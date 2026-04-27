@@ -13,8 +13,33 @@ pub enum Stmt {
 pub enum Expr {
     Str { value: String, line: u32, col: u32 },
     Int { value: i64, line: u32, col: u32 },
+    Bool { value: bool, line: u32, col: u32 },
     Ident { name: String, line: u32, col: u32 },
     Call { callee: Box<Expr>, args: Vec<Expr>, line: u32, col: u32 },
+    Unary { op: UnOp, operand: Box<Expr>, line: u32, col: u32 },
+    Binary { op: BinOp, left: Box<Expr>, right: Box<Expr>, line: u32, col: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
+    And,
+    Or,
 }
 
 impl Expr {
@@ -22,8 +47,11 @@ impl Expr {
         match self {
             Expr::Str { line, .. }
             | Expr::Int { line, .. }
+            | Expr::Bool { line, .. }
             | Expr::Ident { line, .. }
-            | Expr::Call { line, .. } => *line,
+            | Expr::Call { line, .. }
+            | Expr::Unary { line, .. }
+            | Expr::Binary { line, .. } => *line,
         }
     }
 
@@ -31,8 +59,11 @@ impl Expr {
         match self {
             Expr::Str { col, .. }
             | Expr::Int { col, .. }
+            | Expr::Bool { col, .. }
             | Expr::Ident { col, .. }
-            | Expr::Call { col, .. } => *col,
+            | Expr::Call { col, .. }
+            | Expr::Unary { col, .. }
+            | Expr::Binary { col, .. } => *col,
         }
     }
 }

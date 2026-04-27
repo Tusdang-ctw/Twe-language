@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::ast::{Expr, Program, Stmt};
+use crate::ast::{BinOp, Expr, Program, Stmt, UnOp};
 use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +101,149 @@ impl<'a> Parser<'a> {
         })
     }
 
+    // Expression precedence (low to high):
+    //   or
+    //   and
+    //   == != < > <= >=     (non-chaining)
+    //   + -
+    //   * /
+    //   unary -, not
+    //   postfix (calls, …)
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_and()?;
+        while matches!(self.peek().kind, TokenKind::Or) {
+            let tok = self.bump().clone();
+            let right = self.parse_and()?;
+            left = Expr::Binary {
+                op: BinOp::Or,
+                left: Box::new(left),
+                right: Box::new(right),
+                line: tok.line,
+                col: tok.col,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_compare()?;
+        while matches!(self.peek().kind, TokenKind::And) {
+            let tok = self.bump().clone();
+            let right = self.parse_compare()?;
+            left = Expr::Binary {
+                op: BinOp::And,
+                left: Box::new(left),
+                right: Box::new(right),
+                line: tok.line,
+                col: tok.col,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_compare(&mut self) -> Result<Expr, ParseError> {
+        let left = self.parse_add()?;
+        let op = match self.peek().kind {
+            TokenKind::EqEq => BinOp::Eq,
+            TokenKind::NotEq => BinOp::Neq,
+            TokenKind::Lt => BinOp::Lt,
+            TokenKind::Gt => BinOp::Gt,
+            TokenKind::LtEq => BinOp::Lte,
+            TokenKind::GtEq => BinOp::Gte,
+            _ => return Ok(left),
+        };
+        let tok = self.bump().clone();
+        let right = self.parse_add()?;
+        // Disallow chaining like `a < b < c` for now (ambiguous semantics).
+        if matches!(
+            self.peek().kind,
+            TokenKind::EqEq
+                | TokenKind::NotEq
+                | TokenKind::Lt
+                | TokenKind::Gt
+                | TokenKind::LtEq
+                | TokenKind::GtEq
+        ) {
+            let next = self.peek().clone();
+            return Err(ParseError {
+                line: next.line,
+                col: next.col,
+                message: "comparison operators do not chain in twe".to_string(),
+                help: Some(
+                    "split into two comparisons joined by `and`, e.g. `a < b and b < c`"
+                        .to_string(),
+                ),
+            });
+        }
+        Ok(Expr::Binary {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+            line: tok.line,
+            col: tok.col,
+        })
+    }
+
+    fn parse_add(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_mul()?;
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::Plus => BinOp::Add,
+                TokenKind::Minus => BinOp::Sub,
+                _ => return Ok(left),
+            };
+            let tok = self.bump().clone();
+            let right = self.parse_mul()?;
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                line: tok.line,
+                col: tok.col,
+            };
+        }
+    }
+
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_unary()?;
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::Star => BinOp::Mul,
+                TokenKind::Slash => BinOp::Div,
+                _ => return Ok(left),
+            };
+            let tok = self.bump().clone();
+            let right = self.parse_unary()?;
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                line: tok.line,
+                col: tok.col,
+            };
+        }
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        let op = match self.peek().kind {
+            TokenKind::Minus => Some(UnOp::Neg),
+            TokenKind::Not => Some(UnOp::Not),
+            _ => None,
+        };
+        if let Some(op) = op {
+            let tok = self.bump().clone();
+            let operand = self.parse_unary()?;
+            return Ok(Expr::Unary {
+                op,
+                operand: Box::new(operand),
+                line: tok.line,
+                col: tok.col,
+            });
+        }
         self.parse_postfix()
     }
 
@@ -141,11 +283,23 @@ impl<'a> Parser<'a> {
                 line: tok.line,
                 col: tok.col,
             }),
-            TokenKind::Ident(name) => Ok(Expr::Ident {
-                name,
-                line: tok.line,
-                col: tok.col,
-            }),
+            TokenKind::Ident(name) => match name.as_str() {
+                "true" => Ok(Expr::Bool {
+                    value: true,
+                    line: tok.line,
+                    col: tok.col,
+                }),
+                "false" => Ok(Expr::Bool {
+                    value: false,
+                    line: tok.line,
+                    col: tok.col,
+                }),
+                _ => Ok(Expr::Ident {
+                    name,
+                    line: tok.line,
+                    col: tok.col,
+                }),
+            },
             TokenKind::LParen => {
                 let inner = self.parse_expr()?;
                 self.expect(TokenKind::RParen, "expected ')' after parenthesized expression")?;
