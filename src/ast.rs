@@ -7,6 +7,20 @@ pub struct Program {
 pub enum Stmt {
     Let { name: String, value: Expr, line: u32, col: u32 },
     Assign { target: AssignTarget, op: AssignOp, value: Expr, line: u32, col: u32 },
+    If {
+        cond: Expr,
+        then_body: Vec<Stmt>,
+        elifs: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
+        line: u32,
+        col: u32,
+    },
+    OnUpdate {
+        param: String,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
 }
 

@@ -1,0 +1,14 @@
+# Example 1, Phase-1 headless adaptation:
+# real keyboard input ships with the macroquad backend in Phase 2.
+# This script pre-sets `key.right`, runs N frames, prints positions.
+
+let hero = load("hero.png")
+hero.pos = (200, 150)
+key.right = true
+
+on update(dt):
+    if key.right: hero.x += 200 * dt
+    if key.left:  hero.x -= 200 * dt
+    if key.up:    hero.y -= 200 * dt
+    if key.down:  hero.y += 200 * dt
+    print(hero.pos)

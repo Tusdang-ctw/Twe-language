@@ -95,6 +95,13 @@ impl std::error::Error for RuntimeError {}
 pub struct Env {
     bindings: HashMap<String, Value>,
     pub out: String,
+    pub on_update: Option<OnUpdateHandler>,
+}
+
+#[derive(Clone)]
+pub struct OnUpdateHandler {
+    pub param: String,
+    pub body: Vec<crate::ast::Stmt>,
 }
 
 impl Env {
@@ -102,6 +109,7 @@ impl Env {
         Self {
             bindings: HashMap::new(),
             out: String::new(),
+            on_update: None,
         }
     }
 

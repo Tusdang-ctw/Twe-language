@@ -11,6 +11,14 @@ fn run_program(path: &str) -> Result<String, String> {
     eval::run(&program).map_err(|e| format!("eval: {e}"))
 }
 
+fn run_program_frames(path: &str, frames: u32, dt: f64) -> Result<String, String> {
+    let src = fs::read_to_string(Path::new(path))
+        .unwrap_or_else(|e| panic!("could not read {path}: {e}"));
+    let tokens = lexer::lex(&src).map_err(|e| format!("lex: {e}"))?;
+    let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;
+    eval::run_with_frames(&program, frames, dt).map_err(|e| format!("eval: {e}"))
+}
+
 #[test]
 fn runs_hello() {
     let out = run_program("tests/programs/hello.twe").expect("program should run");
@@ -86,6 +94,44 @@ fn missing_field_errors() {
 fn runs_floats() {
     let out = run_program("tests/programs/floats.twe").expect("program should run");
     assert_eq!(out, "3.14\n6.28\n1.5\n0.0015\n2.5\ntrue\ntrue\n");
+}
+
+#[test]
+fn runs_if_else_chain() {
+    let src = r#"
+let x = 5
+if x < 3:
+    print("small")
+elif x < 10:
+    print("medium")
+else:
+    print("large")
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "medium\n");
+}
+
+#[test]
+fn runs_single_line_if() {
+    let src = "let x = 1\nif x == 1: print(\"one\")\n";
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "one\n");
+}
+
+#[test]
+fn runs_example_1_three_frames() {
+    let out = run_program_frames("tests/programs/example_1.twe", 3, 0.1)
+        .expect("program should run");
+    assert_eq!(
+        out,
+        "(220.0, 150)\n(240.0, 150)\n(260.0, 150)\n"
+    );
+}
+
+#[test]
+fn on_update_outside_v01_event_set_errors() {
+    let err = run_program_str("on click(e):\n    print(e)\n").expect_err("should fail");
+    assert!(err.contains("only `on update(dt):`"), "got: {err}");
 }
 
 fn run_program_str(src: &str) -> Result<String, String> {

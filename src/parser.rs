@@ -66,8 +66,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
-        if matches!(self.peek().kind, TokenKind::Let) {
-            return self.parse_let();
+        match self.peek().kind {
+            TokenKind::Let => return self.parse_let(),
+            TokenKind::If => return self.parse_if(),
+            TokenKind::On => return self.parse_on(),
+            _ => {}
         }
         let expr = self.parse_expr()?;
         if let Some(op) = self.peek_assign_op() {
@@ -104,6 +107,119 @@ impl<'a> Parser<'a> {
             TokenKind::StarEq => Some(AssignOp::MulAssign),
             TokenKind::SlashEq => Some(AssignOp::DivAssign),
             _ => None,
+        }
+    }
+
+    fn parse_if(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let cond = self.parse_expr()?;
+        self.expect(TokenKind::Colon, "expected ':' after if condition")?;
+        let then_body = self.parse_block()?;
+        let mut elifs = Vec::new();
+        while matches!(self.peek().kind, TokenKind::Elif) {
+            self.bump();
+            let elif_cond = self.parse_expr()?;
+            self.expect(TokenKind::Colon, "expected ':' after elif condition")?;
+            let elif_body = self.parse_block()?;
+            elifs.push((elif_cond, elif_body));
+        }
+        let else_body = if matches!(self.peek().kind, TokenKind::Else) {
+            self.bump();
+            self.expect(TokenKind::Colon, "expected ':' after `else`")?;
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+        Ok(Stmt::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_on(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let event_tok = self.bump().clone();
+        let event_name = match event_tok.kind {
+            TokenKind::Ident(s) => s,
+            other => {
+                return Err(ParseError {
+                    line: event_tok.line,
+                    col: event_tok.col,
+                    message: format!("expected event name after `on`, got {other:?}"),
+                    help: Some("e.g. `on update(dt):`".to_string()),
+                })
+            }
+        };
+        if event_name != "update" {
+            return Err(ParseError {
+                line: event_tok.line,
+                col: event_tok.col,
+                message: format!(
+                    "only `on update(dt):` is supported in v0.1, got `on {event_name}`"
+                ),
+                help: Some(
+                    "named, predicate, and lifecycle events ship in Phase 2".to_string(),
+                ),
+            });
+        }
+        self.expect(TokenKind::LParen, "expected '(' after `on update`")?;
+        let param_tok = self.bump().clone();
+        let param = match param_tok.kind {
+            TokenKind::Ident(s) => s,
+            other => {
+                return Err(ParseError {
+                    line: param_tok.line,
+                    col: param_tok.col,
+                    message: format!("expected parameter name, got {other:?}"),
+                    help: Some("`on update(dt):` binds dt as the frame delta".to_string()),
+                })
+            }
+        };
+        self.expect(TokenKind::RParen, "expected ')' to close parameter list")?;
+        self.expect(TokenKind::Colon, "expected ':' after `on update(...)`")?;
+        let body = self.parse_block()?;
+        Ok(Stmt::OnUpdate {
+            param,
+            body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        if matches!(self.peek().kind, TokenKind::Newline) {
+            self.bump();
+            if !matches!(self.peek().kind, TokenKind::Indent) {
+                let tok = self.peek().clone();
+                return Err(ParseError {
+                    line: tok.line,
+                    col: tok.col,
+                    message: "expected indented block".to_string(),
+                    help: Some(
+                        "indent the body, or put a single statement on the same line after ':'"
+                            .to_string(),
+                    ),
+                });
+            }
+            self.bump();
+            let mut stmts = Vec::new();
+            loop {
+                self.skip_newlines();
+                if matches!(self.peek().kind, TokenKind::Dedent | TokenKind::Eof) {
+                    break;
+                }
+                stmts.push(self.parse_stmt()?);
+            }
+            if matches!(self.peek().kind, TokenKind::Dedent) {
+                self.bump();
+            }
+            Ok(stmts)
+        } else {
+            Ok(vec![self.parse_stmt()?])
         }
     }
 

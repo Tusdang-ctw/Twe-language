@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::value::{Env, Object, RuntimeError, Value};
@@ -17,6 +18,18 @@ pub fn install(env: &mut Env) {
             name: "load",
             func: load_impl,
         },
+    );
+
+    let mut key_fields = HashMap::new();
+    for k in ["right", "left", "up", "down", "space"] {
+        key_fields.insert(k.to_string(), Value::Bool(false));
+    }
+    env.set(
+        "key".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: key_fields,
+            kind: "input",
+        }))),
     );
 }
 

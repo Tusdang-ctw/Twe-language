@@ -2,13 +2,29 @@ use std::rc::Rc;
 
 use crate::ast::{AssignOp, AssignTarget, BinOp, Expr, Program, Stmt, UnOp};
 use crate::stdlib;
-use crate::value::{Env, RuntimeError, Value};
+use crate::value::{Env, OnUpdateHandler, RuntimeError, Value};
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
+    run_with_frames(program, 0, 1.0 / 60.0)
+}
+
+pub fn run_with_frames(
+    program: &Program,
+    frames: u32,
+    dt: f64,
+) -> Result<String, RuntimeError> {
     let mut env = Env::new();
     stdlib::install(&mut env);
     for stmt in &program.stmts {
         eval_stmt(&mut env, stmt)?;
+    }
+    if let Some(handler) = env.on_update.clone() {
+        for _ in 0..frames {
+            env.set(handler.param.clone(), Value::Float(dt));
+            for stmt in &handler.body {
+                eval_stmt(&mut env, stmt)?;
+            }
+        }
     }
     Ok(env.out)
 }
@@ -27,6 +43,43 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             line,
             col,
         } => eval_assign(env, target, *op, value, *line, *col),
+        Stmt::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            let cond_val = eval_expr(env, cond)?;
+            if is_truthy(&cond_val) {
+                for s in then_body {
+                    eval_stmt(env, s)?;
+                }
+                return Ok(());
+            }
+            for (elif_cond, elif_body) in elifs {
+                let v = eval_expr(env, elif_cond)?;
+                if is_truthy(&v) {
+                    for s in elif_body {
+                        eval_stmt(env, s)?;
+                    }
+                    return Ok(());
+                }
+            }
+            if let Some(eb) = else_body {
+                for s in eb {
+                    eval_stmt(env, s)?;
+                }
+            }
+            Ok(())
+        }
+        Stmt::OnUpdate { param, body, .. } => {
+            env.on_update = Some(OnUpdateHandler {
+                param: param.clone(),
+                body: body.clone(),
+            });
+            Ok(())
+        }
         Stmt::Expr(e) => {
             eval_expr(env, e)?;
             Ok(())
