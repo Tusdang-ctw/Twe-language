@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::process;
 
-const USAGE: &str = "usage: twec [run [--frames N] <file> | version]";
+const USAGE: &str = "usage: twec [run [--frames N] <file> | parse <file> | version]";
 
 pub fn run() {
     let args: Vec<String> = env::args().collect();
@@ -12,6 +12,7 @@ pub fn run() {
     }
     match args[1].as_str() {
         "run" => process::exit(handle_run(&args[2..])),
+        "parse" => process::exit(handle_parse(&args[2..])),
         "version" | "--version" | "-V" => print_version(),
         cmd => {
             eprintln!("error: unknown command '{cmd}'");
@@ -19,6 +20,38 @@ pub fn run() {
             process::exit(2);
         }
     }
+}
+
+fn handle_parse(args: &[String]) -> i32 {
+    if args.len() != 1 {
+        eprintln!("error: `twec parse` takes a single file path");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    let path = &args[0];
+    let src = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not read '{path}': {e}");
+            return 2;
+        }
+    };
+    let tokens = match crate::lexer::lex(&src) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+    let program = match crate::parser::parse(&tokens) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+    println!("{}", crate::ast_json::to_json(&program));
+    0
 }
 
 fn print_version() {
