@@ -1,7 +1,7 @@
 use insta::assert_debug_snapshot;
-use twec::lexer::lex;
+use twec::lexer::{lex, TokenKind};
 
-const EXAMPLE_1_FIRST_CHUNK: &str = r#"sprite hero = load("hero.png")
+const EXAMPLE_1_FIRST_CHUNK: &str = r#"let hero = load("hero.png")
 hero.pos = (200, 150)
 
 on update(dt):
@@ -15,6 +15,16 @@ on update(dt):
 fn lexes_example_1_first_chunk() {
     let tokens = lex(EXAMPLE_1_FIRST_CHUNK).expect("lex should succeed");
     assert_debug_snapshot!(tokens);
+}
+
+#[test]
+fn sprite_is_an_identifier_not_a_keyword() {
+    let tokens = lex("sprite").expect("lex should succeed");
+    assert!(
+        matches!(&tokens[0].kind, TokenKind::Ident(s) if s == "sprite"),
+        "expected Ident(\"sprite\"), got {:?}",
+        tokens[0].kind
+    );
 }
 
 #[test]

@@ -5,22 +5,6 @@
 
 ## Open language-design questions
 
-### `sprite` as keyword vs built-in type
-
-Status: **lexed as a keyword** in `src/lexer.rs`, per CLAUDE.md's First Task
-directive. Conflicts with `06-design-document.md §10.1`'s reserved-words list,
-which omits `sprite`. The parenthetical "(or a built-in type)" in
-`01-examples.md` Example 1 leaves this open. Resolution required before the
-parser handles the `sprite hero = ...` declaration form.
-
-Two viable shapes:
-
-1. Add `sprite` to §10.1 as a reserved word; declarations look like
-   `sprite ident = expr` in addition to `let`/`var`. Ergonomic for Example 1
-   but adds a one-off declaration form.
-2. Treat `sprite` as a built-in type identifier; require `let hero: sprite = load(...)`.
-   Uniform with `let`/`var` but more boilerplate at the entry point.
-
 ### Unicode in identifiers
 
 `06-design-document.md §2.1` permits any Unicode scalar value in identifiers;
@@ -70,8 +54,7 @@ compilation, stop. Note it here."):
 
 ## Tooling debt before the next session
 
-- **Reconcile the `sprite` keyword** with `docs/06-design-document.md §10.1` —
-  either add it with a note in `docs/changes/`, or remove it from the lexer.
-- **Create `docs/changes/`** the first time a design pivot lands; CLAUDE.md
-  doc-discipline expects it.
 - **Pick a license.** `README.md` says "TBD: MIT or Apache-2.0".
+- **Loader API doc-cleanup.** `02-type-system.md` shows `sprite.load(...)`
+  (namespaced); `01-examples.md` Example 1 (post 2026-04-27) shows `load(...)`
+  (bare). Both are valid; pick a canonical form.

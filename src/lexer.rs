@@ -9,7 +9,6 @@ pub struct Token {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
-    Sprite,
     Let,
     Var,
     On,
@@ -301,7 +300,6 @@ impl<'a> Lexer<'a> {
         let text = std::str::from_utf8(&self.src[start..self.pos])
             .expect("ascii ident chars are valid utf-8");
         let kind = match text {
-            "sprite" => TokenKind::Sprite,
             "let" => TokenKind::Let,
             "var" => TokenKind::Var,
             "on" => TokenKind::On,

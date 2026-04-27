@@ -21,7 +21,7 @@ The implied decisions are the actual point. The code is the vehicle.
 ## Example 1 — Hello, sprite (the "first five seconds" test)
 
 ```twe
-sprite hero = load("hero.png")
+let hero = load("hero.png")
 hero.pos = (200, 150)
 
 on update(dt):
@@ -36,7 +36,7 @@ on update(dt):
 **Implied decisions:**
 
 - No `main` function, no scene, no init. Top-level code runs at startup.
-- `sprite` is a keyword (or a built-in type), not a library import. Same for `key`.
+- `let` introduces an immutable binding; `hero`'s type is inferred from `load`'s return value (gradual typing per `02-type-system.md`). `sprite` is a built-in type name, not a reserved keyword (see `changes/2026-04-27-sprite-is-a-type-not-a-keyword.md`). `key` is ambient stdlib context, not a library import.
 - Tuples are first-class (`(200, 150)`); they auto-coerce to `Vector2`. Member access via `.x` and `.y` works on tuples directly.
 - `on update(dt):` is a special block, not a function definition. It registers a per-frame callback. This is the core gameplay loop primitive.
 - Time math is dimensional. `dt` is a `Duration`; `200 * dt` produces a length because `200` is interpreted as `pixels/second` in this context. (This is aspirational and may be relaxed; see `06-design-document.md`.)

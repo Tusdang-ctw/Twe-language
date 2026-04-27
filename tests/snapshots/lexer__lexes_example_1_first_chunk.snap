@@ -4,7 +4,7 @@ expression: tokens
 ---
 [
     Token {
-        kind: Sprite,
+        kind: Let,
         line: 1,
         col: 1,
     },
@@ -13,41 +13,41 @@ expression: tokens
             "hero",
         ),
         line: 1,
-        col: 8,
+        col: 5,
     },
     Token {
         kind: Eq,
         line: 1,
-        col: 13,
+        col: 10,
     },
     Token {
         kind: Ident(
             "load",
         ),
         line: 1,
-        col: 15,
+        col: 12,
     },
     Token {
         kind: LParen,
         line: 1,
-        col: 19,
+        col: 16,
     },
     Token {
         kind: Str(
             "hero.png",
         ),
         line: 1,
-        col: 20,
+        col: 17,
     },
     Token {
         kind: RParen,
         line: 1,
-        col: 30,
+        col: 27,
     },
     Token {
         kind: Newline,
         line: 1,
-        col: 31,
+        col: 28,
     },
     Token {
         kind: Ident(
