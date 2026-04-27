@@ -67,7 +67,7 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         match self.peek().kind {
-            TokenKind::Let => return self.parse_let(),
+            TokenKind::Let | TokenKind::Var => return self.parse_let(),
             TokenKind::If => return self.parse_if(),
             TokenKind::On => return self.parse_on(),
             TokenKind::Entity => return self.parse_decl(DeclKind::Entity),
@@ -76,6 +76,24 @@ impl<'a> Parser<'a> {
             TokenKind::Inventory => return self.parse_decl(DeclKind::Inventory),
             TokenKind::Function => return self.parse_function(),
             TokenKind::Return => return self.parse_return(),
+            TokenKind::While => return self.parse_while(),
+            TokenKind::For => return self.parse_for(),
+            TokenKind::Break => {
+                let tok = self.bump().clone();
+                self.expect_stmt_end()?;
+                return Ok(Stmt::Break {
+                    line: tok.line,
+                    col: tok.col,
+                });
+            }
+            TokenKind::Continue => {
+                let tok = self.bump().clone();
+                self.expect_stmt_end()?;
+                return Ok(Stmt::Continue {
+                    line: tok.line,
+                    col: tok.col,
+                });
+            }
             _ => {}
         }
         let expr = self.parse_expr()?;
@@ -190,6 +208,35 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
         Ok(Stmt::OnUpdate {
             param,
+            body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_while(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let cond = self.parse_expr()?;
+        self.expect(TokenKind::Colon, "expected ':' after while condition")?;
+        let body = self.parse_block()?;
+        Ok(Stmt::While {
+            cond,
+            body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_for(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let var = self.expect_ident("expected loop variable name after `for`")?;
+        self.expect(TokenKind::In, "expected `in` after for-loop variable")?;
+        let iter = self.parse_expr()?;
+        self.expect(TokenKind::Colon, "expected ':' after for-loop iterable")?;
+        let body = self.parse_block()?;
+        Ok(Stmt::For {
+            var,
+            iter,
             body,
             line: kw.line,
             col: kw.col,

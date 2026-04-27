@@ -1,0 +1,34 @@
+var i = 0
+while i < 3:
+    print(i)
+    i += 1
+
+print("---")
+
+for j in 0..3:
+    print(j)
+
+print("---")
+
+for k in 0..<3:
+    print(k)
+
+print("---")
+
+# break and continue
+for n in 0..5:
+    if n == 2:
+        continue
+    if n == 4:
+        break
+    print(n)
+
+print("---")
+
+# nested loops with break
+for a in 0..2:
+    for b in 0..2:
+        if b == 1:
+            break
+        print(a)
+        print(b)

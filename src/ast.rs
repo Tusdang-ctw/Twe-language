@@ -41,6 +41,27 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
+    For {
+        var: String,
+        iter: Expr,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
+    Break {
+        line: u32,
+        col: u32,
+    },
+    Continue {
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
 }
 

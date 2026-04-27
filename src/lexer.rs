@@ -26,6 +26,11 @@ pub enum TokenKind {
     KwSelf,
     Function,
     Return,
+    While,
+    For,
+    In,
+    Break,
+    Continue,
     Ident(String),
     Int(i64),
     Float(f64),
@@ -670,6 +675,11 @@ impl<'a> Lexer<'a> {
             "self" => TokenKind::KwSelf,
             "function" => TokenKind::Function,
             "return" => TokenKind::Return,
+            "while" => TokenKind::While,
+            "for" => TokenKind::For,
+            "in" => TokenKind::In,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }

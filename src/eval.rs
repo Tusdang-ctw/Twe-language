@@ -41,7 +41,7 @@ pub fn run_with_frames(
 fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
     for stmt in stmts {
         eval_stmt(env, stmt)?;
-        if env.returning.is_some() {
+        if env.returning.is_some() || env.breaking || env.continuing {
             return Ok(());
         }
     }
@@ -110,6 +110,44 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 None => Value::Nil,
             };
             env.returning = Some(v);
+            Ok(())
+        }
+        Stmt::While { cond, body, .. } => {
+            env.loop_depth += 1;
+            let result = run_while(env, cond, body);
+            env.loop_depth -= 1;
+            result
+        }
+        Stmt::For {
+            var, iter, body, line, col,
+        } => {
+            env.loop_depth += 1;
+            let result = run_for(env, var, iter, body, *line, *col);
+            env.loop_depth -= 1;
+            result
+        }
+        Stmt::Break { line, col } => {
+            if env.loop_depth == 0 {
+                return Err(RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: "`break` is only valid inside a loop".to_string(),
+                    help: None,
+                });
+            }
+            env.breaking = true;
+            Ok(())
+        }
+        Stmt::Continue { line, col } => {
+            if env.loop_depth == 0 {
+                return Err(RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: "`continue` is only valid inside a loop".to_string(),
+                    help: None,
+                });
+            }
+            env.continuing = true;
             Ok(())
         }
         Stmt::OnUpdate { param, body, .. } => {
@@ -603,6 +641,75 @@ fn call_method(
     }
     body_result?;
     Ok(return_value)
+}
+
+fn run_while(env: &mut Env, cond: &Expr, body: &[Stmt]) -> Result<(), RuntimeError> {
+    loop {
+        let v = eval_expr(env, cond)?;
+        if !is_truthy(&v) {
+            break;
+        }
+        run_block(env, body)?;
+        if env.returning.is_some() {
+            break;
+        }
+        if env.breaking {
+            env.breaking = false;
+            break;
+        }
+        if env.continuing {
+            env.continuing = false;
+        }
+    }
+    Ok(())
+}
+
+fn run_for(
+    env: &mut Env,
+    var: &str,
+    iter: &Expr,
+    body: &[Stmt],
+    line: u32,
+    col: u32,
+) -> Result<(), RuntimeError> {
+    let iter_val = eval_expr(env, iter)?;
+    let (start, end, exclusive) = match iter_val {
+        Value::Range { start, end, exclusive } => (start, end, exclusive),
+        other => {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "for-loop iterable must be a range, got {}",
+                    other.type_name()
+                ),
+                help: Some("v0.1 only supports `for i in <range>:`; lists ship later".to_string()),
+            });
+        }
+    };
+    let saved = env.get(var).cloned();
+    let limit = if exclusive { end } else { end + 1 };
+    let mut i = start;
+    while i < limit {
+        env.set(var.to_string(), Value::Int(i));
+        run_block(env, body)?;
+        if env.returning.is_some() {
+            break;
+        }
+        if env.breaking {
+            env.breaking = false;
+            break;
+        }
+        if env.continuing {
+            env.continuing = false;
+        }
+        i += 1;
+    }
+    match saved {
+        Some(v) => env.set(var.to_string(), v),
+        None => env.remove(var),
+    }
+    Ok(())
 }
 
 fn eval_decl(

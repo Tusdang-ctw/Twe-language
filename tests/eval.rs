@@ -180,6 +180,29 @@ fn return_at_top_level_errors() {
     assert!(err.contains("`return`"), "got: {err}");
 }
 
+#[test]
+fn runs_loops() {
+    let out = run_program("tests/programs/loops.twe").expect("program should run");
+    // Inclusive `0..2` iterates 0, 1, 2 (three rounds), so the nested
+    // section prints 6 lines (a=0,b=0; a=1,b=0; a=2,b=0).
+    assert_eq!(
+        out,
+        "0\n1\n2\n---\n0\n1\n2\n3\n---\n0\n1\n2\n---\n0\n1\n3\n---\n0\n0\n1\n0\n2\n0\n"
+    );
+}
+
+#[test]
+fn break_at_top_level_errors() {
+    let err = run_program_str("break\n").expect_err("should fail");
+    assert!(err.contains("`break`"), "got: {err}");
+}
+
+#[test]
+fn continue_at_top_level_errors() {
+    let err = run_program_str("continue\n").expect_err("should fail");
+    assert!(err.contains("`continue`"), "got: {err}");
+}
+
 fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;

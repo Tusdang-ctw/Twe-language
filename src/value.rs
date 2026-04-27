@@ -156,6 +156,9 @@ pub struct Env {
     pub on_update: Option<OnUpdateHandler>,
     pub self_value: Option<Value>,
     pub returning: Option<Value>,
+    pub breaking: bool,
+    pub continuing: bool,
+    pub loop_depth: u32,
     pub call_depth: u32,
 }
 
@@ -173,6 +176,9 @@ impl Env {
             on_update: None,
             self_value: None,
             returning: None,
+            breaking: false,
+            continuing: false,
+            loop_depth: 0,
             call_depth: 0,
         }
     }
