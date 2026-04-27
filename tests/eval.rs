@@ -203,6 +203,22 @@ fn continue_at_top_level_errors() {
     assert!(err.contains("`continue`"), "got: {err}");
 }
 
+#[test]
+fn runs_type_annotations() {
+    let out = run_program("tests/programs/type_annotations.twe")
+        .expect("program should run");
+    assert_eq!(out, "12\nhi\n");
+}
+
+#[test]
+fn runs_math_stdlib() {
+    let out = run_program("tests/programs/math.twe").expect("program should run");
+    assert_eq!(
+        out,
+        "7\n3.14\n3.0\n1.4142135623730951\n2\n3\n1\n3\n0.5\n"
+    );
+}
+
 fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;

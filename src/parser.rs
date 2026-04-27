@@ -249,13 +249,25 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LParen, "expected '(' after function name")?;
         let mut params = Vec::new();
         if !matches!(self.peek().kind, TokenKind::RParen) {
-            params.push(self.expect_ident("expected parameter name")?);
+            params.push(self.parse_param()?);
             while matches!(self.peek().kind, TokenKind::Comma) {
                 self.bump();
-                params.push(self.expect_ident("expected parameter name")?);
+                params.push(self.parse_param()?);
             }
         }
         self.expect(TokenKind::RParen, "expected ')' to close parameter list")?;
+        // Optional return type `-> type`. Currently no Arrow token; the
+        // design uses `->` which lexes as Minus + Gt. Recognise that pair.
+        if matches!(self.peek().kind, TokenKind::Minus) {
+            // peek ahead one — we only consume both if the second is `>`.
+            if self.pos + 1 < self.tokens.len()
+                && matches!(self.tokens[self.pos + 1].kind, TokenKind::Gt)
+            {
+                self.bump();
+                self.bump();
+                self.parse_type()?;
+            }
+        }
         self.expect(TokenKind::Colon, "expected ':' after function signature")?;
         let body = self.parse_block()?;
         Ok(Stmt::FunctionDecl {
@@ -265,6 +277,15 @@ impl<'a> Parser<'a> {
             line: kw.line,
             col: kw.col,
         })
+    }
+
+    fn parse_param(&mut self) -> Result<String, ParseError> {
+        let name = self.expect_ident("expected parameter name")?;
+        if matches!(self.peek().kind, TokenKind::Colon) {
+            self.bump();
+            self.parse_type()?;
+        }
+        Ok(name)
     }
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
@@ -493,6 +514,12 @@ impl<'a> Parser<'a> {
                 })
             }
         };
+        // Optional type annotation `: type` per docs/06 §3.2.
+        // v0.1 non-strict mode parses but ignores types (docs/02 §5.2.1).
+        if matches!(self.peek().kind, TokenKind::Colon) {
+            self.bump();
+            self.parse_type()?;
+        }
         self.expect(TokenKind::Eq, "expected '=' after `let <name>`")?;
         let value = self.parse_expr()?;
         self.expect_stmt_end()?;
@@ -502,6 +529,36 @@ impl<'a> Parser<'a> {
             line: kw.line,
             col: kw.col,
         })
+    }
+
+    /// Parses a type expression and discards it. Non-strict mode does no
+    /// type checking; strict / verified modes (v0.2+) will replace this
+    /// with a real type tree on the AST.
+    fn parse_type(&mut self) -> Result<(), ParseError> {
+        // Minimal type grammar covering the v0.1 examples:
+        //   type := identifier ("." identifier)*    # qualified names like Hero, vector
+        //         | "list" "of" type
+        //         | "map" "of" type "=>" type
+        let tok = self.peek().clone();
+        match tok.kind {
+            TokenKind::Ident(_) => {
+                self.bump();
+                while matches!(self.peek().kind, TokenKind::Dot) {
+                    self.bump();
+                    self.expect_ident("expected qualified type segment after '.'")?;
+                }
+                Ok(())
+            }
+            other => Err(ParseError {
+                line: tok.line,
+                col: tok.col,
+                message: format!("expected type, got {other:?}"),
+                help: Some(
+                    "v0.1 type annotations accept identifiers like `int`, `Hero`, or `vector`"
+                        .to_string(),
+                ),
+            }),
+        }
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {

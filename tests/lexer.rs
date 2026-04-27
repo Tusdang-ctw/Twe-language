@@ -161,6 +161,49 @@ fn unknown_unit_errors() {
 }
 
 #[test]
+fn hex_and_binary_literals_lex() {
+    let tokens = lex("0xFF 0xff_ff 0b1010 0b1111_0000").expect("lex should succeed");
+    let ints: Vec<i64> = tokens
+        .iter()
+        .filter_map(|t| match t.kind {
+            TokenKind::Int(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ints, vec![0xFF, 0xFFFF, 0b1010, 0b1111_0000]);
+}
+
+#[test]
+fn digit_separators_lex() {
+    let tokens = lex("1_000_000 1_2.5_5 1.5e1_0").expect("lex should succeed");
+    let mut nums = tokens.iter().filter_map(|t| match t.kind {
+        TokenKind::Int(n) => Some(n as f64),
+        TokenKind::Float(f) => Some(f),
+        _ => None,
+    });
+    assert_eq!(nums.next(), Some(1_000_000.0));
+    assert_eq!(nums.next(), Some(12.55));
+    assert_eq!(nums.next(), Some(1.5e10));
+}
+
+#[test]
+fn string_escape_sequences_lex() {
+    let tokens =
+        lex(r#""line one\nline two\ttab\\back\"q""#).expect("lex should succeed");
+    let s = match &tokens[0].kind {
+        TokenKind::Str(s) => s,
+        other => panic!("expected Str, got {other:?}"),
+    };
+    assert_eq!(s, "line one\nline two\ttab\\back\"q");
+}
+
+#[test]
+fn unknown_escape_errors() {
+    let err = lex(r#""\q""#).expect_err("should fail");
+    assert!(err.message.contains(r"\q"), "got: {}", err.message);
+}
+
+#[test]
 fn mixed_tabs_and_spaces_in_indent_errors() {
     let err = lex("if true:\n \tx = 1\n").expect_err("should fail");
     assert_eq!(err.message, "mixed tabs and spaces in indentation");

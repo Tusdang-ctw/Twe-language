@@ -1,0 +1,11 @@
+# Annotations parse but do nothing in non-strict mode (docs/02 §5.2.1).
+# Strict / verified modes ship in v0.2 and v0.3.
+
+let x: int = 5
+let s: string = "hi"
+
+function add(a: int, b: int) -> int:
+    return a + b
+
+print(add(x, 7))
+print(s)

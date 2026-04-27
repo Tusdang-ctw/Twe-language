@@ -466,28 +466,38 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_string(&mut self, line: u32, col: u32) -> Result<Token, LexError> {
-        self.bump(); // opening quote
-        let start = self.pos;
-        while let Some(b) = self.peek() {
-            match b {
-                b'"' => {
-                    let bytes = &self.src[start..self.pos];
-                    let s = std::str::from_utf8(bytes)
-                        .map_err(|_| LexError {
-                            line,
-                            col,
-                            message: "invalid UTF-8 in string literal".to_string(),
-                            help: None,
-                        })?
-                        .to_string();
+        self.bump(); // opening "
+        let mut out = String::new();
+        loop {
+            let chunk_start = self.pos;
+            while let Some(b) = self.peek() {
+                if b == b'"' || b == b'\n' || b == b'\\' {
+                    break;
+                }
+                self.bump();
+            }
+            let chunk = &self.src[chunk_start..self.pos];
+            match std::str::from_utf8(chunk) {
+                Ok(s) => out.push_str(s),
+                Err(_) => {
+                    return Err(LexError {
+                        line,
+                        col,
+                        message: "invalid UTF-8 in string literal".to_string(),
+                        help: None,
+                    })
+                }
+            }
+            match self.peek() {
+                Some(b'"') => {
                     self.bump();
                     return Ok(Token {
-                        kind: TokenKind::Str(s),
+                        kind: TokenKind::Str(out),
                         line,
                         col,
                     });
                 }
-                b'\n' => {
+                Some(b'\n') => {
                     return Err(LexError {
                         line,
                         col,
@@ -499,36 +509,83 @@ impl<'a> Lexer<'a> {
                         ),
                     });
                 }
-                b'\\' => {
-                    return Err(LexError {
-                        line: self.line,
-                        col: self.col,
-                        message: "escape sequences are not yet implemented".to_string(),
-                        help: Some(
-                            "avoid '\\' inside strings until escapes ship".to_string(),
-                        ),
-                    });
-                }
-                _ => {
+                Some(b'\\') => {
+                    let esc_line = self.line;
+                    let esc_col = self.col;
+                    self.bump();
+                    let esc = self.peek().ok_or_else(|| LexError {
+                        line: esc_line,
+                        col: esc_col,
+                        message: "unterminated escape sequence at end of file".to_string(),
+                        help: None,
+                    })?;
+                    let ch = match esc {
+                        b'n' => '\n',
+                        b'r' => '\r',
+                        b't' => '\t',
+                        b'\\' => '\\',
+                        b'"' => '"',
+                        b'0' => '\0',
+                        other => {
+                            return Err(LexError {
+                                line: esc_line,
+                                col: esc_col,
+                                message: format!("unknown escape '\\{}'", other as char),
+                                help: Some(
+                                    "supported: \\n \\r \\t \\\\ \\\" \\0".to_string(),
+                                ),
+                            });
+                        }
+                    };
+                    out.push(ch);
                     self.bump();
                 }
+                None => {
+                    return Err(LexError {
+                        line,
+                        col,
+                        message: "unterminated string literal at end of file".to_string(),
+                        help: Some("add a closing '\"'".to_string()),
+                    })
+                }
+                _ => unreachable!("loop only breaks on \", \\n, \\\\, or end-of-input"),
             }
         }
-        Err(LexError {
-            line,
-            col,
-            message: "unterminated string literal at end of file".to_string(),
-            help: Some("add a closing '\"'".to_string()),
-        })
     }
 
     fn lex_number(&mut self, line: u32, col: u32) -> Result<Token, LexError> {
+        // 0x / 0b prefix radix literals are parsed as ints with no
+        // unit / percent suffix. They must be consumed before falling
+        // through to the decimal path.
+        if self.peek() == Some(b'0') {
+            match self.src.get(self.pos + 1) {
+                Some(b'x') | Some(b'X') => {
+                    self.bump();
+                    self.bump();
+                    return self.lex_radix(line, col, 16, "0x");
+                }
+                Some(b'b') | Some(b'B') => {
+                    self.bump();
+                    self.bump();
+                    return self.lex_radix(line, col, 2, "0b");
+                }
+                _ => {}
+            }
+        }
+
         let start = self.pos;
-        while let Some(b) = self.peek() {
-            if b.is_ascii_digit() {
-                self.bump();
-            } else {
-                break;
+        loop {
+            match self.peek() {
+                Some(b) if b.is_ascii_digit() => self.bump(),
+                Some(b'_')
+                    if self
+                        .src
+                        .get(self.pos + 1)
+                        .is_some_and(|b| b.is_ascii_digit()) =>
+                {
+                    self.bump();
+                }
+                _ => break,
             }
         }
         let mut is_float = false;
@@ -540,11 +597,18 @@ impl<'a> Lexer<'a> {
         {
             is_float = true;
             self.bump(); // dot
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    self.bump();
-                } else {
-                    break;
+            loop {
+                match self.peek() {
+                    Some(b) if b.is_ascii_digit() => self.bump(),
+                    Some(b'_')
+                        if self
+                            .src
+                            .get(self.pos + 1)
+                            .is_some_and(|b| b.is_ascii_digit()) =>
+                    {
+                        self.bump();
+                    }
+                    _ => break,
                 }
             }
         }
@@ -555,11 +619,18 @@ impl<'a> Lexer<'a> {
                 self.bump();
             }
             let exp_start = self.pos;
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    self.bump();
-                } else {
-                    break;
+            loop {
+                match self.peek() {
+                    Some(b) if b.is_ascii_digit() => self.bump(),
+                    Some(b'_')
+                        if self
+                            .src
+                            .get(self.pos + 1)
+                            .is_some_and(|b| b.is_ascii_digit()) =>
+                    {
+                        self.bump();
+                    }
+                    _ => break,
                 }
             }
             if self.pos == exp_start {
@@ -571,12 +642,13 @@ impl<'a> Lexer<'a> {
                 });
             }
         }
-        let text = std::str::from_utf8(&self.src[start..self.pos])
+        let raw = std::str::from_utf8(&self.src[start..self.pos])
             .expect("ascii digits are valid utf-8");
-        let numeric_value: f64 = text.parse().map_err(|_| LexError {
+        let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
+        let numeric_value: f64 = cleaned.parse().map_err(|_| LexError {
             line,
             col,
-            message: format!("could not parse number '{text}'"),
+            message: format!("could not parse number '{raw}'"),
             help: None,
         })?;
 
@@ -632,10 +704,10 @@ impl<'a> Lexer<'a> {
                 col,
             })
         } else {
-            let value: i64 = text.parse().map_err(|_| LexError {
+            let value: i64 = cleaned.parse().map_err(|_| LexError {
                 line,
                 col,
-                message: format!("integer literal '{text}' is out of range for int (i64)"),
+                message: format!("integer literal '{raw}' is out of range for int (i64)"),
                 help: Some("twe ints are 64-bit signed; pick a smaller value".to_string()),
             })?;
             Ok(Token {
@@ -644,6 +716,56 @@ impl<'a> Lexer<'a> {
                 col,
             })
         }
+    }
+
+    fn lex_radix(
+        &mut self,
+        line: u32,
+        col: u32,
+        radix: u32,
+        prefix: &str,
+    ) -> Result<Token, LexError> {
+        let start = self.pos;
+        loop {
+            match self.peek() {
+                Some(b) if (b as char).is_digit(radix) => self.bump(),
+                Some(b'_')
+                    if self
+                        .src
+                        .get(self.pos + 1)
+                        .is_some_and(|c| (*c as char).is_digit(radix)) =>
+                {
+                    self.bump();
+                }
+                _ => break,
+            }
+        }
+        if self.pos == start {
+            return Err(LexError {
+                line,
+                col,
+                message: format!("expected digits after '{prefix}'"),
+                help: Some(if radix == 16 {
+                    "e.g. `0xFF` or `0xFF_FF_FF_FF`".to_string()
+                } else {
+                    "e.g. `0b1010` or `0b1111_0000`".to_string()
+                }),
+            });
+        }
+        let raw = std::str::from_utf8(&self.src[start..self.pos])
+            .expect("ascii digits are valid utf-8");
+        let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
+        let value = i64::from_str_radix(&cleaned, radix).map_err(|_| LexError {
+            line,
+            col,
+            message: format!("{prefix}{cleaned} is out of range for int (i64)"),
+            help: None,
+        })?;
+        Ok(Token {
+            kind: TokenKind::Int(value),
+            line,
+            col,
+        })
     }
 
     fn lex_ident(&mut self, line: u32, col: u32) -> Token {
