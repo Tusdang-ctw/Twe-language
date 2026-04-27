@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
@@ -8,10 +9,18 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Str(Rc<String>),
+    Tuple(Rc<Vec<Value>>),
+    Object(Rc<RefCell<Object>>),
     Builtin {
         name: &'static str,
         func: BuiltinFn,
     },
+}
+
+#[derive(Debug, Default)]
+pub struct Object {
+    pub fields: HashMap<String, Value>,
+    pub kind: &'static str,
 }
 
 pub type BuiltinFn = fn(&mut Env, &[Value]) -> Result<Value, RuntimeError>;
@@ -23,6 +32,8 @@ impl fmt::Debug for Value {
             Value::Bool(b) => write!(f, "Bool({b})"),
             Value::Int(n) => write!(f, "Int({n})"),
             Value::Str(s) => write!(f, "Str({s:?})"),
+            Value::Tuple(t) => write!(f, "Tuple({t:?})"),
+            Value::Object(o) => write!(f, "Object({})", o.borrow().kind),
             Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
         }
     }
@@ -35,6 +46,8 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::Int(_) => "int",
             Value::Str(_) => "string",
+            Value::Tuple(_) => "tuple",
+            Value::Object(o) => o.borrow().kind,
             Value::Builtin { .. } => "function",
         }
     }
@@ -45,6 +58,11 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
             Value::Str(s) => s.as_ref().clone(),
+            Value::Tuple(elems) => {
+                let parts: Vec<String> = elems.iter().map(Value::display).collect();
+                format!("({})", parts.join(", "))
+            }
+            Value::Object(o) => format!("<{}>", o.borrow().kind),
             Value::Builtin { name, .. } => format!("<builtin {name}>"),
         }
     }
@@ -89,6 +107,10 @@ impl Env {
 
     pub fn set(&mut self, name: String, value: Value) {
         self.bindings.insert(name, value);
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.bindings.contains_key(name)
     }
 }
 

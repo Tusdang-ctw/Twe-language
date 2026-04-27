@@ -6,7 +6,23 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Let { name: String, value: Expr, line: u32, col: u32 },
+    Assign { target: AssignTarget, op: AssignOp, value: Expr, line: u32, col: u32 },
     Expr(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssignTarget {
+    Name(String),
+    Field { object: Box<Expr>, name: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Set,
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +31,8 @@ pub enum Expr {
     Int { value: i64, line: u32, col: u32 },
     Bool { value: bool, line: u32, col: u32 },
     Ident { name: String, line: u32, col: u32 },
+    Tuple { elems: Vec<Expr>, line: u32, col: u32 },
+    Field { object: Box<Expr>, name: String, line: u32, col: u32 },
     Call { callee: Box<Expr>, args: Vec<Expr>, line: u32, col: u32 },
     Unary { op: UnOp, operand: Box<Expr>, line: u32, col: u32 },
     Binary { op: BinOp, left: Box<Expr>, right: Box<Expr>, line: u32, col: u32 },
@@ -49,6 +67,8 @@ impl Expr {
             | Expr::Int { line, .. }
             | Expr::Bool { line, .. }
             | Expr::Ident { line, .. }
+            | Expr::Tuple { line, .. }
+            | Expr::Field { line, .. }
             | Expr::Call { line, .. }
             | Expr::Unary { line, .. }
             | Expr::Binary { line, .. } => *line,
@@ -61,6 +81,8 @@ impl Expr {
             | Expr::Int { col, .. }
             | Expr::Bool { col, .. }
             | Expr::Ident { col, .. }
+            | Expr::Tuple { col, .. }
+            | Expr::Field { col, .. }
             | Expr::Call { col, .. }
             | Expr::Unary { col, .. }
             | Expr::Binary { col, .. } => *col,

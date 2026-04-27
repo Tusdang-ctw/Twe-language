@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::ast::{BinOp, Expr, Program, Stmt, UnOp};
+use crate::ast::{AssignOp, AssignTarget, BinOp, Expr, Program, Stmt, UnOp};
 use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,13 +66,44 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
-        match &self.peek().kind {
-            TokenKind::Let => self.parse_let(),
-            _ => {
-                let expr = self.parse_expr()?;
-                self.expect_stmt_end()?;
-                Ok(Stmt::Expr(expr))
-            }
+        if matches!(self.peek().kind, TokenKind::Let) {
+            return self.parse_let();
+        }
+        let expr = self.parse_expr()?;
+        if let Some(op) = self.peek_assign_op() {
+            let tok = self.bump().clone();
+            let value = self.parse_expr()?;
+            self.expect_stmt_end()?;
+            let target = expr_to_target(&expr).ok_or_else(|| ParseError {
+                line: expr.line(),
+                col: expr.col(),
+                message: "invalid assignment target".to_string(),
+                help: Some(
+                    "the left side of `=` must be a name or a field like `obj.field`"
+                        .to_string(),
+                ),
+            })?;
+            Ok(Stmt::Assign {
+                target,
+                op,
+                value,
+                line: tok.line,
+                col: tok.col,
+            })
+        } else {
+            self.expect_stmt_end()?;
+            Ok(Stmt::Expr(expr))
+        }
+    }
+
+    fn peek_assign_op(&self) -> Option<AssignOp> {
+        match self.peek().kind {
+            TokenKind::Eq => Some(AssignOp::Set),
+            TokenKind::PlusEq => Some(AssignOp::AddAssign),
+            TokenKind::MinusEq => Some(AssignOp::SubAssign),
+            TokenKind::StarEq => Some(AssignOp::MulAssign),
+            TokenKind::SlashEq => Some(AssignOp::DivAssign),
+            _ => None,
         }
     }
 
@@ -101,14 +132,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    // Expression precedence (low to high):
-    //   or
-    //   and
-    //   == != < > <= >=     (non-chaining)
-    //   + -
-    //   * /
-    //   unary -, not
-    //   postfix (calls, …)
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_or()
     }
@@ -158,7 +181,6 @@ impl<'a> Parser<'a> {
         };
         let tok = self.bump().clone();
         let right = self.parse_add()?;
-        // Disallow chaining like `a < b < c` for now (ambiguous semantics).
         if matches!(
             self.peek().kind,
             TokenKind::EqEq
@@ -249,23 +271,54 @@ impl<'a> Parser<'a> {
 
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_primary()?;
-        while matches!(self.peek().kind, TokenKind::LParen) {
-            let lp = self.bump().clone();
-            let mut args = Vec::new();
-            if !matches!(self.peek().kind, TokenKind::RParen) {
-                args.push(self.parse_expr()?);
-                while matches!(self.peek().kind, TokenKind::Comma) {
-                    self.bump();
-                    args.push(self.parse_expr()?);
+        loop {
+            match self.peek().kind {
+                TokenKind::LParen => {
+                    let lp = self.bump().clone();
+                    let mut args = Vec::new();
+                    if !matches!(self.peek().kind, TokenKind::RParen) {
+                        args.push(self.parse_expr()?);
+                        while matches!(self.peek().kind, TokenKind::Comma) {
+                            self.bump();
+                            args.push(self.parse_expr()?);
+                        }
+                    }
+                    self.expect(TokenKind::RParen, "expected ')' to close call")?;
+                    left = Expr::Call {
+                        callee: Box::new(left),
+                        args,
+                        line: lp.line,
+                        col: lp.col,
+                    };
                 }
+                TokenKind::Dot => {
+                    self.bump();
+                    let name_tok = self.bump().clone();
+                    let name = match name_tok.kind {
+                        TokenKind::Ident(s) => s,
+                        other => {
+                            return Err(ParseError {
+                                line: name_tok.line,
+                                col: name_tok.col,
+                                message: format!(
+                                    "expected field name after '.', got {other:?}"
+                                ),
+                                help: Some(
+                                    "field names must be identifiers; keywords are reserved"
+                                        .to_string(),
+                                ),
+                            })
+                        }
+                    };
+                    left = Expr::Field {
+                        object: Box::new(left),
+                        name,
+                        line: name_tok.line,
+                        col: name_tok.col,
+                    };
+                }
+                _ => break,
             }
-            self.expect(TokenKind::RParen, "expected ')' to close call")?;
-            left = Expr::Call {
-                callee: Box::new(left),
-                args,
-                line: lp.line,
-                col: lp.col,
-            };
         }
         Ok(left)
     }
@@ -300,17 +353,64 @@ impl<'a> Parser<'a> {
                     col: tok.col,
                 }),
             },
-            TokenKind::LParen => {
-                let inner = self.parse_expr()?;
-                self.expect(TokenKind::RParen, "expected ')' after parenthesized expression")?;
-                Ok(inner)
-            }
+            TokenKind::LParen => self.parse_paren_or_tuple(tok.line, tok.col),
             other => Err(ParseError {
                 line: tok.line,
                 col: tok.col,
                 message: format!("expected expression, got {other:?}"),
                 help: None,
             }),
+        }
+    }
+
+    fn parse_paren_or_tuple(&mut self, lp_line: u32, lp_col: u32) -> Result<Expr, ParseError> {
+        if matches!(self.peek().kind, TokenKind::RParen) {
+            let tok = self.peek().clone();
+            self.bump();
+            return Err(ParseError {
+                line: tok.line,
+                col: tok.col,
+                message: "empty parens '()' have no value".to_string(),
+                help: Some(
+                    "use `nil` for an absent value, or put an expression inside"
+                        .to_string(),
+                ),
+            });
+        }
+        let first = self.parse_expr()?;
+        match self.peek().kind {
+            TokenKind::RParen => {
+                self.bump();
+                Ok(first)
+            }
+            TokenKind::Comma => {
+                let mut elems = vec![first];
+                while matches!(self.peek().kind, TokenKind::Comma) {
+                    self.bump();
+                    if matches!(self.peek().kind, TokenKind::RParen) {
+                        break;
+                    }
+                    elems.push(self.parse_expr()?);
+                }
+                self.expect(TokenKind::RParen, "expected ')' to close tuple")?;
+                Ok(Expr::Tuple {
+                    elems,
+                    line: lp_line,
+                    col: lp_col,
+                })
+            }
+            _ => {
+                let next = self.peek().clone();
+                Err(ParseError {
+                    line: next.line,
+                    col: next.col,
+                    message: format!(
+                        "expected ',' or ')' in parenthesized expression, got {:?}",
+                        next.kind
+                    ),
+                    help: None,
+                })
+            }
         }
     }
 
@@ -349,5 +449,16 @@ impl<'a> Parser<'a> {
                 })
             }
         }
+    }
+}
+
+fn expr_to_target(e: &Expr) -> Option<AssignTarget> {
+    match e {
+        Expr::Ident { name, .. } => Some(AssignTarget::Name(name.clone())),
+        Expr::Field { object, name, .. } => Some(AssignTarget::Field {
+            object: object.clone(),
+            name: name.clone(),
+        }),
+        _ => None,
     }
 }

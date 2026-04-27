@@ -60,6 +60,28 @@ fn type_mismatch_in_arithmetic_errors() {
     assert!(err.contains("string"), "got: {err}");
 }
 
+#[test]
+fn runs_tuples_and_fields() {
+    let out = run_program("tests/programs/tuples_and_fields.twe").expect("program should run");
+    assert_eq!(
+        out,
+        "(3, 4)\n3\n4\n200\n150\n(200, 150)\n(250, 130)\n"
+    );
+}
+
+#[test]
+fn invalid_assignment_target_errors() {
+    let err = run_program_str("1 + 2 = 3\n").expect_err("should fail");
+    assert!(err.contains("invalid assignment target"), "got: {err}");
+}
+
+#[test]
+fn missing_field_errors() {
+    let err = run_program_str("let h = load(\"x.png\")\nprint(h.glubjorm)\n")
+        .expect_err("should fail");
+    assert!(err.contains("'glubjorm'"), "got: {err}");
+}
+
 fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;

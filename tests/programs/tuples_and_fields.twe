@@ -1,0 +1,14 @@
+let p = (3, 4)
+print(p)
+print(p.x)
+print(p.y)
+
+let hero = load("hero.png")
+hero.pos = (200, 150)
+print(hero.x)
+print(hero.y)
+print(hero.pos)
+
+hero.x += 50
+hero.y -= 20
+print(hero.pos)
