@@ -21,7 +21,51 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    Decl {
+        kind: DeclKind,
+        name: String,
+        parent: Option<String>,
+        members: Vec<DeclMember>,
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclKind {
+    Entity,
+    Item,
+    Modifier,
+    Inventory,
+}
+
+impl DeclKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeclKind::Entity => "entity",
+            DeclKind::Item => "item",
+            DeclKind::Modifier => "modifier",
+            DeclKind::Inventory => "inventory",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeclMember {
+    Field {
+        name: String,
+        value: Expr,
+        line: u32,
+        col: u32,
+    },
+    Method {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,8 +89,12 @@ pub enum Expr {
     Int { value: i64, line: u32, col: u32 },
     Float { value: f64, line: u32, col: u32 },
     Bool { value: bool, line: u32, col: u32 },
+    Percent { value: f64, line: u32, col: u32 },
+    Quantity { value: f64, unit: String, line: u32, col: u32 },
     Ident { name: String, line: u32, col: u32 },
+    SelfRef { line: u32, col: u32 },
     Tuple { elems: Vec<Expr>, line: u32, col: u32 },
+    Range { start: Box<Expr>, end: Box<Expr>, exclusive: bool, line: u32, col: u32 },
     Field { object: Box<Expr>, name: String, line: u32, col: u32 },
     Call { callee: Box<Expr>, args: Vec<Expr>, line: u32, col: u32 },
     Unary { op: UnOp, operand: Box<Expr>, line: u32, col: u32 },
@@ -82,8 +130,12 @@ impl Expr {
             | Expr::Int { line, .. }
             | Expr::Float { line, .. }
             | Expr::Bool { line, .. }
+            | Expr::Percent { line, .. }
+            | Expr::Quantity { line, .. }
             | Expr::Ident { line, .. }
+            | Expr::SelfRef { line, .. }
             | Expr::Tuple { line, .. }
+            | Expr::Range { line, .. }
             | Expr::Field { line, .. }
             | Expr::Call { line, .. }
             | Expr::Unary { line, .. }
@@ -97,8 +149,12 @@ impl Expr {
             | Expr::Int { col, .. }
             | Expr::Float { col, .. }
             | Expr::Bool { col, .. }
+            | Expr::Percent { col, .. }
+            | Expr::Quantity { col, .. }
             | Expr::Ident { col, .. }
+            | Expr::SelfRef { col, .. }
             | Expr::Tuple { col, .. }
+            | Expr::Range { col, .. }
             | Expr::Field { col, .. }
             | Expr::Call { col, .. }
             | Expr::Unary { col, .. }

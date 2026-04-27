@@ -1,0 +1,12 @@
+item Counter:
+    value: 0
+
+    bump(amount):
+        self.value = self.value + amount
+
+let c = Counter()
+print(c.value)
+c.bump(5)
+print(c.value)
+c.bump(7)
+print(c.value)

@@ -1,8 +1,12 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{AssignOp, AssignTarget, BinOp, Expr, Program, Stmt, UnOp};
+use crate::ast::{
+    AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp,
+};
 use crate::stdlib;
-use crate::value::{Env, OnUpdateHandler, RuntimeError, Value};
+use crate::value::{ClassDef, Env, Instance, MethodDef, OnUpdateHandler, RuntimeError, Value};
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
     run_with_frames(program, 0, 1.0 / 60.0)
@@ -80,6 +84,14 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             });
             Ok(())
         }
+        Stmt::Decl {
+            kind,
+            name,
+            parent,
+            members,
+            line,
+            col,
+        } => eval_decl(env, *kind, name, parent.as_deref(), members, *line, *col),
         Stmt::Expr(e) => {
             eval_expr(env, e)?;
             Ok(())
@@ -114,43 +126,71 @@ fn eval_assign(
         }
         AssignTarget::Field { object, name } => {
             let obj_val = eval_expr(env, object)?;
-            let Value::Object(rc) = obj_val else {
-                return Err(RuntimeError {
-                    line,
-                    col,
-                    message: format!("cannot assign field on value of type {}", obj_val.type_name()),
-                    help: Some("only objects support field assignment".to_string()),
-                });
-            };
-            let final_value = if matches!(op, AssignOp::Set) {
-                new_value
-            } else {
-                let current = rc.borrow().fields.get(name).cloned().ok_or_else(|| RuntimeError {
-                    line,
-                    col,
-                    message: format!("field '{name}' is not defined on this object"),
-                    help: Some(format!("set it first with `obj.{name} = ...`")),
-                })?;
-                compound(op, &current, &new_value, line, col)?
-            };
-            // Special case: assigning .pos = (x, y) on a sprite-shaped object
-            // also updates .x and .y. Mirrors Example 1's tuple-as-Vector2
-            // behavior. See docs/01-examples.md Example 1 implied decisions.
-            if name == "pos" {
-                if let Value::Tuple(elems) = &final_value {
-                    if elems.len() >= 2 {
-                        let mut o = rc.borrow_mut();
-                        o.fields.insert("x".to_string(), elems[0].clone());
-                        o.fields.insert("y".to_string(), elems[1].clone());
+            match obj_val {
+                Value::Object(rc) => {
+                    let final_value = if matches!(op, AssignOp::Set) {
+                        new_value
+                    } else {
+                        let current = rc.borrow().fields.get(name).cloned().ok_or_else(|| {
+                            RuntimeError {
+                                line,
+                                col,
+                                message: format!("field '{name}' is not defined on this object"),
+                                help: Some(format!("set it first with `obj.{name} = ...`")),
+                            }
+                        })?;
+                        compound(op, &current, &new_value, line, col)?
+                    };
+                    // Special case: `.pos = (x, y)` on a sprite-shaped object
+                    // also updates `.x` and `.y`. Mirrors Example 1's
+                    // tuple-as-Vector2 behavior.
+                    if name == "pos" {
+                        if let Value::Tuple(elems) = &final_value {
+                            if elems.len() >= 2 {
+                                let mut o = rc.borrow_mut();
+                                o.fields.insert("x".to_string(), elems[0].clone());
+                                o.fields.insert("y".to_string(), elems[1].clone());
+                            }
+                        }
                     }
+                    rc.borrow_mut().fields.insert(name.clone(), final_value);
+                    if name == "x" || name == "y" {
+                        refresh_pos(&rc);
+                    }
+                    Ok(())
                 }
+                Value::Instance(rc) => {
+                    let final_value = if matches!(op, AssignOp::Set) {
+                        new_value
+                    } else {
+                        let current = rc.borrow().fields.get(name).cloned().ok_or_else(|| {
+                            RuntimeError {
+                                line,
+                                col,
+                                message: format!(
+                                    "field '{name}' is not defined on instance of {}",
+                                    rc.borrow().class.name
+                                ),
+                                help: None,
+                            }
+                        })?;
+                        compound(op, &current, &new_value, line, col)?
+                    };
+                    rc.borrow_mut().fields.insert(name.clone(), final_value);
+                    Ok(())
+                }
+                other => Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "cannot assign field on value of type {}",
+                        other.type_name()
+                    ),
+                    help: Some(
+                        "only objects and class instances support field assignment".to_string(),
+                    ),
+                }),
             }
-            // And the converse: assigning .x or .y refreshes .pos.
-            rc.borrow_mut().fields.insert(name.clone(), final_value);
-            if name == "x" || name == "y" {
-                refresh_pos(&rc);
-            }
-            Ok(())
         }
     }
 }
@@ -191,11 +231,22 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
         Expr::Int { value, .. } => Ok(Value::Int(*value)),
         Expr::Float { value, .. } => Ok(Value::Float(*value)),
         Expr::Bool { value, .. } => Ok(Value::Bool(*value)),
+        Expr::Percent { value, .. } => Ok(Value::Percent(*value)),
+        Expr::Quantity { value, unit, .. } => Ok(Value::Quantity {
+            value: *value,
+            unit: Rc::new(unit.clone()),
+        }),
         Expr::Ident { name, line, col } => env.get(name).cloned().ok_or_else(|| RuntimeError {
             line: *line,
             col: *col,
             message: format!("name '{name}' is not defined"),
             help: Some(format!("declare it with `let {name} = ...` before use")),
+        }),
+        Expr::SelfRef { line, col } => env.self_value.clone().ok_or_else(|| RuntimeError {
+            line: *line,
+            col: *col,
+            message: "`self` is only valid inside a method body".to_string(),
+            help: None,
         }),
         Expr::Tuple { elems, .. } => {
             let mut vals = Vec::with_capacity(elems.len());
@@ -203,6 +254,33 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
                 vals.push(eval_expr(env, e)?);
             }
             Ok(Value::Tuple(Rc::new(vals)))
+        }
+        Expr::Range {
+            start,
+            end,
+            exclusive,
+            line,
+            col,
+        } => {
+            let s = eval_expr(env, start)?;
+            let e = eval_expr(env, end)?;
+            match (&s, &e) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Range {
+                    start: *a,
+                    end: *b,
+                    exclusive: *exclusive,
+                }),
+                _ => Err(RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: format!(
+                        "range bounds must be ints, got {} and {}",
+                        s.type_name(),
+                        e.type_name()
+                    ),
+                    help: Some("v0.1 supports only integer ranges; float ranges ship later".to_string()),
+                }),
+            }
         }
         Expr::Field {
             object,
@@ -218,25 +296,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             args,
             line,
             col,
-        } => {
-            let f = eval_expr(env, callee)?;
-            let mut arg_vals = Vec::with_capacity(args.len());
-            for a in args {
-                arg_vals.push(eval_expr(env, a)?);
-            }
-            match f {
-                Value::Builtin { func, .. } => func(env, &arg_vals),
-                other => Err(RuntimeError {
-                    line: *line,
-                    col: *col,
-                    message: format!("cannot call value of type {}", other.type_name()),
-                    help: Some(
-                        "only functions are callable; check that the name resolves to a function"
-                            .to_string(),
-                    ),
-                }),
-            }
-        }
+        } => eval_call(env, callee, args, *line, *col),
         Expr::Unary {
             op,
             operand,
@@ -290,6 +350,24 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 help: Some(format!("set it first with `obj.{name} = ...`")),
             }
         }),
+        Value::Instance(rc) => {
+            let inst = rc.borrow();
+            if let Some(v) = inst.fields.get(name) {
+                return Ok(v.clone());
+            }
+            // Methods are not values yet — `obj.method` outside a call site is
+            // not supported in this commit. The Call path resolves them
+            // directly. Falling through to "field not defined" is correct.
+            Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "field '{name}' is not defined on instance of {}",
+                    inst.class.name
+                ),
+                help: None,
+            })
+        }
         _ => Err(RuntimeError {
             line,
             col,
@@ -297,6 +375,230 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
             help: None,
         }),
     }
+}
+
+fn eval_call(
+    env: &mut Env,
+    callee: &Expr,
+    args: &[Expr],
+    line: u32,
+    col: u32,
+) -> Result<Value, RuntimeError> {
+    // Method call: `recv.method(args)`. Resolved here (not via field_get)
+    // because methods aren't first-class values yet.
+    if let Expr::Field { object, name, .. } = callee {
+        let recv = eval_expr(env, object)?;
+        if let Value::Instance(rc) = &recv {
+            let class = rc.borrow().class.clone();
+            if let Some(method) = find_method(&class, name) {
+                let mut arg_vals = Vec::with_capacity(args.len());
+                for a in args {
+                    arg_vals.push(eval_expr(env, a)?);
+                }
+                return call_method(env, recv, &method, &arg_vals, line, col);
+            }
+            // Fall through to a normal field_get -> Call path, which will
+            // produce a "field not defined" error below.
+        }
+        // Re-create the field-get + call path for non-instance receivers.
+        let mut arg_vals = Vec::with_capacity(args.len());
+        for a in args {
+            arg_vals.push(eval_expr(env, a)?);
+        }
+        let f = field_get(&recv, name, line, col)?;
+        return apply_call(env, f, &arg_vals, line, col);
+    }
+    let f = eval_expr(env, callee)?;
+    let mut arg_vals = Vec::with_capacity(args.len());
+    for a in args {
+        arg_vals.push(eval_expr(env, a)?);
+    }
+    apply_call(env, f, &arg_vals, line, col)
+}
+
+fn apply_call(
+    env: &mut Env,
+    f: Value,
+    args: &[Value],
+    line: u32,
+    col: u32,
+) -> Result<Value, RuntimeError> {
+    match f {
+        Value::Builtin { func, .. } => func(env, args),
+        Value::Class(class) => {
+            if !args.is_empty() {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "constructor for {} takes no arguments yet (got {})",
+                        class.name,
+                        args.len()
+                    ),
+                    help: Some(
+                        "v0.1 constructors initialise from field defaults; \
+                         positional/keyword args ship later"
+                            .to_string(),
+                    ),
+                });
+            }
+            Ok(instantiate(class))
+        }
+        other => Err(RuntimeError {
+            line,
+            col,
+            message: format!("cannot call value of type {}", other.type_name()),
+            help: Some(
+                "only functions, builtins, and class constructors are callable".to_string(),
+            ),
+        }),
+    }
+}
+
+fn instantiate(class: Rc<ClassDef>) -> Value {
+    let mut fields = HashMap::new();
+    // Walk the parent chain, oldest first, so child overrides win.
+    let mut chain: Vec<Rc<ClassDef>> = Vec::new();
+    let mut cur = Some(class.clone());
+    while let Some(c) = cur {
+        chain.push(c.clone());
+        cur = c.parent.clone();
+    }
+    for c in chain.iter().rev() {
+        for (k, v) in &c.field_defaults {
+            fields.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Instance(Rc::new(RefCell::new(Instance { class, fields })))
+}
+
+fn find_method(class: &ClassDef, name: &str) -> Option<Rc<MethodDef>> {
+    if let Some(m) = class.methods.get(name) {
+        return Some(m.clone());
+    }
+    class.parent.as_ref().and_then(|p| find_method(p, name))
+}
+
+fn call_method(
+    env: &mut Env,
+    recv: Value,
+    method: &MethodDef,
+    args: &[Value],
+    line: u32,
+    col: u32,
+) -> Result<Value, RuntimeError> {
+    if args.len() != method.params.len() {
+        return Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "method expected {} arguments, got {}",
+                method.params.len(),
+                args.len()
+            ),
+            help: None,
+        });
+    }
+    let saved_self = env.self_value.replace(recv);
+    let saved_params: Vec<(String, Option<Value>)> = method
+        .params
+        .iter()
+        .map(|p| (p.clone(), env.get(p).cloned()))
+        .collect();
+    for (param, arg) in method.params.iter().zip(args.iter()) {
+        env.set(param.clone(), arg.clone());
+    }
+    let mut result = Ok(Value::Nil);
+    for stmt in &method.body {
+        if let Err(e) = eval_stmt(env, stmt) {
+            result = Err(e);
+            break;
+        }
+    }
+    env.self_value = saved_self;
+    for (name, prev) in saved_params {
+        match prev {
+            Some(v) => env.set(name, v),
+            None => {
+                env.remove(&name);
+            }
+        }
+    }
+    result
+}
+
+fn eval_decl(
+    env: &mut Env,
+    kind: DeclKind,
+    name: &str,
+    parent: Option<&str>,
+    members: &[DeclMember],
+    line: u32,
+    col: u32,
+) -> Result<(), RuntimeError> {
+    let parent_class = if let Some(p) = parent {
+        match env.get(p) {
+            Some(Value::Class(c)) => Some(c.clone()),
+            Some(other) => {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "cannot extend `{p}`: it is a {}, not a class",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            }
+            None => {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!("parent `{p}` is not defined"),
+                    help: Some(format!(
+                        "declare `{p}` with `entity {p}:` or `item {p}:` before extending it"
+                    )),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut field_defaults = HashMap::new();
+    let mut methods = HashMap::new();
+    for member in members {
+        match member {
+            DeclMember::Field { name: fname, value, .. } => {
+                let v = eval_expr(env, value)?;
+                field_defaults.insert(fname.clone(), v);
+            }
+            DeclMember::Method {
+                name: mname,
+                params,
+                body,
+                ..
+            } => {
+                methods.insert(
+                    mname.clone(),
+                    Rc::new(MethodDef {
+                        params: params.clone(),
+                        body: body.clone(),
+                    }),
+                );
+            }
+        }
+    }
+
+    let class = Rc::new(ClassDef {
+        kind: kind.as_str(),
+        name: name.to_string(),
+        parent: parent_class,
+        field_defaults,
+        methods,
+    });
+    env.set(name.to_string(), Value::Class(class));
+    Ok(())
 }
 
 fn eval_binary(
@@ -420,6 +722,23 @@ fn values_equal(l: &Value, r: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => a == b,
         (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
         (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
+        (Value::Percent(a), Value::Percent(b)) => a == b,
+        (
+            Value::Quantity { value: a, unit: u1 },
+            Value::Quantity { value: b, unit: u2 },
+        ) => a == b && u1 == u2,
+        (
+            Value::Range {
+                start: s1,
+                end: e1,
+                exclusive: x1,
+            },
+            Value::Range {
+                start: s2,
+                end: e2,
+                exclusive: x2,
+            },
+        ) => s1 == s2 && e1 == e2 && x1 == x2,
         (Value::Str(a), Value::Str(b)) => a == b,
         (Value::Tuple(a), Value::Tuple(b)) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y))

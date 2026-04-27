@@ -1,0 +1,22 @@
+# Phase-1 simplified version of Example 2 (docs/01-examples.md).
+# Demonstrates: item declarations, single inheritance, field overrides,
+# instantiation, field reads, range / percent / quantity / symbol values.
+#
+# Deferred to later phases: methods that return values, modifier
+# composition, inventory + slots, keyword arguments, `apply` semantics.
+
+item Sword:
+    damage: 10..15
+    crit_chance: 5%
+    weight: 3kg
+    rarity: common
+
+item FlameBlade extends Sword:
+    damage: 20..30
+    rarity: rare
+
+let s = FlameBlade()
+print(s.damage)
+print(s.crit_chance)
+print(s.weight)
+print(s.rarity)

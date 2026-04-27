@@ -134,6 +134,40 @@ fn on_update_outside_v01_event_set_errors() {
     assert!(err.contains("only `on update(dt):`"), "got: {err}");
 }
 
+#[test]
+fn runs_literals() {
+    let out = run_program("tests/programs/literals.twe").expect("program should run");
+    assert_eq!(out, "10..15\n0..<5\n5%\n3kg\n1.5s\n");
+}
+
+#[test]
+fn runs_example_2_simplified() {
+    let out = run_program("tests/programs/example_2_simplified.twe")
+        .expect("program should run");
+    assert_eq!(out, "20..30\n5%\n3kg\nrare\n");
+}
+
+#[test]
+fn runs_methods_and_self() {
+    let out = run_program("tests/programs/methods.twe").expect("program should run");
+    assert_eq!(out, "0\n5\n12\n");
+}
+
+#[test]
+fn extending_undefined_parent_errors() {
+    let err = run_program_str("item Foo extends Missing:\n    x: 1\n")
+        .expect_err("should fail");
+    assert!(err.contains("Missing"), "got: {err}");
+    assert!(err.contains("not defined"), "got: {err}");
+}
+
+#[test]
+fn calling_class_with_args_errors_in_v01() {
+    let err = run_program_str("item Foo:\n    x: 1\nlet a = Foo(1, 2)\n")
+        .expect_err("should fail");
+    assert!(err.contains("constructor"), "got: {err}");
+}
+
 fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;

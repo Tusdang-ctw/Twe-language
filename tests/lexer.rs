@@ -113,6 +113,54 @@ fn brackets_and_braces_lex() {
 }
 
 #[test]
+fn range_literals_lex() {
+    let tokens = lex("0..10  3..<8").expect("lex should succeed");
+    let kinds: Vec<_> = tokens.iter().map(|t| t.kind.clone()).collect();
+    assert!(kinds.contains(&TokenKind::DotDot));
+    assert!(kinds.contains(&TokenKind::DotDotLt));
+}
+
+#[test]
+fn percent_literals_lex() {
+    let tokens = lex("5% 25.5%").expect("lex should succeed");
+    let mut percents = tokens.iter().filter_map(|t| match t.kind {
+        TokenKind::PercentLit(v) => Some(v),
+        _ => None,
+    });
+    assert_eq!(percents.next(), Some(5.0));
+    assert_eq!(percents.next(), Some(25.5));
+}
+
+#[test]
+fn unit_literals_lex() {
+    let tokens = lex("3kg 200ms 0.5s 90deg 100px").expect("lex should succeed");
+    let units: Vec<_> = tokens
+        .iter()
+        .filter_map(|t| match &t.kind {
+            TokenKind::UnitLit { value, unit } => Some((*value, unit.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        units,
+        vec![
+            (3.0, "kg".to_string()),
+            (200.0, "ms".to_string()),
+            (0.5, "s".to_string()),
+            (90.0, "deg".to_string()),
+            (100.0, "px".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn unknown_unit_errors() {
+    let err = lex("5xyz").expect_err("should fail");
+    assert!(err.message.contains("unknown unit"));
+    assert!(err.help.is_some());
+}
+
+#[test]
 fn mixed_tabs_and_spaces_in_indent_errors() {
     let err = lex("if true:\n \tx = 1\n").expect_err("should fail");
     assert_eq!(err.message, "mixed tabs and spaces in indentation");

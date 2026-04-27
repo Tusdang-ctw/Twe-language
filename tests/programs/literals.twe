@@ -1,0 +1,14 @@
+let r = 10..15
+print(r)
+
+let half_open = 0..<5
+print(half_open)
+
+let pct = 5%
+print(pct)
+
+let weight = 3kg
+print(weight)
+
+let speed = 1.5s
+print(speed)

@@ -31,6 +31,11 @@ pub fn install(env: &mut Env) {
             kind: "input",
         }))),
     );
+
+    // Rarity tier symbols. Stay as strings until v0.2 introduces enums.
+    for r in ["common", "uncommon", "rare", "epic", "legendary"] {
+        env.set(r.to_string(), Value::Str(Rc::new(r.to_string())));
+    }
 }
 
 fn print_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

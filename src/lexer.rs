@@ -18,9 +18,17 @@ pub enum TokenKind {
     And,
     Or,
     Not,
+    Entity,
+    Item,
+    Modifier,
+    Inventory,
+    Extends,
+    KwSelf,
     Ident(String),
     Int(i64),
     Float(f64),
+    PercentLit(f64),
+    UnitLit { value: f64, unit: String },
     Str(String),
     Eq,
     EqEq,
@@ -46,6 +54,8 @@ pub enum TokenKind {
     RBracket,
     LBrace,
     RBrace,
+    DotDot,
+    DotDotLt,
     Newline,
     Indent,
     Dedent,
@@ -197,7 +207,18 @@ impl<'a> Lexer<'a> {
                 }
                 b'.' => {
                     self.bump();
-                    out.push(Token { kind: TokenKind::Dot, line, col });
+                    let kind = if self.peek() == Some(b'.') {
+                        self.bump();
+                        if self.peek() == Some(b'<') {
+                            self.bump();
+                            TokenKind::DotDotLt
+                        } else {
+                            TokenKind::DotDot
+                        }
+                    } else {
+                        TokenKind::Dot
+                    };
+                    out.push(Token { kind, line, col });
                     content_since_newline = true;
                 }
                 b',' => {
@@ -545,15 +566,61 @@ impl<'a> Lexer<'a> {
         }
         let text = std::str::from_utf8(&self.src[start..self.pos])
             .expect("ascii digits are valid utf-8");
-        if is_float {
-            let value: f64 = text.parse().map_err(|_| LexError {
+        let numeric_value: f64 = text.parse().map_err(|_| LexError {
+            line,
+            col,
+            message: format!("could not parse number '{text}'"),
+            help: None,
+        })?;
+
+        // Optional percent suffix.
+        if self.peek() == Some(b'%') {
+            self.bump();
+            return Ok(Token {
+                kind: TokenKind::PercentLit(numeric_value),
                 line,
                 col,
-                message: format!("could not parse float literal '{text}'"),
-                help: None,
-            })?;
+            });
+        }
+
+        // Optional unit suffix (contiguous, ASCII letters only). v0.1 supports
+        // single-symbol units; compound forms like `5 m/s` ship in Phase 2.
+        if self.peek().is_some_and(|b| b.is_ascii_alphabetic()) {
+            let unit_start = self.pos;
+            while let Some(b) = self.peek() {
+                if b.is_ascii_alphabetic() {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            let unit = std::str::from_utf8(&self.src[unit_start..self.pos])
+                .expect("ascii letters are valid utf-8")
+                .to_string();
+            if !is_known_unit(&unit) {
+                return Err(LexError {
+                    line,
+                    col,
+                    message: format!("unknown unit suffix '{unit}'"),
+                    help: Some(
+                        "valid suffixes: s ms min h, m cm mm km px, kg g mg, deg rad"
+                            .to_string(),
+                    ),
+                });
+            }
+            return Ok(Token {
+                kind: TokenKind::UnitLit {
+                    value: numeric_value,
+                    unit,
+                },
+                line,
+                col,
+            });
+        }
+
+        if is_float {
             Ok(Token {
-                kind: TokenKind::Float(value),
+                kind: TokenKind::Float(numeric_value),
                 line,
                 col,
             })
@@ -593,6 +660,12 @@ impl<'a> Lexer<'a> {
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "not" => TokenKind::Not,
+            "entity" => TokenKind::Entity,
+            "item" => TokenKind::Item,
+            "modifier" => TokenKind::Modifier,
+            "inventory" => TokenKind::Inventory,
+            "extends" => TokenKind::Extends,
+            "self" => TokenKind::KwSelf,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }
@@ -605,4 +678,23 @@ fn is_ident_start(b: u8) -> bool {
 
 fn is_ident_continue(b: u8) -> bool {
     b == b'_' || b.is_ascii_alphanumeric()
+}
+
+fn is_known_unit(s: &str) -> bool {
+    matches!(
+        s,
+        "s" | "ms"
+            | "min"
+            | "h"
+            | "m"
+            | "cm"
+            | "mm"
+            | "km"
+            | "px"
+            | "kg"
+            | "g"
+            | "mg"
+            | "deg"
+            | "rad"
+    )
 }

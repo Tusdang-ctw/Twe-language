@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::ast::{AssignOp, AssignTarget, BinOp, Expr, Program, Stmt, UnOp};
+use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp};
 use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +70,10 @@ impl<'a> Parser<'a> {
             TokenKind::Let => return self.parse_let(),
             TokenKind::If => return self.parse_if(),
             TokenKind::On => return self.parse_on(),
+            TokenKind::Entity => return self.parse_decl(DeclKind::Entity),
+            TokenKind::Item => return self.parse_decl(DeclKind::Item),
+            TokenKind::Modifier => return self.parse_decl(DeclKind::Modifier),
+            TokenKind::Inventory => return self.parse_decl(DeclKind::Inventory),
             _ => {}
         }
         let expr = self.parse_expr()?;
@@ -190,6 +194,170 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_decl(&mut self, kind: DeclKind) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let name_tok = self.bump().clone();
+        let name = match name_tok.kind {
+            TokenKind::Ident(s) => s,
+            other => {
+                return Err(ParseError {
+                    line: name_tok.line,
+                    col: name_tok.col,
+                    message: format!(
+                        "expected name after `{}`, got {other:?}",
+                        kind.as_str()
+                    ),
+                    help: Some(
+                        "declarative block names use PascalCase, e.g. `item Sword:`"
+                            .to_string(),
+                    ),
+                })
+            }
+        };
+        let parent = if matches!(self.peek().kind, TokenKind::Extends) {
+            self.bump();
+            let p_tok = self.bump().clone();
+            match p_tok.kind {
+                TokenKind::Ident(s) => Some(s),
+                other => {
+                    return Err(ParseError {
+                        line: p_tok.line,
+                        col: p_tok.col,
+                        message: format!("expected parent name after `extends`, got {other:?}"),
+                        help: Some(
+                            "single inheritance: `item FlameBlade extends Sword:`".to_string(),
+                        ),
+                    })
+                }
+            }
+        } else {
+            None
+        };
+        self.expect(
+            TokenKind::Colon,
+            &format!("expected ':' after `{} {}`", kind.as_str(), name),
+        )?;
+        let members = self.parse_decl_body()?;
+        Ok(Stmt::Decl {
+            kind,
+            name,
+            parent,
+            members,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_decl_body(&mut self) -> Result<Vec<DeclMember>, ParseError> {
+        if !matches!(self.peek().kind, TokenKind::Newline) {
+            let tok = self.peek().clone();
+            return Err(ParseError {
+                line: tok.line,
+                col: tok.col,
+                message: "expected indented block body after declarative block header".to_string(),
+                help: Some(
+                    "declarative blocks must have an indented body, even if empty".to_string(),
+                ),
+            });
+        }
+        self.bump();
+        if !matches!(self.peek().kind, TokenKind::Indent) {
+            let tok = self.peek().clone();
+            return Err(ParseError {
+                line: tok.line,
+                col: tok.col,
+                message: "expected indent for declarative block body".to_string(),
+                help: None,
+            });
+        }
+        self.bump();
+        let mut members = Vec::new();
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek().kind, TokenKind::Dedent | TokenKind::Eof) {
+                break;
+            }
+            members.push(self.parse_decl_member()?);
+        }
+        if matches!(self.peek().kind, TokenKind::Dedent) {
+            self.bump();
+        }
+        Ok(members)
+    }
+
+    fn parse_decl_member(&mut self) -> Result<DeclMember, ParseError> {
+        let name_tok = self.bump().clone();
+        let name = match name_tok.kind {
+            TokenKind::Ident(s) => s,
+            other => {
+                return Err(ParseError {
+                    line: name_tok.line,
+                    col: name_tok.col,
+                    message: format!("expected member name, got {other:?}"),
+                    help: Some(
+                        "members are fields (`name: value`) or methods (`name(params): body`)"
+                            .to_string(),
+                    ),
+                })
+            }
+        };
+        match self.peek().kind {
+            TokenKind::LParen => {
+                self.bump();
+                let mut params = Vec::new();
+                if !matches!(self.peek().kind, TokenKind::RParen) {
+                    params.push(self.expect_ident("expected parameter name")?);
+                    while matches!(self.peek().kind, TokenKind::Comma) {
+                        self.bump();
+                        params.push(self.expect_ident("expected parameter name")?);
+                    }
+                }
+                self.expect(TokenKind::RParen, "expected ')' after parameter list")?;
+                self.expect(TokenKind::Colon, "expected ':' after parameter list")?;
+                let body = self.parse_block()?;
+                Ok(DeclMember::Method {
+                    name,
+                    params,
+                    body,
+                    line: name_tok.line,
+                    col: name_tok.col,
+                })
+            }
+            TokenKind::Colon => {
+                self.bump();
+                let value = self.parse_expr()?;
+                self.expect_stmt_end()?;
+                Ok(DeclMember::Field {
+                    name,
+                    value,
+                    line: name_tok.line,
+                    col: name_tok.col,
+                })
+            }
+            ref other => Err(ParseError {
+                line: name_tok.line,
+                col: name_tok.col,
+                message: format!(
+                    "expected ':' for a field or '(' for a method after member name, got {other:?}"
+                ),
+                help: None,
+            }),
+        }
+    }
+
+    fn expect_ident(&mut self, message: &str) -> Result<String, ParseError> {
+        let tok = self.bump().clone();
+        match tok.kind {
+            TokenKind::Ident(s) => Ok(s),
+            other => Err(ParseError {
+                line: tok.line,
+                col: tok.col,
+                message: format!("{message} (got {other:?})"),
+                help: None,
+            }),
+        }
+    }
+
     fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
         if matches!(self.peek().kind, TokenKind::Newline) {
             self.bump();
@@ -285,7 +453,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_compare(&mut self) -> Result<Expr, ParseError> {
-        let left = self.parse_add()?;
+        let left = self.parse_range()?;
         let op = match self.peek().kind {
             TokenKind::EqEq => BinOp::Eq,
             TokenKind::NotEq => BinOp::Neq,
@@ -296,7 +464,7 @@ impl<'a> Parser<'a> {
             _ => return Ok(left),
         };
         let tok = self.bump().clone();
-        let right = self.parse_add()?;
+        let right = self.parse_range()?;
         if matches!(
             self.peek().kind,
             TokenKind::EqEq
@@ -321,6 +489,24 @@ impl<'a> Parser<'a> {
             op,
             left: Box::new(left),
             right: Box::new(right),
+            line: tok.line,
+            col: tok.col,
+        })
+    }
+
+    fn parse_range(&mut self) -> Result<Expr, ParseError> {
+        let left = self.parse_add()?;
+        let exclusive = match self.peek().kind {
+            TokenKind::DotDot => false,
+            TokenKind::DotDotLt => true,
+            _ => return Ok(left),
+        };
+        let tok = self.bump().clone();
+        let right = self.parse_add()?;
+        Ok(Expr::Range {
+            start: Box::new(left),
+            end: Box::new(right),
+            exclusive,
             line: tok.line,
             col: tok.col,
         })
@@ -457,6 +643,17 @@ impl<'a> Parser<'a> {
                 line: tok.line,
                 col: tok.col,
             }),
+            TokenKind::PercentLit(value) => Ok(Expr::Percent {
+                value,
+                line: tok.line,
+                col: tok.col,
+            }),
+            TokenKind::UnitLit { value, unit } => Ok(Expr::Quantity {
+                value,
+                unit,
+                line: tok.line,
+                col: tok.col,
+            }),
             TokenKind::Ident(name) => match name.as_str() {
                 "true" => Ok(Expr::Bool {
                     value: true,
@@ -474,6 +671,10 @@ impl<'a> Parser<'a> {
                     col: tok.col,
                 }),
             },
+            TokenKind::KwSelf => Ok(Expr::SelfRef {
+                line: tok.line,
+                col: tok.col,
+            }),
             TokenKind::LParen => self.parse_paren_or_tuple(tok.line, tok.col),
             other => Err(ParseError {
                 line: tok.line,
