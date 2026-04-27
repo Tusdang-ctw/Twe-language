@@ -1,0 +1,462 @@
+---
+source: tests/lexer.rs
+expression: tokens
+---
+[
+    Token {
+        kind: Sprite,
+        line: 1,
+        col: 1,
+    },
+    Token {
+        kind: Ident(
+            "hero",
+        ),
+        line: 1,
+        col: 8,
+    },
+    Token {
+        kind: Eq,
+        line: 1,
+        col: 13,
+    },
+    Token {
+        kind: Ident(
+            "load",
+        ),
+        line: 1,
+        col: 15,
+    },
+    Token {
+        kind: LParen,
+        line: 1,
+        col: 19,
+    },
+    Token {
+        kind: Str(
+            "hero.png",
+        ),
+        line: 1,
+        col: 20,
+    },
+    Token {
+        kind: RParen,
+        line: 1,
+        col: 30,
+    },
+    Token {
+        kind: Newline,
+        line: 1,
+        col: 31,
+    },
+    Token {
+        kind: Ident(
+            "hero",
+        ),
+        line: 2,
+        col: 1,
+    },
+    Token {
+        kind: Dot,
+        line: 2,
+        col: 5,
+    },
+    Token {
+        kind: Ident(
+            "pos",
+        ),
+        line: 2,
+        col: 6,
+    },
+    Token {
+        kind: Eq,
+        line: 2,
+        col: 10,
+    },
+    Token {
+        kind: LParen,
+        line: 2,
+        col: 12,
+    },
+    Token {
+        kind: Int(
+            200,
+        ),
+        line: 2,
+        col: 13,
+    },
+    Token {
+        kind: Comma,
+        line: 2,
+        col: 16,
+    },
+    Token {
+        kind: Int(
+            150,
+        ),
+        line: 2,
+        col: 18,
+    },
+    Token {
+        kind: RParen,
+        line: 2,
+        col: 21,
+    },
+    Token {
+        kind: Newline,
+        line: 2,
+        col: 22,
+    },
+    Token {
+        kind: On,
+        line: 4,
+        col: 1,
+    },
+    Token {
+        kind: Ident(
+            "update",
+        ),
+        line: 4,
+        col: 4,
+    },
+    Token {
+        kind: LParen,
+        line: 4,
+        col: 10,
+    },
+    Token {
+        kind: Ident(
+            "dt",
+        ),
+        line: 4,
+        col: 11,
+    },
+    Token {
+        kind: RParen,
+        line: 4,
+        col: 13,
+    },
+    Token {
+        kind: Colon,
+        line: 4,
+        col: 14,
+    },
+    Token {
+        kind: Newline,
+        line: 4,
+        col: 15,
+    },
+    Token {
+        kind: If,
+        line: 5,
+        col: 5,
+    },
+    Token {
+        kind: Ident(
+            "key",
+        ),
+        line: 5,
+        col: 8,
+    },
+    Token {
+        kind: Dot,
+        line: 5,
+        col: 11,
+    },
+    Token {
+        kind: Ident(
+            "right",
+        ),
+        line: 5,
+        col: 12,
+    },
+    Token {
+        kind: Colon,
+        line: 5,
+        col: 17,
+    },
+    Token {
+        kind: Ident(
+            "hero",
+        ),
+        line: 5,
+        col: 19,
+    },
+    Token {
+        kind: Dot,
+        line: 5,
+        col: 23,
+    },
+    Token {
+        kind: Ident(
+            "x",
+        ),
+        line: 5,
+        col: 24,
+    },
+    Token {
+        kind: PlusEq,
+        line: 5,
+        col: 26,
+    },
+    Token {
+        kind: Int(
+            200,
+        ),
+        line: 5,
+        col: 29,
+    },
+    Token {
+        kind: Star,
+        line: 5,
+        col: 33,
+    },
+    Token {
+        kind: Ident(
+            "dt",
+        ),
+        line: 5,
+        col: 35,
+    },
+    Token {
+        kind: Newline,
+        line: 5,
+        col: 37,
+    },
+    Token {
+        kind: If,
+        line: 6,
+        col: 5,
+    },
+    Token {
+        kind: Ident(
+            "key",
+        ),
+        line: 6,
+        col: 8,
+    },
+    Token {
+        kind: Dot,
+        line: 6,
+        col: 11,
+    },
+    Token {
+        kind: Ident(
+            "left",
+        ),
+        line: 6,
+        col: 12,
+    },
+    Token {
+        kind: Colon,
+        line: 6,
+        col: 16,
+    },
+    Token {
+        kind: Ident(
+            "hero",
+        ),
+        line: 6,
+        col: 19,
+    },
+    Token {
+        kind: Dot,
+        line: 6,
+        col: 23,
+    },
+    Token {
+        kind: Ident(
+            "x",
+        ),
+        line: 6,
+        col: 24,
+    },
+    Token {
+        kind: MinusEq,
+        line: 6,
+        col: 26,
+    },
+    Token {
+        kind: Int(
+            200,
+        ),
+        line: 6,
+        col: 29,
+    },
+    Token {
+        kind: Star,
+        line: 6,
+        col: 33,
+    },
+    Token {
+        kind: Ident(
+            "dt",
+        ),
+        line: 6,
+        col: 35,
+    },
+    Token {
+        kind: Newline,
+        line: 6,
+        col: 37,
+    },
+    Token {
+        kind: If,
+        line: 7,
+        col: 5,
+    },
+    Token {
+        kind: Ident(
+            "key",
+        ),
+        line: 7,
+        col: 8,
+    },
+    Token {
+        kind: Dot,
+        line: 7,
+        col: 11,
+    },
+    Token {
+        kind: Ident(
+            "up",
+        ),
+        line: 7,
+        col: 12,
+    },
+    Token {
+        kind: Colon,
+        line: 7,
+        col: 14,
+    },
+    Token {
+        kind: Ident(
+            "hero",
+        ),
+        line: 7,
+        col: 19,
+    },
+    Token {
+        kind: Dot,
+        line: 7,
+        col: 23,
+    },
+    Token {
+        kind: Ident(
+            "y",
+        ),
+        line: 7,
+        col: 24,
+    },
+    Token {
+        kind: MinusEq,
+        line: 7,
+        col: 26,
+    },
+    Token {
+        kind: Int(
+            200,
+        ),
+        line: 7,
+        col: 29,
+    },
+    Token {
+        kind: Star,
+        line: 7,
+        col: 33,
+    },
+    Token {
+        kind: Ident(
+            "dt",
+        ),
+        line: 7,
+        col: 35,
+    },
+    Token {
+        kind: Newline,
+        line: 7,
+        col: 37,
+    },
+    Token {
+        kind: If,
+        line: 8,
+        col: 5,
+    },
+    Token {
+        kind: Ident(
+            "key",
+        ),
+        line: 8,
+        col: 8,
+    },
+    Token {
+        kind: Dot,
+        line: 8,
+        col: 11,
+    },
+    Token {
+        kind: Ident(
+            "down",
+        ),
+        line: 8,
+        col: 12,
+    },
+    Token {
+        kind: Colon,
+        line: 8,
+        col: 16,
+    },
+    Token {
+        kind: Ident(
+            "hero",
+        ),
+        line: 8,
+        col: 19,
+    },
+    Token {
+        kind: Dot,
+        line: 8,
+        col: 23,
+    },
+    Token {
+        kind: Ident(
+            "y",
+        ),
+        line: 8,
+        col: 24,
+    },
+    Token {
+        kind: PlusEq,
+        line: 8,
+        col: 26,
+    },
+    Token {
+        kind: Int(
+            200,
+        ),
+        line: 8,
+        col: 29,
+    },
+    Token {
+        kind: Star,
+        line: 8,
+        col: 33,
+    },
+    Token {
+        kind: Ident(
+            "dt",
+        ),
+        line: 8,
+        col: 35,
+    },
+    Token {
+        kind: Newline,
+        line: 8,
+        col: 37,
+    },
+    Token {
+        kind: Eof,
+        line: 9,
+        col: 1,
+    },
+]
