@@ -1,0 +1,147 @@
+---
+source: tests/lexer.rs
+expression: tokens
+---
+[
+    Token {
+        kind: If,
+        line: 1,
+        col: 1,
+    },
+    Token {
+        kind: Ident(
+            "a",
+        ),
+        line: 1,
+        col: 4,
+    },
+    Token {
+        kind: Colon,
+        line: 1,
+        col: 5,
+    },
+    Token {
+        kind: Newline,
+        line: 1,
+        col: 6,
+    },
+    Token {
+        kind: Indent,
+        line: 2,
+        col: 1,
+    },
+    Token {
+        kind: If,
+        line: 2,
+        col: 5,
+    },
+    Token {
+        kind: Ident(
+            "b",
+        ),
+        line: 2,
+        col: 8,
+    },
+    Token {
+        kind: Colon,
+        line: 2,
+        col: 9,
+    },
+    Token {
+        kind: Newline,
+        line: 2,
+        col: 10,
+    },
+    Token {
+        kind: Indent,
+        line: 3,
+        col: 1,
+    },
+    Token {
+        kind: Ident(
+            "x",
+        ),
+        line: 3,
+        col: 9,
+    },
+    Token {
+        kind: Eq,
+        line: 3,
+        col: 11,
+    },
+    Token {
+        kind: Int(
+            1,
+        ),
+        line: 3,
+        col: 13,
+    },
+    Token {
+        kind: Newline,
+        line: 3,
+        col: 14,
+    },
+    Token {
+        kind: Dedent,
+        line: 4,
+        col: 1,
+    },
+    Token {
+        kind: Ident(
+            "y",
+        ),
+        line: 4,
+        col: 5,
+    },
+    Token {
+        kind: Eq,
+        line: 4,
+        col: 7,
+    },
+    Token {
+        kind: Int(
+            2,
+        ),
+        line: 4,
+        col: 9,
+    },
+    Token {
+        kind: Newline,
+        line: 4,
+        col: 10,
+    },
+    Token {
+        kind: Dedent,
+        line: 5,
+        col: 1,
+    },
+    Token {
+        kind: Ident(
+            "z",
+        ),
+        line: 5,
+        col: 1,
+    },
+    Token {
+        kind: Eq,
+        line: 5,
+        col: 3,
+    },
+    Token {
+        kind: Int(
+            3,
+        ),
+        line: 5,
+        col: 5,
+    },
+    Token {
+        kind: Newline,
+        line: 5,
+        col: 6,
+    },
+    Token {
+        kind: Eof,
+        line: 6,
+        col: 1,
+    },
+]

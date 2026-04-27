@@ -147,6 +147,11 @@ expression: tokens
         col: 15,
     },
     Token {
+        kind: Indent,
+        line: 5,
+        col: 1,
+    },
+    Token {
         kind: If,
         line: 5,
         col: 5,
@@ -453,6 +458,11 @@ expression: tokens
         kind: Newline,
         line: 8,
         col: 37,
+    },
+    Token {
+        kind: Dedent,
+        line: 9,
+        col: 1,
     },
     Token {
         kind: Eof,

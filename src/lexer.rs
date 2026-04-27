@@ -13,10 +13,19 @@ pub enum TokenKind {
     Var,
     On,
     If,
+    And,
+    Or,
+    Not,
     Ident(String),
     Int(i64),
     Str(String),
     Eq,
+    EqEq,
+    NotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
     PlusEq,
     MinusEq,
     StarEq,
@@ -30,7 +39,13 @@ pub enum TokenKind {
     Colon,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
     Newline,
+    Indent,
+    Dedent,
     Eof,
 }
 
@@ -63,7 +78,10 @@ struct Lexer<'a> {
     pos: usize,
     line: u32,
     col: u32,
-    paren_depth: u32,
+    bracket_depth: u32,
+    indent_stack: Vec<u32>,
+    indent_char: Option<u8>,
+    at_line_start: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -73,7 +91,10 @@ impl<'a> Lexer<'a> {
             pos: 0,
             line: 1,
             col: 1,
-            paren_depth: 0,
+            bracket_depth: 0,
+            indent_stack: vec![0],
+            indent_char: None,
+            at_line_start: true,
         }
     }
 
@@ -81,29 +102,45 @@ impl<'a> Lexer<'a> {
         let mut out = Vec::new();
         let mut content_since_newline = false;
 
-        while let Some(b) = self.peek() {
+        loop {
+            if self.at_line_start && self.bracket_depth == 0 {
+                self.handle_line_start(&mut out)?;
+                self.at_line_start = false;
+            }
+
+            let Some(b) = self.peek() else { break };
             let line = self.line;
             let col = self.col;
+
             match b {
                 b' ' | b'\t' | b'\r' => {
                     self.bump();
                 }
                 b'\n' => {
                     self.bump_newline();
-                    if self.paren_depth == 0 && content_since_newline {
+                    if self.bracket_depth == 0 && content_since_newline {
                         out.push(Token { kind: TokenKind::Newline, line, col });
                         content_since_newline = false;
+                    }
+                    self.at_line_start = true;
+                }
+                b'#' => {
+                    while let Some(c) = self.peek() {
+                        if c == b'\n' {
+                            break;
+                        }
+                        self.bump();
                     }
                 }
                 b'(' => {
                     self.bump();
-                    self.paren_depth += 1;
+                    self.bracket_depth += 1;
                     out.push(Token { kind: TokenKind::LParen, line, col });
                     content_since_newline = true;
                 }
                 b')' => {
                     self.bump();
-                    if self.paren_depth == 0 {
+                    if self.bracket_depth == 0 {
                         return Err(LexError {
                             line,
                             col,
@@ -111,8 +148,48 @@ impl<'a> Lexer<'a> {
                             help: Some("remove this ')' or add a matching '('".to_string()),
                         });
                     }
-                    self.paren_depth -= 1;
+                    self.bracket_depth -= 1;
                     out.push(Token { kind: TokenKind::RParen, line, col });
+                    content_since_newline = true;
+                }
+                b'[' => {
+                    self.bump();
+                    self.bracket_depth += 1;
+                    out.push(Token { kind: TokenKind::LBracket, line, col });
+                    content_since_newline = true;
+                }
+                b']' => {
+                    self.bump();
+                    if self.bracket_depth == 0 {
+                        return Err(LexError {
+                            line,
+                            col,
+                            message: "unmatched ']'".to_string(),
+                            help: Some("remove this ']' or add a matching '['".to_string()),
+                        });
+                    }
+                    self.bracket_depth -= 1;
+                    out.push(Token { kind: TokenKind::RBracket, line, col });
+                    content_since_newline = true;
+                }
+                b'{' => {
+                    self.bump();
+                    self.bracket_depth += 1;
+                    out.push(Token { kind: TokenKind::LBrace, line, col });
+                    content_since_newline = true;
+                }
+                b'}' => {
+                    self.bump();
+                    if self.bracket_depth == 0 {
+                        return Err(LexError {
+                            line,
+                            col,
+                            message: "unmatched '}'".to_string(),
+                            help: Some("remove this '}' or add a matching '{'".to_string()),
+                        });
+                    }
+                    self.bracket_depth -= 1;
+                    out.push(Token { kind: TokenKind::RBrace, line, col });
                     content_since_newline = true;
                 }
                 b'.' => {
@@ -132,7 +209,38 @@ impl<'a> Lexer<'a> {
                 }
                 b'=' => {
                     self.bump();
-                    out.push(Token { kind: TokenKind::Eq, line, col });
+                    let kind = self.maybe_eq(TokenKind::EqEq, TokenKind::Eq);
+                    out.push(Token { kind, line, col });
+                    content_since_newline = true;
+                }
+                b'!' => {
+                    self.bump();
+                    if self.peek() == Some(b'=') {
+                        self.bump();
+                        out.push(Token { kind: TokenKind::NotEq, line, col });
+                        content_since_newline = true;
+                    } else {
+                        return Err(LexError {
+                            line,
+                            col,
+                            message: "stray '!' — Twe uses 'not' for boolean negation".to_string(),
+                            help: Some(
+                                "did you mean '!=' (inequality) or 'not' (logical not)?"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+                b'<' => {
+                    self.bump();
+                    let kind = self.maybe_eq(TokenKind::LtEq, TokenKind::Lt);
+                    out.push(Token { kind, line, col });
+                    content_since_newline = true;
+                }
+                b'>' => {
+                    self.bump();
+                    let kind = self.maybe_eq(TokenKind::GtEq, TokenKind::Gt);
+                    out.push(Token { kind, line, col });
                     content_since_newline = true;
                 }
                 b'+' => {
@@ -182,8 +290,124 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        out.push(Token { kind: TokenKind::Eof, line: self.line, col: self.col });
+        if content_since_newline {
+            out.push(Token {
+                kind: TokenKind::Newline,
+                line: self.line,
+                col: self.col,
+            });
+        }
+        while self.indent_stack.len() > 1 {
+            self.indent_stack.pop();
+            out.push(Token {
+                kind: TokenKind::Dedent,
+                line: self.line,
+                col: self.col,
+            });
+        }
+        out.push(Token {
+            kind: TokenKind::Eof,
+            line: self.line,
+            col: self.col,
+        });
         Ok(out)
+    }
+
+    fn handle_line_start(&mut self, out: &mut Vec<Token>) -> Result<(), LexError> {
+        let line = self.line;
+        let col = self.col;
+
+        let mut spaces = 0u32;
+        let mut tabs = 0u32;
+        while let Some(b) = self.peek() {
+            match b {
+                b' ' => {
+                    spaces += 1;
+                    self.bump();
+                }
+                b'\t' => {
+                    tabs += 1;
+                    self.bump();
+                }
+                _ => break,
+            }
+        }
+
+        // Blank line, comment-only line, or end-of-file: skip indent processing.
+        match self.peek() {
+            None | Some(b'\n') | Some(b'#') => return Ok(()),
+            _ => {}
+        }
+
+        if spaces > 0 && tabs > 0 {
+            return Err(LexError {
+                line,
+                col,
+                message: "mixed tabs and spaces in indentation".to_string(),
+                help: Some(
+                    "use either tabs or spaces consistently within a file".to_string(),
+                ),
+            });
+        }
+
+        let level = spaces + tabs;
+        let this_char = if spaces > 0 {
+            Some(b' ')
+        } else if tabs > 0 {
+            Some(b'\t')
+        } else {
+            None
+        };
+
+        if let Some(c) = this_char {
+            match self.indent_char {
+                None => self.indent_char = Some(c),
+                Some(set) if set != c => {
+                    return Err(LexError {
+                        line,
+                        col,
+                        message: "indentation switched between tabs and spaces".to_string(),
+                        help: Some("pick one and use it throughout the file".to_string()),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+
+        let current = *self
+            .indent_stack
+            .last()
+            .expect("indent_stack always has the 0 sentinel");
+        if level > current {
+            self.indent_stack.push(level);
+            out.push(Token {
+                kind: TokenKind::Indent,
+                line,
+                col,
+            });
+        } else if level < current {
+            while self.indent_stack.len() > 1
+                && *self.indent_stack.last().unwrap() > level
+            {
+                self.indent_stack.pop();
+                out.push(Token {
+                    kind: TokenKind::Dedent,
+                    line,
+                    col,
+                });
+            }
+            if *self.indent_stack.last().unwrap() != level {
+                return Err(LexError {
+                    line,
+                    col,
+                    message: "dedent does not match any outer indentation level"
+                        .to_string(),
+                    help: Some("align this line with one of the outer levels".to_string()),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     fn peek(&self) -> Option<u8> {
@@ -226,7 +450,11 @@ impl<'a> Lexer<'a> {
                         })?
                         .to_string();
                     self.bump();
-                    return Ok(Token { kind: TokenKind::Str(s), line, col });
+                    return Ok(Token {
+                        kind: TokenKind::Str(s),
+                        line,
+                        col,
+                    });
                 }
                 b'\n' => {
                     return Err(LexError {
@@ -245,18 +473,13 @@ impl<'a> Lexer<'a> {
                         line: self.line,
                         col: self.col,
                         message: "escape sequences are not yet implemented".to_string(),
-                        help: Some("avoid '\\' inside strings until escapes ship".to_string()),
+                        help: Some(
+                            "avoid '\\' inside strings until escapes ship".to_string(),
+                        ),
                     });
                 }
                 _ => {
-                    if b < 0x80 {
-                        self.bump();
-                    } else {
-                        // multi-byte UTF-8 char: advance without touching line/col logic
-                        // (we still count one column per byte for now; columns become
-                        // grapheme-aware in a later pass)
-                        self.bump();
-                    }
+                    self.bump();
                 }
             }
         }
@@ -283,9 +506,15 @@ impl<'a> Lexer<'a> {
             line,
             col,
             message: format!("integer literal '{text}' is out of range for int (i64)"),
-            help: Some("twe ints are 64-bit signed; pick a smaller value".to_string()),
+            help: Some(
+                "twe ints are 64-bit signed; pick a smaller value".to_string(),
+            ),
         })?;
-        Ok(Token { kind: TokenKind::Int(value), line, col })
+        Ok(Token {
+            kind: TokenKind::Int(value),
+            line,
+            col,
+        })
     }
 
     fn lex_ident(&mut self, line: u32, col: u32) -> Token {
@@ -304,6 +533,9 @@ impl<'a> Lexer<'a> {
             "var" => TokenKind::Var,
             "on" => TokenKind::On,
             "if" => TokenKind::If,
+            "and" => TokenKind::And,
+            "or" => TokenKind::Or,
+            "not" => TokenKind::Not,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }

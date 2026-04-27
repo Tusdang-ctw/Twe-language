@@ -14,11 +14,10 @@ non-ASCII identifier enters the test suite.
 
 ## Lexer features deferred
 
-Required by the design doc but not by Example 1's first chunk:
+Required by the design doc but not yet by examples in scope:
 
-- `INDENT` / `DEDENT` tokens (§2.2). Required for declarative blocks.
-  Includes the "mixing tabs and spaces in one file is a parse error" rule.
-- Comments: `#` line, `#:` doc, `#- ... -#` block (§2.3).
+- Doc comments `#:` and block comments `#- ... -#` (§2.3). `#` line comments
+  ship; the other two forms aren't used by any of the eleven examples.
 - Escape sequences in strings (§2.5.2). Currently rejected with a help message.
 - String interpolation `"hi {name}"` (§2.5.2).
 - Triple-quoted strings `""" ... """` (§2.5.2; needed by Example 9).
@@ -26,10 +25,11 @@ Required by the design doc but not by Example 1's first chunk:
   (§2.5.1).
 - Range literals `..` and `..<` (§2.5.4; needed by Example 2).
 - Percent literals `5%` (§2.5.5; needed by Example 2).
-- Unit literals `3kg`, `5 m/s`, `90deg` (§2.5.6; needed by Example 1 onward).
-- Comparison and logical operators (`==`, `!=`, `<`, `>`, `<=`, `>=`,
-  `and`, `or`, `not`).
-- Brackets and braces (`[ ] { }`).
+- Unit literals `3kg`, `5 m/s`, `90deg` (§2.5.6; needed by Example 1 onward
+  via the `200 * dt` semantic).
+- `^` (power) and `%` (modulo, distinct from percent literal) operators.
+- `?` (optional unwrap) and `?.` (optional chaining) per §10.2.
+- `=>` for map literals per §3.5 / §10.2.
 - Recoverable error reporting — current lexer fails fast on the first error.
 
 ## Parser, AST, evaluator
