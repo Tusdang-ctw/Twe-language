@@ -6,7 +6,9 @@ use crate::ast::{
     AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp,
 };
 use crate::stdlib;
-use crate::value::{ClassDef, Env, Instance, MethodDef, OnUpdateHandler, RuntimeError, Value};
+use crate::value::{
+    ClassDef, Env, FunctionDef, Instance, MethodDef, OnUpdateHandler, RuntimeError, Value,
+};
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
     run_with_frames(program, 0, 1.0 / 60.0)
@@ -19,18 +21,31 @@ pub fn run_with_frames(
 ) -> Result<String, RuntimeError> {
     let mut env = Env::new();
     stdlib::install(&mut env);
-    for stmt in &program.stmts {
-        eval_stmt(&mut env, stmt)?;
+    run_block(&mut env, &program.stmts)?;
+    if env.returning.take().is_some() {
+        // Top-level `return` — drop the value, stop here.
+        return Ok(env.out);
     }
     if let Some(handler) = env.on_update.clone() {
         for _ in 0..frames {
             env.set(handler.param.clone(), Value::Float(dt));
-            for stmt in &handler.body {
-                eval_stmt(&mut env, stmt)?;
+            run_block(&mut env, &handler.body)?;
+            if env.returning.take().is_some() {
+                break;
             }
         }
     }
     Ok(env.out)
+}
+
+fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
+    for stmt in stmts {
+        eval_stmt(env, stmt)?;
+        if env.returning.is_some() {
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
@@ -56,25 +71,45 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
         } => {
             let cond_val = eval_expr(env, cond)?;
             if is_truthy(&cond_val) {
-                for s in then_body {
-                    eval_stmt(env, s)?;
-                }
-                return Ok(());
+                return run_block(env, then_body);
             }
             for (elif_cond, elif_body) in elifs {
                 let v = eval_expr(env, elif_cond)?;
                 if is_truthy(&v) {
-                    for s in elif_body {
-                        eval_stmt(env, s)?;
-                    }
-                    return Ok(());
+                    return run_block(env, elif_body);
                 }
             }
             if let Some(eb) = else_body {
-                for s in eb {
-                    eval_stmt(env, s)?;
-                }
+                run_block(env, eb)?;
             }
+            Ok(())
+        }
+        Stmt::FunctionDecl { name, params, body, .. } => {
+            env.set(
+                name.clone(),
+                Value::Function(Rc::new(FunctionDef {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                })),
+            );
+            Ok(())
+        }
+        Stmt::Return { value, line, col } => {
+            if env.call_depth == 0 {
+                return Err(RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: "`return` is only valid inside a function or method body"
+                        .to_string(),
+                    help: None,
+                });
+            }
+            let v = match value {
+                Some(e) => eval_expr(env, e)?,
+                None => Value::Nil,
+            };
+            env.returning = Some(v);
             Ok(())
         }
         Stmt::OnUpdate { param, body, .. } => {
@@ -425,6 +460,7 @@ fn apply_call(
 ) -> Result<Value, RuntimeError> {
     match f {
         Value::Builtin { func, .. } => func(env, args),
+        Value::Function(def) => call_function(env, &def, args, line, col),
         Value::Class(class) => {
             if !args.is_empty() {
                 return Err(RuntimeError {
@@ -453,6 +489,50 @@ fn apply_call(
             ),
         }),
     }
+}
+
+fn call_function(
+    env: &mut Env,
+    def: &FunctionDef,
+    args: &[Value],
+    line: u32,
+    col: u32,
+) -> Result<Value, RuntimeError> {
+    if args.len() != def.params.len() {
+        return Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "function '{}' expected {} arguments, got {}",
+                def.name,
+                def.params.len(),
+                args.len()
+            ),
+            help: None,
+        });
+    }
+    let saved_returning = env.returning.take();
+    let saved_params: Vec<(String, Option<Value>)> = def
+        .params
+        .iter()
+        .map(|p| (p.clone(), env.get(p).cloned()))
+        .collect();
+    for (param, arg) in def.params.iter().zip(args.iter()) {
+        env.set(param.clone(), arg.clone());
+    }
+    env.call_depth += 1;
+    let body_result = run_block(env, &def.body);
+    env.call_depth -= 1;
+    let return_value = env.returning.take().unwrap_or(Value::Nil);
+    env.returning = saved_returning;
+    for (name, prev) in saved_params {
+        match prev {
+            Some(v) => env.set(name, v),
+            None => env.remove(&name),
+        }
+    }
+    body_result?;
+    Ok(return_value)
 }
 
 fn instantiate(class: Rc<ClassDef>) -> Value {
@@ -500,6 +580,7 @@ fn call_method(
         });
     }
     let saved_self = env.self_value.replace(recv);
+    let saved_returning = env.returning.take();
     let saved_params: Vec<(String, Option<Value>)> = method
         .params
         .iter()
@@ -508,23 +589,20 @@ fn call_method(
     for (param, arg) in method.params.iter().zip(args.iter()) {
         env.set(param.clone(), arg.clone());
     }
-    let mut result = Ok(Value::Nil);
-    for stmt in &method.body {
-        if let Err(e) = eval_stmt(env, stmt) {
-            result = Err(e);
-            break;
-        }
-    }
+    env.call_depth += 1;
+    let body_result = run_block(env, &method.body);
+    env.call_depth -= 1;
+    let return_value = env.returning.take().unwrap_or(Value::Nil);
+    env.returning = saved_returning;
     env.self_value = saved_self;
     for (name, prev) in saved_params {
         match prev {
             Some(v) => env.set(name, v),
-            None => {
-                env.remove(&name);
-            }
+            None => env.remove(&name),
         }
     }
-    result
+    body_result?;
+    Ok(return_value)
 }
 
 fn eval_decl(
@@ -645,6 +723,15 @@ fn apply_arith(
         BinOp::Div => "/",
         _ => unreachable!(),
     };
+    // String concatenation via `+`.
+    if matches!(op, BinOp::Add) {
+        if let (Value::Str(a), Value::Str(b)) = (l, r) {
+            let mut s = String::with_capacity(a.len() + b.len());
+            s.push_str(a);
+            s.push_str(b);
+            return Ok(Value::Str(Rc::new(s)));
+        }
+    }
     let pair = match (l, r) {
         (Value::Int(a), Value::Int(b)) => NumPair::Ints(*a, *b),
         (Value::Float(a), Value::Float(b)) => NumPair::Floats(*a, *b),

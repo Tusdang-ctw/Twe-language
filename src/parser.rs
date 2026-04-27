@@ -74,6 +74,8 @@ impl<'a> Parser<'a> {
             TokenKind::Item => return self.parse_decl(DeclKind::Item),
             TokenKind::Modifier => return self.parse_decl(DeclKind::Modifier),
             TokenKind::Inventory => return self.parse_decl(DeclKind::Inventory),
+            TokenKind::Function => return self.parse_function(),
+            TokenKind::Return => return self.parse_return(),
             _ => {}
         }
         let expr = self.parse_expr()?;
@@ -189,6 +191,45 @@ impl<'a> Parser<'a> {
         Ok(Stmt::OnUpdate {
             param,
             body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_function(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let name = self.expect_ident("expected function name after `function`")?;
+        self.expect(TokenKind::LParen, "expected '(' after function name")?;
+        let mut params = Vec::new();
+        if !matches!(self.peek().kind, TokenKind::RParen) {
+            params.push(self.expect_ident("expected parameter name")?);
+            while matches!(self.peek().kind, TokenKind::Comma) {
+                self.bump();
+                params.push(self.expect_ident("expected parameter name")?);
+            }
+        }
+        self.expect(TokenKind::RParen, "expected ')' to close parameter list")?;
+        self.expect(TokenKind::Colon, "expected ':' after function signature")?;
+        let body = self.parse_block()?;
+        Ok(Stmt::FunctionDecl {
+            name,
+            params,
+            body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_return(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let value = if matches!(self.peek().kind, TokenKind::Newline | TokenKind::Eof) {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        self.expect_stmt_end()?;
+        Ok(Stmt::Return {
+            value,
             line: kw.line,
             col: kw.col,
         })

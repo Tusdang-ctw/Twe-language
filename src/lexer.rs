@@ -24,6 +24,8 @@ pub enum TokenKind {
     Inventory,
     Extends,
     KwSelf,
+    Function,
+    Return,
     Ident(String),
     Int(i64),
     Float(f64),
@@ -666,6 +668,8 @@ impl<'a> Lexer<'a> {
             "inventory" => TokenKind::Inventory,
             "extends" => TokenKind::Extends,
             "self" => TokenKind::KwSelf,
+            "function" => TokenKind::Function,
+            "return" => TokenKind::Return,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }

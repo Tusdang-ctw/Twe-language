@@ -29,6 +29,18 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    FunctionDecl {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
+    Return {
+        value: Option<Expr>,
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
 }
 

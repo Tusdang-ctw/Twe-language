@@ -17,10 +17,18 @@ pub enum Value {
     Object(Rc<RefCell<Object>>),
     Class(Rc<ClassDef>),
     Instance(Rc<RefCell<Instance>>),
+    Function(Rc<FunctionDef>),
     Builtin {
         name: &'static str,
         func: BuiltinFn,
     },
+}
+
+#[derive(Debug)]
+pub struct FunctionDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<crate::ast::Stmt>,
 }
 
 #[derive(Debug)]
@@ -70,6 +78,7 @@ impl fmt::Debug for Value {
             Value::Object(o) => write!(f, "Object({})", o.borrow().kind),
             Value::Class(c) => write!(f, "Class({} {})", c.kind, c.name),
             Value::Instance(i) => write!(f, "Instance({})", i.borrow().class.name),
+            Value::Function(func) => write!(f, "Function({})", func.name),
             Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
         }
     }
@@ -90,6 +99,7 @@ impl Value {
             Value::Object(o) => o.borrow().kind,
             Value::Class(_) => "class",
             Value::Instance(_) => "instance",
+            Value::Function(_) => "function",
             Value::Builtin { .. } => "function",
         }
     }
@@ -114,6 +124,7 @@ impl Value {
             Value::Object(o) => format!("<{}>", o.borrow().kind),
             Value::Class(c) => format!("<{} {}>", c.kind, c.name),
             Value::Instance(i) => format!("<{}>", i.borrow().class.name),
+            Value::Function(func) => format!("<function {}>", func.name),
             Value::Builtin { name, .. } => format!("<builtin {name}>"),
         }
     }
@@ -144,6 +155,8 @@ pub struct Env {
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
     pub self_value: Option<Value>,
+    pub returning: Option<Value>,
+    pub call_depth: u32,
 }
 
 #[derive(Clone)]
@@ -159,6 +172,8 @@ impl Env {
             out: String::new(),
             on_update: None,
             self_value: None,
+            returning: None,
+            call_depth: 0,
         }
     }
 

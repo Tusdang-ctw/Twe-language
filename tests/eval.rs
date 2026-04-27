@@ -168,6 +168,18 @@ fn calling_class_with_args_errors_in_v01() {
     assert!(err.contains("constructor"), "got: {err}");
 }
 
+#[test]
+fn runs_functions_and_recursion() {
+    let out = run_program("tests/programs/functions.twe").expect("program should run");
+    assert_eq!(out, "5\n6\n42\n0\n1\n13\n");
+}
+
+#[test]
+fn return_at_top_level_errors() {
+    let err = run_program_str("return 1\n").expect_err("should fail");
+    assert!(err.contains("`return`"), "got: {err}");
+}
+
 fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;
