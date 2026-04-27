@@ -204,6 +204,37 @@ fn unknown_escape_errors() {
 }
 
 #[test]
+fn triple_string_lexes_multiline_content() {
+    let src = "let x = \"\"\"line 1\nline 2\nline 3\"\"\"\n";
+    let tokens = lex(src).expect("lex should succeed");
+    let s = tokens
+        .iter()
+        .find_map(|t| match &t.kind {
+            TokenKind::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("should have a Str token");
+    assert_eq!(s, "line 1\nline 2\nline 3");
+}
+
+#[test]
+fn block_comment_spans_lines() {
+    let src = "let x = 1\n#- block\ncomment\nspans -#\nlet y = 2\n";
+    let tokens = lex(src).expect("lex should succeed");
+    let lets = tokens
+        .iter()
+        .filter(|t| matches!(t.kind, TokenKind::Let))
+        .count();
+    assert_eq!(lets, 2);
+}
+
+#[test]
+fn unterminated_block_comment_errors() {
+    let err = lex("#- never closes").expect_err("should fail");
+    assert!(err.message.contains("block comment"));
+}
+
+#[test]
 fn mixed_tabs_and_spaces_in_indent_errors() {
     let err = lex("if true:\n \tx = 1\n").expect_err("should fail");
     assert_eq!(err.message, "mixed tabs and spaces in indentation");

@@ -145,11 +145,43 @@ impl<'a> Lexer<'a> {
                     self.at_line_start = true;
                 }
                 b'#' => {
-                    while let Some(c) = self.peek() {
-                        if c == b'\n' {
-                            break;
-                        }
+                    self.bump();
+                    if self.peek() == Some(b'-') {
+                        // Block comment `#- ... -#`. Cannot nest.
                         self.bump();
+                        loop {
+                            match self.peek() {
+                                None => {
+                                    return Err(LexError {
+                                        line,
+                                        col,
+                                        message: "unterminated block comment at end of file"
+                                            .to_string(),
+                                        help: Some(
+                                            "close with `-#`; block comments do not nest"
+                                                .to_string(),
+                                        ),
+                                    });
+                                }
+                                Some(b'-')
+                                    if self.src.get(self.pos + 1) == Some(&b'#') =>
+                                {
+                                    self.bump();
+                                    self.bump();
+                                    break;
+                                }
+                                Some(b'\n') => self.bump_newline(),
+                                Some(_) => self.bump(),
+                            }
+                        }
+                    } else {
+                        // Line comment (covers `#` and `#:` doc comments).
+                        while let Some(c) = self.peek() {
+                            if c == b'\n' {
+                                break;
+                            }
+                            self.bump();
+                        }
                     }
                 }
                 b'(' => {
@@ -299,7 +331,13 @@ impl<'a> Lexer<'a> {
                     content_since_newline = true;
                 }
                 b'"' => {
-                    out.push(self.lex_string(line, col)?);
+                    if self.src.get(self.pos + 1) == Some(&b'"')
+                        && self.src.get(self.pos + 2) == Some(&b'"')
+                    {
+                        out.push(self.lex_triple_string(line, col)?);
+                    } else {
+                        out.push(self.lex_string(line, col)?);
+                    }
                     content_since_newline = true;
                 }
                 b'0'..=b'9' => {
@@ -462,6 +500,50 @@ impl<'a> Lexer<'a> {
             with_eq
         } else {
             plain
+        }
+    }
+
+    fn lex_triple_string(&mut self, line: u32, col: u32) -> Result<Token, LexError> {
+        self.bump();
+        self.bump();
+        self.bump();
+        let start = self.pos;
+        loop {
+            match self.peek() {
+                Some(b'"')
+                    if self.src.get(self.pos + 1) == Some(&b'"')
+                        && self.src.get(self.pos + 2) == Some(&b'"') =>
+                {
+                    let bytes = &self.src[start..self.pos];
+                    let s = std::str::from_utf8(bytes)
+                        .map_err(|_| LexError {
+                            line,
+                            col,
+                            message: "invalid UTF-8 in triple-quoted string".to_string(),
+                            help: None,
+                        })?
+                        .to_string();
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    return Ok(Token {
+                        kind: TokenKind::Str(s),
+                        line,
+                        col,
+                    });
+                }
+                Some(b'\n') => self.bump_newline(),
+                Some(_) => self.bump(),
+                None => {
+                    return Err(LexError {
+                        line,
+                        col,
+                        message: "unterminated triple-quoted string at end of file"
+                            .to_string(),
+                        help: Some("close with '\"\"\"'".to_string()),
+                    });
+                }
+            }
         }
     }
 
