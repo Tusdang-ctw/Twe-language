@@ -8,6 +8,7 @@ pub enum Value {
     Nil,
     Bool(bool),
     Int(i64),
+    Float(f64),
     Str(Rc<String>),
     Tuple(Rc<Vec<Value>>),
     Object(Rc<RefCell<Object>>),
@@ -31,6 +32,7 @@ impl fmt::Debug for Value {
             Value::Nil => write!(f, "Nil"),
             Value::Bool(b) => write!(f, "Bool({b})"),
             Value::Int(n) => write!(f, "Int({n})"),
+            Value::Float(x) => write!(f, "Float({x:?})"),
             Value::Str(s) => write!(f, "Str({s:?})"),
             Value::Tuple(t) => write!(f, "Tuple({t:?})"),
             Value::Object(o) => write!(f, "Object({})", o.borrow().kind),
@@ -45,6 +47,7 @@ impl Value {
             Value::Nil => "nil",
             Value::Bool(_) => "bool",
             Value::Int(_) => "int",
+            Value::Float(_) => "float",
             Value::Str(_) => "string",
             Value::Tuple(_) => "tuple",
             Value::Object(o) => o.borrow().kind,
@@ -57,6 +60,7 @@ impl Value {
             Value::Nil => "nil".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
+            Value::Float(x) => format!("{x:?}"),
             Value::Str(s) => s.as_ref().clone(),
             Value::Tuple(elems) => {
                 let parts: Vec<String> = elems.iter().map(Value::display).collect();

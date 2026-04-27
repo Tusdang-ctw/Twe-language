@@ -1,13 +1,13 @@
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
     pub line: u32,
     pub col: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Let,
     Var,
@@ -18,6 +18,7 @@ pub enum TokenKind {
     Not,
     Ident(String),
     Int(i64),
+    Float(f64),
     Str(String),
     Eq,
     EqEq,
@@ -500,21 +501,73 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
+        let mut is_float = false;
+        if self.peek() == Some(b'.')
+            && self
+                .src
+                .get(self.pos + 1)
+                .is_some_and(|b| b.is_ascii_digit())
+        {
+            is_float = true;
+            self.bump(); // dot
+            while let Some(b) = self.peek() {
+                if b.is_ascii_digit() {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            is_float = true;
+            self.bump();
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.bump();
+            }
+            let exp_start = self.pos;
+            while let Some(b) = self.peek() {
+                if b.is_ascii_digit() {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            if self.pos == exp_start {
+                return Err(LexError {
+                    line,
+                    col,
+                    message: "expected digits after exponent marker".to_string(),
+                    help: Some("write a digit (e.g. '1e5' or '1.5e-3')".to_string()),
+                });
+            }
+        }
         let text = std::str::from_utf8(&self.src[start..self.pos])
             .expect("ascii digits are valid utf-8");
-        let value: i64 = text.parse().map_err(|_| LexError {
-            line,
-            col,
-            message: format!("integer literal '{text}' is out of range for int (i64)"),
-            help: Some(
-                "twe ints are 64-bit signed; pick a smaller value".to_string(),
-            ),
-        })?;
-        Ok(Token {
-            kind: TokenKind::Int(value),
-            line,
-            col,
-        })
+        if is_float {
+            let value: f64 = text.parse().map_err(|_| LexError {
+                line,
+                col,
+                message: format!("could not parse float literal '{text}'"),
+                help: None,
+            })?;
+            Ok(Token {
+                kind: TokenKind::Float(value),
+                line,
+                col,
+            })
+        } else {
+            let value: i64 = text.parse().map_err(|_| LexError {
+                line,
+                col,
+                message: format!("integer literal '{text}' is out of range for int (i64)"),
+                help: Some("twe ints are 64-bit signed; pick a smaller value".to_string()),
+            })?;
+            Ok(Token {
+                kind: TokenKind::Int(value),
+                line,
+                col,
+            })
+        }
     }
 
     fn lex_ident(&mut self, line: u32, col: u32) -> Token {

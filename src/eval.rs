@@ -136,6 +136,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
     match expr {
         Expr::Str { value, .. } => Ok(Value::Str(Rc::new(value.clone()))),
         Expr::Int { value, .. } => Ok(Value::Int(*value)),
+        Expr::Float { value, .. } => Ok(Value::Float(*value)),
         Expr::Bool { value, .. } => Ok(Value::Bool(*value)),
         Expr::Ident { name, line, col } => env.get(name).cloned().ok_or_else(|| RuntimeError {
             line: *line,
@@ -192,11 +193,12 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             let v = eval_expr(env, operand)?;
             match (op, &v) {
                 (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
+                (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
                 (UnOp::Neg, _) => Err(RuntimeError {
                     line: *line,
                     col: *col,
                     message: format!("cannot negate value of type {}", v.type_name()),
-                    help: Some("`-` is defined on int".to_string()),
+                    help: Some("`-` is defined on int and float".to_string()),
                 }),
                 (UnOp::Not, _) => Ok(Value::Bool(!is_truthy(&v))),
             }
@@ -266,10 +268,10 @@ fn eval_binary(
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => apply_arith(op, &l, &r, line, col),
         BinOp::Eq => Ok(Value::Bool(values_equal(&l, &r))),
         BinOp::Neq => Ok(Value::Bool(!values_equal(&l, &r))),
-        BinOp::Lt => cmp_int(&l, &r, |a, b| a < b, "<", line, col),
-        BinOp::Gt => cmp_int(&l, &r, |a, b| a > b, ">", line, col),
-        BinOp::Lte => cmp_int(&l, &r, |a, b| a <= b, "<=", line, col),
-        BinOp::Gte => cmp_int(&l, &r, |a, b| a >= b, ">=", line, col),
+        BinOp::Lt => cmp_int(&l, &r, |a, b| a < b, |a, b| a < b, "<", line, col),
+        BinOp::Gt => cmp_int(&l, &r, |a, b| a > b, |a, b| a > b, ">", line, col),
+        BinOp::Lte => cmp_int(&l, &r, |a, b| a <= b, |a, b| a <= b, "<=", line, col),
+        BinOp::Gte => cmp_int(&l, &r, |a, b| a >= b, |a, b| a >= b, ">=", line, col),
         BinOp::And | BinOp::Or => unreachable!("handled above"),
     }
 }
@@ -288,40 +290,62 @@ fn apply_arith(
         BinOp::Div => "/",
         _ => unreachable!(),
     };
-    match (op, l, r) {
-        (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-        (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
-        (BinOp::Mul, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
-        (BinOp::Div, Value::Int(_), Value::Int(0)) => Err(RuntimeError {
+    let pair = match (l, r) {
+        (Value::Int(a), Value::Int(b)) => NumPair::Ints(*a, *b),
+        (Value::Float(a), Value::Float(b)) => NumPair::Floats(*a, *b),
+        (Value::Int(a), Value::Float(b)) => NumPair::Floats(*a as f64, *b),
+        (Value::Float(a), Value::Int(b)) => NumPair::Floats(*a, *b as f64),
+        _ => {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "operator '{op_str}' is not defined on {} and {}",
+                    l.type_name(),
+                    r.type_name()
+                ),
+                help: None,
+            })
+        }
+    };
+    match (op, pair) {
+        (BinOp::Add, NumPair::Ints(a, b)) => Ok(Value::Int(a + b)),
+        (BinOp::Sub, NumPair::Ints(a, b)) => Ok(Value::Int(a - b)),
+        (BinOp::Mul, NumPair::Ints(a, b)) => Ok(Value::Int(a * b)),
+        (BinOp::Div, NumPair::Ints(_, 0)) => Err(RuntimeError {
             line,
             col,
             message: "division by zero".to_string(),
             help: Some("guard the divisor with `if b != 0:` before dividing".to_string()),
         }),
-        (BinOp::Div, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
-        _ => Err(RuntimeError {
-            line,
-            col,
-            message: format!(
-                "operator '{op_str}' is not defined on {} and {}",
-                l.type_name(),
-                r.type_name()
-            ),
-            help: None,
-        }),
+        (BinOp::Div, NumPair::Ints(a, b)) => Ok(Value::Int(a / b)),
+        (BinOp::Add, NumPair::Floats(a, b)) => Ok(Value::Float(a + b)),
+        (BinOp::Sub, NumPair::Floats(a, b)) => Ok(Value::Float(a - b)),
+        (BinOp::Mul, NumPair::Floats(a, b)) => Ok(Value::Float(a * b)),
+        (BinOp::Div, NumPair::Floats(a, b)) => Ok(Value::Float(a / b)),
+        _ => unreachable!(),
     }
+}
+
+enum NumPair {
+    Ints(i64, i64),
+    Floats(f64, f64),
 }
 
 fn cmp_int(
     l: &Value,
     r: &Value,
-    f: fn(i64, i64) -> bool,
+    int_cmp: fn(i64, i64) -> bool,
+    float_cmp: fn(f64, f64) -> bool,
     op_str: &str,
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
     match (l, r) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(f(*a, *b))),
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(int_cmp(*a, *b))),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(float_cmp(*a, *b))),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Bool(float_cmp(*a as f64, *b))),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Bool(float_cmp(*a, *b as f64))),
         _ => Err(RuntimeError {
             line,
             col,
@@ -340,6 +364,9 @@ fn values_equal(l: &Value, r: &Value) -> bool {
         (Value::Nil, Value::Nil) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Int(a), Value::Int(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
+        (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
         (Value::Str(a), Value::Str(b)) => a == b,
         (Value::Tuple(a), Value::Tuple(b)) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y))

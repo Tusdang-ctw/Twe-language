@@ -82,6 +82,12 @@ fn missing_field_errors() {
     assert!(err.contains("'glubjorm'"), "got: {err}");
 }
 
+#[test]
+fn runs_floats() {
+    let out = run_program("tests/programs/floats.twe").expect("program should run");
+    assert_eq!(out, "3.14\n6.28\n1.5\n0.0015\n2.5\ntrue\ntrue\n");
+}
+
 fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;

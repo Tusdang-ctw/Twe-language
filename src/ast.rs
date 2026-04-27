@@ -29,6 +29,7 @@ pub enum AssignOp {
 pub enum Expr {
     Str { value: String, line: u32, col: u32 },
     Int { value: i64, line: u32, col: u32 },
+    Float { value: f64, line: u32, col: u32 },
     Bool { value: bool, line: u32, col: u32 },
     Ident { name: String, line: u32, col: u32 },
     Tuple { elems: Vec<Expr>, line: u32, col: u32 },
@@ -65,6 +66,7 @@ impl Expr {
         match self {
             Expr::Str { line, .. }
             | Expr::Int { line, .. }
+            | Expr::Float { line, .. }
             | Expr::Bool { line, .. }
             | Expr::Ident { line, .. }
             | Expr::Tuple { line, .. }
@@ -79,6 +81,7 @@ impl Expr {
         match self {
             Expr::Str { col, .. }
             | Expr::Int { col, .. }
+            | Expr::Float { col, .. }
             | Expr::Bool { col, .. }
             | Expr::Ident { col, .. }
             | Expr::Tuple { col, .. }

@@ -336,6 +336,11 @@ impl<'a> Parser<'a> {
                 line: tok.line,
                 col: tok.col,
             }),
+            TokenKind::Float(value) => Ok(Expr::Float {
+                value,
+                line: tok.line,
+                col: tok.col,
+            }),
             TokenKind::Ident(name) => match name.as_str() {
                 "true" => Ok(Expr::Bool {
                     value: true,
