@@ -85,8 +85,10 @@ fn invalid_assignment_target_errors() {
 
 #[test]
 fn missing_field_errors() {
-    let err = run_program_str("let h = load(\"x.png\")\nprint(h.glubjorm)\n")
-        .expect_err("should fail");
+    let err = run_program_str(
+        "let h = load(\"tests/assets/hero.png\")\nprint(h.glubjorm)\n",
+    )
+    .expect_err("should fail");
     assert!(err.contains("'glubjorm'"), "got: {err}");
 }
 
@@ -415,6 +417,40 @@ fn survive_parses_and_ticks() {
         !env.active_entities.is_empty(),
         "expected at least one monster to spawn within ~2s"
     );
+}
+
+#[test]
+fn load_fails_fast_on_missing_asset() {
+    let err = run_program_str("let h = load(\"nope-not-a-real-path.png\")\n")
+        .expect_err("should fail");
+    assert!(err.contains("cannot find asset"), "got: {err}");
+    assert!(err.contains("nope-not-a-real-path.png"), "got: {err}");
+}
+
+#[test]
+fn load_returns_handle_with_path_field() {
+    use twec::value::Value;
+    let src = r#"
+let h = load("tests/assets/hero.png")
+print(h.path)
+print(h.x)
+print(h.y)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "tests/assets/hero.png\n0\n0\n");
+    let _ = Value::Nil;
+}
+
+#[test]
+fn sprite_outside_render_errors() {
+    let src = r#"let h = load("tests/assets/hero.png")
+on update(dt):
+    sprite(h, (0, 0))
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let err = twec::eval::run_with_frames(&program, 1, 0.016).expect_err("should fail");
+    assert!(err.message.contains("on render"), "got: {}", err.message);
 }
 
 #[test]

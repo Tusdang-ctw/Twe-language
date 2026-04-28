@@ -77,6 +77,7 @@ async fn run_loop(path: String) {
             match initialize(&path_ref) {
                 Ok(new_env) => {
                     eprintln!("[twec] hot reload: {path_ref}");
+                    crate::stdlib::clear_asset_caches();
                     env = new_env;
                     flush_output(&mut env);
                 }

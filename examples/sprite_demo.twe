@@ -1,0 +1,28 @@
+# `twec play examples/sprite_demo.twe`
+#
+# Phase-2 demo of the sprite binding: load() returns a sprite handle,
+# `sprite(spr, at, [size])` draws it during `on render()`. The bundled
+# hero.png is 1x1 — the demo scales it to 64x64 so the texture is
+# actually visible. Assets are resolved relative to the working
+# directory.
+
+let hero = load("examples/assets/hero.png")
+
+scene SpriteDemo:
+    var x = 320.0
+    var y = 240.0
+    var speed = 240.0
+
+    initial: playing
+
+    state playing:
+        every 16ms:
+            let step = speed * time.dt
+            if key.right: x += step
+            if key.left:  x -= step
+            if key.up:    y -= step
+            if key.down:  y += step
+
+        on render():
+            sprite(hero, (x - 32, y - 32), (64, 64))
+            text("arrows to move", (10, 20), 16, color.white)

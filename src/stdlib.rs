@@ -4,6 +4,22 @@ use std::rc::Rc;
 
 use crate::value::{Env, Object, RuntimeError, Value};
 
+// Texture cache: macroquad's `Texture2D` can only be constructed once
+// the GL context exists, so loading is lazy — the first `sprite(spr, at)`
+// call inside `on render():` decodes the file. Cleared by `clear_sprite_cache`
+// when `twec play` hot-reloads the script. Single-threaded (macroquad
+// runs on the main thread), so a thread_local is the right shape.
+thread_local! {
+    static SPRITE_CACHE: RefCell<HashMap<String, macroquad::texture::Texture2D>>
+        = RefCell::new(HashMap::new());
+}
+
+/// Drop every cached `Texture2D`. The play loop calls this on hot reload
+/// so a swapped-out asset path actually reloads.
+pub fn clear_asset_caches() {
+    SPRITE_CACHE.with(|c| c.borrow_mut().clear());
+}
+
 pub fn install(env: &mut Env) {
     env.set(
         "print".to_string(),
@@ -134,10 +150,37 @@ fn print_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Nil)
 }
 
-fn load_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
-    // Phase-1 stub: returns a fresh sprite-shaped object with x = 0, y = 0.
-    // Real asset loading lands in Phase 2 alongside the macroquad backend.
-    let mut fields = std::collections::HashMap::new();
+fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    // Returns a sprite handle: { path, x = 0, y = 0 }. The texture
+    // is decoded lazily on the first `sprite(spr, at)` call inside
+    // `on render():` because macroquad's `Texture2D` can only be
+    // constructed after the GL context exists. Path existence is
+    // checked here so typos fail fast.
+    arity(args, 1, "load")?;
+    let path = match &args[0] {
+        Value::Str(s) => s.as_ref().clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("load expected a string path, got {}", other.type_name()),
+                help: Some("e.g. `load(\"hero.png\")`".to_string()),
+            });
+        }
+    };
+    if std::fs::metadata(&path).is_err() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("load: cannot find asset '{path}'"),
+            help: Some(
+                "the path is relative to the working directory; check spelling and case"
+                    .to_string(),
+            ),
+        });
+    }
+    let mut fields = HashMap::new();
+    fields.insert("path".to_string(), Value::Str(Rc::new(path)));
     fields.insert("x".to_string(), Value::Int(0));
     fields.insert("y".to_string(), Value::Int(0));
     Ok(Value::Object(Rc::new(RefCell::new(Object {
@@ -446,6 +489,111 @@ fn install_draw(env: &mut Env) {
             func: draw_text,
         },
     );
+    env.set(
+        "sprite".to_string(),
+        Value::Builtin {
+            name: "sprite",
+            func: draw_sprite,
+        },
+    );
+}
+
+fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "sprite")?;
+    if args.len() != 2 && args.len() != 3 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "sprite expected 2 or 3 arguments (handle, at, [size]), got {}",
+                args.len()
+            ),
+            help: None,
+        });
+    }
+    let path = match &args[0] {
+        Value::Object(rc) => {
+            let o = rc.borrow();
+            if o.kind != "sprite" {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!(
+                        "sprite expects a sprite handle from `load(...)`, got {}",
+                        o.kind
+                    ),
+                    help: None,
+                });
+            }
+            match o.fields.get("path") {
+                Some(Value::Str(s)) => s.as_ref().clone(),
+                _ => {
+                    return Err(RuntimeError {
+                        line: 0,
+                        col: 0,
+                        message: "sprite handle is missing a `path` field".to_string(),
+                        help: Some(
+                            "build the handle with `load(\"file.png\")` rather than \
+                             constructing one by hand"
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+        }
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "sprite expects a sprite handle from `load(...)`, got {}",
+                    other.type_name()
+                ),
+                help: None,
+            });
+        }
+    };
+    let (x, y) = xy_of(&args[1], "sprite.at")?;
+    let size = if args.len() == 3 {
+        Some(xy_of(&args[2], "sprite.size")?)
+    } else {
+        None
+    };
+
+    SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
+        let mut c = cache.borrow_mut();
+        if !c.contains_key(&path) {
+            let bytes = std::fs::read(&path).map_err(|e| RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("sprite: cannot read '{path}': {e}"),
+                help: None,
+            })?;
+            let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
+            c.insert(path.clone(), tex);
+        }
+        let tex = &c[&path];
+        match size {
+            None => macroquad::texture::draw_texture(
+                tex,
+                x as f32,
+                y as f32,
+                macroquad::color::WHITE,
+            ),
+            Some((w, h)) => macroquad::texture::draw_texture_ex(
+                tex,
+                x as f32,
+                y as f32,
+                macroquad::color::WHITE,
+                macroquad::texture::DrawTextureParams {
+                    dest_size: Some(macroquad::math::vec2(w as f32, h as f32)),
+                    ..Default::default()
+                },
+            ),
+        }
+        Ok(())
+    })?;
+    Ok(Value::Nil)
 }
 
 fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {

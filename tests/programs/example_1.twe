@@ -2,7 +2,7 @@
 # real keyboard input ships with the macroquad backend in Phase 2.
 # This script pre-sets `key.right`, runs N frames, prints positions.
 
-let hero = load("hero.png")
+let hero = load("tests/assets/hero.png")
 hero.pos = (200, 150)
 key.right = true
 

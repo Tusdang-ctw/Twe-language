@@ -3,7 +3,7 @@ print(p)
 print(p.x)
 print(p.y)
 
-let hero = load("hero.png")
+let hero = load("tests/assets/hero.png")
 hero.pos = (200, 150)
 print(hero.x)
 print(hero.y)

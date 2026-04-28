@@ -59,11 +59,13 @@ list for Phase 3).
 Current lexer follows §2.4 (ASCII-only). Reconcile §2.1 or §2.4 before any
 non-ASCII identifier enters the test suite.
 
-### Loader API doc-cleanup
+### Loader API doc-cleanup — **RESOLVED 2026-04-28**
 
-`02-type-system.md` shows `sprite.load(...)` (namespaced); `01-examples.md`
-Example 1 (post 2026-04-27) shows `load(...)` (bare). Both work; pick a
-canonical form during Phase 2 stdlib build-out.
+Bare `load(path)` is canonical (matches Example 1, the spec). `02-type-system.md`'s
+`sprite.load(...)` form should be edited to match. Drawing is explicit:
+`sprite(handle, at, [size])` inside `on render():`. Implicit auto-rendering
+(the original Example 1 ideal where setting `hero.pos` is enough) remains
+deferred to Phase 3+.
 
 ## Phase 2 deferred (caught in scope)
 

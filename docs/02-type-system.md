@@ -61,7 +61,7 @@ Behavior:
 Example:
 
 ```twe
-hero = sprite.load("hero.png")        # type inferred: Sprite
+hero = load("hero.png")               # type inferred: Sprite (canonical v0.1 form)
 hero.pos = (100, 100)                  # ok — Sprite has .pos
 hero.glubjorm = "what"                 # ok at parse time, errors at runtime
                                         # (non-strict won't flag because it
