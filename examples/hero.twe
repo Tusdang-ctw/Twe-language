@@ -14,7 +14,7 @@ scene Hero:
 
     state playing:
         every 16ms:
-            let step = speed * 0.016
+            let step = speed * time.dt
             if key.right: x += step
             if key.left:  x -= step
             if key.up:    y -= step

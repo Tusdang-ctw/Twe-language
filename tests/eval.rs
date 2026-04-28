@@ -418,6 +418,15 @@ fn survive_parses_and_ticks() {
 }
 
 #[test]
+fn time_dt_reflects_real_frame_delta() {
+    // 3 frames of dt = 0.05s. Every-clock fires every 16ms, so it
+    // fires once per frame and `time.dt` returns the frame's dt.
+    let out = run_program_frames("tests/programs/time_dt.twe", 3, 0.05)
+        .expect("program should run");
+    assert_eq!(out, "0.05\n0.1\n0.15000000000000002\n");
+}
+
+#[test]
 fn entities_of_returns_only_live_instances_of_class() {
     let out = run_program("tests/programs/entity_query.twe").expect("program should run");
     // 3 mobs spawned, 1 bullet. entities.count returns 3, 1.

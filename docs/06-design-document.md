@@ -552,7 +552,7 @@ Detailed in a separate document (`stdlib.md`, not yet written). Sections planned
 3. **`random`** — `random.float()`, `random.int(0..10)`, `random.in_circle(radius:)`, `random.choice([...])`.
 4. **`vector`** — vector operations: `dot`, `cross`, `length`, `normalize`, `lerp`.
 5. **`color`** — named constants, `color.lerp`, `color.from_hex`, `color.hsv`.
-6. **`time`** — `time.now`, `time.delta`, `time.frame`.
+6. **`time`** — `time.now`, `time.delta`, `time.frame`. *(v0.1 ships only `time.dt`, the live frame delta — set by `eval::tick_frame` and readable from every-clock bodies; closes Phase 2 frustration F8.)*
 7. **`input`** — `key`, `mouse`, `gamepad`.
 8. **`scene`** — `scene.find`, `scene.spawn`, `scene.npc`, `scene.enter`.
 8a. **`entities`** *(v0.1)* — `entities.of(Class)` returns a list of live instances of a class; `entities.count(Class)` returns just the count. Closes the iteration-on-dynamic-instances gap from the Phase 2 frustration list (F3 / F6) and is what bullet/enemy collision in `examples/survive.twe` is built on.

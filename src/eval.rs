@@ -47,6 +47,7 @@ pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeErro
 /// seconds. Side-effects (prints, field mutations, transitions) are
 /// applied to `env`.
 pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
+    update_time_ambient(env, dt);
     if let Some(handler) = env.on_update.clone() {
         env.set(handler.param.clone(), Value::Float(dt));
         run_block(env, &handler.body)?;
@@ -88,6 +89,14 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
 
 fn prune_despawned(env: &mut Env) {
     env.active_entities.retain(|e| !e.borrow().despawned);
+}
+
+fn update_time_ambient(env: &mut Env, dt: f64) {
+    if let Some(Value::Object(rc)) = env.get("time").cloned() {
+        rc.borrow_mut()
+            .fields
+            .insert("dt".to_string(), Value::Float(dt));
+    }
 }
 
 /// Look at `env.key_press` (an Object whose fields are bool flags set

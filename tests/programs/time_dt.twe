@@ -1,0 +1,13 @@
+# `time.dt` is the live frame delta. Closes Phase-2 frustration F8 —
+# every-clock bodies and other code can read the real dt instead of
+# hardcoding `0.016`.
+
+scene S:
+    var sum = 0.0
+
+    initial: a
+
+    state a:
+        every 16ms:
+            sum += time.dt
+            print(sum)

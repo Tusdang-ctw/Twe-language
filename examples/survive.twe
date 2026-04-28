@@ -30,7 +30,7 @@ scene Survive:
 
     state playing:
         every 16ms:
-            let dt = 0.016
+            let dt = time.dt
             elapsed += dt
 
             let speed = 200.0 * dt

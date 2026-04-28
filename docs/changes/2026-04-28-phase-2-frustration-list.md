@@ -109,11 +109,17 @@ look at this in Phase 4 alongside refinement types.
 
 ## Ergonomics
 
-### F8. `let dt = 0.016` workaround for every-clocks
+### F8. `let dt = 0.016` workaround for every-clocks — **CLOSED 2026-04-28**
 
 (See F5.) Every-clocks have no implicit dt; the only available dt
 is in top-level `on update(dt):`. Survive shoves `let dt = 0.016`
 into the every body and hopes the real frame matches.
+
+**Fix shipped:** `time.dt` ambient module-field is rewritten by
+`eval::tick_frame` at the top of every frame. `every` clocks (and
+any other code) now read `time.dt` instead of guessing. Note: this
+is the *frame* dt, not the elapsed-time-since-last-fire of the
+clock — that finer-grained accounting still needs F5.
 
 ### F9. Nested `if` chains for direction handling
 

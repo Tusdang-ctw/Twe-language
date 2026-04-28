@@ -55,6 +55,23 @@ pub fn install(env: &mut Env) {
     install_screen(env);
     install_draw(env);
     install_entities(env);
+    install_time(env);
+}
+
+fn install_time(env: &mut Env) {
+    // `time.dt` is rewritten by `eval::tick_frame` on every frame, so
+    // `every` clocks (which receive no implicit dt) and other code can
+    // read the live frame delta instead of hardcoding `0.016`. Closes
+    // Phase-2 frustration F8.
+    let mut fields = HashMap::new();
+    fields.insert("dt".to_string(), Value::Float(0.0));
+    env.set(
+        "time".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields,
+            kind: "module",
+        }))),
+    );
 }
 
 fn install_math(env: &mut Env) {
