@@ -62,6 +62,11 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    Transition {
+        target: String,
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
 }
 
@@ -71,6 +76,7 @@ pub enum DeclKind {
     Item,
     Modifier,
     Inventory,
+    Scene,
 }
 
 impl DeclKind {
@@ -80,6 +86,7 @@ impl DeclKind {
             DeclKind::Item => "item",
             DeclKind::Modifier => "modifier",
             DeclKind::Inventory => "inventory",
+            DeclKind::Scene => "scene",
         }
     }
 }
@@ -95,6 +102,30 @@ pub enum DeclMember {
     Method {
         name: String,
         params: Vec<String>,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
+    InitialState {
+        name: String,
+        line: u32,
+        col: u32,
+    },
+    State {
+        name: String,
+        members: Vec<StateMember>,
+        line: u32,
+        col: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateMember {
+    /// Plain statements that run when the state is entered.
+    Stmt(Stmt),
+    /// `every <duration>: body` — fires periodically while in the state.
+    Every {
+        interval: Expr,
         body: Vec<Stmt>,
         line: u32,
         col: u32,

@@ -1,5 +1,5 @@
 use crate::ast::{
-    AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp,
+    AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, StateMember, Stmt, UnOp,
 };
 
 pub fn to_json(program: &Program) -> String {
@@ -137,6 +137,12 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Stmt::Transition { target, line, col } => {
+            s.push_str("{\"kind\":\"Transition\",\"target\":");
+            write_str_value(s, target);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Stmt::Expr(e) => {
             s.push_str("{\"kind\":\"ExprStmt\",\"expr\":");
             write_expr(s, e);
@@ -160,6 +166,44 @@ fn write_member(s: &mut String, m: &DeclMember) {
             write_str_value(s, name);
             s.push_str(",\"params\":");
             write_str_array(s, params);
+            s.push_str(",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        DeclMember::InitialState { name, line, col } => {
+            s.push_str("{\"kind\":\"InitialState\",\"name\":");
+            write_str_value(s, name);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        DeclMember::State { name, members, line, col } => {
+            s.push_str("{\"kind\":\"State\",\"name\":");
+            write_str_value(s, name);
+            s.push_str(",\"members\":[");
+            for (i, sm) in members.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                write_state_member(s, sm);
+            }
+            s.push(']');
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+    }
+}
+
+fn write_state_member(s: &mut String, m: &StateMember) {
+    match m {
+        StateMember::Stmt(st) => {
+            s.push_str("{\"kind\":\"Stmt\",\"stmt\":");
+            write_stmt(s, st);
+            s.push('}');
+        }
+        StateMember::Every { interval, body, line, col } => {
+            s.push_str("{\"kind\":\"Every\",\"interval\":");
+            write_expr(s, interval);
             s.push_str(",\"body\":");
             write_block(s, body);
             write_pos(s, *line, *col);

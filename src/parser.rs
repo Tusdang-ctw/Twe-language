@@ -1,6 +1,8 @@
 use std::fmt;
 
-use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp};
+use crate::ast::{
+    AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, StateMember, Stmt, UnOp,
+};
 use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +76,7 @@ impl<'a> Parser<'a> {
             TokenKind::Item => return self.parse_decl(DeclKind::Item),
             TokenKind::Modifier => return self.parse_decl(DeclKind::Modifier),
             TokenKind::Inventory => return self.parse_decl(DeclKind::Inventory),
+            TokenKind::Scene => return self.parse_decl(DeclKind::Scene),
             TokenKind::Function => return self.parse_function(),
             TokenKind::Return => return self.parse_return(),
             TokenKind::While => return self.parse_while(),
@@ -93,6 +96,12 @@ impl<'a> Parser<'a> {
                     line: tok.line,
                     col: tok.col,
                 });
+            }
+            TokenKind::Minus
+                if self.pos + 1 < self.tokens.len()
+                    && matches!(self.tokens[self.pos + 1].kind, TokenKind::Gt) =>
+            {
+                return self.parse_transition();
             }
             _ => {}
         }
@@ -211,6 +220,20 @@ impl<'a> Parser<'a> {
             body,
             line: kw.line,
             col: kw.col,
+        })
+    }
+
+    fn parse_transition(&mut self) -> Result<Stmt, ParseError> {
+        let arrow_line = self.peek().line;
+        let arrow_col = self.peek().col;
+        self.bump(); // -
+        self.bump(); // >
+        let target = self.expect_ident("expected state name after `->`")?;
+        self.expect_stmt_end()?;
+        Ok(Stmt::Transition {
+            target,
+            line: arrow_line,
+            col: arrow_col,
         })
     }
 
@@ -395,6 +418,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_decl_member(&mut self) -> Result<DeclMember, ParseError> {
+        if matches!(self.peek().kind, TokenKind::State) {
+            return self.parse_state_member();
+        }
+        // `var name ...` / `let name ...` are explicit-mutability prefixes.
+        // v0.1 ignores the distinction (all fields are mutable) but accepts
+        // the keyword to keep examples like docs/example-11-snake.md valid.
+        if matches!(self.peek().kind, TokenKind::Var | TokenKind::Let) {
+            self.bump();
+        }
         let name_tok = self.bump().clone();
         let name = match name_tok.kind {
             TokenKind::Ident(s) => s,
@@ -415,13 +447,22 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let mut params = Vec::new();
                 if !matches!(self.peek().kind, TokenKind::RParen) {
-                    params.push(self.expect_ident("expected parameter name")?);
+                    params.push(self.parse_param()?);
                     while matches!(self.peek().kind, TokenKind::Comma) {
                         self.bump();
-                        params.push(self.expect_ident("expected parameter name")?);
+                        params.push(self.parse_param()?);
                     }
                 }
                 self.expect(TokenKind::RParen, "expected ')' after parameter list")?;
+                // Optional return type `-> type` parsed-and-ignored.
+                if matches!(self.peek().kind, TokenKind::Minus)
+                    && self.pos + 1 < self.tokens.len()
+                    && matches!(self.tokens[self.pos + 1].kind, TokenKind::Gt)
+                {
+                    self.bump();
+                    self.bump();
+                    self.parse_type()?;
+                }
                 self.expect(TokenKind::Colon, "expected ':' after parameter list")?;
                 let body = self.parse_block()?;
                 Ok(DeclMember::Method {
@@ -434,6 +475,31 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Colon => {
                 self.bump();
+                // Optional type annotation `field: type = value` per docs/06 §3.3.
+                // We don't have type-only fields yet; v0.1 always expects a value.
+                // If the next-next is `=`, drop the type. Otherwise treat the
+                // expression after ':' as the value.
+                if self.looks_like_typed_field() {
+                    self.parse_type()?;
+                    self.expect(TokenKind::Eq, "expected '=' after field type")?;
+                }
+                // Special case: `initial: <state_name>` is a state-machine
+                // declaration, not a regular field. Recognise it before
+                // parsing as expression so the state name isn't required to
+                // be a defined identifier.
+                if name == "initial" {
+                    let state_tok = self.peek().clone();
+                    if let TokenKind::Ident(state_name) = &state_tok.kind {
+                        let state_name = state_name.clone();
+                        self.bump();
+                        self.expect_stmt_end()?;
+                        return Ok(DeclMember::InitialState {
+                            name: state_name,
+                            line: name_tok.line,
+                            col: name_tok.col,
+                        });
+                    }
+                }
                 let value = self.parse_expr()?;
                 self.expect_stmt_end()?;
                 Ok(DeclMember::Field {
@@ -452,6 +518,85 @@ impl<'a> Parser<'a> {
                 help: None,
             }),
         }
+    }
+
+    /// Heuristic: after seeing `name:`, decide if what follows is
+    /// `<type> = <expr>` (typed field) vs. `<expr>` (untyped field).
+    /// We say it's typed if the first identifier-or-keyword is followed
+    /// by `=`. This is cheap and covers the v0.1 examples.
+    fn looks_like_typed_field(&self) -> bool {
+        let mut depth = 0_i32;
+        for i in self.pos..self.tokens.len() {
+            match &self.tokens[i].kind {
+                TokenKind::Newline | TokenKind::Eof => return false,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
+                TokenKind::Eq if depth == 0 => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn parse_state_member(&mut self) -> Result<DeclMember, ParseError> {
+        let kw = self.bump().clone(); // `state`
+        let name = self.expect_ident("expected state name after `state`")?;
+        self.expect(TokenKind::Colon, "expected ':' after state name")?;
+        let members = self.parse_state_body()?;
+        Ok(DeclMember::State {
+            name,
+            members,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_state_body(&mut self) -> Result<Vec<StateMember>, ParseError> {
+        if !matches!(self.peek().kind, TokenKind::Newline) {
+            let tok = self.peek().clone();
+            return Err(ParseError {
+                line: tok.line,
+                col: tok.col,
+                message: "expected indented body after `state <name>:`".to_string(),
+                help: None,
+            });
+        }
+        self.bump();
+        // Empty state body is fine — comment-only or no-content states
+        // don't trigger an Indent token from the lexer.
+        if !matches!(self.peek().kind, TokenKind::Indent) {
+            return Ok(Vec::new());
+        }
+        self.bump();
+        let mut members = Vec::new();
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek().kind, TokenKind::Dedent | TokenKind::Eof) {
+                break;
+            }
+            members.push(self.parse_state_inner_member()?);
+        }
+        if matches!(self.peek().kind, TokenKind::Dedent) {
+            self.bump();
+        }
+        Ok(members)
+    }
+
+    fn parse_state_inner_member(&mut self) -> Result<StateMember, ParseError> {
+        if matches!(self.peek().kind, TokenKind::Every) {
+            let kw = self.bump().clone();
+            let interval = self.parse_expr()?;
+            self.expect(TokenKind::Colon, "expected ':' after every <duration>")?;
+            let body = self.parse_block()?;
+            return Ok(StateMember::Every {
+                interval,
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
+        let stmt = self.parse_stmt()?;
+        Ok(StateMember::Stmt(stmt))
     }
 
     fn expect_ident(&mut self, message: &str) -> Result<String, ParseError> {

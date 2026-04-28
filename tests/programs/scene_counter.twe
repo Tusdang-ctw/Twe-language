@@ -1,0 +1,17 @@
+# Phase-2 milestone: scene + state machine + every clock + transition.
+# A scene with two states. Counts to 3, then transitions to done.
+
+scene Counter:
+    var ticks: int = 0
+
+    initial: counting
+
+    state counting:
+        every 100ms:
+            ticks += 1
+            print(ticks)
+            if ticks >= 3:
+                -> done
+
+    state done:
+        # No `every`, no body — the scene sits idle.

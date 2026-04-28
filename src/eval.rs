@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{
-    AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp,
+    AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, StateMember, Stmt, UnOp,
 };
 use crate::stdlib;
 use crate::value::{
-    ClassDef, Env, FunctionDef, Instance, MethodDef, OnUpdateHandler, RuntimeError, Value,
+    ClassDef, Env, EveryClockDef, FunctionDef, Instance, MethodDef, OnUpdateHandler,
+    RuntimeError, StateDef, Value,
 };
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
@@ -26,22 +27,191 @@ pub fn run_with_frames(
         // Top-level `return` — drop the value, stop here.
         return Ok(env.out);
     }
-    if let Some(handler) = env.on_update.clone() {
-        for _ in 0..frames {
+    let scene = env.active_scene.clone();
+    let on_update = env.on_update.clone();
+    for _ in 0..frames {
+        if let Some(handler) = &on_update {
             env.set(handler.param.clone(), Value::Float(dt));
             run_block(&mut env, &handler.body)?;
             if env.returning.take().is_some() {
                 break;
             }
         }
+        if let Some(scene) = &scene {
+            tick_scene(&mut env, scene, dt)?;
+        }
     }
     Ok(env.out)
+}
+
+fn tick_scene(
+    env: &mut Env,
+    scene: &Rc<RefCell<Instance>>,
+    dt: f64,
+) -> Result<(), RuntimeError> {
+    // Snapshot the state name + clock bodies before running, so a
+    // transition during a clock body doesn't fire the wrong clock list.
+    let (state_name, clocks): (Option<String>, Vec<(f64, Vec<Stmt>)>) = {
+        let inst = scene.borrow();
+        let name = inst.current_state.clone();
+        let bodies: Vec<Vec<Stmt>> = if let Some(state) = name
+            .as_ref()
+            .and_then(|n| inst.class.states.get(n))
+        {
+            state.every_clocks.iter().map(|c| c.body.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let clocks: Vec<(f64, Vec<Stmt>)> = inst
+            .every_intervals_secs
+            .iter()
+            .zip(bodies)
+            .map(|(i, body)| (*i, body))
+            .collect();
+        (name, clocks)
+    };
+    if state_name.is_none() {
+        return Ok(());
+    }
+    let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    // Tick each clock.
+    for (clock_idx, (interval, body)) in clocks.into_iter().enumerate() {
+        // Bump the clock's accumulated time by dt.
+        {
+            let mut inst = scene.borrow_mut();
+            if clock_idx >= inst.every_timers.len() {
+                continue;
+            }
+            inst.every_timers[clock_idx] += dt;
+        }
+        // Fire as many times as the accumulator covers, but never more
+        // than once per frame (avoids runaway catch-up after a long
+        // tick — phase-2 simplification; revisit if a vertical-slice
+        // game needs catch-up).
+        let should_fire = {
+            let inst = scene.borrow();
+            inst.every_timers
+                .get(clock_idx)
+                .copied()
+                .unwrap_or(0.0)
+                >= interval
+        };
+        if should_fire {
+            scene.borrow_mut().every_timers[clock_idx] -= interval;
+            run_block(env, &body)?;
+            if env.returning.is_some() {
+                break;
+            }
+            if let Some(target) = env.transitioning.take() {
+                enter_state(env, scene, &target)?;
+                break;
+            }
+        }
+    }
+    env.self_value = prev_self;
+    Ok(())
+}
+
+fn enter_state(
+    env: &mut Env,
+    scene: &Rc<RefCell<Instance>>,
+    state_name: &str,
+) -> Result<(), RuntimeError> {
+    // Resolve the target state on the class.
+    let state = {
+        let inst = scene.borrow();
+        inst.class
+            .states
+            .get(state_name)
+            .cloned()
+            .ok_or_else(|| RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("no state named '{state_name}'"),
+                help: Some(
+                    "transitions must target a `state <name>:` declared in the same scene"
+                        .to_string(),
+                ),
+            })?
+    };
+    // Replace current_state, reset timers / intervals.
+    {
+        let mut inst = scene.borrow_mut();
+        inst.current_state = Some(state.name.clone());
+        inst.every_timers = vec![0.0; state.every_clocks.len()];
+        inst.every_intervals_secs.clear();
+    }
+    // Resolve each every-clock interval (in seconds) by evaluating the
+    // interval expression with self bound to the scene instance.
+    let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    let mut intervals = Vec::with_capacity(state.every_clocks.len());
+    for clock in &state.every_clocks {
+        let v = eval_expr(env, &clock.interval)?;
+        intervals.push(quantity_to_seconds(&v, clock.interval.line(), clock.interval.col())?);
+    }
+    scene.borrow_mut().every_intervals_secs = intervals;
+    // Run the on-entry body.
+    run_block(env, &state.on_entry)?;
+    // A transition during on_entry is followed immediately.
+    if let Some(next) = env.transitioning.take() {
+        env.self_value = prev_self;
+        return enter_state(env, scene, &next);
+    }
+    env.self_value = prev_self;
+    Ok(())
+}
+
+/// Resolve a bare name. Scope chain: the active `self` instance's fields
+/// shadow env globals, so `ticks += 1` inside a scene state mutates
+/// `self.ticks`. Without this, scene fields would only be reachable via
+/// explicit `self.x` syntax — verbose and unusual.
+fn lookup_name(env: &Env, name: &str) -> Option<Value> {
+    if let Some(Value::Instance(rc)) = &env.self_value {
+        if let Some(v) = rc.borrow().fields.get(name) {
+            return Some(v.clone());
+        }
+    }
+    env.get(name).cloned()
+}
+
+fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
+    match v {
+        Value::Quantity { value, unit } => match unit.as_str() {
+            "s" => Ok(*value),
+            "ms" => Ok(*value / 1000.0),
+            "min" => Ok(*value * 60.0),
+            "h" => Ok(*value * 3600.0),
+            other => Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "every <duration> needs a time unit (s, ms, min, h), got '{other}'"
+                ),
+                help: None,
+            }),
+        },
+        Value::Float(f) => Ok(*f),
+        Value::Int(n) => Ok(*n as f64),
+        other => Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "every <duration> expects a duration quantity, got {}",
+                other.type_name()
+            ),
+            help: Some("e.g. `every 100ms:` or `every 0.5s:`".to_string()),
+        }),
+    }
 }
 
 fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
     for stmt in stmts {
         eval_stmt(env, stmt)?;
-        if env.returning.is_some() || env.breaking || env.continuing {
+        if env.returning.is_some()
+            || env.breaking
+            || env.continuing
+            || env.transitioning.is_some()
+        {
             return Ok(());
         }
     }
@@ -150,6 +320,10 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             env.continuing = true;
             Ok(())
         }
+        Stmt::Transition { target, .. } => {
+            env.transitioning = Some(target.clone());
+            Ok(())
+        }
         Stmt::OnUpdate { param, body, .. } => {
             env.on_update = Some(OnUpdateHandler {
                 param: param.clone(),
@@ -184,16 +358,33 @@ fn eval_assign(
     match target {
         AssignTarget::Name(name) => {
             if matches!(op, AssignOp::Set) {
+                // Mutate the instance field if `name` is one (scope chain),
+                // else fall back to env. New `let` bindings are introduced
+                // by Stmt::Let, not by plain `name = value`.
+                if let Some(Value::Instance(rc)) = &env.self_value {
+                    let mut inst = rc.borrow_mut();
+                    if inst.fields.contains_key(name) {
+                        inst.fields.insert(name.clone(), new_value);
+                        return Ok(());
+                    }
+                }
                 env.set(name.clone(), new_value);
                 return Ok(());
             }
-            let current = env.get(name).cloned().ok_or_else(|| RuntimeError {
+            let current = lookup_name(env, name).ok_or_else(|| RuntimeError {
                 line,
                 col,
                 message: format!("name '{name}' is not defined"),
                 help: Some(format!("declare it with `let {name} = ...` before use")),
             })?;
             let combined = compound(op, &current, &new_value, line, col)?;
+            if let Some(Value::Instance(rc)) = &env.self_value {
+                let mut inst = rc.borrow_mut();
+                if inst.fields.contains_key(name) {
+                    inst.fields.insert(name.clone(), combined);
+                    return Ok(());
+                }
+            }
             env.set(name.clone(), combined);
             Ok(())
         }
@@ -321,7 +512,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             value: *value,
             unit: Rc::new(unit.clone()),
         }),
-        Expr::Ident { name, line, col } => env.get(name).cloned().ok_or_else(|| RuntimeError {
+        Expr::Ident { name, line, col } => lookup_name(env, name).ok_or_else(|| RuntimeError {
             line: *line,
             col: *col,
             message: format!("name '{name}' is not defined"),
@@ -815,7 +1006,13 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
             fields.insert(k.clone(), v.clone());
         }
     }
-    Value::Instance(Rc::new(RefCell::new(Instance { class, fields })))
+    Value::Instance(Rc::new(RefCell::new(Instance {
+        class,
+        fields,
+        current_state: None,
+        every_timers: Vec::new(),
+        every_intervals_secs: Vec::new(),
+    })))
 }
 
 fn find_method(class: &ClassDef, name: &str) -> Option<Rc<MethodDef>> {
@@ -980,6 +1177,8 @@ fn eval_decl(
 
     let mut field_defaults = HashMap::new();
     let mut methods = HashMap::new();
+    let mut states = HashMap::new();
+    let mut initial_state: Option<String> = None;
     for member in members {
         match member {
             DeclMember::Field { name: fname, value, .. } => {
@@ -1000,6 +1199,32 @@ fn eval_decl(
                     }),
                 );
             }
+            DeclMember::InitialState { name: sname, .. } => {
+                initial_state = Some(sname.clone());
+            }
+            DeclMember::State { name: sname, members: smembers, .. } => {
+                let mut on_entry = Vec::new();
+                let mut every_clocks = Vec::new();
+                for sm in smembers {
+                    match sm {
+                        StateMember::Stmt(stmt) => on_entry.push(stmt.clone()),
+                        StateMember::Every { interval, body, .. } => {
+                            every_clocks.push(EveryClockDef {
+                                interval: interval.clone(),
+                                body: body.clone(),
+                            });
+                        }
+                    }
+                }
+                states.insert(
+                    sname.clone(),
+                    Rc::new(StateDef {
+                        name: sname.clone(),
+                        on_entry,
+                        every_clocks,
+                    }),
+                );
+            }
         }
     }
 
@@ -1009,8 +1234,23 @@ fn eval_decl(
         parent: parent_class,
         field_defaults,
         methods,
+        states,
+        initial_state,
     });
-    env.set(name.to_string(), Value::Class(class));
+    env.set(name.to_string(), Value::Class(class.clone()));
+
+    // Scenes auto-instantiate at declaration time and become the active
+    // scene. There's only one active scene per program in v0.1.
+    if matches!(kind, DeclKind::Scene) {
+        let inst = match instantiate(class.clone()) {
+            Value::Instance(rc) => rc,
+            _ => unreachable!("instantiate always returns Instance"),
+        };
+        env.active_scene = Some(inst.clone());
+        if let Some(start) = class.initial_state.clone() {
+            enter_state(env, &inst, &start)?;
+        }
+    }
     Ok(())
 }
 

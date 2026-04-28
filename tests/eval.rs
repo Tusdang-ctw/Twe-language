@@ -285,6 +285,31 @@ fn unterminated_interpolation_errors() {
 }
 
 #[test]
+fn runs_scene_counter_with_state_machine() {
+    // 10 frames of dt=0.1s. Counter ticks at 100ms, so each frame
+    // should fire exactly once. After 3 ticks, `-> done` transitions
+    // out and the remaining 7 frames are silent.
+    let out = run_program_frames("tests/programs/scene_counter.twe", 10, 0.1)
+        .expect("program should run");
+    assert_eq!(out, "1\n2\n3\n");
+}
+
+#[test]
+fn transition_to_unknown_state_errors() {
+    let src = r#"scene S:
+    initial: a
+    state a:
+        every 100ms:
+            -> nope
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    // The error fires at scene tick time when the transition runs.
+    let err = twec::eval::run_with_frames(&program, 1, 0.1).expect_err("should fail");
+    assert!(err.message.contains("nope"), "got: {}", err.message);
+}
+
+#[test]
 fn range_roll_returns_value_in_range() {
     // Deterministic: same seed → same sequence. Just check the values
     // fall inside the range.

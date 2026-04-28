@@ -39,6 +39,8 @@ pub struct ClassDef {
     pub parent: Option<Rc<ClassDef>>,
     pub field_defaults: HashMap<String, Value>,
     pub methods: HashMap<String, Rc<MethodDef>>,
+    pub states: HashMap<String, Rc<StateDef>>,
+    pub initial_state: Option<String>,
 }
 
 #[derive(Debug)]
@@ -48,9 +50,28 @@ pub struct MethodDef {
 }
 
 #[derive(Debug)]
+pub struct StateDef {
+    pub name: String,
+    pub on_entry: Vec<crate::ast::Stmt>,
+    pub every_clocks: Vec<EveryClockDef>,
+}
+
+#[derive(Debug)]
+pub struct EveryClockDef {
+    pub interval: crate::ast::Expr,
+    pub body: Vec<crate::ast::Stmt>,
+}
+
+#[derive(Debug)]
 pub struct Instance {
     pub class: Rc<ClassDef>,
     pub fields: HashMap<String, Value>,
+    pub current_state: Option<String>,
+    /// Accumulated seconds since each clock last fired, parallel-indexed
+    /// to `current_state`'s `every_clocks`.
+    pub every_timers: Vec<f64>,
+    /// Cached interval seconds for each clock in `current_state`.
+    pub every_intervals_secs: Vec<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -161,8 +182,10 @@ pub struct Env {
     bindings: HashMap<String, Value>,
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
+    pub active_scene: Option<Rc<RefCell<Instance>>>,
     pub self_value: Option<Value>,
     pub returning: Option<Value>,
+    pub transitioning: Option<String>,
     pub breaking: bool,
     pub continuing: bool,
     pub loop_depth: u32,
@@ -182,8 +205,10 @@ impl Env {
             bindings: HashMap::new(),
             out: String::new(),
             on_update: None,
+            active_scene: None,
             self_value: None,
             returning: None,
+            transitioning: None,
             breaking: false,
             continuing: false,
             loop_depth: 0,
