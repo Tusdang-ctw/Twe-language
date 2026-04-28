@@ -387,6 +387,15 @@ fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
 }
 
 #[test]
+fn scene_methods_callable_by_bare_name() {
+    let out = run_program_frames("tests/programs/scene_methods.twe", 20, 0.1)
+        .expect("program should run");
+    // a: bump() three times → 1, 2, 3, transition to b.
+    // b: bump_by(10) three times → 13, 23, 33, transition to done.
+    assert_eq!(out, "1\n2\n3\n13\n23\n33\n");
+}
+
+#[test]
 fn snake_advances_right_by_default() {
     use twec::value::Value;
     let src = std::fs::read_to_string("examples/snake.twe")

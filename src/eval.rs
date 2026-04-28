@@ -838,6 +838,23 @@ fn eval_call(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
+    // Bare-name call inside a method or scene state body: dispatch to a
+    // method on self if the name resolves there. Mirrors the bare-name
+    // read/assign behaviour in `lookup_name` / `eval_assign`. Without
+    // this, scene methods would only be reachable via `self.method()`
+    // — verbose, and Snake-style code uses bare calls.
+    if let Expr::Ident { name, .. } = callee {
+        if let Some(Value::Instance(rc)) = env.self_value.clone() {
+            let class = rc.borrow().class.clone();
+            if let Some(method) = find_method(&class, name) {
+                let mut arg_vals = Vec::with_capacity(args.len());
+                for a in args {
+                    arg_vals.push(eval_expr(env, a)?);
+                }
+                return call_method(env, Value::Instance(rc), &method, &arg_vals, line, col);
+            }
+        }
+    }
     // Method call: `recv.method(args)`. Resolved here (not via field_get)
     // because methods aren't first-class values yet.
     if let Expr::Field { object, name, .. } = callee {

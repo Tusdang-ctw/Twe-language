@@ -421,6 +421,11 @@ impl<'a> Parser<'a> {
         if matches!(self.peek().kind, TokenKind::State) {
             return self.parse_state_member();
         }
+        // Explicit `function` keyword inside a declarative-block body.
+        // Same shape as the implicit `name(params): body` method form.
+        if matches!(self.peek().kind, TokenKind::Function) {
+            self.bump();
+        }
         // `var name ...` / `let name ...` are explicit-mutability prefixes.
         // After them, the syntax follows binding form: `name [: type] = value`,
         // mirroring top-level `let`/`var`. v0.1 ignores the var/let

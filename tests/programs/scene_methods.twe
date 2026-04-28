@@ -1,0 +1,27 @@
+scene Counter:
+    var n = 0
+
+    initial: a
+
+    function bump():
+        n += 1
+        print(n)
+
+    function bump_by(amount):
+        n += amount
+        print(n)
+
+    state a:
+        every 100ms:
+            bump()
+            if n >= 3:
+                -> b
+
+    state b:
+        every 100ms:
+            bump_by(10)
+            if n >= 30:
+                -> done
+
+    state done:
+        # idle
