@@ -92,9 +92,13 @@ Every conversation should end with the codebase in a working state. Like git com
 
 ### Phase discipline
 
-We are in **Phase 1** (tree-walking interpreter) per `docs/05-roadmap.md`. Do not rabbit-hole into Phase 3 (bytecode), Phase 4 (strict types), or Phase 5 (3D) ideas. If you find yourself thinking about NaN tagging or shader compilation, stop. Note it in `notes/future-phases.md` and return to the lexer.
+We are in **Phase 2** (vertical-slice game) per `docs/05-roadmap.md`. Phase 1 (tree-walking interpreter) is complete: see commits `844fd9a` through `7c4c06c`. The interpreter runs Examples 1, 2 (simplified), and the eleven test programs in `tests/programs/`.
 
-The exit criteria for Phase 1 are in the roadmap. Don't move on until they're met.
+**Phase 2 plan** is to ship Snake (Example 11) first as the warm-up game, then iterate to a Vampire Survivors clone. Snake is recommended as the warm-up by `docs/example-11-snake.md` §"When this example becomes runnable".
+
+Do not rabbit-hole into Phase 3 (bytecode), Phase 4 (strict types), or Phase 5 (3D) ideas. If you find yourself thinking about NaN tagging or shader compilation, stop. Note it in `notes/future-phases.md` and return to the macroquad bindings.
+
+The exit criteria for Phase 2 are in the roadmap. Don't declare Phase 2 done until a playable game runs at 60fps, hot reload works, and the implementer has written the language-frustrations list that feeds Phase 3.
 
 ### Test discipline
 
@@ -111,11 +115,13 @@ Every meaningful code change updates the relevant doc:
 
 ### Commit discipline
 
-Commit messages follow the form: `phase-1: <verb> <what>`. Examples:
+Commit messages follow the form: `phase-N: <verb> <what>`, where N is the current phase. Examples:
 
-- `phase-1: parse let and var declarations`
-- `phase-1: implement range literal lexing`
-- `phase-1: ship Example 1 in tree-walker`
+- `phase-2: lex string interpolation`
+- `phase-2: bind macroquad window and event loop`
+- `phase-2: ship Snake on the tree-walker`
+
+Phase 1 commits used the same form prefixed with `phase-1:`.
 
 ---
 
