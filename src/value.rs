@@ -55,6 +55,7 @@ pub struct StateDef {
     pub on_entry: Vec<crate::ast::Stmt>,
     pub every_clocks: Vec<EveryClockDef>,
     pub on_render: Option<Vec<crate::ast::Stmt>>,
+    pub on_key_press: HashMap<String, Vec<crate::ast::Stmt>>,
 }
 
 #[derive(Debug)]

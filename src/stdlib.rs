@@ -20,14 +20,26 @@ pub fn install(env: &mut Env) {
         },
     );
 
+    let key_names = [
+        "right", "left", "up", "down", "space", "escape", "enter", "r", "w", "a", "s", "d",
+    ];
     let mut key_fields = HashMap::new();
-    for k in ["right", "left", "up", "down", "space"] {
+    let mut press_fields = HashMap::new();
+    for k in key_names {
         key_fields.insert(k.to_string(), Value::Bool(false));
+        press_fields.insert(k.to_string(), Value::Bool(false));
     }
     env.set(
         "key".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
             fields: key_fields,
+            kind: "input",
+        }))),
+    );
+    env.set(
+        "key_press".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: press_fields,
             kind: "input",
         }))),
     );

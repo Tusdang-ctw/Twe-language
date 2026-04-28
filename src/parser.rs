@@ -614,8 +614,7 @@ impl<'a> Parser<'a> {
                 col: kw.col,
             });
         }
-        // `on render():` — special-cased inside states. Other `on <event>:`
-        // forms (key_press, named events) ship in a follow-up commit.
+        // `on render():` — special-cased inside states.
         if matches!(self.peek().kind, TokenKind::On)
             && self.pos + 1 < self.tokens.len()
             && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "render")
@@ -627,6 +626,24 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Colon, "expected ':' after `on render()`")?;
             let body = self.parse_block()?;
             return Ok(StateMember::OnRender {
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
+        // `on key_press.<key>: body` per docs/example-11-snake.md NP1.
+        if matches!(self.peek().kind, TokenKind::On)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "key_press")
+        {
+            let kw = self.bump().clone();
+            self.bump(); // ident "key_press"
+            self.expect(TokenKind::Dot, "expected '.<key>' after `on key_press`")?;
+            let key = self.expect_ident("expected key name after `on key_press.`")?;
+            self.expect(TokenKind::Colon, "expected ':' after `on key_press.<key>`")?;
+            let body = self.parse_block()?;
+            return Ok(StateMember::OnKeyPress {
+                key,
                 body,
                 line: kw.line,
                 col: kw.col,

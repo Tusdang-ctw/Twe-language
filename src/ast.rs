@@ -136,6 +136,13 @@ pub enum StateMember {
         line: u32,
         col: u32,
     },
+    /// `on key_press.<key>: body` — fires once per key down-stroke.
+    OnKeyPress {
+        key: String,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

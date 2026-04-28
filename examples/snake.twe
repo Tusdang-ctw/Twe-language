@@ -1,0 +1,73 @@
+# `twec play examples/snake.twe`
+#
+# Phase-2 milestone: the Snake game from docs/example-11-snake.md,
+# adapted to the v0.1 language slice (no scene-local methods, no
+# keyword args, no `cell * cell_size` quantity arithmetic).
+#
+# Arrow keys to steer. R to restart after game over.
+
+scene Snake:
+    var snake = [(10, 7), (9, 7), (8, 7)]
+    var dir = (1, 0)
+    var next_dir = (1, 0)
+    var food = (15, 7)
+    var score = 0
+
+    initial: playing
+
+    state playing:
+        on key_press.right:
+            if dir != (-1, 0):
+                next_dir = (1, 0)
+        on key_press.left:
+            if dir != (1, 0):
+                next_dir = (-1, 0)
+        on key_press.up:
+            if dir != (0, 1):
+                next_dir = (0, -1)
+        on key_press.down:
+            if dir != (0, -1):
+                next_dir = (0, 1)
+
+        every 150ms:
+            dir = next_dir
+            let new_head = snake[0] + dir
+
+            # Wall collision (20 wide, 15 tall grid).
+            if new_head.x < 0 or new_head.x >= 20:
+                -> game_over
+            if new_head.y < 0 or new_head.y >= 15:
+                -> game_over
+
+            # Self collision.
+            if new_head in snake:
+                -> game_over
+
+            # Eat food?
+            if new_head == food:
+                snake.prepend(new_head)
+                score += 1
+                food = (random.int(0..<20), random.int(0..<15))
+            else:
+                snake.prepend(new_head)
+                snake.pop_back()
+
+        on render():
+            for cell in snake:
+                rect((cell.x * 24, cell.y * 24), (24, 24), color.green)
+            rect((food.x * 24, food.y * 24), (24, 24), color.red)
+            text("Score: {score}", (10, 20), 20, color.white)
+
+    state game_over:
+        on render():
+            text("Game Over", (200, 200), 32, color.red)
+            text("Final score: {score}", (170, 240), 20, color.white)
+            text("Press R to restart", (160, 280), 16, color.gray)
+
+        on key_press.r:
+            snake = [(10, 7), (9, 7), (8, 7)]
+            dir = (1, 0)
+            next_dir = (1, 0)
+            food = (15, 7)
+            score = 0
+            -> playing

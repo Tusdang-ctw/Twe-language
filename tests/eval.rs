@@ -305,6 +305,151 @@ fn runs_scene_with_render_handler_headlessly() {
 }
 
 #[test]
+fn tuple_arithmetic() {
+    let src = r#"
+let head = (10, 7)
+let dir = (1, 0)
+print(head + dir)
+print(head - dir)
+print(head * 3)
+print(2 * head)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "(11, 7)\n(9, 7)\n(30, 21)\n(20, 14)\n");
+}
+
+#[test]
+fn for_over_list_iterates_each_element() {
+    let src = r#"
+let xs = [10, 20, 30]
+let total = 0
+for x in xs:
+    total += x
+print(total)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "60\n");
+}
+
+#[test]
+fn for_over_tuple_iterates_each_element() {
+    let src = r#"
+let t = (1, 2, 3, 4)
+let s = 0
+for x in t:
+    s += x
+print(s)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "10\n");
+}
+
+#[test]
+fn key_press_handler_fires_when_pressed() {
+    let src = r#"
+scene S:
+    var counter = 0
+
+    initial: a
+
+    state a:
+        on key_press.right:
+            counter += 1
+            print(counter)
+            if counter >= 2:
+                -> b
+
+    state b:
+        on key_press.right:
+            print("done")
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+
+    // Simulate three frames where key_press.right is set.
+    set_key_press(&env, "right", true);
+    twec::eval::tick_frame(&mut env, 0.016).expect("frame 1");
+    twec::eval::tick_frame(&mut env, 0.016).expect("frame 2");
+    twec::eval::tick_frame(&mut env, 0.016).expect("frame 3");
+    assert_eq!(env.out, "1\n2\ndone\n");
+}
+
+fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
+    use twec::value::Value;
+    if let Some(Value::Object(rc)) = env.get("key_press") {
+        rc.borrow_mut()
+            .fields
+            .insert(key.to_string(), Value::Bool(value));
+    }
+}
+
+#[test]
+fn snake_advances_right_by_default() {
+    use twec::value::Value;
+    let src = std::fs::read_to_string("examples/snake.twe")
+        .expect("examples/snake.twe must exist");
+    let tokens = twec::lexer::lex(&src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+
+    // No keys held, no presses. Tick exactly one full step (150ms).
+    twec::eval::tick_frame(&mut env, 0.150).expect("tick");
+
+    let scene = env.active_scene.as_ref().expect("scene");
+    let inst = scene.borrow();
+    let snake = inst.fields.get("snake").expect("snake field");
+    let head = match snake {
+        Value::List(rc) => rc.borrow()[0].clone(),
+        _ => panic!("snake should be a list"),
+    };
+    let (hx, hy) = match head {
+        Value::Tuple(elems) => match (&elems[0], &elems[1]) {
+            (Value::Int(x), Value::Int(y)) => (*x, *y),
+            _ => panic!("head should be (Int, Int)"),
+        },
+        _ => panic!("head should be a tuple"),
+    };
+    // Snake starts at (10, 7) heading right; after one 150ms tick the
+    // head should be at (11, 7).
+    assert_eq!((hx, hy), (11, 7));
+}
+
+#[test]
+fn snake_dies_into_a_wall() {
+    use twec::value::Value;
+    let src = std::fs::read_to_string("examples/snake.twe")
+        .expect("examples/snake.twe must exist");
+    let tokens = twec::lexer::lex(&src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+
+    // Snake heads right. Grid is 20 wide. From x=10 it takes 9
+    // ticks to land on x=19, and the 10th to walk off the east wall.
+    for _ in 0..10 {
+        twec::eval::tick_frame(&mut env, 0.150).expect("tick");
+    }
+    let scene = env.active_scene.as_ref().expect("scene");
+    let state_name = scene
+        .borrow()
+        .current_state
+        .clone()
+        .expect("current state");
+    assert_eq!(state_name, "game_over");
+    // Snake eats the food at (15, 7) on the way, so score is 1 by the
+    // time it walks off the east wall at x=20.
+    let inst = scene.borrow();
+    let score = inst.fields.get("score").expect("score field");
+    assert!(matches!(score, Value::Int(1)), "got: {score:?}");
+}
+
+#[test]
 fn rect_outside_render_errors() {
     let src = r#"on update(dt):
     rect((0, 0), (10, 10), (1.0, 0.0, 0.0))

@@ -55,8 +55,64 @@ pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
         }
     }
     if let Some(scene) = env.active_scene.clone() {
+        dispatch_key_press(env, &scene)?;
         tick_scene(env, &scene, dt)?;
     }
+    Ok(())
+}
+
+/// Look at `env.key_press` (an Object whose fields are bool flags set
+/// each frame by the host) and fire the active scene's matching
+/// on_key_press handlers.
+fn dispatch_key_press(
+    env: &mut Env,
+    scene: &Rc<RefCell<Instance>>,
+) -> Result<(), RuntimeError> {
+    let pressed = match env.get("key_press").cloned() {
+        Some(Value::Object(rc)) => {
+            let o = rc.borrow();
+            o.fields
+                .iter()
+                .filter_map(|(k, v)| {
+                    if matches!(v, Value::Bool(true)) {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+        _ => return Ok(()),
+    };
+    if pressed.is_empty() {
+        return Ok(());
+    }
+    let bodies: Vec<Vec<Stmt>> = {
+        let inst = scene.borrow();
+        let state_name = match &inst.current_state {
+            Some(n) => n.clone(),
+            None => return Ok(()),
+        };
+        match inst.class.states.get(&state_name) {
+            Some(state) => pressed
+                .iter()
+                .filter_map(|key| state.on_key_press.get(key).cloned())
+                .collect(),
+            None => return Ok(()),
+        }
+    };
+    let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    for body in bodies {
+        run_block(env, &body)?;
+        if env.returning.is_some() {
+            break;
+        }
+        if let Some(target) = env.transitioning.take() {
+            enter_state(env, scene, &target)?;
+            break;
+        }
+    }
+    env.self_value = prev_self;
     Ok(())
 }
 
@@ -1149,25 +1205,45 @@ fn run_for(
     col: u32,
 ) -> Result<(), RuntimeError> {
     let iter_val = eval_expr(env, iter)?;
-    let (start, end, exclusive) = match iter_val {
-        Value::Range { start, end, exclusive } => (start, end, exclusive),
-        other => {
-            return Err(RuntimeError {
-                line,
-                col,
-                message: format!(
-                    "for-loop iterable must be a range, got {}",
-                    other.type_name()
-                ),
-                help: Some("v0.1 only supports `for i in <range>:`; lists ship later".to_string()),
-            });
-        }
-    };
     let saved = env.get(var).cloned();
-    let limit = if exclusive { end } else { end + 1 };
-    let mut i = start;
-    while i < limit {
-        env.set(var.to_string(), Value::Int(i));
+    let result = match iter_val {
+        Value::Range { start, end, exclusive } => {
+            let limit = if exclusive { end } else { end + 1 };
+            run_for_iter(env, var, body, (start..limit).map(Value::Int))
+        }
+        Value::List(rc) => {
+            let snapshot: Vec<Value> = rc.borrow().clone();
+            run_for_iter(env, var, body, snapshot.into_iter())
+        }
+        Value::Tuple(elems) => {
+            let snapshot: Vec<Value> = elems.iter().cloned().collect();
+            run_for_iter(env, var, body, snapshot.into_iter())
+        }
+        other => Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "for-loop iterable must be a range, list, or tuple, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    };
+    match saved {
+        Some(v) => env.set(var.to_string(), v),
+        None => env.remove(var),
+    }
+    result
+}
+
+fn run_for_iter<I: Iterator<Item = Value>>(
+    env: &mut Env,
+    var: &str,
+    body: &[Stmt],
+    items: I,
+) -> Result<(), RuntimeError> {
+    for item in items {
+        env.set(var.to_string(), item);
         run_block(env, body)?;
         if env.returning.is_some() {
             break;
@@ -1179,11 +1255,6 @@ fn run_for(
         if env.continuing {
             env.continuing = false;
         }
-        i += 1;
-    }
-    match saved {
-        Some(v) => env.set(var.to_string(), v),
-        None => env.remove(var),
     }
     Ok(())
 }
@@ -1257,6 +1328,7 @@ fn eval_decl(
                 let mut on_entry = Vec::new();
                 let mut every_clocks = Vec::new();
                 let mut on_render: Option<Vec<Stmt>> = None;
+                let mut on_key_press: HashMap<String, Vec<Stmt>> = HashMap::new();
                 for sm in smembers {
                     match sm {
                         StateMember::Stmt(stmt) => on_entry.push(stmt.clone()),
@@ -1269,6 +1341,9 @@ fn eval_decl(
                         StateMember::OnRender { body, .. } => {
                             on_render = Some(body.clone());
                         }
+                        StateMember::OnKeyPress { key, body, .. } => {
+                            on_key_press.insert(key.clone(), body.clone());
+                        }
                     }
                 }
                 states.insert(
@@ -1278,6 +1353,7 @@ fn eval_decl(
                         on_entry,
                         every_clocks,
                         on_render,
+                        on_key_press,
                     }),
                 );
             }
@@ -1397,6 +1473,49 @@ fn apply_arith(
             return Ok(Value::Str(Rc::new(s)));
         }
     }
+    // Tuple arithmetic — element-wise add/sub between same-length tuples
+    // (Snake's `snake[0] + direction` shape) and tuple * scalar (Snake's
+    // `cell * cell_size`).
+    if let (Value::Tuple(a), Value::Tuple(b)) = (l, r) {
+        if matches!(op, BinOp::Add | BinOp::Sub) {
+            if a.len() != b.len() {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "tuple {} requires equal-length operands ({} vs {})",
+                        op_str,
+                        a.len(),
+                        b.len()
+                    ),
+                    help: None,
+                });
+            }
+            let mut out_elems = Vec::with_capacity(a.len());
+            for (x, y) in a.iter().zip(b.iter()) {
+                out_elems.push(apply_arith(op, x, y, line, col)?);
+            }
+            return Ok(Value::Tuple(Rc::new(out_elems)));
+        }
+    }
+    if let Value::Tuple(elems) = l {
+        if matches!(op, BinOp::Mul | BinOp::Div) && is_scalar(r) {
+            let mut out_elems = Vec::with_capacity(elems.len());
+            for x in elems.iter() {
+                out_elems.push(apply_arith(op, x, r, line, col)?);
+            }
+            return Ok(Value::Tuple(Rc::new(out_elems)));
+        }
+    }
+    if let Value::Tuple(elems) = r {
+        if matches!(op, BinOp::Mul) && is_scalar(l) {
+            let mut out_elems = Vec::with_capacity(elems.len());
+            for y in elems.iter() {
+                out_elems.push(apply_arith(op, l, y, line, col)?);
+            }
+            return Ok(Value::Tuple(Rc::new(out_elems)));
+        }
+    }
     let pair = match (l, r) {
         (Value::Int(a), Value::Int(b)) => NumPair::Ints(*a, *b),
         (Value::Float(a), Value::Float(b)) => NumPair::Floats(*a, *b),
@@ -1437,6 +1556,10 @@ fn apply_arith(
 enum NumPair {
     Ints(i64, i64),
     Floats(f64, f64),
+}
+
+fn is_scalar(v: &Value) -> bool {
+    matches!(v, Value::Int(_) | Value::Float(_))
 }
 
 fn cmp_int(

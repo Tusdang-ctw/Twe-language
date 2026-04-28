@@ -215,6 +215,14 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        StateMember::OnKeyPress { key, body, line, col } => {
+            s.push_str("{\"kind\":\"OnKeyPress\",\"key\":");
+            write_str_value(s, key);
+            s.push_str(",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
     }
 }
 
