@@ -1186,13 +1186,6 @@ impl Compiler {
         line: u32,
         col: u32,
     ) -> Result<(), CompileError> {
-        if matches!(kind, DeclKind::Particles) {
-            return Err(self.unsupported(
-                "`particles` declarative block (lifetime tracking lands in session 13)",
-                line,
-                col,
-            ));
-        }
         if parent.is_some() {
             return Err(self.unsupported(
                 "class inheritance (parent `extends ...`)",
@@ -1367,6 +1360,8 @@ impl Compiler {
         let mut on_entry_stmts: Vec<Stmt> = Vec::new();
         let mut every: Vec<(f64, Rc<BcFunction>)> = Vec::new();
         let mut on_update: Option<Rc<BcFunction>> = None;
+        let mut on_render: Option<Rc<BcFunction>> = None;
+        let mut on_key_press: HashMap<String, Rc<BcFunction>> = HashMap::new();
         for sm in members {
             match sm {
                 StateMember::Stmt(s) => on_entry_stmts.push(s.clone()),
@@ -1397,19 +1392,25 @@ impl Compiler {
                     )?;
                     on_update = Some(Rc::new(func));
                 }
-                StateMember::OnRender { line: rl, col: rc, .. } => {
-                    return Err(self.unsupported(
-                        "`on render():` (session 13 — needs the render-loop integration)",
+                StateMember::OnRender { body, line: rl, col: _rc } => {
+                    let func = self.compile_state_body(
+                        &format!("{name}.on_render"),
+                        body,
+                        class_fields.clone(),
                         *rl,
-                        *rc,
-                    ));
+                        0,
+                    )?;
+                    on_render = Some(Rc::new(func));
                 }
-                StateMember::OnKeyPress { line: kl, col: kc, .. } => {
-                    return Err(self.unsupported(
-                        "`on key_press.<key>:` (session 13 — needs key-press dispatch)",
+                StateMember::OnKeyPress { key, body, line: kl, col: _kc } => {
+                    let func = self.compile_state_body(
+                        &format!("{name}.on_key_press.{key}"),
+                        body,
+                        class_fields.clone(),
                         *kl,
-                        *kc,
-                    ));
+                        0,
+                    )?;
+                    on_key_press.insert(key.clone(), Rc::new(func));
                 }
             }
         }
@@ -1425,6 +1426,8 @@ impl Compiler {
             on_entry: Rc::new(on_entry),
             every_clocks: every,
             on_update,
+            on_render,
+            on_key_press,
         })
     }
 

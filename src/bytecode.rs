@@ -370,6 +370,13 @@ pub struct BcStateDef {
     /// State-scoped `on update(dt):` handler — fires once per frame
     /// before the every-clocks. The function takes `dt` at slot 1.
     pub on_update: Option<Rc<BcFunction>>,
+    /// `on render():` handler — fires per render frame (driven by
+    /// `VM::render`). Takes no params; `self` is the scene at slot 0.
+    pub on_render: Option<Rc<BcFunction>>,
+    /// `on key_press.<key>:` handlers — fired once per key down-stroke
+    /// while the state is active. Keyed by the key name (`right`,
+    /// `space`, etc.). Body takes no params.
+    pub on_key_press: HashMap<String, Rc<BcFunction>>,
 }
 
 /// A live instance of a `BcClassDef`. Field reads/writes go

@@ -543,8 +543,11 @@ impl VM {
                         Value::BcInstance(rc) => rc,
                         _ => unreachable!(),
                     };
-                    if let Some(at) = at_value {
+                    if let Some(at) = at_value.clone() {
                         inst.borrow_mut().fields.insert("pos".to_string(), at);
+                    }
+                    if class.kind == "particles" {
+                        self.seed_particle_emitter(&inst, at_value, line)?;
                     }
                     self.active_entities.push(inst.clone());
                     if let Some(start) = class.initial_state.clone() {
@@ -763,6 +766,10 @@ impl VM {
             self.invoke_method_value(handler, dummy_recv, &[Value::Float(dt)])?;
         }
         if let Some(scene) = self.active_scene.clone() {
+            // dispatch_key_press fires BEFORE tick_scene (matches
+            // eval::tick_frame ordering — input handlers see the
+            // pre-tick state).
+            self.dispatch_key_press(&scene)?;
             self.tick_scene(&scene, dt)?;
         }
         let entities = self.active_entities.clone();
@@ -771,6 +778,10 @@ impl VM {
                 continue;
             }
             let class = entity.borrow().class.clone();
+            if class.kind == "particles" {
+                self.tick_particle_emitter(&entity, dt)?;
+                continue;
+            }
             if let Some(method) = class.methods.get("update").cloned() {
                 self.invoke_method_value(
                     method,
@@ -780,6 +791,236 @@ impl VM {
             }
         }
         self.active_entities.retain(|e| !e.borrow().despawned);
+        Ok(())
+    }
+
+    /// Drive one render frame. Fires the active scene's current
+    /// state's `on render():` handler (if any), then each entity's
+    /// `render()` method (particles get the default circle path
+    /// only when a graphics context is wired up — for headless
+    /// tests, particles without a custom `render()` no-op).
+    pub fn render(&mut self) -> Result<(), RuntimeError> {
+        if let Some(scene) = self.active_scene.clone() {
+            let body = {
+                let inst = scene.borrow();
+                inst.current_state
+                    .as_ref()
+                    .and_then(|n| inst.class.states.get(n))
+                    .and_then(|s| s.on_render.clone())
+            };
+            if let Some(body) = body {
+                self.invoke_method_value(body, Value::BcInstance(scene.clone()), &[])?;
+                self.transitioning.take();
+            }
+        }
+        let entities = self.active_entities.clone();
+        for entity in entities {
+            if entity.borrow().despawned {
+                continue;
+            }
+            let class = entity.borrow().class.clone();
+            if let Some(method) = class.methods.get("render").cloned() {
+                self.invoke_method_value(
+                    method,
+                    Value::BcInstance(entity.clone()),
+                    &[],
+                )?;
+            }
+            // Particles without a custom `render()` defer to the
+            // engine's per-particle drawing path. The headless VM
+            // doesn't have a graphics context, so we no-op here —
+            // matches `eval::render_particle_emitter` checking
+            // `env.in_render`.
+        }
+        Ok(())
+    }
+
+    /// Mirror of `eval::dispatch_key_press`. Reads the `key_press`
+    /// Object's bool fields; for each true field that the active
+    /// state has a handler for, invokes the handler. A transition
+    /// inside a handler short-circuits the rest.
+    fn dispatch_key_press(
+        &mut self,
+        scene: &Rc<RefCell<BcInstance>>,
+    ) -> Result<(), RuntimeError> {
+        let pressed: Vec<String> = match self.globals.get("key_press") {
+            Some(Value::Object(rc)) => rc
+                .borrow()
+                .fields
+                .iter()
+                .filter_map(|(k, v)| {
+                    if matches!(v, Value::Bool(true)) {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => return Ok(()),
+        };
+        if pressed.is_empty() {
+            return Ok(());
+        }
+        let bodies: Vec<Rc<BcFunction>> = {
+            let inst = scene.borrow();
+            let state = match inst
+                .current_state
+                .as_ref()
+                .and_then(|n| inst.class.states.get(n))
+            {
+                Some(s) => s.clone(),
+                None => return Ok(()),
+            };
+            pressed
+                .iter()
+                .filter_map(|k| state.on_key_press.get(k).cloned())
+                .collect()
+        };
+        for body in bodies {
+            self.invoke_method_value(
+                body,
+                Value::BcInstance(scene.clone()),
+                &[],
+            )?;
+            if let Some(target) = self.transitioning.take() {
+                self.enter_state(scene, &target)?;
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Seed a particle emitter on `spawn`: read `count` and
+    /// `lifetime` from the instance's fields, build that many
+    /// Particle Objects (with default fields the runtime can age),
+    /// fire the class's `on_spawn(p)` for each particle if present,
+    /// then stash the list as the hidden `__particles` field.
+    /// Mirrors `eval::seed_particle_emitter`.
+    fn seed_particle_emitter(
+        &mut self,
+        emitter: &Rc<RefCell<BcInstance>>,
+        at: Option<Value>,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        let (count, lifetime, on_spawn) = {
+            let inst = emitter.borrow();
+            let count = match inst.fields.get("count") {
+                Some(Value::Int(n)) if *n >= 0 => *n as usize,
+                Some(other) => {
+                    return Err(RuntimeError {
+                        line,
+                        col: 0,
+                        message: format!(
+                            "particles `count` must be a non-negative int, got {}",
+                            other.type_name()
+                        ),
+                        help: None,
+                    });
+                }
+                None => 16,
+            };
+            let lifetime = match inst.fields.get("lifetime") {
+                Some(Value::Float(f)) => *f,
+                Some(Value::Int(n)) => *n as f64,
+                Some(Value::Quantity { value, .. }) => *value,
+                None => 1.0,
+                Some(other) => {
+                    return Err(RuntimeError {
+                        line,
+                        col: 0,
+                        message: format!(
+                            "particles `lifetime` must be a number or duration, got {}",
+                            other.type_name()
+                        ),
+                        help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
+                    });
+                }
+            };
+            let on_spawn = inst.class.methods.get("on_spawn").cloned();
+            (count, lifetime, on_spawn)
+        };
+        let initial_pos = at.unwrap_or_else(|| {
+            Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)]))
+        });
+        let mut particles: Vec<Value> = Vec::with_capacity(count);
+        for _ in 0..count {
+            let p = make_particle(&initial_pos, lifetime);
+            if let Some(method) = on_spawn.clone() {
+                self.invoke_method_value(
+                    method,
+                    Value::BcInstance(emitter.clone()),
+                    std::slice::from_ref(&p),
+                )?;
+            }
+            particles.push(p);
+        }
+        emitter.borrow_mut().fields.insert(
+            "__particles".to_string(),
+            Value::List(Rc::new(RefCell::new(particles))),
+        );
+        Ok(())
+    }
+
+    /// Per-frame particle aging. Fires `on_update(p, dt)` for each
+    /// live particle, advances `age`, computes `age_ratio`, and
+    /// drops any particle past its lifetime. When all particles
+    /// are dead, marks the emitter despawned. Mirrors
+    /// `eval::tick_particle_emitter`.
+    fn tick_particle_emitter(
+        &mut self,
+        emitter: &Rc<RefCell<BcInstance>>,
+        dt: f64,
+    ) -> Result<(), RuntimeError> {
+        let class = emitter.borrow().class.clone();
+        let on_update = class.methods.get("on_update").cloned();
+        let particles = match emitter.borrow().fields.get("__particles").cloned() {
+            Some(Value::List(rc)) => rc,
+            _ => return Ok(()),
+        };
+        let snapshot: Vec<Value> = particles.borrow().clone();
+        for p in &snapshot {
+            if let Some(method) = on_update.clone() {
+                self.invoke_method_value(
+                    method,
+                    Value::BcInstance(emitter.clone()),
+                    &[p.clone(), Value::Float(dt)],
+                )?;
+            }
+            if let Value::Object(rc) = p {
+                let mut o = rc.borrow_mut();
+                let age = match o.fields.get("age") {
+                    Some(Value::Float(a)) => *a + dt,
+                    Some(Value::Int(a)) => *a as f64 + dt,
+                    _ => dt,
+                };
+                let lifetime = match o.fields.get("lifetime") {
+                    Some(Value::Float(l)) => *l,
+                    _ => 1.0,
+                };
+                o.fields.insert("age".to_string(), Value::Float(age));
+                let ratio = if lifetime > 0.0 {
+                    (age / lifetime).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                o.fields
+                    .insert("age_ratio".to_string(), Value::Float(ratio));
+            }
+        }
+        // Drop dead particles.
+        particles.borrow_mut().retain(|p| match p {
+            Value::Object(rc) => match rc.borrow().fields.get("age") {
+                Some(Value::Float(age)) => match rc.borrow().fields.get("lifetime") {
+                    Some(Value::Float(lt)) => *age < *lt,
+                    _ => true,
+                },
+                _ => true,
+            },
+            _ => true,
+        });
+        if particles.borrow().is_empty() {
+            emitter.borrow_mut().despawned = true;
+        }
         Ok(())
     }
 
@@ -1765,6 +2006,36 @@ fn range_method(
     }
 }
 
+/// Build a fresh particle Object with the same default-field set
+/// as `eval::make_particle`: pos, velocity, color, size, age,
+/// age_ratio, lifetime. Particle bodies (`on_spawn`, `on_update`)
+/// receive this Object as `p` and can mutate any field.
+fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("pos".to_string(), initial_pos.clone());
+    fields.insert(
+        "velocity".to_string(),
+        Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])),
+    );
+    fields.insert(
+        "color".to_string(),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(1.0),
+            Value::Float(1.0),
+            Value::Float(1.0),
+            Value::Float(1.0),
+        ])),
+    );
+    fields.insert("size".to_string(), Value::Float(4.0));
+    fields.insert("age".to_string(), Value::Float(0.0));
+    fields.insert("age_ratio".to_string(), Value::Float(0.0));
+    fields.insert("lifetime".to_string(), Value::Float(lifetime));
+    Value::Object(Rc::new(RefCell::new(crate::value::Object {
+        fields,
+        kind: "particle",
+    })))
+}
+
 /// xorshift64* PRNG; same algorithm as `Env::next_random_u64` so a
 /// fixed seed produces the same sequence on both interpreters.
 fn next_random_u64(state: &mut u64) -> u64 {
@@ -2623,12 +2894,195 @@ mod tests {
         assert!(err.contains("missing"), "got: {err}");
     }
 
+    // --- Session 13: render + input + particles ---
+
+    /// Helper: run + tick + render in interleaved fashion.
+    fn run_and_render(
+        src: &str,
+        frames: u32,
+        dt: f64,
+    ) -> Result<String, RuntimeError> {
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let chunk = crate::compiler::compile_program(&program).expect("compile");
+        let mut vm = VM::new();
+        vm.run(&chunk)?;
+        for _ in 0..frames {
+            vm.tick(dt)?;
+            vm.render()?;
+        }
+        Ok(std::mem::take(&mut vm.out))
+    }
+
+    /// Helper: like run_program_frames but lets the test set a key
+    /// to pressed before each tick (then clear after).
+    fn run_with_key_press(
+        src: &str,
+        frames: u32,
+        dt: f64,
+        key: &str,
+    ) -> Result<String, RuntimeError> {
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let chunk = crate::compiler::compile_program(&program).expect("compile");
+        let mut vm = VM::new();
+        vm.run(&chunk)?;
+        for _ in 0..frames {
+            // Simulate a key being held down each frame; the tree-
+            // walker's matching test does the same single-set then
+            // ticks repeatedly.
+            if let Some(Value::Object(rc)) = vm.globals.get("key_press") {
+                rc.borrow_mut()
+                    .fields
+                    .insert(key.to_string(), Value::Bool(true));
+            }
+            vm.tick(dt)?;
+        }
+        Ok(std::mem::take(&mut vm.out))
+    }
+
     #[test]
-    fn vm_on_render_errors_pointing_at_session_13() {
-        let err = compile_err(
-            "scene S:\n    initial: a\n    state a:\n        on render():\n            print(1)\n",
-        );
-        assert!(err.contains("session 13"), "got: {err}");
+    fn vm_on_render_fires_per_render_call() {
+        let src = "scene S:\n    var n = 0\n\n    initial: a\n\n    state a:\n        on render():\n            n += 1\n            print(n)\n";
+        let out = run_and_render(src, 3, 0.016).expect("ok");
+        assert_eq!(out, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn vm_on_render_does_not_fire_without_render_call() {
+        // tick alone shouldn't fire on_render; it only fires when
+        // VM::render() is called explicitly.
+        let src = "scene S:\n    var n = 0\n\n    initial: a\n\n    state a:\n        on render():\n            n += 1\n            print(n)\n";
+        let out = run_program_frames(src, 3, 0.016).expect("ok");
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn vm_entity_render_method_fires_on_render() {
+        let src = "entity Box:\n    var n = 0\n\n    render():\n        n += 1\n        print(n)\n\nspawn Box at (0, 0)\n";
+        let out = run_and_render(src, 2, 0.016).expect("ok");
+        assert_eq!(out, "1\n2\n");
+    }
+
+    #[test]
+    fn vm_on_key_press_dispatches_when_key_held() {
+        let src = "scene S:\n    var n = 0\n\n    initial: a\n\n    state a:\n        on key_press.right:\n            n += 1\n            print(n)\n";
+        let out = run_with_key_press(src, 3, 0.016, "right").expect("ok");
+        assert_eq!(out, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn vm_on_key_press_no_handler_for_inactive_key() {
+        // A scene with handler for `right` only — pressing `left`
+        // does nothing. Verifies the per-key dispatch lookup.
+        let src = "scene S:\n    var n = 0\n\n    initial: a\n\n    state a:\n        on key_press.right:\n            n += 1\n            print(n)\n";
+        let out = run_with_key_press(src, 2, 0.016, "left").expect("ok");
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn vm_on_key_press_handler_can_transition() {
+        // Mirrors `tests/eval.rs::key_press_handler_fires_when_pressed`.
+        let src = "scene S:\n    var counter = 0\n\n    initial: a\n\n    state a:\n        on key_press.right:\n            counter += 1\n            print(counter)\n            if counter >= 2:\n                -> b\n\n    state b:\n        on key_press.right:\n            print(\"done\")\n";
+        let out = run_with_key_press(src, 3, 0.016, "right").expect("ok");
+        assert_eq!(out, "1\n2\ndone\n");
+    }
+
+    #[test]
+    fn vm_particles_block_seeds_count_particles_with_defaults() {
+        // Mirrors `tests/eval.rs::particles_block_creates_count_particles_with_defaults`.
+        let src = "particles Spark:\n    count: 4\n    lifetime: 5.0\n\nspawn Spark at (50.0, 60.0)\n";
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let chunk = crate::compiler::compile_program(&program).expect("compile");
+        let mut vm = VM::new();
+        vm.run(&chunk).expect("run");
+        assert_eq!(vm.active_entities.len(), 1);
+        let inst = vm.active_entities[0].borrow();
+        let n = match inst.fields.get("__particles") {
+            Some(Value::List(rc)) => rc.borrow().len(),
+            _ => panic!("__particles should be a list"),
+        };
+        assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn vm_particles_on_spawn_runs_per_particle() {
+        // count=3 with on_spawn that prints — should fire 3 times
+        // at spawn time.
+        let src = "particles Burst:\n    count: 3\n    lifetime: 1.0\n\n    on_spawn(p):\n        print(\"seed\")\n\nspawn Burst at (0.0, 0.0)\n";
+        let out = run_program_frames(src, 0, 0.0).expect("ok");
+        assert_eq!(out, "seed\nseed\nseed\n");
+    }
+
+    #[test]
+    fn vm_particles_age_and_emitter_despawns() {
+        // Mirrors `tests/programs/particles_block.twe` shape.
+        // count=3, lifetime=0.1, ticked at 0.05s. After frame 1
+        // alive = 1 (one emitter). Frame 2: still alive (particles
+        // are at age 0.1 == lifetime, still considered dead by
+        // strict <). Actually let me check: tree-walker uses
+        // `age < lt` so when age == lt the particle is dead. Frame
+        // 1: age=0.05 < 0.1 → alive. Frame 2: age=0.1, NOT < 0.1
+        // → dead, all dead, emitter despawns. So count = 1, 1, 0.
+        let src = "particles Burst:\n    count: 3\n    lifetime: 0.1\n\n    on_spawn(p):\n        # nothing\n\n    on_update(p, dt):\n        # nothing\n\nspawn Burst at (10.0, 10.0)\n\non update(dt):\n    print(entities.count(Burst))\n";
+        let out = run_program_frames(src, 3, 0.05).expect("ok");
+        assert_eq!(out, "1\n1\n0\n");
+    }
+
+    #[test]
+    fn vm_particles_on_update_can_mutate_particle() {
+        // on_update(p, dt) sets p.color — the field set should
+        // persist across the loop because Object is Rc<RefCell>.
+        // Verify by reading the particle's color after one tick.
+        let src = "particles Spark:\n    count: 1\n    lifetime: 100.0\n\n    on_update(p, dt):\n        p.size = 99.0\n\nspawn Spark at (0.0, 0.0)\n";
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let chunk = crate::compiler::compile_program(&program).expect("compile");
+        let mut vm = VM::new();
+        vm.run(&chunk).expect("run");
+        vm.tick(0.016).expect("tick");
+        let inst = vm.active_entities[0].borrow();
+        let particles = match inst.fields.get("__particles") {
+            Some(Value::List(rc)) => rc.borrow().clone(),
+            _ => panic!("__particles missing"),
+        };
+        assert_eq!(particles.len(), 1);
+        let size = match &particles[0] {
+            Value::Object(rc) => rc.borrow().fields.get("size").cloned(),
+            _ => panic!("particle should be Object"),
+        };
+        assert!(matches!(size, Some(Value::Float(f)) if f == 99.0), "size = {size:?}");
+    }
+
+    #[test]
+    fn vm_matches_eval_on_render_input_particles_corpus() {
+        // Cross-check render/input/particles programs through both
+        // interpreters. Particles use the file under tests/programs
+        // so the diff is meaningful.
+        let particles_src = std::fs::read_to_string("tests/programs/particles_block.twe")
+            .expect("read particles_block.twe");
+        // Programs that do tick-only (on_render is exercised in the
+        // dedicated test above; cross-checking it would require the
+        // tree-walker's render_frame which the eval tests don't drive
+        // for arbitrary scenes).
+        let cases: &[(&str, u32, f64)] = &[
+            (&particles_src, 3, 0.05),
+        ];
+        for (src, frames, dt) in cases {
+            let bytecode_out = run_program_frames(src, *frames, *dt)
+                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out = crate::eval::run_with_frames(
+                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
+                *frames,
+                *dt,
+            )
+            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(
+                bytecode_out, walker_out,
+                "results diverge on `{src}`",
+            );
+        }
     }
 
     #[test]
