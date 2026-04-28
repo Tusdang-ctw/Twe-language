@@ -9,3 +9,4 @@ pub mod parser;
 pub mod play;
 pub mod stdlib;
 pub mod value;
+pub mod vm;
