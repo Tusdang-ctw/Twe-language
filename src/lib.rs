@@ -7,6 +7,7 @@ pub mod eval;
 pub mod lexer;
 pub mod parser;
 pub mod play;
+pub mod printer;
 pub mod stdlib;
 pub mod value;
 pub mod vm;
