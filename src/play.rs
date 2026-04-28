@@ -43,6 +43,18 @@ pub fn launch(path: String) -> i32 {
     0
 }
 
+/// `twec play --vm bytecode <file>` entry. Mirrors `launch` but
+/// drives the bytecode VM (`vm.tick(dt)` + `vm.render()`) instead
+/// of `eval::tick_frame` + `eval::render_frame`. Hot reload still
+/// rebuilds from scratch on file change. The macroquad input /
+/// screen-size pumps go through the same Rc-shared Objects the
+/// stdlib installs, so they reach both interpreters identically.
+pub fn launch_bytecode(path: String) -> i32 {
+    let conf = window_conf();
+    macroquad::Window::from_config(conf, run_loop_bytecode(path));
+    0
+}
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "Twec play".to_string(),
@@ -108,6 +120,135 @@ async fn run_loop(path: String) {
         flush_output(&mut env);
 
         next_frame().await;
+    }
+}
+
+async fn run_loop_bytecode(path: String) {
+    let path_ref = path.clone();
+    let mut vm = match initialize_bytecode(&path_ref) {
+        Ok(v) => v,
+        Err(()) => return,
+    };
+    let mut last_mtime = current_mtime(&path_ref);
+    flush_vm_output(&mut vm);
+
+    loop {
+        if is_key_pressed(KeyCode::Escape) {
+            break;
+        }
+
+        // Hot reload: poll mtime, reload on change.
+        let cur_mtime = current_mtime(&path_ref);
+        if cur_mtime.is_some() && cur_mtime != last_mtime {
+            match initialize_bytecode(&path_ref) {
+                Ok(new_vm) => {
+                    eprintln!("[twec] hot reload: {path_ref}");
+                    crate::stdlib::clear_asset_caches();
+                    vm = new_vm;
+                    flush_vm_output(&mut vm);
+                }
+                Err(()) => {
+                    // Init failed — keep running with the old VM so the
+                    // window doesn't close on a transient parse error.
+                }
+            }
+            last_mtime = cur_mtime;
+        }
+
+        update_vm_input(&vm);
+        let dt = get_frame_time() as f64;
+        if let Err(e) = vm.tick(dt) {
+            eprintln!("{path_ref}: runtime error: {e}");
+            break;
+        }
+        flush_vm_output(&mut vm);
+
+        clear_background(BLACK);
+        if let Err(e) = vm.render() {
+            eprintln!("{path_ref}: runtime error: {e}");
+            break;
+        }
+        flush_vm_output(&mut vm);
+
+        next_frame().await;
+    }
+}
+
+fn initialize_bytecode(path: &str) -> Result<crate::vm::VM, ()> {
+    let src = match std::fs::read_to_string(Path::new(path)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not read '{path}': {e}");
+            return Err(());
+        }
+    };
+    let tokens = match crate::lexer::lex(&src) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return Err(());
+        }
+    };
+    let program = match crate::parser::parse(&tokens) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return Err(());
+        }
+    };
+    let chunk = match crate::compiler::compile_program(&program) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{path}: compile error: {e}");
+            return Err(());
+        }
+    };
+    let mut vm = crate::vm::VM::new();
+    if let Err(e) = vm.run(&chunk) {
+        eprintln!("{path}: runtime error: {e}");
+        return Err(());
+    }
+    Ok(vm)
+}
+
+fn flush_vm_output(vm: &mut crate::vm::VM) {
+    let s = vm.take_out();
+    if !s.is_empty() {
+        print!("{s}");
+    }
+}
+
+/// Mirror of `update_key_state` for the bytecode VM. The `key`,
+/// `key_press`, and `screen` Objects are the same `Rc<RefCell<Object>>`
+/// instances the stdlib installs, so writes via `.borrow_mut()` here
+/// reach the running scene/state code through their globals.
+fn update_vm_input(vm: &crate::vm::VM) {
+    if let Some(Value::Object(rc)) = vm.get_global("key") {
+        let mut o = rc.borrow_mut();
+        for (name, code) in KEYS {
+            o.fields
+                .insert((*name).to_string(), Value::Bool(is_key_down(*code)));
+        }
+    }
+    if let Some(Value::Object(rc)) = vm.get_global("key_press") {
+        let mut o = rc.borrow_mut();
+        for (name, code) in KEYS {
+            o.fields
+                .insert((*name).to_string(), Value::Bool(is_key_pressed(*code)));
+        }
+    }
+    if let Some(Value::Object(rc)) = vm.get_global("screen") {
+        let mut o = rc.borrow_mut();
+        let w = screen_width() as f64;
+        let h = screen_height() as f64;
+        o.fields.insert(
+            "size".to_string(),
+            Value::Tuple(Rc::new(vec![Value::Float(w), Value::Float(h)])),
+        );
+        o.fields.insert(
+            "center".to_string(),
+            Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
+        );
     }
 }
 

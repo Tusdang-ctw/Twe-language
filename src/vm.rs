@@ -796,10 +796,20 @@ impl VM {
 
     /// Drive one render frame. Fires the active scene's current
     /// state's `on render():` handler (if any), then each entity's
-    /// `render()` method (particles get the default circle path
-    /// only when a graphics context is wired up — for headless
-    /// tests, particles without a custom `render()` no-op).
+    /// `render()` method. `builtin_env.in_render` is toggled around
+    /// the call so drawing builtins (`rect`, `text`, `circle`, ...)
+    /// pass their `require_render` gate. Particles without a custom
+    /// `render()` defer to the engine's per-particle drawing path
+    /// (skipped in headless tests — matches the tree-walker's
+    /// `env.in_render` check inside `render_particle_emitter`).
     pub fn render(&mut self) -> Result<(), RuntimeError> {
+        self.builtin_env.in_render = true;
+        let result = self.render_inner();
+        self.builtin_env.in_render = false;
+        result
+    }
+
+    fn render_inner(&mut self) -> Result<(), RuntimeError> {
         if let Some(scene) = self.active_scene.clone() {
             let body = {
                 let inst = scene.borrow();
@@ -826,11 +836,6 @@ impl VM {
                     &[],
                 )?;
             }
-            // Particles without a custom `render()` defer to the
-            // engine's per-particle drawing path. The headless VM
-            // doesn't have a graphics context, so we no-op here —
-            // matches `eval::render_particle_emitter` checking
-            // `env.in_render`.
         }
         Ok(())
     }
@@ -1210,6 +1215,23 @@ impl VM {
                 help: Some("entities methods are .of(Class), .count(Class)".to_string()),
             }),
         }
+    }
+
+    /// Look up a global by name. Returns a clone — for `Object` /
+    /// `BcInstance` / `List` values, the inner Rc is shared, so a
+    /// caller that calls `.borrow_mut()` on the cloned Value will
+    /// mutate the global in place. Used by the macroquad play loop
+    /// to push input state into the `key` / `key_press` / `screen`
+    /// Objects each frame.
+    pub fn get_global(&self, name: &str) -> Option<Value> {
+        self.globals.get(name).cloned()
+    }
+
+    /// Drain `vm.out` (captured `print` output). Returns the captured
+    /// text and resets the buffer to empty. Used by the play loop
+    /// to flush per-frame output to the host's stdout.
+    pub fn take_out(&mut self) -> String {
+        std::mem::take(&mut self.out)
     }
 
     /// Update `time.dt` on the global `time` Object so scene/entity
