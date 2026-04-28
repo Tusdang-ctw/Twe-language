@@ -478,6 +478,30 @@ on update(dt):
 }
 
 #[test]
+fn or_and_value_returning_semantics() {
+    // `or` / `and` are value-returning, short-circuit, Python-like.
+    // `not` is strict-Bool. Only `false` is falsy in Twe (Principle 3),
+    // so `0`, `nil`, "" are all truthy. Locks in the F11 decision per
+    // docs/changes/2026-04-28-or-and-keep-value-returning.md.
+    let src = r#"
+print(true and 42)
+print(false and 42)
+print(true or 99)
+print(false or 99)
+print(0 or "default")
+print(false or "default")
+print(not true)
+print(not false)
+print(not 0)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(
+        out,
+        "42\nfalse\ntrue\n99\n0\ndefault\nfalse\ntrue\nfalse\n"
+    );
+}
+
+#[test]
 fn state_scoped_on_update_fires_per_frame_with_dt() {
     // Top-level on_update runs first (prints "top N"), then the
     // active state's on_update (prints "a N dt=..."). After 2 fires

@@ -268,6 +268,13 @@ binary_op   := "+" | "-" | "*" | "/" | "%" | "^"
             | "and" | "or" | "not"
             | ".." | "..<"
 
+# `and` / `or` are value-returning short-circuit (Python-like): they return
+# one of their operands, not a strict Bool. `not` returns strict Bool.
+# Combined with Principle 3 (only `false` is falsy), this means
+# `count or default` returns `count` even when `count == 0` — the
+# Lua/JS/Python footgun does not apply here. See
+# docs/changes/2026-04-28-or-and-keep-value-returning.md.
+
 unary_expr  := ("-" | "not") unary_expr | postfix_expr
 postfix_expr := primary postfix*
 postfix      := "." identifier

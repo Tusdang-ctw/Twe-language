@@ -166,16 +166,21 @@ variable is needed, set inside the loop, checked after.
 **Fix shape:** loop labels (`break outer`) like Rust. Phase 3 if
 several Phase 2 games want it.
 
-### F11. `or` returns the value, not a strict bool
+### F11. `or` returns the value, not a strict bool — **CLOSED 2026-04-28 (Phase 3 session 4)**
 
 `if key.right or key.d: ...` works because of truthiness, but
 `a or b` returning `a` (when `a` is truthy) means downstream code
 can't rely on the result being a Bool. Survive happens to only
 chain `or`s inside `if` conditions, so this hasn't bitten yet.
 
-**Fix shape:** consider whether `or` should always return Bool
-(strict) or stay value-returning (Python-like). Locked decision for
-v0.2; recorded in `docs/changes/`.
+**Decision shipped:** keep value-returning Python-like semantics.
+`not` stays strict-Bool. Full reasoning in
+`docs/changes/2026-04-28-or-and-keep-value-returning.md`. The
+"looks-like-Bool but isn't" footgun in Lua/Python/JS doesn't
+apply to Twe because Principle 3 makes only `false` falsy — `0`,
+`nil`, `""` are all truthy here, so `count or default` returns
+`count` even when count is 0. Strict mode (Phase 4) will offer
+opt-in strict-Bool typing for users who want it.
 
 ### F12. `every <duration>:` ergonomics with `..ms` and `..s`
 
