@@ -92,13 +92,18 @@ Every conversation should end with the codebase in a working state. Like git com
 
 ### Phase discipline
 
-We are in **Phase 2** (vertical-slice game) per `docs/05-roadmap.md`. Phase 1 (tree-walking interpreter) is complete: see commits `844fd9a` through `7c4c06c`. The interpreter runs Examples 1, 2 (simplified), and the eleven test programs in `tests/programs/`.
+We are in **Phase 3** (design corrections + bytecode VM) per `docs/05-roadmap.md`. Phase 1 (tree-walking interpreter) is complete: see commits `844fd9a` through `7c4c06c`. Phase 2 (vertical-slice game) closed 2026-04-28 with five of six components shipped (macroquad bindings including audio, ECS-style entity queries, `particles` block, hot reload, game stdlib including `time.dt`); cooperative fibers were formally deferred to Phase 3 per `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`. The four Phase 2 exit-criteria bullets all pass: Survive runs as a real bullet-vs-monster game (`examples/survive.twe`, ~120 lines), hot reload works, and the 15-item frustration list (`docs/changes/2026-04-28-phase-2-frustration-list.md`) is the input for Phase 3.
 
-**Phase 2 plan** is to ship Snake (Example 11) first as the warm-up game, then iterate to a Vampire Survivors clone. Snake is recommended as the warm-up by `docs/example-11-snake.md` §"When this example becomes runnable".
+**Phase 3 plan** has two halves the roadmap calls out:
 
-Do not rabbit-hole into Phase 3 (bytecode), Phase 4 (strict types), or Phase 5 (3D) ideas. If you find yourself thinking about NaN tagging or shader compilation, stop. Note it in `notes/future-phases.md` and return to the macroquad bindings.
+1. **Design corrections** driven by the frustration list. The high-leverage open items, in priority order from that list's closing section: F1 keyword arguments → unblocks F15 (Snake doc alignment) and reads better in every drawing call; F4 every-clock catch-up; F5/F8 state-scoped `on update(dt):`; F11 `or`/`and` strict-bool decision.
+2. **Bytecode VM** per *Crafting Interpreters* Chapters 14–25 + Wren's `wren_compiler.c` / `wren_vm.c`. NaN-tagged values (Ch. 30), single-pass compiler from AST to bytecode, computed-goto interpreter loop where the host compiler supports it, incremental tracing GC, and **cooperative fibers** (the deferred Phase 2 item — bytecode IPs make suspension/resumption natural). Target: 5x–20x speedup on hot paths.
 
-The exit criteria for Phase 2 are in the roadmap. Don't declare Phase 2 done until a playable game runs at 60fps, hot reload works, and the implementer has written the language-frustrations list that feeds Phase 3.
+Tooling deliverables that ride along: `twec fmt`, tree-sitter grammar, basic LSP.
+
+Do not rabbit-hole into Phase 4 (strict types) or Phase 5 (3D / dialogue) ideas. If you find yourself thinking about Hindley-Milner constraint solving or wgpu pipelines, stop. Note it in `notes/future-phases.md` and return to the bytecode work or the next frustration-list item.
+
+The exit criteria for Phase 3 are in the roadmap §"Phase 3": Phase-2 game runs at 60fps with 500+ entities, format/parse round-trips on every test file, tree-sitter parses the eleven examples, LSP gives syntax highlighting + go-to-def + inline errors in VS Code.
 
 ### Test discipline
 
@@ -117,11 +122,11 @@ Every meaningful code change updates the relevant doc:
 
 Commit messages follow the form: `phase-N: <verb> <what>`, where N is the current phase. Examples:
 
-- `phase-2: lex string interpolation`
-- `phase-2: bind macroquad window and event loop`
-- `phase-2: ship Snake on the tree-walker`
+- `phase-3: add keyword arguments to call sites`
+- `phase-3: scaffold bytecode opcodes`
+- `phase-3: ship the bytecode dispatch loop`
 
-Phase 1 commits used the same form prefixed with `phase-1:`.
+Phase 1 commits used `phase-1:`; Phase 2 used `phase-2:`.
 
 ---
 
