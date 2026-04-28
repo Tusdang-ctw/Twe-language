@@ -1,26 +1,48 @@
-//! Bytecode dispatch loop. Phase-3 session 7.
+//! Bytecode dispatch loop. Phase-3 sessions 7–9.
 //!
 //! Reads a `Chunk` produced by `crate::compiler` and evaluates it
 //! against an internal value stack. Semantics match the tree-walker
 //! in `crate::eval` for the subset that's compiled so far: numeric
 //! arithmetic with int/float coercion, string `+` concatenation,
-//! structural `==` / `!=`, and numeric comparisons. Tuple
-//! arithmetic, list/range membership, and unit-aware ops stay in
-//! eval until the bytecode compiler grows them (sessions 9–10).
+//! structural `==` / `!=`, numeric comparisons, control flow,
+//! globals, and (session 9) user-defined functions with calls and
+//! returns.
 //!
-//! No globals, no functions, no control flow, no GC — this session
-//! is just "run an expression chunk and return the top of stack."
+//! Frame layout per *Crafting Interpreters* §24.4:
+//! - The top-level script is wrapped in a synthetic `BcFunction`
+//!   named `<script>` with arity 0. Its frame's slot 0 holds the
+//!   script-function value.
+//! - Each `OP_CALL` creates a new `CallFrame { function, ip,
+//!   slot_base }`. `slot_base` points at the function value on the
+//!   value stack; arguments naturally live at slots 1..=arity.
+//! - `OP_RETURN` collapses the callee's slots back to `slot_base`
+//!   and pushes the return value, leaving the caller's stack as if
+//!   the call expression evaluated to that value.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{Chunk, OpCode};
+use crate::bytecode::{BcFunction, Chunk, OpCode};
 use crate::value::{RuntimeError, Value};
 
+const FRAMES_MAX: usize = 256;
+
+/// One activation record: which compiled function is running, where
+/// in its chunk we are, and where on the value stack its locals begin.
+struct CallFrame {
+    function: Rc<BcFunction>,
+    ip: usize,
+    slot_base: usize,
+}
+
 /// Stack-based VM state. One instance is short-lived: build it, run
-/// a chunk, read the result. Persistent state (globals, heap) lands
-/// in later sessions.
+/// a chunk, read the result. The `globals` HashMap persists across
+/// statements within a single `run` but does not survive a fresh
+/// `VM::new()`.
 pub struct VM {
     stack: Vec<Value>,
+    frames: Vec<CallFrame>,
+    globals: HashMap<String, Value>,
     /// Captured `print` output, mirroring `Env::out` from the tree
     /// walker so test harnesses can compare them.
     pub out: String,
@@ -36,25 +58,56 @@ impl VM {
     pub fn new() -> Self {
         Self {
             stack: Vec::with_capacity(256),
+            frames: Vec::with_capacity(64),
+            globals: HashMap::new(),
             out: String::new(),
         }
     }
 
-    /// Run a chunk to completion. Returns the value left on top of
-    /// the stack at `OP_RETURN` (or `Nil` if the stack is empty
-    /// there). Treats `OP_RETURN` as program-exit since this session
-    /// only has a single top-level frame.
+    /// Run a chunk to completion. The chunk is wrapped in a synthetic
+    /// `<script>` function for uniform frame dispatch. Returns the
+    /// value left on top of the stack at the script's `OP_RETURN`
+    /// (or `Nil` if the stack is empty there).
     pub fn run(&mut self, chunk: &Chunk) -> Result<Value, RuntimeError> {
-        let mut ip: usize = 0;
-        while ip < chunk.code.len() {
-            let line = chunk.lines[ip];
-            let op = OpCode::from_u8(chunk.code[ip]);
-            ip += 1;
+        // Wrap the script chunk in a BcFunction so the dispatch loop
+        // is uniformly frame-based. The arity is 0; slot 0 holds the
+        // script function itself (unused by the body but reserved by
+        // the compiler so local indices line up).
+        let script = Rc::new(BcFunction::new("<script>", 0, chunk.clone()));
+        self.stack.push(Value::BcFunction(script.clone()));
+        self.frames.push(CallFrame {
+            function: script,
+            ip: 0,
+            slot_base: 0,
+        });
+        self.dispatch()
+    }
+
+    fn dispatch(&mut self) -> Result<Value, RuntimeError> {
+        loop {
+            // Borrow info from the active frame without holding the
+            // borrow across the match arms — the dispatch arms need
+            // mutable access to `self.frames` (for push/pop) and to
+            // `self.stack`, so we copy the bytes we need each tick.
+            let (op, line, ip_after_op) = {
+                let frame = self.frames.last().expect("at least one frame");
+                let chunk = &frame.function.chunk;
+                if frame.ip >= chunk.code.len() {
+                    // Bytecode without an explicit OP_RETURN at the end
+                    // would land here; the compiler always emits one,
+                    // so this is a defensive fallthrough.
+                    return Ok(self.stack.pop().unwrap_or(Value::Nil));
+                }
+                let line = chunk.lines[frame.ip];
+                let op = OpCode::from_u8(chunk.code[frame.ip]);
+                (op, line, frame.ip + 1)
+            };
+            self.frames.last_mut().unwrap().ip = ip_after_op;
+
             match op {
                 OpCode::Constant => {
-                    let idx = chunk.code[ip] as usize;
-                    ip += 1;
-                    let value = chunk.constants[idx].clone();
+                    let idx = self.read_byte() as usize;
+                    let value = self.read_constant(idx);
                     self.push(value);
                 }
                 OpCode::Nil => self.push(Value::Nil),
@@ -97,59 +150,65 @@ impl VM {
                     self.out.push('\n');
                 }
                 OpCode::Return => {
-                    return Ok(self.stack.pop().unwrap_or(Value::Nil));
+                    let result = self.pop()?;
+                    let frame = self.frames.pop().expect("frame to return from");
+                    if self.frames.is_empty() {
+                        // Script frame ended. Drop the synthetic script
+                        // function value sitting at slot_base and exit.
+                        self.stack.truncate(frame.slot_base);
+                        return Ok(result);
+                    }
+                    // Caller frame: collapse the callee's slots, push
+                    // the return value as the call expression's result.
+                    self.stack.truncate(frame.slot_base);
+                    self.push(result);
                 }
                 OpCode::GetLocal => {
-                    let slot = chunk.code[ip] as usize;
-                    ip += 1;
-                    let v = self
-                        .stack
-                        .get(slot)
-                        .cloned()
-                        .ok_or_else(|| RuntimeError {
-                            line,
-                            col: 0,
-                            message: format!(
-                                "vm: local slot {slot} out of range (stack has {})",
-                                self.stack.len()
-                            ),
-                            help: Some(
-                                "compiler bug — slot was emitted past the live frame".to_string(),
-                            ),
-                        })?;
+                    let slot = self.read_byte() as usize;
+                    let abs = self.frames.last().unwrap().slot_base + slot;
+                    let v = self.stack.get(abs).cloned().ok_or_else(|| RuntimeError {
+                        line,
+                        col: 0,
+                        message: format!(
+                            "vm: local slot {slot} (abs {abs}) out of range \
+                             (stack has {})",
+                            self.stack.len()
+                        ),
+                        help: Some(
+                            "compiler bug — slot was emitted past the live frame".to_string(),
+                        ),
+                    })?;
                     self.push(v);
                 }
                 OpCode::SetLocal => {
-                    let slot = chunk.code[ip] as usize;
-                    ip += 1;
-                    if slot >= self.stack.len() {
+                    let slot = self.read_byte() as usize;
+                    let abs = self.frames.last().unwrap().slot_base + slot;
+                    if abs >= self.stack.len() {
                         return Err(RuntimeError {
                             line,
                             col: 0,
                             message: format!(
-                                "vm: SetLocal slot {slot} past stack top ({})",
+                                "vm: SetLocal slot {slot} (abs {abs}) past stack top ({})",
                                 self.stack.len()
                             ),
                             help: None,
                         });
                     }
                     // Peek, don't pop: the assignment expression keeps
-                    // its value on the stack so the producer (e.g. an
-                    // expression-statement OP_POP) drops it cleanly.
+                    // its value on the stack so the producer's OP_POP
+                    // drops it cleanly.
                     let v = self.stack.last().cloned().unwrap();
-                    self.stack[slot] = v;
+                    self.stack[abs] = v;
                 }
                 OpCode::JumpIfFalse => {
-                    let offset = read_u16(chunk, ip);
-                    ip += 2;
+                    let offset = self.read_u16();
                     let v = self.pop()?;
                     if !is_truthy(&v) {
-                        ip += offset as usize;
+                        self.frames.last_mut().unwrap().ip += offset as usize;
                     }
                 }
                 OpCode::JumpIfFalsePeek => {
-                    let offset = read_u16(chunk, ip);
-                    ip += 2;
+                    let offset = self.read_u16();
                     let truthy = self
                         .stack
                         .last()
@@ -161,12 +220,11 @@ impl VM {
                             help: None,
                         })?;
                     if !truthy {
-                        ip += offset as usize;
+                        self.frames.last_mut().unwrap().ip += offset as usize;
                     }
                 }
                 OpCode::JumpIfTruePeek => {
-                    let offset = read_u16(chunk, ip);
-                    ip += 2;
+                    let offset = self.read_u16();
                     let truthy = self
                         .stack
                         .last()
@@ -178,18 +236,17 @@ impl VM {
                             help: None,
                         })?;
                     if truthy {
-                        ip += offset as usize;
+                        self.frames.last_mut().unwrap().ip += offset as usize;
                     }
                 }
                 OpCode::Jump => {
-                    let offset = read_u16(chunk, ip);
-                    ip += 2;
-                    ip += offset as usize;
+                    let offset = self.read_u16();
+                    self.frames.last_mut().unwrap().ip += offset as usize;
                 }
                 OpCode::Loop => {
-                    let offset = read_u16(chunk, ip);
-                    ip += 2;
-                    ip = ip.checked_sub(offset as usize).ok_or_else(|| {
+                    let offset = self.read_u16();
+                    let frame = self.frames.last_mut().unwrap();
+                    frame.ip = frame.ip.checked_sub(offset as usize).ok_or_else(|| {
                         RuntimeError {
                             line,
                             col: 0,
@@ -198,9 +255,162 @@ impl VM {
                         }
                     })?;
                 }
+                OpCode::DefineGlobal => {
+                    let idx = self.read_byte() as usize;
+                    let name = self.read_string_constant(idx, line)?;
+                    let value = self.pop()?;
+                    self.globals.insert(name, value);
+                }
+                OpCode::GetGlobal => {
+                    let idx = self.read_byte() as usize;
+                    let name = self.read_string_constant(idx, line)?;
+                    let value = self.globals.get(&name).cloned().ok_or_else(|| {
+                        RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!("name `{name}` is not defined"),
+                            help: Some(format!(
+                                "declare it with `let {name} = ...` before using it"
+                            )),
+                        }
+                    })?;
+                    self.push(value);
+                }
+                OpCode::SetGlobal => {
+                    let idx = self.read_byte() as usize;
+                    let name = self.read_string_constant(idx, line)?;
+                    if !self.globals.contains_key(&name) {
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!("name `{name}` is not defined"),
+                            help: Some(format!(
+                                "declare it with `let {name} = ...` before assigning"
+                            )),
+                        });
+                    }
+                    // Peek, don't pop — assignment is an expression;
+                    // its statement caller will OP_POP the value.
+                    let v = self
+                        .stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| RuntimeError {
+                            line,
+                            col: 0,
+                            message: "vm: stack underflow on SetGlobal".to_string(),
+                            help: None,
+                        })?;
+                    self.globals.insert(name, v);
+                }
+                OpCode::Call => {
+                    let arg_count = self.read_byte() as usize;
+                    self.call_value(arg_count, line)?;
+                }
             }
         }
-        Ok(self.stack.pop().unwrap_or(Value::Nil))
+    }
+
+    /// Look up the value being called (sitting at `stack[top - arg_count]`),
+    /// validate arity, push a fresh CallFrame so dispatch resumes inside
+    /// the callee's chunk. Args remain on the stack as the new frame's
+    /// locals 1..=arg_count, and the function value itself becomes the
+    /// new frame's local 0 (per *Crafting Interpreters* §24.5).
+    fn call_value(&mut self, arg_count: usize, line: u32) -> Result<(), RuntimeError> {
+        let callee_idx = self
+            .stack
+            .len()
+            .checked_sub(arg_count + 1)
+            .ok_or_else(|| RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "vm: stack underflow on Call (arg_count={arg_count}, stack={})",
+                    self.stack.len()
+                ),
+                help: None,
+            })?;
+        let callee = self.stack[callee_idx].clone();
+        match callee {
+            Value::BcFunction(func) => {
+                if func.arity as usize != arg_count {
+                    return Err(RuntimeError {
+                        line,
+                        col: 0,
+                        message: format!(
+                            "function `{}` expected {} arguments, got {}",
+                            func.name, func.arity, arg_count
+                        ),
+                        help: None,
+                    });
+                }
+                if self.frames.len() >= FRAMES_MAX {
+                    return Err(RuntimeError {
+                        line,
+                        col: 0,
+                        message: "stack overflow".to_string(),
+                        help: Some(format!(
+                            "call stack exceeded {FRAMES_MAX} frames — likely \
+                             unbounded recursion"
+                        )),
+                    });
+                }
+                self.frames.push(CallFrame {
+                    function: func,
+                    ip: 0,
+                    slot_base: callee_idx,
+                });
+                Ok(())
+            }
+            other => Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "tried to call a {} (only functions are callable in bytecode v0.1)",
+                    other.type_name()
+                ),
+                help: None,
+            }),
+        }
+    }
+
+    /// Read a single byte from the active frame's chunk and bump IP.
+    fn read_byte(&mut self) -> u8 {
+        let frame = self.frames.last_mut().expect("frame");
+        let byte = frame.function.chunk.code[frame.ip];
+        frame.ip += 1;
+        byte
+    }
+
+    /// Read a big-endian u16 operand from the active frame's chunk
+    /// and bump IP by 2.
+    fn read_u16(&mut self) -> u16 {
+        let frame = self.frames.last_mut().expect("frame");
+        let chunk = &frame.function.chunk;
+        let hi = chunk.code[frame.ip] as u16;
+        let lo = chunk.code[frame.ip + 1] as u16;
+        frame.ip += 2;
+        (hi << 8) | lo
+    }
+
+    fn read_constant(&self, idx: usize) -> Value {
+        let frame = self.frames.last().expect("frame");
+        frame.function.chunk.constants[idx].clone()
+    }
+
+    fn read_string_constant(&self, idx: usize, line: u32) -> Result<String, RuntimeError> {
+        match &self.frames.last().expect("frame").function.chunk.constants[idx] {
+            Value::Str(s) => Ok(s.as_ref().clone()),
+            other => Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "vm: expected a string constant for global name, got {}",
+                    other.type_name()
+                ),
+                help: Some("compiler bug — global ops must point at a Value::Str".to_string()),
+            }),
+        }
     }
 
     fn push(&mut self, v: Value) {
@@ -316,10 +526,6 @@ impl VM {
         self.push(result);
         Ok(())
     }
-}
-
-fn read_u16(chunk: &Chunk, ip: usize) -> u16 {
-    ((chunk.code[ip] as u16) << 8) | (chunk.code[ip + 1] as u16)
 }
 
 fn type_error(op: &str, l: &Value, r: &Value, line: u32) -> RuntimeError {
@@ -528,6 +734,111 @@ mod tests {
     }
 
     #[test]
+    fn vm_undefined_global_errors_at_runtime() {
+        // Session 9 change: the compiler doesn't know whether a name is
+        // a global or undefined; the VM errors at OP_GET_GLOBAL.
+        let err = run_program("print(missing)").expect_err("should fail");
+        assert!(err.message.contains("`missing`"), "got: {}", err.message);
+        assert!(err.message.contains("not defined"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_assign_to_undeclared_global_errors() {
+        // Bare `x = 1` (no prior `let`) should error — matches the
+        // tree-walker's behaviour of refusing to invent a binding.
+        let err = run_program("x = 1").expect_err("should fail");
+        assert!(err.message.contains("`x`"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_calls_a_zero_arg_function() {
+        let out = run_program(
+            "function greet():\n    print(\"hi\")\n\ngreet()\n",
+        )
+        .expect("ok");
+        assert_eq!(out, "hi\n");
+    }
+
+    #[test]
+    fn vm_calls_a_function_with_args_and_return() {
+        let out = run_program(
+            "function add(a, b):\n    return a + b\n\nlet r = add(2, 3)\nprint(r)\n",
+        )
+        .expect("ok");
+        assert_eq!(out, "5\n");
+    }
+
+    #[test]
+    fn vm_function_without_explicit_return_returns_nil() {
+        let out = run_program(
+            "function noop():\n    let x = 1\n\nlet r = noop()\nprint(r)\n",
+        )
+        .expect("ok");
+        assert_eq!(out, "nil\n");
+    }
+
+    #[test]
+    fn vm_recursion_factorial() {
+        // factorial(6) = 720. Direct recursion exercises the frame
+        // stack: each call pushes a new CallFrame, OP_RETURN pops it.
+        let src = "function fact(n):\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n\nprint(fact(6))\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "720\n");
+    }
+
+    #[test]
+    fn vm_recursion_fibonacci() {
+        // fib(10) = 55. Two recursive call sites per call exercises
+        // the return-value-into-arg-slot collapse twice per fire.
+        let src = "function fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nprint(fib(10))\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "55\n");
+    }
+
+    #[test]
+    fn vm_mutual_recursion_even_odd() {
+        // is_even(4) → is_odd(3) → is_even(2) → is_odd(1) →
+        // is_even(0) → true. Both functions need to be visible by
+        // name from each other's body, which is the purpose of the
+        // global table — they're bound before either is called.
+        let src = "function is_even(n):\n    if n == 0:\n        return true\n    return is_odd(n - 1)\n\nfunction is_odd(n):\n    if n == 0:\n        return false\n    return is_even(n - 1)\n\nprint(is_even(4))\nprint(is_odd(7))\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "true\ntrue\n");
+    }
+
+    #[test]
+    fn vm_unbounded_recursion_overflows_with_helpful_message() {
+        // No base case → the call-frame guard should fire long before
+        // a real stack overflow.
+        let src = "function loop():\n    return loop()\n\nloop()\n";
+        let err = run_program(src).expect_err("should overflow");
+        assert!(err.message.contains("stack overflow"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_arity_mismatch_errors() {
+        let src = "function takes_two(a, b):\n    return a + b\n\ntakes_two(1)\n";
+        let err = run_program(src).expect_err("should fail");
+        assert!(
+            err.message.contains("expected 2"),
+            "got: {}",
+            err.message
+        );
+        assert!(err.message.contains("got 1"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_calling_a_non_function_errors() {
+        let src = "let x = 5\nx()\n";
+        let err = run_program(src).expect_err("should fail");
+        assert!(
+            err.message.contains("tried to call"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn vm_matches_eval_results_on_arithmetic_corpus() {
         // Cross-check: every expression here should produce the same
         // result on the bytecode VM as on the tree-walker. This is
@@ -563,6 +874,31 @@ mod tests {
                 bytecode_result.display(),
                 walker_str,
                 "results diverge on `{src}`: bytecode={bytecode_result:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn vm_matches_eval_on_factorial_and_fibonacci() {
+        // The session-9 cross-check: real recursive programs should
+        // produce identical output on the bytecode VM and the tree-
+        // walker. If these ever diverge, that's the canary for a
+        // semantic drift between the two implementations.
+        let cases = [
+            "function fact(n):\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n\nprint(fact(5))\nprint(fact(8))\n",
+            "function fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nprint(fib(7))\nprint(fib(12))\n",
+            "function is_even(n):\n    if n == 0:\n        return true\n    return is_odd(n - 1)\n\nfunction is_odd(n):\n    if n == 0:\n        return false\n    return is_even(n - 1)\n\nprint(is_even(10))\nprint(is_odd(10))\n",
+        ];
+        for src in cases {
+            let bytecode_out = run_program(src)
+                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out = crate::eval::run(
+                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
+            )
+            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(
+                bytecode_out, walker_out,
+                "results diverge on `{src}`",
             );
         }
     }

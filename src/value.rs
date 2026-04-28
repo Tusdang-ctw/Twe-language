@@ -19,6 +19,12 @@ pub enum Value {
     Class(Rc<ClassDef>),
     Instance(Rc<RefCell<Instance>>),
     Function(Rc<FunctionDef>),
+    /// Compiled function for the Phase-3 bytecode VM. The tree-walker
+    /// in `crate::eval` doesn't produce or consume these — they're a
+    /// separate code path. When NaN tagging lands, both `Function` and
+    /// `BcFunction` will fold into a single `Obj` pointer; until then
+    /// the two coexist.
+    BcFunction(Rc<crate::bytecode::BcFunction>),
     Builtin {
         name: &'static str,
         /// Parameter names for keyword-argument distribution.
@@ -114,6 +120,7 @@ impl fmt::Debug for Value {
             Value::Class(c) => write!(f, "Class({} {})", c.kind, c.name),
             Value::Instance(i) => write!(f, "Instance({})", i.borrow().class.name),
             Value::Function(func) => write!(f, "Function({})", func.name),
+            Value::BcFunction(func) => write!(f, "BcFunction({})", func.name),
             Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
         }
     }
@@ -136,6 +143,7 @@ impl Value {
             Value::Class(_) => "class",
             Value::Instance(_) => "instance",
             Value::Function(_) => "function",
+            Value::BcFunction(_) => "function",
             Value::Builtin { .. } => "function",
         }
     }
@@ -165,6 +173,7 @@ impl Value {
             Value::Class(c) => format!("<{} {}>", c.kind, c.name),
             Value::Instance(i) => format!("<{}>", i.borrow().class.name),
             Value::Function(func) => format!("<function {}>", func.name),
+            Value::BcFunction(func) => format!("<function {}>", func.name),
             Value::Builtin { name, .. } => format!("<builtin {name}>"),
         }
     }

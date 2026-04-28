@@ -1,11 +1,12 @@
 //! Bytecode representation for the Phase-3 VM.
 //!
-//! This module is the foundation: opcodes, the Chunk struct that
-//! holds compiled code + constants + line info, and a disassembler
-//! for debugging. The compiler (AST → bytecode) lands in a follow-up
-//! session; the dispatch loop lands after that. Until then, the
-//! tree-walker in `crate::eval` remains the active interpreter and
-//! these types are unused at runtime.
+//! Opcodes, the `Chunk` struct (compiled code, constants, and
+//! per-byte line info), the `BcFunction` wrapper that names a chunk
+//! and records arity, and a disassembler. The compiler (AST →
+//! bytecode) lives in `crate::compiler`; the dispatch loop lives in
+//! `crate::vm`. The tree-walker in `crate::eval` remains the active
+//! interpreter for the CLI until the bytecode VM reaches feature
+//! parity (around session 11).
 //!
 //! Design follows *Crafting Interpreters* Chapter 14 closely. We
 //! reuse `crate::value::Value` for the constant pool rather than
@@ -93,6 +94,29 @@ pub enum OpCode {
     /// Unconditional backward jump for loops. 2-byte unsigned
     /// big-endian operand subtracted from the post-operand IP.
     Loop,
+
+    // --- Session 9: globals + functions + calls ---
+
+    /// Pop top of stack and bind it to the global named by the
+    /// constant-pool string at the 1-byte operand index. Used by
+    /// top-level `let` / `var` and by function declarations.
+    DefineGlobal,
+    /// Push the value of the global named by the constant-pool
+    /// string at the 1-byte operand index. Runtime error if the
+    /// name has no binding.
+    GetGlobal,
+    /// Set the global named by the constant-pool string at the
+    /// 1-byte operand index to the value on top of stack. Leaves
+    /// the value on the stack so the assignment expression's
+    /// caller can pop it. Runtime error if the global doesn't
+    /// already exist (assignment requires prior `let`/`var`).
+    SetGlobal,
+    /// Call the value at `stack[top - arg_count]` with the
+    /// `arg_count` values above it. 1-byte operand is the arg
+    /// count. The callee pushes a new CallFrame; the args remain
+    /// on the stack as the new frame's locals 1..=arg_count, with
+    /// the function value itself at the new frame's local 0.
+    Call,
 }
 
 impl OpCode {
@@ -129,6 +153,10 @@ impl OpCode {
             24 => OpCode::JumpIfTruePeek,
             25 => OpCode::Jump,
             26 => OpCode::Loop,
+            27 => OpCode::DefineGlobal,
+            28 => OpCode::GetGlobal,
+            29 => OpCode::SetGlobal,
+            30 => OpCode::Call,
             other => panic!("OpCode::from_u8: invalid byte {other}"),
         }
     }
@@ -174,6 +202,29 @@ impl Chunk {
         }
         self.constants.push(value);
         idx as u8
+    }
+}
+
+/// A compiled function: a name (for diagnostics + display), a fixed
+/// arity, and the chunk that runs when the function is called. The
+/// VM wraps every chunk it executes in a `BcFunction` — even the
+/// top-level script gets a synthetic one named `<script>` with
+/// arity 0, so the dispatch loop can be uniformly frame-based per
+/// *Crafting Interpreters* §24.4.
+#[derive(Debug, Clone)]
+pub struct BcFunction {
+    pub name: String,
+    pub arity: u8,
+    pub chunk: Chunk,
+}
+
+impl BcFunction {
+    pub fn new(name: impl Into<String>, arity: u8, chunk: Chunk) -> Self {
+        Self {
+            name: name.into(),
+            arity,
+            chunk,
+        }
     }
 }
 
@@ -236,6 +287,10 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         }
         OpCode::Jump => jump_instruction(out, "OP_JUMP", 1, chunk, offset),
         OpCode::Loop => jump_instruction(out, "OP_LOOP", -1, chunk, offset),
+        OpCode::DefineGlobal => constant_instruction(out, "OP_DEFINE_GLOBAL", chunk, offset),
+        OpCode::GetGlobal => constant_instruction(out, "OP_GET_GLOBAL", chunk, offset),
+        OpCode::SetGlobal => constant_instruction(out, "OP_SET_GLOBAL", chunk, offset),
+        OpCode::Call => byte_instruction(out, "OP_CALL", chunk, offset),
     }
 }
 
@@ -351,6 +406,10 @@ mod tests {
             OpCode::JumpIfTruePeek,
             OpCode::Jump,
             OpCode::Loop,
+            OpCode::DefineGlobal,
+            OpCode::GetGlobal,
+            OpCode::SetGlobal,
+            OpCode::Call,
         ] {
             assert_eq!(OpCode::from_u8(op as u8), op);
         }
