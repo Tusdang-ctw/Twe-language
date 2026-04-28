@@ -1,0 +1,116 @@
+# `twec play examples/survive.twe`
+#
+# Phase-2 vertical slice. Move with arrow keys (or WASD). Monsters
+# spawn from the screen edges every 800ms and drift toward you.
+# Touch one and it's game over — press R to restart. The scene tracks
+# elapsed time as your score; a kill counter updates as bullets hit.
+# Space shoots an upward bullet.
+#
+# Exercises every Phase-2 language feature: scene + state machine,
+# every-clocks, on render(), key_press events, dynamic entities via
+# `spawn ... at ...`, per-entity update/render dispatch, lists,
+# tuple arithmetic, random, string interpolation, hot reload.
+#
+# ~110 lines. The roadmap's <500-line budget for the Phase 2 game
+# (Lua/GDScript reference: 800–1000) holds with room to spare.
+
+var player_x = 320.0
+var player_y = 240.0
+var alive = true
+var kills = 0
+
+scene Survive:
+    var elapsed = 0.0
+    var spawn_timer = 0.0
+    var fire_timer = 0.0
+
+    initial: playing
+
+    state playing:
+        every 16ms:
+            let dt = 0.016
+            elapsed += dt
+
+            let speed = 200.0 * dt
+            if key.right or key.d: player_x += speed
+            if key.left  or key.a: player_x -= speed
+            if key.up    or key.w: player_y -= speed
+            if key.down  or key.s: player_y += speed
+
+            spawn_timer += dt
+            if spawn_timer >= 0.8:
+                spawn_timer = 0.0
+                let edge = random.int(0..<4)
+                if edge == 0:
+                    spawn Monster at (random.int(0..640), 0)
+                elif edge == 1:
+                    spawn Monster at (random.int(0..640), 480)
+                elif edge == 2:
+                    spawn Monster at (0, random.int(0..480))
+                else:
+                    spawn Monster at (640, random.int(0..480))
+
+            fire_timer += dt
+            if key.space and fire_timer >= 0.18:
+                fire_timer = 0.0
+                spawn Bullet at (player_x, player_y - 20.0)
+
+            if not alive:
+                -> game_over
+
+        on render():
+            rect((player_x - 12, player_y - 12), (24, 24), color.green)
+            text("Time: {elapsed}s", (10, 20), 18, color.white)
+            text("Kills: {kills}", (10, 44), 18, color.yellow)
+
+    state game_over:
+        on render():
+            text("Game Over", (260, 200), 36, color.red)
+            text("Survived: {elapsed}s", (240, 250), 20, color.white)
+            text("Kills: {kills}", (270, 280), 20, color.yellow)
+            text("Press R to restart", (220, 320), 16, color.gray)
+
+        on key_press.r:
+            elapsed = 0.0
+            spawn_timer = 0.0
+            fire_timer = 0.0
+            alive = true
+            kills = 0
+            player_x = 320.0
+            player_y = 240.0
+            -> playing
+
+
+entity Monster:
+    var pos = (0.0, 0.0)
+    var speed = 80.0
+    var hp = 1
+
+    function update(dt):
+        let dx = player_x - pos.x
+        let dy = player_y - pos.y
+        let mag2 = dx * dx + dy * dy
+        if mag2 < 18.0 * 18.0:
+            alive = false
+            despawn self
+            return
+        if mag2 < 1.0:
+            return
+        let mag = math.sqrt(mag2)
+        pos = (pos.x + dx / mag * speed * dt, pos.y + dy / mag * speed * dt)
+
+    function render():
+        rect((pos.x - 8, pos.y - 8), (16, 16), color.red)
+
+
+entity Bullet:
+    var pos = (0.0, 0.0)
+    var vy = -360.0
+
+    function update(dt):
+        pos = (pos.x, pos.y + vy * dt)
+        if pos.y < -10.0:
+            despawn self
+
+    function render():
+        rect((pos.x - 2, pos.y - 6), (4, 12), color.yellow)

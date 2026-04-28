@@ -396,6 +396,28 @@ fn spawn_and_despawn_drive_entity_updates() {
 }
 
 #[test]
+fn survive_parses_and_ticks() {
+    // Smoke test: examples/survive.twe parses and ticks without error.
+    // After ~2 seconds of 16ms frames the spawn_timer (which the
+    // scene increments by 0.016 per tick) crosses 0.8 and a monster
+    // gets spawned.
+    let src = std::fs::read_to_string("examples/survive.twe")
+        .expect("examples/survive.twe must exist");
+    let tokens = twec::lexer::lex(&src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+    for _ in 0..120 {
+        twec::eval::tick_frame(&mut env, 0.016).expect("tick");
+    }
+    assert!(
+        !env.active_entities.is_empty(),
+        "expected at least one monster to spawn within ~2s"
+    );
+}
+
+#[test]
 fn spawn_at_sets_pos_field() {
     use twec::value::Value;
     let src = r#"
