@@ -4,14 +4,16 @@
 # spawn from the screen edges every 800ms and drift toward you.
 # Touch one and it's game over — press R to restart. The scene tracks
 # elapsed time as your score; a kill counter updates as bullets hit.
-# Space shoots an upward bullet.
+# Space shoots an upward bullet; bullets despawn monsters on overlap
+# via `entities.of(Monster)`.
 #
 # Exercises every Phase-2 language feature: scene + state machine,
 # every-clocks, on render(), key_press events, dynamic entities via
 # `spawn ... at ...`, per-entity update/render dispatch, lists,
-# tuple arithmetic, random, string interpolation, hot reload.
+# tuple arithmetic, random, string interpolation, hot reload, and
+# entity queries (`entities.of(Class)`).
 #
-# ~110 lines. The roadmap's <500-line budget for the Phase 2 game
+# ~120 lines. The roadmap's <500-line budget for the Phase 2 game
 # (Lua/GDScript reference: 800–1000) holds with room to spare.
 
 var player_x = 320.0
@@ -111,6 +113,15 @@ entity Bullet:
         pos = (pos.x, pos.y + vy * dt)
         if pos.y < -10.0:
             despawn self
+            return
+        for monster in entities.of(Monster):
+            let dx = monster.pos.x - pos.x
+            let dy = monster.pos.y - pos.y
+            if dx * dx + dy * dy < 14.0 * 14.0:
+                despawn monster
+                despawn self
+                kills += 1
+                return
 
     function render():
         rect((pos.x - 2, pos.y - 6), (4, 12), color.yellow)

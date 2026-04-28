@@ -44,7 +44,7 @@ returns the current active scene Instance, so entity code can
 `engine.scene.player_pos` (or similar). Phase 4 may dovetail this
 with the Bevy-style query pattern from `docs/03-runtime.md`.
 
-### F3. No collision query
+### F3. No collision query — **CLOSED 2026-04-28 (Phase 2 follow-on)**
 
 Survive has bullets and monsters; checking which bullets are inside
 which monsters means iterating `env.active_entities` from Twe code,
@@ -53,9 +53,13 @@ self-destruct only when they touch the player, no bullet/monster
 collision. The parsed-but-dead `kills` counter is the visible
 symptom.
 
-**Fix shape:** a stdlib `entities.of(Class)` returning a list of live
-instances, or per-class `Class.all` access. Either way needs a
-sanctioned read view of `env.active_entities`.
+**Fix shipped:** `entities.of(Class)` returns a list of live
+instances; `entities.count(Class)` returns the count. Picked the
+function-call form over the `Class.all` field-access form because it
+needs no new grammar rule (Principle 4: predictable LL(1)-ish
+grammar). Survive's Bullet now iterates `entities.of(Monster)` in
+its `update(dt)` and despawns both on overlap. F6 closes with the
+same fix.
 
 ### F4. No catch-up on `every` clocks under big dt
 
@@ -83,13 +87,14 @@ each frame with the real dt. Or fold `every <duration>:` and
 `on update:` into a single concept where the duration of `on update`
 is "every frame".
 
-### F6. No direct way to query active-entities count or filter
+### F6. No direct way to query active-entities count or filter — **CLOSED 2026-04-28**
 
 For collision, scoring, AI lookup ("nearest monster"), etc. — all
 of these want list views of entities. Phase 2 punted by spawning
 nothing-vs-nothing.
 
-**Fix shape:** see F3.
+**Fix shipped:** see F3 — `entities.of(Class)` and
+`entities.count(Class)`.
 
 ### F7. Strings are immutable; tuples too
 

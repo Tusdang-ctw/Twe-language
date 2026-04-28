@@ -555,6 +555,7 @@ Detailed in a separate document (`stdlib.md`, not yet written). Sections planned
 6. **`time`** — `time.now`, `time.delta`, `time.frame`.
 7. **`input`** — `key`, `mouse`, `gamepad`.
 8. **`scene`** — `scene.find`, `scene.spawn`, `scene.npc`, `scene.enter`.
+8a. **`entities`** *(v0.1)* — `entities.of(Class)` returns a list of live instances of a class; `entities.count(Class)` returns just the count. Closes the iteration-on-dynamic-instances gap from the Phase 2 frustration list (F3 / F6) and is what bullet/enemy collision in `examples/survive.twe` is built on.
 9. **`asset`** — `load`, `load_mesh`, `load_sound`.
 10. **`io`** — `read_file`, `write_file`, `save_to`, `load_from`.
 11. **`net`** — minimal HTTP for fetching at dev time; full networking deferred.

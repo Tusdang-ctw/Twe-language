@@ -418,6 +418,31 @@ fn survive_parses_and_ticks() {
 }
 
 #[test]
+fn entities_of_returns_only_live_instances_of_class() {
+    let out = run_program("tests/programs/entity_query.twe").expect("program should run");
+    // 3 mobs spawned, 1 bullet. entities.count returns 3, 1.
+    // entities.of(Mob).length is 3. Each mob's hp default is 1.
+    assert_eq!(out, "3\n1\n3\n1\n1\n1\n");
+}
+
+#[test]
+fn bullet_despawns_overlapping_monster_and_bumps_kills() {
+    // Per tick_frame: top-level on update(dt) runs before entities.
+    // Frame 1: prints kills=0, then bullet collides, kills becomes 1.
+    // Frame 2: prints kills=1; bullet is gone, nothing else happens.
+    let out = run_program_frames("tests/programs/bullet_collision.twe", 2, 0.016)
+        .expect("program should run");
+    assert_eq!(out, "0\n1\n");
+}
+
+#[test]
+fn entities_of_with_non_class_errors() {
+    let err = run_program_str("print(entities.of(42))\n").expect_err("should fail");
+    assert!(err.contains("entities.of"), "got: {err}");
+    assert!(err.contains("class"), "got: {err}");
+}
+
+#[test]
 fn spawn_at_sets_pos_field() {
     use twec::value::Value;
     let src = r#"

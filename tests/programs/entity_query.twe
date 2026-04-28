@@ -1,0 +1,24 @@
+# entities.of(Class) returns a list of live instances of that class.
+# Closes Phase-2 frustration F3 / F6 — entity-collision scripting.
+
+entity Mob:
+    var hp = 1
+    function update(dt):
+        # nothing — kept alive so entities.of() can find them.
+
+entity Bullet:
+    function update(dt):
+        # nothing.
+
+spawn Mob at (0, 0)
+spawn Mob at (1, 0)
+spawn Mob at (2, 0)
+spawn Bullet at (0, 0)
+
+print(entities.count(Mob))
+print(entities.count(Bullet))
+
+let mobs = entities.of(Mob)
+print(mobs.length)
+for m in mobs:
+    print(m.hp)

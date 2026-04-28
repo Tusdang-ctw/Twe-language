@@ -54,6 +54,7 @@ pub fn install(env: &mut Env) {
     install_color(env);
     install_screen(env);
     install_draw(env);
+    install_entities(env);
 }
 
 fn install_math(env: &mut Env) {
@@ -530,6 +531,92 @@ fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color,
     );
     Ok(Value::Nil)
+}
+
+fn install_entities(env: &mut Env) {
+    let mut entities = HashMap::new();
+    entities.insert(
+        "of".to_string(),
+        Value::Builtin {
+            name: "entities.of",
+            func: entities_of,
+        },
+    );
+    entities.insert(
+        "count".to_string(),
+        Value::Builtin {
+            name: "entities.count",
+            func: entities_count,
+        },
+    );
+    env.set(
+        "entities".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: entities,
+            kind: "module",
+        }))),
+    );
+}
+
+fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "entities.of")?;
+    let class = match &args[0] {
+        Value::Class(c) => c.clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "entities.of expects a class (e.g. `entities.of(Monster)`), got {}",
+                    other.type_name()
+                ),
+                help: Some(
+                    "pass the entity class itself, not an instance".to_string(),
+                ),
+            });
+        }
+    };
+    let mut result = Vec::new();
+    for inst in &env.active_entities {
+        let borrowed = inst.borrow();
+        if borrowed.despawned {
+            continue;
+        }
+        if Rc::ptr_eq(&borrowed.class, &class) {
+            drop(borrowed);
+            result.push(Value::Instance(inst.clone()));
+        }
+    }
+    Ok(Value::List(Rc::new(RefCell::new(result))))
+}
+
+fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "entities.count")?;
+    let class = match &args[0] {
+        Value::Class(c) => c.clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "entities.count expects a class (e.g. `entities.count(Monster)`), got {}",
+                    other.type_name()
+                ),
+                help: None,
+            });
+        }
+    };
+    let mut n: i64 = 0;
+    for inst in &env.active_entities {
+        let borrowed = inst.borrow();
+        if borrowed.despawned {
+            continue;
+        }
+        if Rc::ptr_eq(&borrowed.class, &class) {
+            n += 1;
+        }
+    }
+    Ok(Value::Int(n))
 }
 
 fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

@@ -1,0 +1,30 @@
+# Smoke-test for bullet/monster collision via entities.of(Monster).
+# Mirrors examples/survive.twe semantics in miniature: a bullet placed
+# on top of a monster despawns both and bumps `kills`.
+
+var kills = 0
+var alive = true
+
+entity Monster:
+    var pos = (0.0, 0.0)
+    function update(dt):
+        # Monsters don't move in this test.
+
+entity Bullet:
+    var pos = (0.0, 0.0)
+    function update(dt):
+        for monster in entities.of(Monster):
+            let dx = monster.pos.x - pos.x
+            let dy = monster.pos.y - pos.y
+            if dx * dx + dy * dy < 14.0 * 14.0:
+                despawn monster
+                despawn self
+                kills += 1
+                return
+
+spawn Monster at (50.0, 50.0)
+spawn Monster at (200.0, 200.0)
+spawn Bullet at (50.0, 50.0)
+
+on update(dt):
+    print(kills)
