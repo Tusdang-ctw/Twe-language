@@ -169,30 +169,85 @@ impl VM {
     /// (`invoke_method_value`) target is the caller's frame count,
     /// so dispatch returns once the callee's `OP_RETURN` pops back.
     fn dispatch(&mut self, target_depth: usize) -> Result<Value, RuntimeError> {
-        loop {
-            // Borrow info from the active frame without holding the
-            // borrow across the match arms — the dispatch arms need
-            // mutable access to `self.frames` (for push/pop) and to
-            // `self.stack`, so we copy the bytes we need each tick.
-            let (op, line, ip_after_op) = {
-                let frame = self.frames.last().expect("at least one frame");
-                let chunk = &frame.function.chunk;
-                if frame.ip >= chunk.code.len() {
-                    // Bytecode without an explicit OP_RETURN at the end
-                    // would land here; the compiler always emits one,
-                    // so this is a defensive fallthrough.
-                    return Ok(self.stack.pop().unwrap_or(Value::Nil));
-                }
-                let line = chunk.lines[frame.ip];
-                let op = OpCode::from_u8(chunk.code[frame.ip]);
-                (op, line, frame.ip + 1)
+        // Hoist the active frame's function and ip into locals so the
+        // dispatch loop skips the per-instruction `self.frames.last()`
+        // / `last_mut()` Vec lookups. Sync back to the frame slot
+        // only on Call / Invoke (which may push a frame and continue
+        // dispatching it inline) and Return (which always pops).
+        // Per *Crafting Interpreters* §24.7: the single biggest
+        // dispatch win in the Lox VM.
+        //
+        // Frame-mutating helpers that call `invoke_method_value`
+        // internally (enter_state, tick_scene, seed_particle_emitter,
+        // ...) push and pop their own frames in a balanced way via a
+        // nested `dispatch()` invocation. From this outer dispatch's
+        // perspective, the frame stack is unchanged after they return,
+        // so the cached locals stay valid — no sync/reload needed
+        // around InitScene / Spawn / Despawn / Transition.
+        let mut current_func = Rc::clone(&self.frames.last().unwrap().function);
+        let mut ip = self.frames.last().unwrap().ip;
+
+        macro_rules! sync_ip {
+            () => {
+                self.frames.last_mut().unwrap().ip = ip;
             };
-            self.frames.last_mut().unwrap().ip = ip_after_op;
+        }
+        macro_rules! reload {
+            () => {
+                let top = self.frames.last().unwrap();
+                current_func = Rc::clone(&top.function);
+                ip = top.ip;
+            };
+        }
+        macro_rules! read_byte {
+            () => {{
+                let b = current_func.chunk.code[ip];
+                ip += 1;
+                b
+            }};
+        }
+        macro_rules! read_u16 {
+            () => {{
+                let hi = current_func.chunk.code[ip] as u16;
+                let lo = current_func.chunk.code[ip + 1] as u16;
+                ip += 2;
+                (hi << 8) | lo
+            }};
+        }
+        macro_rules! read_string_const {
+            ($idx:expr, $line:expr) => {{
+                match &current_func.chunk.constants[$idx] {
+                    Value::Str(s) => Ok(s.clone()),
+                    other => Err(RuntimeError {
+                        line: $line,
+                        col: 0,
+                        message: format!(
+                            "vm: expected a string constant for global name, got {}",
+                            other.type_name()
+                        ),
+                        help: Some(
+                            "compiler bug — global ops must point at a Value::Str".to_string(),
+                        ),
+                    }),
+                }
+            }};
+        }
+
+        loop {
+            if ip >= current_func.chunk.code.len() {
+                // Defensive — the compiler always emits OP_RETURN, so
+                // this is a fallthrough only on a malformed chunk.
+                sync_ip!();
+                return Ok(self.stack.pop().unwrap_or(Value::Nil));
+            }
+            let line = current_func.chunk.lines[ip];
+            let op = OpCode::from_u8(current_func.chunk.code[ip]);
+            ip += 1;
 
             match op {
                 OpCode::Constant => {
-                    let idx = self.read_byte() as usize;
-                    let value = self.read_constant(idx);
+                    let idx = read_byte!() as usize;
+                    let value = current_func.chunk.constants[idx].clone();
                     self.push(value);
                 }
                 OpCode::Nil => self.push(Value::Nil),
@@ -241,22 +296,19 @@ impl VM {
                     if self.frames.len() < target_depth {
                         // Nested invocation completing: leave the
                         // result on the stack so the VM-side caller
-                        // can pop it (mirrors the OP_CALL / OP_INVOKE
-                        // contract for bytecode callers).
+                        // can pop it.
                         self.push(result.clone());
                         return Ok(result);
                     }
                     if self.frames.is_empty() {
-                        // Script frame ended at top level. The result
-                        // is the script's return value (typically Nil).
+                        // Script frame ended at top level.
                         return Ok(result);
                     }
-                    // Bytecode-internal call returning to a caller
-                    // frame: push the return value for the caller.
                     self.push(result);
+                    reload!();
                 }
                 OpCode::GetLocal => {
-                    let slot = self.read_byte() as usize;
+                    let slot = read_byte!() as usize;
                     let abs = self.frames.last().unwrap().slot_base + slot;
                     let v = self.stack.get(abs).cloned().ok_or_else(|| RuntimeError {
                         line,
@@ -273,7 +325,7 @@ impl VM {
                     self.push(v);
                 }
                 OpCode::SetLocal => {
-                    let slot = self.read_byte() as usize;
+                    let slot = read_byte!() as usize;
                     let abs = self.frames.last().unwrap().slot_base + slot;
                     if abs >= self.stack.len() {
                         return Err(RuntimeError {
@@ -286,21 +338,18 @@ impl VM {
                             help: None,
                         });
                     }
-                    // Peek, don't pop: the assignment expression keeps
-                    // its value on the stack so the producer's OP_POP
-                    // drops it cleanly.
                     let v = self.stack.last().cloned().unwrap();
                     self.stack[abs] = v;
                 }
                 OpCode::JumpIfFalse => {
-                    let offset = self.read_u16();
+                    let offset = read_u16!();
                     let v = self.pop()?;
                     if !is_truthy(&v) {
-                        self.frames.last_mut().unwrap().ip += offset as usize;
+                        ip += offset as usize;
                     }
                 }
                 OpCode::JumpIfFalsePeek => {
-                    let offset = self.read_u16();
+                    let offset = read_u16!();
                     let truthy = self
                         .stack
                         .last()
@@ -312,11 +361,11 @@ impl VM {
                             help: None,
                         })?;
                     if !truthy {
-                        self.frames.last_mut().unwrap().ip += offset as usize;
+                        ip += offset as usize;
                     }
                 }
                 OpCode::JumpIfTruePeek => {
-                    let offset = self.read_u16();
+                    let offset = read_u16!();
                     let truthy = self
                         .stack
                         .last()
@@ -328,34 +377,31 @@ impl VM {
                             help: None,
                         })?;
                     if truthy {
-                        self.frames.last_mut().unwrap().ip += offset as usize;
+                        ip += offset as usize;
                     }
                 }
                 OpCode::Jump => {
-                    let offset = self.read_u16();
-                    self.frames.last_mut().unwrap().ip += offset as usize;
+                    let offset = read_u16!();
+                    ip += offset as usize;
                 }
                 OpCode::Loop => {
-                    let offset = self.read_u16();
-                    let frame = self.frames.last_mut().unwrap();
-                    frame.ip = frame.ip.checked_sub(offset as usize).ok_or_else(|| {
-                        RuntimeError {
-                            line,
-                            col: 0,
-                            message: "vm: OP_LOOP offset underflow".to_string(),
-                            help: None,
-                        }
+                    let offset = read_u16!();
+                    ip = ip.checked_sub(offset as usize).ok_or_else(|| RuntimeError {
+                        line,
+                        col: 0,
+                        message: "vm: OP_LOOP offset underflow".to_string(),
+                        help: None,
                     })?;
                 }
                 OpCode::DefineGlobal => {
-                    let idx = self.read_byte() as usize;
-                    let name = self.read_string_constant(idx, line)?;
+                    let idx = read_byte!() as usize;
+                    let name = read_string_const!(idx, line)?;
                     let value = self.pop()?;
                     self.globals.insert((*name).clone(), value);
                 }
                 OpCode::GetGlobal => {
-                    let idx = self.read_byte() as usize;
-                    let name = self.read_string_constant(idx, line)?;
+                    let idx = read_byte!() as usize;
+                    let name = read_string_const!(idx, line)?;
                     let value = self.globals.get(name.as_str()).cloned().ok_or_else(|| {
                         RuntimeError {
                             line,
@@ -369,8 +415,8 @@ impl VM {
                     self.push(value);
                 }
                 OpCode::SetGlobal => {
-                    let idx = self.read_byte() as usize;
-                    let name = self.read_string_constant(idx, line)?;
+                    let idx = read_byte!() as usize;
+                    let name = read_string_const!(idx, line)?;
                     if !self.globals.contains_key(name.as_str()) {
                         return Err(RuntimeError {
                             line,
@@ -381,8 +427,6 @@ impl VM {
                             )),
                         });
                     }
-                    // Peek, don't pop — assignment is an expression;
-                    // its statement caller will OP_POP the value.
                     let v = self
                         .stack
                         .last()
@@ -396,21 +440,29 @@ impl VM {
                     self.globals.insert((*name).clone(), v);
                 }
                 OpCode::Call => {
-                    let arg_count = self.read_byte() as usize;
+                    let arg_count = read_byte!() as usize;
+                    let frames_before = self.frames.len();
+                    sync_ip!();
                     self.call_value(arg_count, line)?;
+                    if self.frames.len() != frames_before {
+                        // call_value pushed a frame for a BcFunction;
+                        // dispatch resumes inside it. Builtin / BcClass
+                        // calls don't push a frame so we stay put.
+                        reload!();
+                    }
                 }
                 OpCode::BuildTuple => {
-                    let n = self.read_byte() as usize;
+                    let n = read_byte!() as usize;
                     let elems = self.pop_n(n, line)?;
                     self.push(Value::Tuple(Rc::new(elems)));
                 }
                 OpCode::BuildList => {
-                    let n = self.read_byte() as usize;
+                    let n = read_byte!() as usize;
                     let elems = self.pop_n(n, line)?;
                     self.push(Value::List(Rc::new(RefCell::new(elems))));
                 }
                 OpCode::BuildRange => {
-                    let exclusive = self.read_byte() != 0;
+                    let exclusive = read_byte!() != 0;
                     let end = self.pop()?;
                     let start = self.pop()?;
                     match (&start, &end) {
@@ -447,7 +499,7 @@ impl VM {
                     self.push(Value::Str(Rc::new(v.display())));
                 }
                 OpCode::Interp => {
-                    let n = self.read_byte() as usize;
+                    let n = read_byte!() as usize;
                     let parts = self.pop_n(n, line)?;
                     let mut out = String::new();
                     for p in &parts {
@@ -479,18 +531,15 @@ impl VM {
                     self.push(Value::Bool(found));
                 }
                 OpCode::GetField => {
-                    let idx = self.read_byte() as usize;
-                    let name = self.read_string_constant(idx, line)?;
+                    let idx = read_byte!() as usize;
+                    let name = read_string_const!(idx, line)?;
                     let recv = self.pop()?;
                     let v = field_get(&recv, name.as_str(), line)?;
                     self.push(v);
                 }
                 OpCode::SetField => {
-                    let idx = self.read_byte() as usize;
-                    let name = self.read_string_constant(idx, line)?;
-                    // Stack: [..., recv, value]. Set leaves the value
-                    // on top so the assignment expression's caller can
-                    // OP_POP it (statement context) or use it (rare).
+                    let idx = read_byte!() as usize;
+                    let name = read_string_const!(idx, line)?;
                     let value = self.pop()?;
                     let recv = self.pop()?;
                     field_set(&recv, name.as_str(), value.clone(), line)?;
@@ -518,11 +567,15 @@ impl VM {
                     };
                     self.active_scene = Some(inst.clone());
                     if let Some(start) = class.initial_state.clone() {
+                        // enter_state runs nested invocations via
+                        // invoke_method_value (separate dispatch);
+                        // frames.len() unchanged after return.
+                        sync_ip!();
                         self.enter_state(&inst, &start)?;
                     }
                 }
                 OpCode::Spawn => {
-                    let with_at = self.read_byte() != 0;
+                    let with_at = read_byte!() != 0;
                     let class_val = self.pop()?;
                     let at_value = if with_at { Some(self.pop()?) } else { None };
                     let class = match class_val {
@@ -547,10 +600,12 @@ impl VM {
                         inst.borrow_mut().fields.insert("pos".to_string(), at);
                     }
                     if class.kind == "particles" {
+                        sync_ip!();
                         self.seed_particle_emitter(&inst, at_value, line)?;
                     }
                     self.active_entities.push(inst.clone());
                     if let Some(start) = class.initial_state.clone() {
+                        sync_ip!();
                         self.enter_state(&inst, &start)?;
                     }
                 }
@@ -574,13 +629,13 @@ impl VM {
                     }
                 }
                 OpCode::Transition => {
-                    let idx = self.read_byte() as usize;
-                    let target = self.read_string_constant(idx, line)?;
+                    let idx = read_byte!() as usize;
+                    let target = read_string_const!(idx, line)?;
                     self.transitioning = Some((*target).clone());
                 }
                 OpCode::SetOnUpdate => {
-                    let idx = self.read_byte() as usize;
-                    let value = self.read_constant(idx);
+                    let idx = read_byte!() as usize;
+                    let value = current_func.chunk.constants[idx].clone();
                     match value {
                         Value::BcFunction(func) => {
                             self.on_update = Some(func);
@@ -599,14 +654,21 @@ impl VM {
                     }
                 }
                 OpCode::Invoke => {
-                    let name_idx = self.read_byte() as usize;
-                    let arg_count = self.read_byte() as usize;
-                    let name = self.read_string_constant(name_idx, line)?;
+                    let name_idx = read_byte!() as usize;
+                    let arg_count = read_byte!() as usize;
+                    let name = read_string_const!(name_idx, line)?;
+                    let frames_before = self.frames.len();
+                    sync_ip!();
                     self.invoke_method(name.as_str(), arg_count, line)?;
+                    if self.frames.len() != frames_before {
+                        // BcInstance method dispatch pushed a frame;
+                        // List/Range/Object intrinsics didn't.
+                        reload!();
+                    }
                 }
                 OpCode::ForNext => {
-                    let base_slot = self.read_byte() as usize;
-                    let exit_offset = self.read_u16();
+                    let base_slot = read_byte!() as usize;
+                    let exit_offset = read_u16!();
                     let abs_iter = self.frames.last().unwrap().slot_base + base_slot;
                     let abs_counter = abs_iter + 1;
                     let counter = match self.stack.get(abs_counter) {
@@ -668,7 +730,7 @@ impl VM {
                             self.push(elem);
                         }
                         None => {
-                            self.frames.last_mut().unwrap().ip += exit_offset as usize;
+                            ip += exit_offset as usize;
                         }
                     }
                 }
@@ -1308,52 +1370,6 @@ impl VM {
         Ok(())
     }
 
-    /// Read a single byte from the active frame's chunk and bump IP.
-    fn read_byte(&mut self) -> u8 {
-        let frame = self.frames.last_mut().expect("frame");
-        let byte = frame.function.chunk.code[frame.ip];
-        frame.ip += 1;
-        byte
-    }
-
-    /// Read a big-endian u16 operand from the active frame's chunk
-    /// and bump IP by 2.
-    fn read_u16(&mut self) -> u16 {
-        let frame = self.frames.last_mut().expect("frame");
-        let chunk = &frame.function.chunk;
-        let hi = chunk.code[frame.ip] as u16;
-        let lo = chunk.code[frame.ip + 1] as u16;
-        frame.ip += 2;
-        (hi << 8) | lo
-    }
-
-    fn read_constant(&self, idx: usize) -> Value {
-        let frame = self.frames.last().expect("frame");
-        frame.function.chunk.constants[idx].clone()
-    }
-
-    /// Read a `Value::Str` from the active chunk's constant pool
-    /// and return its `Rc<String>` cloned (one ref-count bump, no
-    /// allocation). Hot-path consumers like OP_GET_GLOBAL hit this
-    /// every iteration of inner loops; returning `Rc<String>` lets
-    /// them do `name.as_str()` for `HashMap<String, _>::get` via
-    /// `Borrow`, with zero allocation on the common path. Owners
-    /// (DefineGlobal, SetGlobal insert, Transition) still pay one
-    /// `String::clone` — but those fire much less often.
-    fn read_string_constant(&self, idx: usize, line: u32) -> Result<Rc<String>, RuntimeError> {
-        match &self.frames.last().expect("frame").function.chunk.constants[idx] {
-            Value::Str(s) => Ok(s.clone()),
-            other => Err(RuntimeError {
-                line,
-                col: 0,
-                message: format!(
-                    "vm: expected a string constant for global name, got {}",
-                    other.type_name()
-                ),
-                help: Some("compiler bug — global ops must point at a Value::Str".to_string()),
-            }),
-        }
-    }
 
     fn push(&mut self, v: Value) {
         self.stack.push(v);
