@@ -351,12 +351,12 @@ impl VM {
                     let idx = self.read_byte() as usize;
                     let name = self.read_string_constant(idx, line)?;
                     let value = self.pop()?;
-                    self.globals.insert(name, value);
+                    self.globals.insert((*name).clone(), value);
                 }
                 OpCode::GetGlobal => {
                     let idx = self.read_byte() as usize;
                     let name = self.read_string_constant(idx, line)?;
-                    let value = self.globals.get(&name).cloned().ok_or_else(|| {
+                    let value = self.globals.get(name.as_str()).cloned().ok_or_else(|| {
                         RuntimeError {
                             line,
                             col: 0,
@@ -371,7 +371,7 @@ impl VM {
                 OpCode::SetGlobal => {
                     let idx = self.read_byte() as usize;
                     let name = self.read_string_constant(idx, line)?;
-                    if !self.globals.contains_key(&name) {
+                    if !self.globals.contains_key(name.as_str()) {
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -393,7 +393,7 @@ impl VM {
                             message: "vm: stack underflow on SetGlobal".to_string(),
                             help: None,
                         })?;
-                    self.globals.insert(name, v);
+                    self.globals.insert((*name).clone(), v);
                 }
                 OpCode::Call => {
                     let arg_count = self.read_byte() as usize;
@@ -482,7 +482,7 @@ impl VM {
                     let idx = self.read_byte() as usize;
                     let name = self.read_string_constant(idx, line)?;
                     let recv = self.pop()?;
-                    let v = field_get(&recv, &name, line)?;
+                    let v = field_get(&recv, name.as_str(), line)?;
                     self.push(v);
                 }
                 OpCode::SetField => {
@@ -493,7 +493,7 @@ impl VM {
                     // OP_POP it (statement context) or use it (rare).
                     let value = self.pop()?;
                     let recv = self.pop()?;
-                    field_set(&recv, &name, value.clone(), line)?;
+                    field_set(&recv, name.as_str(), value.clone(), line)?;
                     self.push(value);
                 }
                 OpCode::InitScene => {
@@ -576,7 +576,7 @@ impl VM {
                 OpCode::Transition => {
                     let idx = self.read_byte() as usize;
                     let target = self.read_string_constant(idx, line)?;
-                    self.transitioning = Some(target);
+                    self.transitioning = Some((*target).clone());
                 }
                 OpCode::SetOnUpdate => {
                     let idx = self.read_byte() as usize;
@@ -602,7 +602,7 @@ impl VM {
                     let name_idx = self.read_byte() as usize;
                     let arg_count = self.read_byte() as usize;
                     let name = self.read_string_constant(name_idx, line)?;
-                    self.invoke_method(&name, arg_count, line)?;
+                    self.invoke_method(name.as_str(), arg_count, line)?;
                 }
                 OpCode::ForNext => {
                     let base_slot = self.read_byte() as usize;
@@ -1332,9 +1332,17 @@ impl VM {
         frame.function.chunk.constants[idx].clone()
     }
 
-    fn read_string_constant(&self, idx: usize, line: u32) -> Result<String, RuntimeError> {
+    /// Read a `Value::Str` from the active chunk's constant pool
+    /// and return its `Rc<String>` cloned (one ref-count bump, no
+    /// allocation). Hot-path consumers like OP_GET_GLOBAL hit this
+    /// every iteration of inner loops; returning `Rc<String>` lets
+    /// them do `name.as_str()` for `HashMap<String, _>::get` via
+    /// `Borrow`, with zero allocation on the common path. Owners
+    /// (DefineGlobal, SetGlobal insert, Transition) still pay one
+    /// `String::clone` — but those fire much less often.
+    fn read_string_constant(&self, idx: usize, line: u32) -> Result<Rc<String>, RuntimeError> {
         match &self.frames.last().expect("frame").function.chunk.constants[idx] {
-            Value::Str(s) => Ok(s.as_ref().clone()),
+            Value::Str(s) => Ok(s.clone()),
             other => Err(RuntimeError {
                 line,
                 col: 0,
