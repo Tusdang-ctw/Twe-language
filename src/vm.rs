@@ -1,12 +1,15 @@
-//! Bytecode dispatch loop. Phase-3 sessions 7–9.
+//! Bytecode dispatch loop. Phase-3 sessions 7–10.
 //!
 //! Reads a `Chunk` produced by `crate::compiler` and evaluates it
 //! against an internal value stack. Semantics match the tree-walker
 //! in `crate::eval` for the subset that's compiled so far: numeric
 //! arithmetic with int/float coercion, string `+` concatenation,
 //! structural `==` / `!=`, numeric comparisons, control flow,
-//! globals, and (session 9) user-defined functions with calls and
-//! returns.
+//! globals, user-defined functions with calls and returns
+//! (session 9), and (session 10) heap-type literals (tuple, list,
+//! range), indexing, string interpolation, `in` / `not in`, tuple
+//! arithmetic, list/range built-in methods, and `for x in iter:`
+//! over ranges, lists, and tuples.
 //!
 //! Frame layout per *Crafting Interpreters* §24.4:
 //! - The top-level script is wrapped in a synthetic `BcFunction`
@@ -19,11 +22,31 @@
 //!   and pushes the return value, leaving the caller's stack as if
 //!   the call expression evaluated to that value.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::bytecode::{BcFunction, Chunk, OpCode};
 use crate::value::{RuntimeError, Value};
+
+#[derive(Copy, Clone)]
+enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl ArithOp {
+    fn as_str(self) -> &'static str {
+        match self {
+            ArithOp::Add => "+",
+            ArithOp::Sub => "-",
+            ArithOp::Mul => "*",
+            ArithOp::Div => "/",
+        }
+    }
+}
 
 const FRAMES_MAX: usize = 256;
 
@@ -43,6 +66,10 @@ pub struct VM {
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
+    /// xorshift64* state for `range.roll`. Same algorithm and default
+    /// seed as `Env` so a deterministic test seed yields the same
+    /// sequence on the tree-walker and the VM.
+    rng: u64,
     /// Captured `print` output, mirroring `Env::out` from the tree
     /// walker so test harnesses can compare them.
     pub out: String,
@@ -60,6 +87,7 @@ impl VM {
             stack: Vec::with_capacity(256),
             frames: Vec::with_capacity(64),
             globals: HashMap::new(),
+            rng: 0x9E37_79B9_7F4A_7C15,
             out: String::new(),
         }
     }
@@ -116,10 +144,10 @@ impl VM {
                 OpCode::Pop => {
                     self.pop()?;
                 }
-                OpCode::Add => self.binary_arith("+", line, |a, b| a + b, |a, b| a + b)?,
-                OpCode::Sub => self.binary_arith("-", line, |a, b| a - b, |a, b| a - b)?,
-                OpCode::Mul => self.binary_arith("*", line, |a, b| a * b, |a, b| a * b)?,
-                OpCode::Div => self.binary_div(line)?,
+                OpCode::Add => self.binary_arith(ArithOp::Add, line)?,
+                OpCode::Sub => self.binary_arith(ArithOp::Sub, line)?,
+                OpCode::Mul => self.binary_arith(ArithOp::Mul, line)?,
+                OpCode::Div => self.binary_arith(ArithOp::Div, line)?,
                 OpCode::Mod => self.binary_mod(line)?,
                 OpCode::Neg => self.unary_neg(line)?,
                 OpCode::Not => {
@@ -307,6 +335,166 @@ impl VM {
                     let arg_count = self.read_byte() as usize;
                     self.call_value(arg_count, line)?;
                 }
+                OpCode::BuildTuple => {
+                    let n = self.read_byte() as usize;
+                    let elems = self.pop_n(n, line)?;
+                    self.push(Value::Tuple(Rc::new(elems)));
+                }
+                OpCode::BuildList => {
+                    let n = self.read_byte() as usize;
+                    let elems = self.pop_n(n, line)?;
+                    self.push(Value::List(Rc::new(RefCell::new(elems))));
+                }
+                OpCode::BuildRange => {
+                    let exclusive = self.read_byte() != 0;
+                    let end = self.pop()?;
+                    let start = self.pop()?;
+                    match (&start, &end) {
+                        (Value::Int(a), Value::Int(b)) => self.push(Value::Range {
+                            start: *a,
+                            end: *b,
+                            exclusive,
+                        }),
+                        _ => {
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "range bounds must be ints, got {} and {}",
+                                    start.type_name(),
+                                    end.type_name()
+                                ),
+                                help: Some(
+                                    "v0.1 supports only integer ranges; float ranges ship later"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                    }
+                }
+                OpCode::Index => {
+                    let idx = self.pop()?;
+                    let obj = self.pop()?;
+                    let v = index_get(&obj, &idx, line)?;
+                    self.push(v);
+                }
+                OpCode::ToStr => {
+                    let v = self.pop()?;
+                    self.push(Value::Str(Rc::new(v.display())));
+                }
+                OpCode::Interp => {
+                    let n = self.read_byte() as usize;
+                    let parts = self.pop_n(n, line)?;
+                    let mut out = String::new();
+                    for p in &parts {
+                        match p {
+                            Value::Str(s) => out.push_str(s),
+                            other => {
+                                return Err(RuntimeError {
+                                    line,
+                                    col: 0,
+                                    message: format!(
+                                        "vm: OP_INTERP got non-string part {}",
+                                        other.type_name()
+                                    ),
+                                    help: Some(
+                                        "compiler bug — every interp part should be a Str \
+                                         (text constants and OP_TO_STR-coerced exprs)"
+                                            .to_string(),
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    self.push(Value::Str(Rc::new(out)));
+                }
+                OpCode::In => {
+                    let haystack = self.pop()?;
+                    let needle = self.pop()?;
+                    let found = value_in(&needle, &haystack, line)?;
+                    self.push(Value::Bool(found));
+                }
+                OpCode::GetField => {
+                    let idx = self.read_byte() as usize;
+                    let name = self.read_string_constant(idx, line)?;
+                    let recv = self.pop()?;
+                    let v = field_get(&recv, &name, line)?;
+                    self.push(v);
+                }
+                OpCode::Invoke => {
+                    let name_idx = self.read_byte() as usize;
+                    let arg_count = self.read_byte() as usize;
+                    let name = self.read_string_constant(name_idx, line)?;
+                    self.invoke_method(&name, arg_count, line)?;
+                }
+                OpCode::ForNext => {
+                    let base_slot = self.read_byte() as usize;
+                    let exit_offset = self.read_u16();
+                    let abs_iter = self.frames.last().unwrap().slot_base + base_slot;
+                    let abs_counter = abs_iter + 1;
+                    let counter = match self.stack.get(abs_counter) {
+                        Some(Value::Int(n)) => *n,
+                        other => {
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "vm: for-loop counter not an int (got {})",
+                                    other.map(Value::type_name).unwrap_or("missing")
+                                ),
+                                help: Some("compiler bug".to_string()),
+                            });
+                        }
+                    };
+                    let iter_value = self.stack[abs_iter].clone();
+                    let next = match &iter_value {
+                        Value::Range { start, end, exclusive } => {
+                            let limit = if *exclusive { *end } else { *end + 1 };
+                            let cur = *start + counter;
+                            if cur < limit {
+                                Some(Value::Int(cur))
+                            } else {
+                                None
+                            }
+                        }
+                        Value::List(rc) => {
+                            let v = rc.borrow();
+                            if (counter as usize) < v.len() {
+                                Some(v[counter as usize].clone())
+                            } else {
+                                None
+                            }
+                        }
+                        Value::Tuple(elems) => {
+                            if (counter as usize) < elems.len() {
+                                Some(elems[counter as usize].clone())
+                            } else {
+                                None
+                            }
+                        }
+                        other => {
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "for-loop iterable must be a range, list, or tuple, \
+                                     got {}",
+                                    other.type_name()
+                                ),
+                                help: None,
+                            });
+                        }
+                    };
+                    match next {
+                        Some(elem) => {
+                            self.stack[abs_counter] = Value::Int(counter + 1);
+                            self.push(elem);
+                        }
+                        None => {
+                            self.frames.last_mut().unwrap().ip += exit_offset as usize;
+                        }
+                    }
+                }
             }
         }
     }
@@ -426,51 +614,78 @@ impl VM {
         })
     }
 
-    fn binary_arith(
-        &mut self,
-        op_str: &str,
-        line: u32,
-        int_op: fn(i64, i64) -> i64,
-        float_op: fn(f64, f64) -> f64,
-    ) -> Result<(), RuntimeError> {
-        let r = self.pop()?;
-        let l = self.pop()?;
-        // String concatenation via `+`.
-        if op_str == "+" {
-            if let (Value::Str(a), Value::Str(b)) = (&l, &r) {
-                let mut s = String::with_capacity(a.len() + b.len());
-                s.push_str(a);
-                s.push_str(b);
-                self.push(Value::Str(Rc::new(s)));
-                return Ok(());
-            }
+    /// Pop the top `n` values, returning them in source order (the
+    /// value pushed first is index 0). Used by OP_BUILD_TUPLE,
+    /// OP_BUILD_LIST, OP_INTERP — all of which need the constructor
+    /// values in the order they were emitted.
+    fn pop_n(&mut self, n: usize, line: u32) -> Result<Vec<Value>, RuntimeError> {
+        if self.stack.len() < n {
+            return Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "vm: stack underflow popping {n} values (have {})",
+                    self.stack.len()
+                ),
+                help: Some("compiler bug".to_string()),
+            });
         }
-        let result = match (&l, &r) {
-            (Value::Int(a), Value::Int(b)) => Value::Int(int_op(*a, *b)),
-            (Value::Float(a), Value::Float(b)) => Value::Float(float_op(*a, *b)),
-            (Value::Int(a), Value::Float(b)) => Value::Float(float_op(*a as f64, *b)),
-            (Value::Float(a), Value::Int(b)) => Value::Float(float_op(*a, *b as f64)),
-            _ => {
-                return Err(type_error(op_str, &l, &r, line));
+        let at = self.stack.len() - n;
+        Ok(self.stack.drain(at..).collect())
+    }
+
+    /// OP_INVOKE handler. The receiver is on the stack at `top -
+    /// arg_count`, with the args above it. Dispatches by receiver
+    /// type to built-in methods; mirrors `eval::list_method_call` /
+    /// `eval::range_method_call`. User-defined methods on Instance
+    /// land with the declarative-block pass in session 11.
+    fn invoke_method(
+        &mut self,
+        name: &str,
+        arg_count: usize,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        let recv_idx = self
+            .stack
+            .len()
+            .checked_sub(arg_count + 1)
+            .ok_or_else(|| RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "vm: stack underflow on Invoke (arg_count={arg_count}, stack={})",
+                    self.stack.len()
+                ),
+                help: None,
+            })?;
+        let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
+        let recv = self.stack.pop().expect("receiver");
+        let result = match &recv {
+            Value::List(rc) => list_method(rc, name, &args, line)?,
+            Value::Range { start, end, exclusive } => {
+                range_method(*start, *end, *exclusive, name, &args, line, &mut self.rng)?
+            }
+            other => {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!(
+                        "method `.{name}` is not defined on {} (instance methods land in \
+                         the declarative-blocks pass)",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
             }
         };
         self.push(result);
         Ok(())
     }
 
-    fn binary_div(&mut self, line: u32) -> Result<(), RuntimeError> {
+    fn binary_arith(&mut self, op: ArithOp, line: u32) -> Result<(), RuntimeError> {
         let r = self.pop()?;
         let l = self.pop()?;
-        let result = match (&l, &r) {
-            (Value::Int(_), Value::Int(0)) => {
-                return Err(division_by_zero(line));
-            }
-            (Value::Int(a), Value::Int(b)) => Value::Int(a / b),
-            (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
-            (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 / *b),
-            (Value::Float(a), Value::Int(b)) => Value::Float(*a / *b as f64),
-            _ => return Err(type_error("/", &l, &r, line)),
-        };
+        let result = apply_arith(op, &l, &r, line)?;
         self.push(result);
         Ok(())
     }
@@ -556,11 +771,11 @@ fn is_truthy(v: &Value) -> bool {
 }
 
 fn values_equal(l: &Value, r: &Value) -> bool {
-    // Mirror the tree-walker's `values_equal` in eval.rs for the
-    // value types the bytecode VM currently sees: Nil, Bool, Int,
-    // Float, Str. Heap types and instances arrive in later sessions
-    // and will need to be added here at the same time they're added
-    // to the compiler.
+    // Mirror `eval::values_equal`. Tuple equality recurses; Range
+    // and Str compare by structural identity. Lists are
+    // intentionally compared by Rc identity (same as eval) — two
+    // distinct list values with equal contents are not `==`,
+    // matching the mutability story.
     match (l, r) {
         (Value::Nil, Value::Nil) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -569,8 +784,368 @@ fn values_equal(l: &Value, r: &Value) -> bool {
         (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
         (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
         (Value::Str(a), Value::Str(b)) => a == b,
+        (Value::Tuple(a), Value::Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y))
+        }
+        (
+            Value::Range { start: s1, end: e1, exclusive: x1 },
+            Value::Range { start: s2, end: e2, exclusive: x2 },
+        ) => s1 == s2 && e1 == e2 && x1 == x2,
         _ => false,
     }
+}
+
+/// Numeric / string / tuple arithmetic. Mirrors `eval::apply_arith`
+/// but takes a small `ArithOp` enum so the VM dispatch can stay
+/// flat. Tuple element-wise + / - and tuple <-> scalar * / / are
+/// here so Snake-style `cell * cell_size` and `pos + direction`
+/// produce the same Tuple values as the tree-walker.
+fn apply_arith(op: ArithOp, l: &Value, r: &Value, line: u32) -> Result<Value, RuntimeError> {
+    // String concatenation via `+`.
+    if matches!(op, ArithOp::Add) {
+        if let (Value::Str(a), Value::Str(b)) = (l, r) {
+            let mut s = String::with_capacity(a.len() + b.len());
+            s.push_str(a);
+            s.push_str(b);
+            return Ok(Value::Str(Rc::new(s)));
+        }
+    }
+    // Tuple element-wise + / -.
+    if let (Value::Tuple(a), Value::Tuple(b)) = (l, r) {
+        if matches!(op, ArithOp::Add | ArithOp::Sub) {
+            if a.len() != b.len() {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!(
+                        "tuple {} requires equal-length operands ({} vs {})",
+                        op.as_str(),
+                        a.len(),
+                        b.len()
+                    ),
+                    help: None,
+                });
+            }
+            let mut out = Vec::with_capacity(a.len());
+            for (x, y) in a.iter().zip(b.iter()) {
+                out.push(apply_arith(op, x, y, line)?);
+            }
+            return Ok(Value::Tuple(Rc::new(out)));
+        }
+    }
+    // Tuple * / / scalar.
+    if let Value::Tuple(elems) = l {
+        if matches!(op, ArithOp::Mul | ArithOp::Div) && is_scalar(r) {
+            let mut out = Vec::with_capacity(elems.len());
+            for x in elems.iter() {
+                out.push(apply_arith(op, x, r, line)?);
+            }
+            return Ok(Value::Tuple(Rc::new(out)));
+        }
+    }
+    // scalar * Tuple.
+    if let Value::Tuple(elems) = r {
+        if matches!(op, ArithOp::Mul) && is_scalar(l) {
+            let mut out = Vec::with_capacity(elems.len());
+            for y in elems.iter() {
+                out.push(apply_arith(op, l, y, line)?);
+            }
+            return Ok(Value::Tuple(Rc::new(out)));
+        }
+    }
+    // Scalar paths.
+    let result = match (op, l, r) {
+        (ArithOp::Div, Value::Int(_), Value::Int(0)) => return Err(division_by_zero(line)),
+        (ArithOp::Add, Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (ArithOp::Sub, Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (ArithOp::Mul, Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+        (ArithOp::Div, Value::Int(a), Value::Int(b)) => Value::Int(a / b),
+        (ArithOp::Add, Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+        (ArithOp::Sub, Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+        (ArithOp::Mul, Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+        (ArithOp::Div, Value::Float(a), Value::Float(b)) => Value::Float(a / b),
+        (op, Value::Int(a), Value::Float(b)) => mix_float(op, *a as f64, *b, line)?,
+        (op, Value::Float(a), Value::Int(b)) => mix_float(op, *a, *b as f64, line)?,
+        _ => return Err(type_error(op.as_str(), l, r, line)),
+    };
+    Ok(result)
+}
+
+fn mix_float(op: ArithOp, a: f64, b: f64, line: u32) -> Result<Value, RuntimeError> {
+    Ok(match op {
+        ArithOp::Add => Value::Float(a + b),
+        ArithOp::Sub => Value::Float(a - b),
+        ArithOp::Mul => Value::Float(a * b),
+        ArithOp::Div => {
+            if b == 0.0 {
+                return Err(division_by_zero(line));
+            }
+            Value::Float(a / b)
+        }
+    })
+}
+
+fn is_scalar(v: &Value) -> bool {
+    matches!(v, Value::Int(_) | Value::Float(_))
+}
+
+/// Mirrors `eval::index_get`. Lists and tuples are 0-indexed;
+/// negative indices count from the end (Principle 3).
+fn index_get(obj: &Value, idx: &Value, line: u32) -> Result<Value, RuntimeError> {
+    match (obj, idx) {
+        (Value::List(rc), Value::Int(i)) => {
+            let v = rc.borrow();
+            let len = v.len() as i64;
+            let actual = if *i < 0 { *i + len } else { *i };
+            if actual < 0 || actual >= len {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!("list index {i} out of bounds (length {len})"),
+                    help: Some(
+                        "lists are 0-indexed; negative indices count from the end".to_string(),
+                    ),
+                });
+            }
+            Ok(v[actual as usize].clone())
+        }
+        (Value::Tuple(elems), Value::Int(i)) => {
+            let len = elems.len() as i64;
+            let actual = if *i < 0 { *i + len } else { *i };
+            if actual < 0 || actual >= len {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!("tuple index {i} out of bounds (length {len})"),
+                    help: None,
+                });
+            }
+            Ok(elems[actual as usize].clone())
+        }
+        (Value::List(_) | Value::Tuple(_), other) => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!("index must be int, got {}", other.type_name()),
+            help: None,
+        }),
+        (other, _) => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!("cannot index value of type {}", other.type_name()),
+            help: Some("indexing works on lists and tuples".to_string()),
+        }),
+    }
+}
+
+/// Mirrors a subset of `eval::field_get` — tuple .x/.y/.z and
+/// list .length only. Object and Instance fields land in session 11.
+fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> {
+    match obj {
+        Value::Tuple(elems) => match name {
+            "x" if !elems.is_empty() => Ok(elems[0].clone()),
+            "y" if elems.len() >= 2 => Ok(elems[1].clone()),
+            "z" if elems.len() >= 3 => Ok(elems[2].clone()),
+            _ => Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!("tuple has no field '{name}'"),
+                help: Some(
+                    "tuples expose .x, .y, .z (and only those for the leading components)"
+                        .to_string(),
+                ),
+            }),
+        },
+        Value::List(rc) => match name {
+            "length" => Ok(Value::Int(rc.borrow().len() as i64)),
+            _ => Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!("list has no field '{name}'"),
+                help: Some(
+                    "lists expose .length; methods are .append, .prepend, .pop_back, \
+                     .pop_front, .contains"
+                        .to_string(),
+                ),
+            }),
+        },
+        other => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!(
+                "cannot read field '.{name}' on a {} (object/instance fields land in \
+                 the declarative-blocks pass)",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    }
+}
+
+/// Mirrors `eval::value_in`. List/Tuple/Range/Str membership.
+fn value_in(needle: &Value, haystack: &Value, line: u32) -> Result<bool, RuntimeError> {
+    match haystack {
+        Value::List(rc) => Ok(rc.borrow().iter().any(|v| values_equal(v, needle))),
+        Value::Tuple(elems) => Ok(elems.iter().any(|v| values_equal(v, needle))),
+        Value::Range { start, end, exclusive } => match needle {
+            Value::Int(n) => {
+                let upper = if *exclusive { *end } else { *end + 1 };
+                Ok(*n >= *start && *n < upper)
+            }
+            _ => Ok(false),
+        },
+        Value::Str(s) => match needle {
+            Value::Str(sub) => Ok(s.contains(sub.as_ref())),
+            _ => Ok(false),
+        },
+        other => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!(
+                "`in` expects a list, tuple, range, or string, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    }
+}
+
+fn list_method(
+    rc: &Rc<RefCell<Vec<Value>>>,
+    name: &str,
+    args: &[Value],
+    line: u32,
+) -> Result<Value, RuntimeError> {
+    let arity_check = |expected: usize| -> Result<(), RuntimeError> {
+        if args.len() != expected {
+            Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "list.{name} expected {expected} argument{}, got {}",
+                    if expected == 1 { "" } else { "s" },
+                    args.len()
+                ),
+                help: None,
+            })
+        } else {
+            Ok(())
+        }
+    };
+    match name {
+        "append" => {
+            arity_check(1)?;
+            rc.borrow_mut().push(args[0].clone());
+            Ok(Value::Nil)
+        }
+        "prepend" => {
+            arity_check(1)?;
+            rc.borrow_mut().insert(0, args[0].clone());
+            Ok(Value::Nil)
+        }
+        "pop_back" => {
+            arity_check(0)?;
+            rc.borrow_mut().pop().ok_or_else(|| RuntimeError {
+                line,
+                col: 0,
+                message: "pop_back on an empty list".to_string(),
+                help: Some("guard with `if list.length > 0:` before popping".to_string()),
+            })
+        }
+        "pop_front" => {
+            arity_check(0)?;
+            let mut v = rc.borrow_mut();
+            if v.is_empty() {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: "pop_front on an empty list".to_string(),
+                    help: Some("guard with `if list.length > 0:` before popping".to_string()),
+                });
+            }
+            Ok(v.remove(0))
+        }
+        "contains" => {
+            arity_check(1)?;
+            let found = rc.borrow().iter().any(|v| values_equal(v, &args[0]));
+            Ok(Value::Bool(found))
+        }
+        _ => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!("list has no method '{name}'"),
+            help: Some(
+                "list methods are .append, .prepend, .pop_back, .pop_front, .contains".to_string(),
+            ),
+        }),
+    }
+}
+
+fn range_method(
+    start: i64,
+    end: i64,
+    exclusive: bool,
+    name: &str,
+    args: &[Value],
+    line: u32,
+    rng: &mut u64,
+) -> Result<Value, RuntimeError> {
+    match name {
+        "roll" => {
+            if !args.is_empty() {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!("range.roll expected 0 arguments, got {}", args.len()),
+                    help: None,
+                });
+            }
+            let upper = if exclusive { end } else { end + 1 };
+            if upper <= start {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: "range.roll on an empty range".to_string(),
+                    help: None,
+                });
+            }
+            let n = next_random_u64(rng);
+            let span = (upper - start) as u64;
+            Ok(Value::Int(start + (n % span) as i64))
+        }
+        "contains" => {
+            if args.len() != 1 {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: "range.contains expected 1 argument".to_string(),
+                    help: None,
+                });
+            }
+            let upper = if exclusive { end } else { end + 1 };
+            let result = match &args[0] {
+                Value::Int(n) => *n >= start && *n < upper,
+                _ => false,
+            };
+            Ok(Value::Bool(result))
+        }
+        _ => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!("range has no method '{name}'"),
+            help: Some("range methods are .roll, .contains".to_string()),
+        }),
+    }
+}
+
+/// xorshift64* PRNG; same algorithm as `Env::next_random_u64` so a
+/// fixed seed produces the same sequence on both interpreters.
+fn next_random_u64(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
 }
 
 #[cfg(test)]
@@ -874,6 +1449,271 @@ mod tests {
                 bytecode_result.display(),
                 walker_str,
                 "results diverge on `{src}`: bytecode={bytecode_result:?}",
+            );
+        }
+    }
+
+    // --- Session 10: heap types + for-loops ---
+
+    #[test]
+    fn vm_builds_tuple_and_indexes_it() {
+        let out = run_program("let p = (3, 4, 5)\nprint(p[0])\nprint(p[1])\nprint(p[2])").expect("ok");
+        assert_eq!(out, "3\n4\n5\n");
+    }
+
+    #[test]
+    fn vm_tuple_field_xyz() {
+        let out = run_program("let p = (10, 20, 30)\nprint(p.x)\nprint(p.y)\nprint(p.z)").expect("ok");
+        assert_eq!(out, "10\n20\n30\n");
+    }
+
+    #[test]
+    fn vm_tuple_arithmetic_elementwise() {
+        // Snake's `snake[0] + direction` shape.
+        let out = run_program("let pos = (3, 4)\nlet dir = (1, 0)\nprint(pos + dir)").expect("ok");
+        assert_eq!(out, "(4, 4)\n");
+    }
+
+    #[test]
+    fn vm_tuple_times_scalar() {
+        // Snake's `cell * cell_size` shape.
+        let out = run_program("let cell = (2, 3)\nprint(cell * 10)").expect("ok");
+        assert_eq!(out, "(20, 30)\n");
+    }
+
+    #[test]
+    fn vm_scalar_times_tuple() {
+        let out = run_program("let cell = (2, 3)\nprint(4 * cell)").expect("ok");
+        assert_eq!(out, "(8, 12)\n");
+    }
+
+    #[test]
+    fn vm_tuple_equality_recurses() {
+        let out = run_program("print((1, 2) == (1, 2))\nprint((1, 2) == (1, 3))").expect("ok");
+        assert_eq!(out, "true\nfalse\n");
+    }
+
+    #[test]
+    fn vm_builds_list_and_indexes() {
+        let out = run_program("let xs = [10, 20, 30]\nprint(xs[0])\nprint(xs[2])").expect("ok");
+        assert_eq!(out, "10\n30\n");
+    }
+
+    #[test]
+    fn vm_list_negative_index() {
+        let out = run_program("let xs = [10, 20, 30]\nprint(xs[-1])\nprint(xs[-2])").expect("ok");
+        assert_eq!(out, "30\n20\n");
+    }
+
+    #[test]
+    fn vm_list_length_field() {
+        let out = run_program("let xs = [1, 2, 3, 4]\nprint(xs.length)").expect("ok");
+        assert_eq!(out, "4\n");
+    }
+
+    #[test]
+    fn vm_list_methods_append_pop() {
+        let src = "let xs = [1, 2]\nxs.append(3)\nprint(xs.length)\nlet last = xs.pop_back()\nprint(last)\nprint(xs.length)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "3\n3\n2\n");
+    }
+
+    #[test]
+    fn vm_list_method_pop_front_and_prepend() {
+        let src = "let xs = [2, 3]\nxs.prepend(1)\nprint(xs[0])\nlet first = xs.pop_front()\nprint(first)\nprint(xs.length)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "1\n1\n2\n");
+    }
+
+    #[test]
+    fn vm_list_method_contains() {
+        let src = "let xs = [1, 2, 3]\nprint(xs.contains(2))\nprint(xs.contains(99))\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "true\nfalse\n");
+    }
+
+    #[test]
+    fn vm_list_index_out_of_bounds_errors() {
+        let err = run_program("let xs = [1, 2]\nprint(xs[5])").expect_err("should fail");
+        assert!(err.message.contains("out of bounds"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_pop_empty_list_errors() {
+        let err = run_program("let xs = []\nxs.pop_back()").expect_err("should fail");
+        assert!(err.message.contains("empty"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_builds_range_inclusive_and_exclusive() {
+        // `0..3` is inclusive (yields 0,1,2,3); `0..<3` is exclusive
+        // (yields 0,1,2). Verify via for-loop iteration counts.
+        let out = run_program("let total = 0\nfor i in 0..3:\n    total = total + 1\nprint(total)").expect("ok");
+        assert_eq!(out, "4\n");
+        let out = run_program("let total = 0\nfor i in 0..<3:\n    total = total + 1\nprint(total)").expect("ok");
+        assert_eq!(out, "3\n");
+    }
+
+    #[test]
+    fn vm_for_over_range_sums_correctly() {
+        // 1+2+...+10 = 55 — classic.
+        let out = run_program("let sum = 0\nfor i in 1..10:\n    sum = sum + i\nprint(sum)").expect("ok");
+        assert_eq!(out, "55\n");
+    }
+
+    #[test]
+    fn vm_for_over_list() {
+        let out = run_program("let xs = [10, 20, 30]\nfor x in xs:\n    print(x)").expect("ok");
+        assert_eq!(out, "10\n20\n30\n");
+    }
+
+    #[test]
+    fn vm_for_over_tuple() {
+        let out = run_program("for x in (5, 6, 7):\n    print(x)").expect("ok");
+        assert_eq!(out, "5\n6\n7\n");
+    }
+
+    #[test]
+    fn vm_for_with_break() {
+        let src = "for i in 0..10:\n    if i == 3:\n        break\n    print(i)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "0\n1\n2\n");
+    }
+
+    #[test]
+    fn vm_for_with_continue() {
+        let src = "for i in 0..<5:\n    if i == 2:\n        continue\n    print(i)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "0\n1\n3\n4\n");
+    }
+
+    #[test]
+    fn vm_nested_for_loops() {
+        // Each outer iteration runs the inner loop fresh; tests that
+        // the unique-name hidden locals don't collide between
+        // simultaneously-active for frames.
+        let src = "for i in 0..<2:\n    for j in 0..<2:\n        print(i + j)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "0\n1\n1\n2\n");
+    }
+
+    #[test]
+    fn vm_range_method_contains() {
+        let src = "let r = 0..10\nprint(r.contains(5))\nprint(r.contains(11))\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "true\nfalse\n");
+    }
+
+    #[test]
+    fn vm_range_method_roll_is_in_range() {
+        // `roll` returns an int in [start, upper). Just check
+        // bounds — the seed is deterministic but we don't pin a
+        // specific value because that would couple the test to the
+        // RNG algorithm details.
+        let src = "let r = 10..20\nlet v = r.roll()\nprint(v >= 10 and v <= 20)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "true\n");
+    }
+
+    #[test]
+    fn vm_string_interpolation_renders_values() {
+        let src = "let name = \"twe\"\nlet n = 42\nprint(\"hello, {name}: {n}\")";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "hello, twe: 42\n");
+    }
+
+    #[test]
+    fn vm_string_interpolation_renders_tuple_via_display() {
+        let src = "let p = (3, 4)\nprint(\"pos = {p}\")";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "pos = (3, 4)\n");
+    }
+
+    #[test]
+    fn vm_in_operator_on_list_and_range() {
+        let out = run_program("print(2 in [1, 2, 3])").expect("ok");
+        assert_eq!(out, "true\n");
+        let out = run_program("print(99 in [1, 2, 3])").expect("ok");
+        assert_eq!(out, "false\n");
+        let out = run_program("print(5 in 0..10)").expect("ok");
+        assert_eq!(out, "true\n");
+        let out = run_program("print(11 in 0..10)").expect("ok");
+        assert_eq!(out, "false\n");
+        let out = run_program("print(11 in 0..<11)").expect("ok");
+        assert_eq!(out, "false\n");
+    }
+
+    #[test]
+    fn vm_not_in_operator() {
+        let out = run_program("print(99 not in [1, 2, 3])").expect("ok");
+        assert_eq!(out, "true\n");
+    }
+
+    #[test]
+    fn vm_in_operator_substring() {
+        let out = run_program("print(\"ll\" in \"hello\")").expect("ok");
+        assert_eq!(out, "true\n");
+        let out = run_program("print(\"xy\" in \"hello\")").expect("ok");
+        assert_eq!(out, "false\n");
+    }
+
+    #[test]
+    fn vm_for_over_non_iterable_errors() {
+        let err = run_program("for x in 5:\n    print(x)\n").expect_err("should fail");
+        assert!(
+            err.message.contains("range, list, or tuple"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn vm_method_on_non_receiver_errors() {
+        let err = run_program("let x = 5\nx.append(1)").expect_err("should fail");
+        assert!(err.message.contains("append"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_field_on_unsupported_receiver_errors() {
+        // Field access on a number is a type error and should point
+        // at where Object/Instance support lands.
+        let err = run_program("let x = 5\nprint(x.foo)").expect_err("should fail");
+        assert!(err.message.contains("'.foo'"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_matches_eval_on_heap_corpus() {
+        // Cross-check: every program here should produce identical
+        // output on the bytecode VM and the tree-walker. The corpus
+        // is the new session-10 surface area.
+        let cases = [
+            // Tuple ops that Snake exercises.
+            "let pos = (3, 4)\nlet dir = (1, 0)\nlet next = pos + dir\nprint(next)\nprint(next * 10)\n",
+            // List build + index + length.
+            "let xs = [1, 2, 3]\nprint(xs.length)\nprint(xs[0])\nprint(xs[-1])\n",
+            // List mutation.
+            "let xs = [1]\nxs.append(2)\nxs.append(3)\nlet last = xs.pop_back()\nprint(xs)\nprint(last)\n",
+            // For over range, list, tuple.
+            "let sum = 0\nfor i in 1..5:\n    sum = sum + i\nprint(sum)\n",
+            "for x in [10, 20, 30]:\n    print(x)\n",
+            "for x in (\"a\", \"b\", \"c\"):\n    print(x)\n",
+            // Nested for + break.
+            "for i in 0..<3:\n    for j in 0..<3:\n        if j == i:\n            break\n        print((i, j))\n",
+            // Interpolation with tuple in scope.
+            "let p = (1, 2)\nprint(\"point = {p}, len = {p.x + p.y}\")\n",
+            // `in` over various haystacks.
+            "print(2 in [1, 2, 3])\nprint(5 in 0..<5)\nprint(\"hi\" in \"high\")\n",
+        ];
+        for src in cases {
+            let bytecode_out = run_program(src)
+                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out = crate::eval::run(
+                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
+            )
+            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(
+                bytecode_out, walker_out,
+                "results diverge on `{src}`",
             );
         }
     }

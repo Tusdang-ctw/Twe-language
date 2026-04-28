@@ -7,12 +7,16 @@
 //! Phase-3 session 9: top-level `let`/`var` lower to globals,
 //! function declarations + calls + returns, and the compiler
 //! grows a frame stack so nested function compilation is natural.
+//! Phase-3 session 10: heap-type literals (tuple, list, range),
+//! indexing, string interpolation, the `in` / `not in` operator,
+//! tuple `.x/.y/.z` and list `.length` field access, list/range
+//! built-in methods via `OP_INVOKE`, and `for x in iter:` over
+//! ranges, lists, and tuples.
 //!
-//! Heap types (lists, tuples, ranges, full strings, instance fields)
-//! and `for x in range:` come in session 10. Declarative blocks
-//! (`entity`/`scene`/`particles`) come in session 11. Until then,
-//! those produce `CompileError`s that name the session where the
-//! feature lands.
+//! Object/instance fields (for `math.min`, `time.dt`, scene fields,
+//! `self`) and the `entity` / `scene` / `particles` declarative
+//! blocks come in session 11. Until then, those produce
+//! `CompileError`s that name the session where the feature lands.
 
 use std::rc::Rc;
 
@@ -292,12 +296,8 @@ impl Compiler {
                     *col,
                 ));
             }
-            Stmt::For { line, col, .. } => {
-                return Err(self.unsupported(
-                    "`for` (depends on Range; session 10)",
-                    *line,
-                    *col,
-                ));
+            Stmt::For { var, iter, body, line, .. } => {
+                self.emit_for(var, iter, body, *line)?;
             }
             Stmt::Transition { line, col, .. }
             | Stmt::Spawn { line, col, .. }
@@ -487,6 +487,95 @@ impl Compiler {
         Ok(())
     }
 
+    /// Emit a `for var in iter:` loop. The compiled shape:
+    /// ```text
+    ///   <eval iter>            ; pushes iter, declared as hidden local
+    ///   OP_CONSTANT 0          ; push counter, declared as hidden local
+    /// loop_start:
+    ///   OP_FOR_NEXT base, exit ; on iter: increments counter, pushes
+    ///                          ;   element (becomes user var local)
+    ///                          ; on exhaust: jumps to exit
+    ///   <body>                 ; user var visible inside body's scope
+    ///   ;; end_scope pops the user var (the elem FOR_NEXT pushed)
+    ///   OP_LOOP loop_start
+    /// exit:
+    ///   OP_POP                 ; counter
+    ///   OP_POP                 ; iter
+    /// ```
+    /// The hidden iter and counter occupy adjacent slots so OP_FOR_NEXT
+    /// only needs the base slot. Their nameless locals don't shadow
+    /// any user names because `resolve_local` skips empty-name entries
+    /// implicitly (no source identifier can have empty text).
+    fn emit_for(
+        &mut self,
+        var: &str,
+        iter: &Expr,
+        body: &[Stmt],
+        line: u32,
+    ) -> Result<(), CompileError> {
+        let var_col = 0;
+        // Push iter onto the stack, register a hidden local for it.
+        // Names start with a space so they can't collide with any real
+        // identifier (the lexer never produces names starting with whitespace).
+        let iter_name = format!(" __for_iter_{}", self.frame().chunk.code.len());
+        let counter_name = format!(" __for_counter_{}", self.frame().chunk.code.len());
+        self.emit_expr(iter)?;
+        self.declare_local(&iter_name, line, var_col)?;
+        self.mark_initialised();
+        let base_slot = (self.frame().locals.len() - 1) as u8;
+        // Push counter (Int 0), register hidden local.
+        let zero_idx = self.frame_mut().chunk.add_constant(Value::Int(0));
+        self.frame_mut().chunk.write_op(OpCode::Constant, line);
+        self.frame_mut().chunk.write_byte(zero_idx, line);
+        self.declare_local(&counter_name, line, var_col)?;
+        self.mark_initialised();
+
+        // Loop frame: body locals start above the counter; break /
+        // continue pop down to here. Note: break additionally jumps
+        // past the post-loop OP_POP×2, so it doesn't double-pop the
+        // hidden iter/counter — see the breaks-patch step below.
+        let loop_start = self.frame().chunk.code.len();
+        let body_locals = self.frame().locals.len();
+        self.frame_mut().loops.push(LoopFrame {
+            loop_start,
+            locals_at_entry: body_locals,
+            breaks: Vec::new(),
+        });
+
+        // Emit OP_FOR_NEXT with a placeholder exit jump.
+        self.frame_mut().chunk.write_op(OpCode::ForNext, line);
+        self.frame_mut().chunk.write_byte(base_slot, line);
+        self.frame_mut().chunk.write_byte(0xFF, line);
+        self.frame_mut().chunk.write_byte(0xFF, line);
+        let exit_jump_offset = self.frame().chunk.code.len() - 2;
+
+        // Body scope. FOR_NEXT pushed the element; bind it to `var`
+        // as a body-scope local so end_scope's OP_POP retires it.
+        self.begin_scope();
+        self.declare_local(var, line, var_col)?;
+        self.mark_initialised();
+        for s in body {
+            self.emit_stmt(s)?;
+        }
+        self.end_scope(line);
+        self.emit_loop(loop_start, line)?;
+
+        // Patch FOR_NEXT's exit and all break jumps to land here, then
+        // emit the OP_POP × 2 that retires the hidden iter + counter.
+        self.patch_jump(exit_jump_offset)?;
+        let frame = self.frame_mut().loops.pop().expect("loop frame missing");
+        for b in frame.breaks {
+            self.patch_jump(b)?;
+        }
+        self.frame_mut().chunk.write_op(OpCode::Pop, line); // counter
+        self.frame_mut().chunk.write_op(OpCode::Pop, line); // iter
+        // Drop the hidden locals from the compile-time table so later
+        // declarations don't think the slots are still in use.
+        self.frame_mut().locals.pop();
+        self.frame_mut().locals.pop();
+        Ok(())
+    }
+
     fn emit_assign(
         &mut self,
         target: &AssignTarget,
@@ -597,7 +686,7 @@ impl Compiler {
                     UnOp::Not => self.frame_mut().chunk.write_op(OpCode::Not, *line),
                 }
             }
-            Expr::Binary { op, left, right, line, col } => {
+            Expr::Binary { op, left, right, line, col: _ } => {
                 if matches!(op, BinOp::And) {
                     return self.emit_and(left, right, *line);
                 }
@@ -618,68 +707,105 @@ impl Compiler {
                     BinOp::Gt => OpCode::Greater,
                     BinOp::Gte => OpCode::GreaterEqual,
                     BinOp::And | BinOp::Or => unreachable!("handled above"),
-                    BinOp::In | BinOp::NotIn => {
-                        return Err(self.unsupported(
-                            "`in` / `not in` (heap; session 10)",
-                            *line,
-                            *col,
-                        ));
+                    BinOp::In => {
+                        // emit_expr already pushed left then right.
+                        // OP_IN pops haystack then needle; left = needle,
+                        // right = haystack — matches the source order.
+                        self.frame_mut().chunk.write_op(OpCode::In, *line);
+                        return Ok(());
+                    }
+                    BinOp::NotIn => {
+                        self.frame_mut().chunk.write_op(OpCode::In, *line);
+                        self.frame_mut().chunk.write_op(OpCode::Not, *line);
+                        return Ok(());
                     }
                 };
                 self.frame_mut().chunk.write_op(op, *line);
             }
             Expr::Call { callee, args, kwargs, line, col } => {
-                if !kwargs.is_empty() {
-                    return Err(self.unsupported(
-                        "keyword arguments in bytecode calls (lands once builtin dispatch \
-                         reaches the VM in session 11)",
-                        *line,
-                        *col,
-                    ));
-                }
-                if args.len() > u8::MAX as usize {
+                self.emit_call(callee, args, kwargs, *line, *col)?;
+            }
+            Expr::Tuple { elems, line, col } => {
+                if elems.len() > u8::MAX as usize {
                     return Err(CompileError {
                         line: *line,
                         col: *col,
-                        message: format!("call has too many arguments (max {})", u8::MAX),
+                        message: format!("tuple literal too large (max {})", u8::MAX),
                     });
                 }
-                self.emit_expr(callee)?;
-                for arg in args {
-                    self.emit_expr(arg)?;
+                for e in elems {
+                    self.emit_expr(e)?;
                 }
-                self.frame_mut().chunk.write_op(OpCode::Call, *line);
-                self.frame_mut().chunk.write_byte(args.len() as u8, *line);
+                self.frame_mut().chunk.write_op(OpCode::BuildTuple, *line);
+                self.frame_mut().chunk.write_byte(elems.len() as u8, *line);
             }
-            // Heap / future-session features.
+            Expr::List { elems, line, col } => {
+                if elems.len() > u8::MAX as usize {
+                    return Err(CompileError {
+                        line: *line,
+                        col: *col,
+                        message: format!("list literal too large (max {})", u8::MAX),
+                    });
+                }
+                for e in elems {
+                    self.emit_expr(e)?;
+                }
+                self.frame_mut().chunk.write_op(OpCode::BuildList, *line);
+                self.frame_mut().chunk.write_byte(elems.len() as u8, *line);
+            }
+            Expr::Range { start, end, exclusive, line, .. } => {
+                self.emit_expr(start)?;
+                self.emit_expr(end)?;
+                self.frame_mut().chunk.write_op(OpCode::BuildRange, *line);
+                self.frame_mut().chunk.write_byte(if *exclusive { 1 } else { 0 }, *line);
+            }
+            Expr::Index { object, index, line, .. } => {
+                self.emit_expr(object)?;
+                self.emit_expr(index)?;
+                self.frame_mut().chunk.write_op(OpCode::Index, *line);
+            }
+            Expr::Field { object, name, line, .. } => {
+                self.emit_expr(object)?;
+                let name_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::Str(Rc::new(name.clone())));
+                self.frame_mut().chunk.write_op(OpCode::GetField, *line);
+                self.frame_mut().chunk.write_byte(name_idx, *line);
+            }
+            Expr::Interp { parts, exprs, line, col } => {
+                // parts.len() == exprs.len() + 1 by construction in
+                // `lex_string`. Emit alternating text-const + expr-as-str
+                // so the VM can OP_INTERP them all into a single Str.
+                let total = parts.len() + exprs.len();
+                if total > u8::MAX as usize {
+                    return Err(CompileError {
+                        line: *line,
+                        col: *col,
+                        message: format!(
+                            "interpolated string has too many parts ({total}, max {})",
+                            u8::MAX
+                        ),
+                    });
+                }
+                for (i, p) in parts.iter().enumerate() {
+                    let idx = self
+                        .frame_mut()
+                        .chunk
+                        .add_constant(Value::Str(Rc::new(p.clone())));
+                    self.frame_mut().chunk.write_op(OpCode::Constant, *line);
+                    self.frame_mut().chunk.write_byte(idx, *line);
+                    if let Some(e) = exprs.get(i) {
+                        self.emit_expr(e)?;
+                        self.frame_mut().chunk.write_op(OpCode::ToStr, e.line());
+                    }
+                }
+                self.frame_mut().chunk.write_op(OpCode::Interp, *line);
+                self.frame_mut().chunk.write_byte(total as u8, *line);
+            }
+            // Future-session features.
             Expr::SelfRef { line, col } => {
                 return Err(self.unsupported("`self` (with method dispatch)", *line, *col));
-            }
-            Expr::Tuple { line, col, .. } => {
-                return Err(self.unsupported("tuple literal (session 10)", *line, *col));
-            }
-            Expr::List { line, col, .. } => {
-                return Err(self.unsupported("list literal (session 10)", *line, *col));
-            }
-            Expr::Range { line, col, .. } => {
-                return Err(self.unsupported("range literal (session 10)", *line, *col));
-            }
-            Expr::Index { line, col, .. } => {
-                return Err(self.unsupported("indexing (session 10)", *line, *col));
-            }
-            Expr::Field { line, col, .. } => {
-                return Err(self.unsupported(
-                    "field access (with method dispatch)",
-                    *line,
-                    *col,
-                ));
-            }
-            Expr::Interp { line, col, .. } => {
-                return Err(self.unsupported(
-                    "string interpolation (session 10)",
-                    *line,
-                    *col,
-                ));
             }
             Expr::Quantity { value, unit, line, col } => {
                 return Err(self.unsupported(
@@ -689,6 +815,57 @@ impl Compiler {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// Compile a call site. Method calls (`recv.name(args)`) lower to
+    /// `OP_INVOKE name_idx argcount` so the VM can dispatch built-in
+    /// receivers (lists, ranges) without first materialising the
+    /// method as a Value. Plain calls go through `OP_CALL`.
+    fn emit_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        kwargs: &[(String, Expr)],
+        line: u32,
+        col: u32,
+    ) -> Result<(), CompileError> {
+        if !kwargs.is_empty() {
+            return Err(self.unsupported(
+                "keyword arguments in bytecode calls (lands once builtin dispatch \
+                 reaches the VM in session 11)",
+                line,
+                col,
+            ));
+        }
+        if args.len() > u8::MAX as usize {
+            return Err(CompileError {
+                line,
+                col,
+                message: format!("call has too many arguments (max {})", u8::MAX),
+            });
+        }
+        if let Expr::Field { object, name, line: fline, .. } = callee {
+            // Method call. Push receiver + args, then OP_INVOKE.
+            self.emit_expr(object)?;
+            for arg in args {
+                self.emit_expr(arg)?;
+            }
+            let name_idx = self
+                .frame_mut()
+                .chunk
+                .add_constant(Value::Str(Rc::new(name.clone())));
+            self.frame_mut().chunk.write_op(OpCode::Invoke, *fline);
+            self.frame_mut().chunk.write_byte(name_idx, *fline);
+            self.frame_mut().chunk.write_byte(args.len() as u8, *fline);
+            return Ok(());
+        }
+        self.emit_expr(callee)?;
+        for arg in args {
+            self.emit_expr(arg)?;
+        }
+        self.frame_mut().chunk.write_op(OpCode::Call, line);
+        self.frame_mut().chunk.write_byte(args.len() as u8, line);
         Ok(())
     }
 

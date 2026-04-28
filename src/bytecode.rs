@@ -117,6 +117,59 @@ pub enum OpCode {
     /// on the stack as the new frame's locals 1..=arg_count, with
     /// the function value itself at the new frame's local 0.
     Call,
+
+    // --- Session 10: heap types + for-loops ---
+
+    /// Pop `n` values and push them as a `Value::Tuple`. 1-byte
+    /// operand is `n`. The first popped value is the *last*
+    /// element; the compiler emits values left-to-right so the
+    /// VM reverses on pop.
+    BuildTuple,
+    /// Pop `n` values and push them as a `Value::List`. Same
+    /// ordering convention as `BuildTuple`.
+    BuildList,
+    /// Pop end then start, push a `Value::Range`. 1-byte operand
+    /// is the inclusivity flag: 0 = inclusive (`..`), 1 =
+    /// exclusive (`..<`). Both bounds must be ints (runtime check
+    /// mirrors `eval`).
+    BuildRange,
+    /// Pop index then container, push the indexed element. Works
+    /// on List and Tuple; errors on other types. Negative indices
+    /// count from the end (matches `eval::index_get`).
+    Index,
+    /// Pop one value, push its display form as a `Value::Str`.
+    /// Used by string interpolation to coerce numbers / tuples /
+    /// nested values into renderable text.
+    ToStr,
+    /// Pop `n` strings and push their concatenation as a single
+    /// `Value::Str`. 1-byte operand is `n`. Compiler emits the
+    /// alternating text + expr-as-str sequence in source order;
+    /// VM concatenates in order.
+    Interp,
+    /// Pop the haystack then the needle, push a `Value::Bool`
+    /// indicating membership. Mirrors `eval::value_in` for List,
+    /// Tuple, Range, and substring-in-Str.
+    In,
+    /// Read a field by name (constant-pool index, 1 byte) from
+    /// the value on top of stack and push the result. Tuple
+    /// exposes `.x` `.y` `.z`; List exposes `.length`. Other
+    /// receivers error — Object and Instance fields land with
+    /// the declarative-blocks pass in session 11.
+    GetField,
+    /// Method call. Operands: 1-byte name index in the constant
+    /// pool, 1-byte arg count. Stack on entry: `[..., recv, arg1,
+    /// ..., argN]`. Dispatches to built-in list/range methods;
+    /// other receivers error pending session 11.
+    Invoke,
+    /// Iterate one step of a `for var in iter:` loop.
+    /// Operands: 1-byte `base_slot` (the iterable's slot — the
+    /// counter sits at `base_slot + 1`), 2-byte big-endian exit
+    /// jump offset. Behaviour: if the iterable is exhausted, jump
+    /// to exit; otherwise increment the counter and push the next
+    /// element on the stack (the compiler binds it to the user's
+    /// loop variable as the next local). Range / List / Tuple
+    /// receivers; mirrors `eval::run_for`.
+    ForNext,
 }
 
 impl OpCode {
@@ -157,6 +210,16 @@ impl OpCode {
             28 => OpCode::GetGlobal,
             29 => OpCode::SetGlobal,
             30 => OpCode::Call,
+            31 => OpCode::BuildTuple,
+            32 => OpCode::BuildList,
+            33 => OpCode::BuildRange,
+            34 => OpCode::Index,
+            35 => OpCode::ToStr,
+            36 => OpCode::Interp,
+            37 => OpCode::In,
+            38 => OpCode::GetField,
+            39 => OpCode::Invoke,
+            40 => OpCode::ForNext,
             other => panic!("OpCode::from_u8: invalid byte {other}"),
         }
     }
@@ -291,7 +354,41 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         OpCode::GetGlobal => constant_instruction(out, "OP_GET_GLOBAL", chunk, offset),
         OpCode::SetGlobal => constant_instruction(out, "OP_SET_GLOBAL", chunk, offset),
         OpCode::Call => byte_instruction(out, "OP_CALL", chunk, offset),
+        OpCode::BuildTuple => byte_instruction(out, "OP_BUILD_TUPLE", chunk, offset),
+        OpCode::BuildList => byte_instruction(out, "OP_BUILD_LIST", chunk, offset),
+        OpCode::BuildRange => byte_instruction(out, "OP_BUILD_RANGE", chunk, offset),
+        OpCode::Index => simple_instruction(out, "OP_INDEX", offset),
+        OpCode::ToStr => simple_instruction(out, "OP_TO_STR", offset),
+        OpCode::Interp => byte_instruction(out, "OP_INTERP", chunk, offset),
+        OpCode::In => simple_instruction(out, "OP_IN", offset),
+        OpCode::GetField => constant_instruction(out, "OP_GET_FIELD", chunk, offset),
+        OpCode::Invoke => invoke_instruction(out, "OP_INVOKE", chunk, offset),
+        OpCode::ForNext => for_next_instruction(out, "OP_FOR_NEXT", chunk, offset),
     }
+}
+
+fn invoke_instruction(out: &mut String, name: &str, chunk: &Chunk, offset: usize) -> usize {
+    use std::fmt::Write;
+    let name_idx = chunk.code[offset + 1];
+    let arg_count = chunk.code[offset + 2];
+    let method = chunk
+        .constants
+        .get(name_idx as usize)
+        .map(Value::display)
+        .unwrap_or_else(|| "<missing>".to_string());
+    let _ = writeln!(out, "{name:<16} {name_idx:>4} '{method}' ({arg_count} args)");
+    offset + 3
+}
+
+fn for_next_instruction(out: &mut String, name: &str, chunk: &Chunk, offset: usize) -> usize {
+    use std::fmt::Write;
+    let base_slot = chunk.code[offset + 1];
+    let hi = chunk.code[offset + 2] as u16;
+    let lo = chunk.code[offset + 3] as u16;
+    let jump = (hi << 8) | lo;
+    let target = (offset + 4) as i32 + jump as i32;
+    let _ = writeln!(out, "{name:<16} base={base_slot} -> {target}");
+    offset + 4
 }
 
 fn byte_instruction(out: &mut String, name: &str, chunk: &Chunk, offset: usize) -> usize {
@@ -410,6 +507,16 @@ mod tests {
             OpCode::GetGlobal,
             OpCode::SetGlobal,
             OpCode::Call,
+            OpCode::BuildTuple,
+            OpCode::BuildList,
+            OpCode::BuildRange,
+            OpCode::Index,
+            OpCode::ToStr,
+            OpCode::Interp,
+            OpCode::In,
+            OpCode::GetField,
+            OpCode::Invoke,
+            OpCode::ForNext,
         ] {
             assert_eq!(OpCode::from_u8(op as u8), op);
         }
