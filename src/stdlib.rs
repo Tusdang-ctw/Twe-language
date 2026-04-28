@@ -38,6 +38,7 @@ pub fn install(env: &mut Env) {
     }
 
     install_math(env);
+    install_random(env);
 }
 
 fn install_math(env: &mut Env) {
@@ -202,5 +203,129 @@ fn math_max(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let bf = as_f64(b, "math.max")?;
             Ok(Value::Float(af.max(bf)))
         }
+    }
+}
+
+fn install_random(env: &mut Env) {
+    let mut random = HashMap::new();
+    random.insert(
+        "int".to_string(),
+        Value::Builtin {
+            name: "random.int",
+            func: random_int,
+        },
+    );
+    random.insert(
+        "float".to_string(),
+        Value::Builtin {
+            name: "random.float",
+            func: random_float,
+        },
+    );
+    random.insert(
+        "choice".to_string(),
+        Value::Builtin {
+            name: "random.choice",
+            func: random_choice,
+        },
+    );
+    random.insert(
+        "seed".to_string(),
+        Value::Builtin {
+            name: "random.seed",
+            func: random_seed,
+        },
+    );
+    env.set(
+        "random".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: random,
+            kind: "module",
+        }))),
+    );
+}
+
+fn random_int(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "random.int")?;
+    let (start, end, exclusive) = match &args[0] {
+        Value::Range { start, end, exclusive } => (*start, *end, *exclusive),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "random.int expected a range, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `random.int(1..6)` rolls a six-sided die".to_string()),
+            });
+        }
+    };
+    let upper = if exclusive { end } else { end + 1 };
+    if upper <= start {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "random.int on an empty range".to_string(),
+            help: None,
+        });
+    }
+    let n = env.next_random_u64();
+    let span = (upper - start) as u64;
+    Ok(Value::Int(start + (n % span) as i64))
+}
+
+fn random_float(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "random.float")?;
+    // 53 bits of randomness mapped to [0.0, 1.0).
+    let n = env.next_random_u64() >> 11;
+    let f = n as f64 * (1.0 / ((1u64 << 53) as f64));
+    Ok(Value::Float(f))
+}
+
+fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "random.choice")?;
+    match &args[0] {
+        Value::List(rc) => {
+            let v = rc.borrow();
+            if v.is_empty() {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: "random.choice on an empty list".to_string(),
+                    help: None,
+                });
+            }
+            let idx = (env.next_random_u64() as usize) % v.len();
+            Ok(v[idx].clone())
+        }
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "random.choice expected a list, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    }
+}
+
+fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "random.seed")?;
+    match &args[0] {
+        Value::Int(n) => {
+            env.seed_rng(*n as u64);
+            Ok(Value::Nil)
+        }
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "random.seed expected an int, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
     }
 }

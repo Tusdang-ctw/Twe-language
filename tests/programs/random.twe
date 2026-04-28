@@ -1,0 +1,32 @@
+random.seed(42)
+
+# random.int from a range — should land in the range
+let n = random.int(1..6)
+if n >= 1 and n <= 6:
+    print("ok int")
+else:
+    print("bad int")
+
+# random.float in [0.0, 1.0)
+let f = random.float()
+if f >= 0.0 and f < 1.0:
+    print("ok float")
+else:
+    print("bad float")
+
+# random.choice from a non-empty list
+let pick = random.choice(["a", "b", "c"])
+if pick == "a" or pick == "b" or pick == "c":
+    print("ok choice")
+else:
+    print("bad choice")
+
+# determinism: re-seed and re-roll, expect same first int
+random.seed(42)
+let first = random.int(1..100)
+random.seed(42)
+let second = random.int(1..100)
+if first == second:
+    print("ok determinism")
+else:
+    print("bad determinism")

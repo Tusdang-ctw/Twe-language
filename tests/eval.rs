@@ -248,6 +248,24 @@ fn pop_back_on_empty_errors() {
 }
 
 #[test]
+fn runs_random_stdlib() {
+    let out = run_program("tests/programs/random.twe").expect("program should run");
+    assert_eq!(out, "ok int\nok float\nok choice\nok determinism\n");
+}
+
+#[test]
+fn random_int_on_empty_range_errors() {
+    let err = run_program_str("print(random.int(5..<5))\n").expect_err("should fail");
+    assert!(err.contains("empty range"), "got: {err}");
+}
+
+#[test]
+fn random_choice_on_empty_list_errors() {
+    let err = run_program_str("print(random.choice([]))\n").expect_err("should fail");
+    assert!(err.contains("empty list"), "got: {err}");
+}
+
+#[test]
 fn range_roll_returns_value_in_range() {
     // Deterministic: same seed → same sequence. Just check the values
     // fall inside the range.
