@@ -183,6 +183,35 @@ pub enum OpCode {
     /// for the statement caller's `OP_POP`. BcInstance and Object
     /// receivers; other types error.
     SetField,
+
+    // --- Session 12: scenes + states + play loop ---
+
+    /// Auto-instantiate a scene. Stack on entry: `[..., class]`.
+    /// VM pops the class, instantiates with default fields, marks
+    /// the instance as the active scene, and runs the class's
+    /// `initial:` state's on_entry (if any). Stack after: `[...]`.
+    InitScene,
+    /// Spawn an entity. 1-byte operand: `1` if an `at <expr>`
+    /// value is on the stack just below the class, `0` otherwise.
+    /// Stack on entry: `[..., (at?), class]`. VM pops both,
+    /// instantiates, sets `pos = at` if provided, pushes to
+    /// active_entities, runs initial state if any. Stack after:
+    /// `[...]`.
+    Spawn,
+    /// Despawn the value on top of the stack. Pops, marks the
+    /// `BcInstance`'s `despawned` flag; the runtime drops it from
+    /// `active_entities` at end of the current frame. Errors on
+    /// non-instance receivers.
+    Despawn,
+    /// Set the scene's transitioning flag. 1-byte operand is the
+    /// constant-pool index of the target state name (`Value::Str`).
+    /// The current handler completes, then the runtime runs
+    /// `enter_state(target)`.
+    Transition,
+    /// Bind the function constant at the 1-byte operand index as
+    /// the top-level `on update(dt):` handler. Stored on the VM
+    /// and fired once per `tick(dt)` before the scene tick.
+    SetOnUpdate,
 }
 
 impl OpCode {
@@ -234,6 +263,11 @@ impl OpCode {
             39 => OpCode::Invoke,
             40 => OpCode::ForNext,
             41 => OpCode::SetField,
+            42 => OpCode::InitScene,
+            43 => OpCode::Spawn,
+            44 => OpCode::Despawn,
+            45 => OpCode::Transition,
+            46 => OpCode::SetOnUpdate,
             other => panic!("OpCode::from_u8: invalid byte {other}"),
         }
     }
@@ -306,26 +340,53 @@ impl BcFunction {
 }
 
 /// A bytecode-VM class. Mirrors `value::ClassDef` but stores
-/// methods as compiled `BcFunction`s and only carries the subset
-/// of class state the bytecode VM uses today: name, kind (entity
-/// / item / modifier / inventory), default fields, and methods.
-/// State machines, initial states, every-clocks, and the rest of
-/// the scene/particles surface area arrive in session 12 with the
-/// play-loop integration.
+/// methods as compiled `BcFunction`s. As of session 12, scenes
+/// also carry their state machine: each `state <name>:` becomes a
+/// `BcStateDef` and the optional `initial: <name>` fixes the
+/// boot state.
 #[derive(Debug)]
 pub struct BcClassDef {
     pub kind: &'static str,
     pub name: String,
     pub field_defaults: HashMap<String, Value>,
     pub methods: HashMap<String, Rc<BcFunction>>,
+    pub states: HashMap<String, Rc<BcStateDef>>,
+    pub initial_state: Option<String>,
+}
+
+/// A compiled scene state. Each handler is its own `BcFunction`
+/// with `self` at slot 0 (scenes execute their bodies as if they
+/// were methods on the scene instance).
+#[derive(Debug)]
+pub struct BcStateDef {
+    pub name: String,
+    /// Statements that run once when the state is entered. Always
+    /// present (an empty body still compiles to a Nil + Return).
+    pub on_entry: Rc<BcFunction>,
+    /// `every <duration>:` clocks. The interval is const-folded to
+    /// seconds at compile time (so the VM doesn't need a quantity
+    /// runtime in the hot tick path).
+    pub every_clocks: Vec<(f64, Rc<BcFunction>)>,
+    /// State-scoped `on update(dt):` handler — fires once per frame
+    /// before the every-clocks. The function takes `dt` at slot 1.
+    pub on_update: Option<Rc<BcFunction>>,
 }
 
 /// A live instance of a `BcClassDef`. Field reads/writes go
 /// through the inner `RefCell` so methods can mutate `self.x`.
+/// State-machine fields (`current_state`, `every_timers`,
+/// `every_intervals_secs`, `despawned`) are present on every
+/// instance but only used for scenes / entities with states.
 #[derive(Debug)]
 pub struct BcInstance {
     pub class: Rc<BcClassDef>,
     pub fields: HashMap<String, Value>,
+    pub current_state: Option<String>,
+    pub every_timers: Vec<f64>,
+    pub every_intervals_secs: Vec<f64>,
+    /// Set by `despawn self`; the runtime drops this instance from
+    /// `VM::active_entities` at the end of the frame.
+    pub despawned: bool,
 }
 
 /// Format a Chunk as a human-readable instruction listing. Mirrors
@@ -402,6 +463,11 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         OpCode::Invoke => invoke_instruction(out, "OP_INVOKE", chunk, offset),
         OpCode::ForNext => for_next_instruction(out, "OP_FOR_NEXT", chunk, offset),
         OpCode::SetField => constant_instruction(out, "OP_SET_FIELD", chunk, offset),
+        OpCode::InitScene => simple_instruction(out, "OP_INIT_SCENE", offset),
+        OpCode::Spawn => byte_instruction(out, "OP_SPAWN", chunk, offset),
+        OpCode::Despawn => simple_instruction(out, "OP_DESPAWN", offset),
+        OpCode::Transition => constant_instruction(out, "OP_TRANSITION", chunk, offset),
+        OpCode::SetOnUpdate => constant_instruction(out, "OP_SET_ON_UPDATE", chunk, offset),
     }
 }
 
@@ -556,6 +622,11 @@ mod tests {
             OpCode::Invoke,
             OpCode::ForNext,
             OpCode::SetField,
+            OpCode::InitScene,
+            OpCode::Spawn,
+            OpCode::Despawn,
+            OpCode::Transition,
+            OpCode::SetOnUpdate,
         ] {
             assert_eq!(OpCode::from_u8(op as u8), op);
         }

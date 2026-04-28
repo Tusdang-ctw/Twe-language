@@ -29,6 +29,14 @@ use std::rc::Rc;
 use crate::bytecode::{BcClassDef, BcFunction, BcInstance, Chunk, OpCode};
 use crate::value::{Env, RuntimeError, Value};
 
+/// Cap on how many times a single `every <duration>:` clock can
+/// fire in one frame. Same value as `eval::MAX_CATCHUP_FIRES_PER_FRAME`
+/// — eight 16ms ticks ≈ 128ms of catch-up, comfortably absorbing a
+/// slow first frame while bounded so a long stall can't lock the
+/// runtime in catch-up forever. Closes Phase-2 frustration F4 for
+/// the bytecode VM too.
+const MAX_CATCHUP_FIRES_PER_FRAME: u32 = 8;
+
 #[derive(Copy, Clone)]
 enum ArithOp {
     Add,
@@ -66,18 +74,28 @@ pub struct VM {
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
-    /// Held tree-walker env. The bytecode VM doesn't share globals
-    /// with it; this exists only to give `Value::Builtin` calls a
-    /// `&mut Env` parameter (their existing signature). Builtins
-    /// that mutate Env state (random seeds, scene state, active
-    /// entities) currently won't fully work in the bytecode VM —
-    /// the play-loop integration arrives in session 12. Pure
-    /// builtins like `math.min` ignore Env and work fine.
+    /// Held tree-walker env, used as a `&mut Env` slot for builtin
+    /// dispatch. Pure builtins (math etc.) ignore it. The VM's own
+    /// active_scene/active_entities live below — Env's are unused.
     builtin_env: Env,
     /// xorshift64* state for `range.roll`. Same algorithm and default
     /// seed as `Env` so a deterministic test seed yields the same
     /// sequence on the tree-walker and the VM.
     rng: u64,
+    /// The current scene instance, set by OP_INIT_SCENE when a
+    /// `scene <Name>:` declaration is compiled. `tick(dt)` ticks
+    /// this scene's state machine each frame.
+    active_scene: Option<Rc<RefCell<BcInstance>>>,
+    /// Live entities (anything `spawn`ed). `tick(dt)` calls each
+    /// entity's `.update(dt)` method (if any), then prunes any
+    /// flagged despawned.
+    active_entities: Vec<Rc<RefCell<BcInstance>>>,
+    /// Set by `Stmt::Transition`; the scene tick consumes this
+    /// after the current state-handler body completes.
+    transitioning: Option<String>,
+    /// Top-level `on update(dt):` handler. Fires once per
+    /// `tick(dt)` before the scene tick.
+    on_update: Option<Rc<BcFunction>>,
     /// Captured `print` output, mirroring `Env::out` from the tree
     /// walker so test harnesses can compare them.
     pub out: String,
@@ -102,12 +120,26 @@ impl VM {
         for (name, value) in env.iter_bindings() {
             globals.insert(name.clone(), value.clone());
         }
+        // Replace the stdlib `entities` Object (which routes through
+        // tree-walker builtins) with a VM-tagged one so OP_INVOKE
+        // can dispatch to our own active_entities.
+        globals.insert(
+            "entities".to_string(),
+            Value::Object(Rc::new(RefCell::new(crate::value::Object {
+                fields: HashMap::new(),
+                kind: "entities",
+            }))),
+        );
         Self {
             stack: Vec::with_capacity(256),
             frames: Vec::with_capacity(64),
             globals,
             builtin_env: env,
             rng: 0x9E37_79B9_7F4A_7C15,
+            active_scene: None,
+            active_entities: Vec::new(),
+            transitioning: None,
+            on_update: None,
             out: String::new(),
         }
     }
@@ -128,10 +160,15 @@ impl VM {
             ip: 0,
             slot_base: 0,
         });
-        self.dispatch()
+        self.dispatch(0)
     }
 
-    fn dispatch(&mut self) -> Result<Value, RuntimeError> {
+    /// Run the dispatch loop until the active call-frame count drops
+    /// below `target_depth`. For top-level `run`, target is 0 — loop
+    /// runs to completion. For VM-side nested invocations
+    /// (`invoke_method_value`) target is the caller's frame count,
+    /// so dispatch returns once the callee's `OP_RETURN` pops back.
+    fn dispatch(&mut self, target_depth: usize) -> Result<Value, RuntimeError> {
         loop {
             // Borrow info from the active frame without holding the
             // borrow across the match arms — the dispatch arms need
@@ -200,15 +237,22 @@ impl VM {
                 OpCode::Return => {
                     let result = self.pop()?;
                     let frame = self.frames.pop().expect("frame to return from");
-                    if self.frames.is_empty() {
-                        // Script frame ended. Drop the synthetic script
-                        // function value sitting at slot_base and exit.
-                        self.stack.truncate(frame.slot_base);
+                    self.stack.truncate(frame.slot_base);
+                    if self.frames.len() < target_depth {
+                        // Nested invocation completing: leave the
+                        // result on the stack so the VM-side caller
+                        // can pop it (mirrors the OP_CALL / OP_INVOKE
+                        // contract for bytecode callers).
+                        self.push(result.clone());
                         return Ok(result);
                     }
-                    // Caller frame: collapse the callee's slots, push
-                    // the return value as the call expression's result.
-                    self.stack.truncate(frame.slot_base);
+                    if self.frames.is_empty() {
+                        // Script frame ended at top level. The result
+                        // is the script's return value (typically Nil).
+                        return Ok(result);
+                    }
+                    // Bytecode-internal call returning to a caller
+                    // frame: push the return value for the caller.
                     self.push(result);
                 }
                 OpCode::GetLocal => {
@@ -452,6 +496,105 @@ impl VM {
                     field_set(&recv, &name, value.clone(), line)?;
                     self.push(value);
                 }
+                OpCode::InitScene => {
+                    let class_val = self.pop()?;
+                    let class = match class_val {
+                        Value::BcClass(c) => c,
+                        other => {
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "OP_INIT_SCENE expected a class, got {}",
+                                    other.type_name()
+                                ),
+                                help: Some("compiler bug".to_string()),
+                            });
+                        }
+                    };
+                    let inst = match instantiate_bc(class.clone()) {
+                        Value::BcInstance(rc) => rc,
+                        _ => unreachable!(),
+                    };
+                    self.active_scene = Some(inst.clone());
+                    if let Some(start) = class.initial_state.clone() {
+                        self.enter_state(&inst, &start)?;
+                    }
+                }
+                OpCode::Spawn => {
+                    let with_at = self.read_byte() != 0;
+                    let class_val = self.pop()?;
+                    let at_value = if with_at { Some(self.pop()?) } else { None };
+                    let class = match class_val {
+                        Value::BcClass(c) => c,
+                        other => {
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "`spawn` expected a class, got {}",
+                                    other.type_name()
+                                ),
+                                help: None,
+                            });
+                        }
+                    };
+                    let inst = match instantiate_bc(class.clone()) {
+                        Value::BcInstance(rc) => rc,
+                        _ => unreachable!(),
+                    };
+                    if let Some(at) = at_value {
+                        inst.borrow_mut().fields.insert("pos".to_string(), at);
+                    }
+                    self.active_entities.push(inst.clone());
+                    if let Some(start) = class.initial_state.clone() {
+                        self.enter_state(&inst, &start)?;
+                    }
+                }
+                OpCode::Despawn => {
+                    let target = self.pop()?;
+                    match target {
+                        Value::BcInstance(rc) => {
+                            rc.borrow_mut().despawned = true;
+                        }
+                        other => {
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "`despawn` expects an instance, got {}",
+                                    other.type_name()
+                                ),
+                                help: None,
+                            });
+                        }
+                    }
+                }
+                OpCode::Transition => {
+                    let idx = self.read_byte() as usize;
+                    let target = self.read_string_constant(idx, line)?;
+                    self.transitioning = Some(target);
+                }
+                OpCode::SetOnUpdate => {
+                    let idx = self.read_byte() as usize;
+                    let value = self.read_constant(idx);
+                    match value {
+                        Value::BcFunction(func) => {
+                            self.on_update = Some(func);
+                        }
+                        other => {
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "OP_SET_ON_UPDATE expected a function, got {}",
+                                    other.type_name()
+                                ),
+                                help: Some("compiler bug".to_string()),
+                            });
+                        }
+                    }
+                }
                 OpCode::Invoke => {
                     let name_idx = self.read_byte() as usize;
                     let arg_count = self.read_byte() as usize;
@@ -600,6 +743,267 @@ impl VM {
                 help: None,
             }),
         }
+    }
+
+    /// Drive one frame of the play loop. Order mirrors
+    /// `eval::tick_frame`:
+    ///   1. update `time.dt` ambient
+    ///   2. fire top-level `on update(dt):` if any
+    ///   3. tick the active scene's state machine (state on_update,
+    ///      then every-clocks with bounded catch-up)
+    ///   4. tick each active entity's `update(dt)` method
+    ///   5. prune entities flagged despawned
+    pub fn tick(&mut self, dt: f64) -> Result<(), RuntimeError> {
+        self.update_time_dt(dt);
+        if let Some(handler) = self.on_update.clone() {
+            // Top-level on_update has no `self`; we still pass the
+            // function value as slot 0 (per the BcFunction calling
+            // convention) and `dt` as slot 1.
+            let dummy_recv = Value::BcFunction(handler.clone());
+            self.invoke_method_value(handler, dummy_recv, &[Value::Float(dt)])?;
+        }
+        if let Some(scene) = self.active_scene.clone() {
+            self.tick_scene(&scene, dt)?;
+        }
+        let entities = self.active_entities.clone();
+        for entity in entities {
+            if entity.borrow().despawned {
+                continue;
+            }
+            let class = entity.borrow().class.clone();
+            if let Some(method) = class.methods.get("update").cloned() {
+                self.invoke_method_value(
+                    method,
+                    Value::BcInstance(entity.clone()),
+                    &[Value::Float(dt)],
+                )?;
+            }
+        }
+        self.active_entities.retain(|e| !e.borrow().despawned);
+        Ok(())
+    }
+
+    fn tick_scene(
+        &mut self,
+        scene: &Rc<RefCell<BcInstance>>,
+        dt: f64,
+    ) -> Result<(), RuntimeError> {
+        // Snapshot the current state's bodies before running so a
+        // transition mid-tick doesn't fire the new state's clocks
+        // this frame (matches `eval::tick_scene`).
+        let (state_on_update, clocks) = {
+            let inst = scene.borrow();
+            let state = match inst
+                .current_state
+                .as_ref()
+                .and_then(|n| inst.class.states.get(n))
+            {
+                Some(s) => s.clone(),
+                None => return Ok(()),
+            };
+            (state.on_update.clone(), state.every_clocks.clone())
+        };
+
+        // State-scoped `on update(dt):` fires once per frame BEFORE
+        // every-clocks. A transition inside it skips the clocks for
+        // this frame; we re-enter the new state immediately.
+        if let Some(handler) = state_on_update {
+            self.invoke_method_value(
+                handler,
+                Value::BcInstance(scene.clone()),
+                &[Value::Float(dt)],
+            )?;
+            if let Some(target) = self.transitioning.take() {
+                return self.enter_state(scene, &target);
+            }
+        }
+
+        // Tick each clock with bounded catch-up. If a transition
+        // fires inside a clock body, we exit the loop and re-enter
+        // immediately (no further clocks fire this frame).
+        let mut transition: Option<String> = None;
+        'clocks: for (clock_idx, (interval, body)) in clocks.into_iter().enumerate() {
+            {
+                let mut inst = scene.borrow_mut();
+                if clock_idx >= inst.every_timers.len() {
+                    continue;
+                }
+                inst.every_timers[clock_idx] += dt;
+            }
+            let mut fires: u32 = 0;
+            while fires < MAX_CATCHUP_FIRES_PER_FRAME {
+                let should_fire = scene
+                    .borrow()
+                    .every_timers
+                    .get(clock_idx)
+                    .copied()
+                    .unwrap_or(0.0)
+                    >= interval;
+                if !should_fire {
+                    break;
+                }
+                scene.borrow_mut().every_timers[clock_idx] -= interval;
+                fires += 1;
+                self.invoke_method_value(
+                    body.clone(),
+                    Value::BcInstance(scene.clone()),
+                    &[],
+                )?;
+                if let Some(target) = self.transitioning.take() {
+                    transition = Some(target);
+                    break 'clocks;
+                }
+            }
+            if fires >= MAX_CATCHUP_FIRES_PER_FRAME {
+                // Drop residual so next frame starts fresh and doesn't
+                // compound the backlog.
+                scene.borrow_mut().every_timers[clock_idx] = 0.0;
+            }
+        }
+        if let Some(target) = transition {
+            self.enter_state(scene, &target)?;
+        }
+        Ok(())
+    }
+
+    fn enter_state(
+        &mut self,
+        scene: &Rc<RefCell<BcInstance>>,
+        state_name: &str,
+    ) -> Result<(), RuntimeError> {
+        let state = scene
+            .borrow()
+            .class
+            .states
+            .get(state_name)
+            .cloned()
+            .ok_or_else(|| RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("no state named '{state_name}'"),
+                help: Some(
+                    "transitions must target a `state <name>:` declared in the same scene"
+                        .to_string(),
+                ),
+            })?;
+        {
+            let mut inst = scene.borrow_mut();
+            inst.current_state = Some(state.name.clone());
+            inst.every_timers = vec![0.0; state.every_clocks.len()];
+            inst.every_intervals_secs = state.every_clocks.iter().map(|(s, _)| *s).collect();
+        }
+        // Run on_entry. A transition inside the body cascades.
+        self.invoke_method_value(
+            state.on_entry.clone(),
+            Value::BcInstance(scene.clone()),
+            &[],
+        )?;
+        if let Some(next) = self.transitioning.take() {
+            return self.enter_state(scene, &next);
+        }
+        Ok(())
+    }
+
+    /// VM-side dispatch for `entities.of(Class)` / `entities.count(Class)`.
+    /// The held `builtin_env`'s entities builtins look at the tree-
+    /// walker's active_entities and would always return empty for
+    /// us — so we intercept here. When the BuiltinFn signature gets
+    /// unified across both interpreters this becomes redundant.
+    fn entities_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        line: u32,
+    ) -> Result<Value, RuntimeError> {
+        let class = match args.first() {
+            Some(Value::BcClass(c)) => c.clone(),
+            Some(other) => {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!(
+                        "entities.{name} expected a class, got {}",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            }
+            None => {
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!("entities.{name} expected 1 argument, got 0"),
+                    help: None,
+                });
+            }
+        };
+        if args.len() != 1 {
+            return Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "entities.{name} expected 1 argument, got {}",
+                    args.len()
+                ),
+                help: None,
+            });
+        }
+        let matches: Vec<Rc<RefCell<BcInstance>>> = self
+            .active_entities
+            .iter()
+            .filter(|e| {
+                !e.borrow().despawned && Rc::ptr_eq(&e.borrow().class, &class)
+            })
+            .cloned()
+            .collect();
+        match name {
+            "count" => Ok(Value::Int(matches.len() as i64)),
+            "of" => {
+                let list: Vec<Value> = matches.into_iter().map(Value::BcInstance).collect();
+                Ok(Value::List(Rc::new(RefCell::new(list))))
+            }
+            _ => Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!("entities has no method '{name}'"),
+                help: Some("entities methods are .of(Class), .count(Class)".to_string()),
+            }),
+        }
+    }
+
+    /// Update `time.dt` on the global `time` Object so scene/entity
+    /// code can read it as an ambient. Mirrors `eval::update_time_ambient`.
+    fn update_time_dt(&mut self, dt: f64) {
+        if let Some(Value::Object(rc)) = self.globals.get("time") {
+            rc.borrow_mut()
+                .fields
+                .insert("dt".to_string(), Value::Float(dt));
+        }
+    }
+
+    /// Run a `BcFunction` with `recv` as slot 0 and `args` as
+    /// slots 1..=arity. Used by VM-side machinery (state-machine
+    /// tick, entity update, top-level on_update) to invoke
+    /// compiled bodies. Returns the value the body popped at its
+    /// `OP_RETURN`; the stack is clean afterwards (the result is
+    /// also popped before return so callers don't have to).
+    fn invoke_method_value(
+        &mut self,
+        function: Rc<BcFunction>,
+        recv: Value,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let recv_idx = self.stack.len();
+        self.stack.push(recv);
+        for arg in args {
+            self.stack.push(arg.clone());
+        }
+        let target_depth = self.frames.len();
+        self.push_call_frame(function, recv_idx, args.len(), 0)?;
+        let result = self.dispatch(target_depth + 1)?;
+        // dispatch() left the result on top; pop to keep the stack clean.
+        self.stack.pop();
+        Ok(result)
     }
 
     /// Push a CallFrame for a `BcFunction`. Validates arity and the
@@ -758,6 +1162,20 @@ impl VM {
                     help: None,
                 })?;
             return self.push_call_frame(method, recv_idx, arg_count, line);
+        }
+        // VM-side intrinsics for the `entities` module: of(Class)
+        // and count(Class) read from `self.active_entities`, which
+        // the held builtin_env doesn't see. The tree-walker's
+        // entities.of/count Builtins look at `Env::active_entities`;
+        // for the bytecode VM we route to BcInstance values here.
+        if let Value::Object(rc) = &recv_clone {
+            if rc.borrow().kind == "entities" {
+                let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
+                self.stack.pop(); // drop receiver
+                let result = self.entities_intrinsic(name, &args, line)?;
+                self.push(result);
+                return Ok(());
+            }
         }
         // Object module access: `math.min(...)`. The "method" is
         // really a Builtin field; look it up and call it with args.
@@ -1173,7 +1591,8 @@ fn field_set(recv: &Value, name: &str, value: Value, line: u32) -> Result<(), Ru
 /// Walk the class's defaults to materialise a fresh instance.
 /// Defaults are cloned so each instance gets its own copy
 /// (Rc-shared values like Lists still share their interior, which
-/// matches the tree-walker semantics).
+/// matches the tree-walker semantics). State-machine fields stay
+/// empty; `enter_state` populates them when the scene boots.
 fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
     let fields: HashMap<String, Value> = class
         .field_defaults
@@ -1183,6 +1602,10 @@ fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
     Value::BcInstance(Rc::new(RefCell::new(BcInstance {
         class,
         fields,
+        current_state: None,
+        every_timers: Vec::new(),
+        every_intervals_secs: Vec::new(),
+        despawned: false,
     })))
 }
 
@@ -1988,12 +2411,6 @@ mod tests {
     }
 
     #[test]
-    fn vm_scene_decl_errors_pointing_at_session_12() {
-        let err = compile_err("scene S:\n    var x = 0\n");
-        assert!(err.contains("session 12"), "got: {err}");
-    }
-
-    #[test]
     fn vm_math_module_builtins() {
         // `math.min`, `.max`, `.abs` go through OP_INVOKE on Object.
         let out = run_program("print(math.min(3, 1))\nprint(math.max(3, 1))\nprint(math.abs(-7))\n")
@@ -2077,6 +2494,174 @@ mod tests {
             .err()
             .map(|e| e.message)
             .unwrap_or_default()
+    }
+
+    // --- Session 12: scenes + states + play loop ---
+
+    /// Helper for tick-driven scene tests. Runs the top-level
+    /// statements via `run`, then ticks `frames` times with `dt`.
+    fn run_program_frames(src: &str, frames: u32, dt: f64) -> Result<String, RuntimeError> {
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let chunk = crate::compiler::compile_program(&program).expect("compile");
+        let mut vm = VM::new();
+        vm.run(&chunk)?;
+        for _ in 0..frames {
+            vm.tick(dt)?;
+        }
+        Ok(std::mem::take(&mut vm.out))
+    }
+
+    #[test]
+    fn vm_scene_counter_runs_state_machine() {
+        // Mirrors `tests/programs/scene_counter.twe`: scene with two
+        // states, every-clock that increments, transition when done.
+        let src = "scene Counter:\n    var ticks: int = 0\n\n    initial: counting\n\n    state counting:\n        every 100ms:\n            ticks += 1\n            print(ticks)\n            if ticks >= 3:\n                -> done\n\n    state done:\n";
+        let out = run_program_frames(src, 5, 0.100).expect("ok");
+        assert_eq!(out, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn vm_state_on_update_fires_each_frame() {
+        // Mirrors `tests/programs/state_on_update.twe` shape.
+        let src = "scene S:\n    var n: int = 0\n\n    initial: a\n\n    state a:\n        on update(dt):\n            n += 1\n            print(n)\n";
+        let out = run_program_frames(src, 3, 0.016).expect("ok");
+        assert_eq!(out, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn vm_top_level_on_update_fires_each_frame() {
+        let src = "var n = 0\non update(dt):\n    n += 1\n    print(n)\n";
+        let out = run_program_frames(src, 3, 0.016).expect("ok");
+        assert_eq!(out, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn vm_scene_initial_on_entry_runs_at_boot() {
+        // on_entry of the initial state runs at scene-instantiation
+        // time (no tick needed).
+        let src = "scene S:\n    initial: hello\n\n    state hello:\n        print(\"hi\")\n";
+        let out = run_program_frames(src, 0, 0.016).expect("ok");
+        assert_eq!(out, "hi\n");
+    }
+
+    #[test]
+    fn vm_transition_re_enters_new_state_immediately() {
+        // -> done from inside `start` should run done's on_entry
+        // before tick returns.
+        let src = "scene S:\n    initial: start\n\n    state start:\n        print(\"start\")\n        -> done\n\n    state done:\n        print(\"done\")\n";
+        let out = run_program_frames(src, 0, 0.016).expect("ok");
+        assert_eq!(out, "start\ndone\n");
+    }
+
+    #[test]
+    fn vm_every_clock_catchup_is_capped() {
+        // dt of 1.0s with interval 100ms would naturally fire 10
+        // times; the cap drops it to MAX_CATCHUP_FIRES_PER_FRAME (8)
+        // and resets the residual so next frame starts fresh.
+        let src = "scene S:\n    var n: int = 0\n\n    initial: a\n\n    state a:\n        every 100ms:\n            n += 1\n            print(n)\n";
+        let out = run_program_frames(src, 1, 1.0).expect("ok");
+        assert_eq!(out, "1\n2\n3\n4\n5\n6\n7\n8\n");
+    }
+
+    #[test]
+    fn vm_spawn_entity_pushes_to_active_entities() {
+        // Spawn two Counter entities. tick once. Each entity's
+        // update method fires.
+        let src = "entity Counter:\n    var n = 0\n\n    update(dt):\n        n += 1\n        print(n)\n\nspawn Counter at (1, 0)\nspawn Counter at (2, 0)\n";
+        let out = run_program_frames(src, 1, 0.016).expect("ok");
+        assert_eq!(out, "1\n1\n");
+    }
+
+    #[test]
+    fn vm_despawn_self_removes_at_end_of_frame() {
+        // Mirrors `tests/programs/spawn_entities.twe` exactly:
+        // entity prints n on each update, despawns at n>=2.
+        let src = "entity Counter:\n    var n = 0\n\n    update(dt):\n        n += 1\n        print(n)\n        if n >= 2:\n            despawn self\n\nspawn Counter at (1, 0)\nspawn Counter at (2, 0)\n";
+        let out = run_program_frames(src, 3, 0.016).expect("ok");
+        // Frame 1: both fire (1, 1). Frame 2: both fire (2, 2) and
+        // despawn. Frame 3: nothing.
+        assert_eq!(out, "1\n1\n2\n2\n");
+    }
+
+    #[test]
+    fn vm_entities_count_and_of_intrinsics() {
+        // Mirrors `tests/programs/entity_query.twe` essentials.
+        let src = "entity Mob:\n    var hp = 1\n    update(dt):\n        # nothing\n\nentity Bullet:\n    update(dt):\n        # nothing\n\nspawn Mob at (0, 0)\nspawn Mob at (1, 0)\nspawn Mob at (2, 0)\nspawn Bullet at (0, 0)\n\nprint(entities.count(Mob))\nprint(entities.count(Bullet))\n\nlet mobs = entities.of(Mob)\nprint(mobs.length)\nfor m in mobs:\n    print(m.hp)\n";
+        let out = run_program_frames(src, 0, 0.016).expect("ok");
+        assert_eq!(out, "3\n1\n3\n1\n1\n1\n");
+    }
+
+    #[test]
+    fn vm_time_dt_is_live_each_frame() {
+        // `time.dt` should equal whatever was passed to tick.
+        let src = "scene S:\n    var sum = 0.0\n\n    initial: a\n\n    state a:\n        every 50ms:\n            sum += time.dt\n            print(sum)\n";
+        let out = run_program_frames(src, 1, 0.050).expect("ok");
+        assert_eq!(out, "0.05\n");
+    }
+
+    #[test]
+    fn vm_bare_name_writes_to_self_field_in_state() {
+        // `ticks += 1` inside a state body should mutate self.ticks
+        // — that's the bare-name → self-field rewrite.
+        let src = "scene S:\n    var ticks: int = 0\n\n    initial: counting\n\n    state counting:\n        every 100ms:\n            ticks += 1\n            print(ticks)\n";
+        let out = run_program_frames(src, 3, 0.100).expect("ok");
+        assert_eq!(out, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn vm_field_default_must_be_const_for_scene_too() {
+        let err = compile_err(
+            "let g = 5\nscene S:\n    var n: int = g\n    initial: a\n    state a:\n",
+        );
+        assert!(err.contains("literal constant"), "got: {err}");
+    }
+
+    #[test]
+    fn vm_unknown_initial_state_errors_at_compile() {
+        let err = compile_err("scene S:\n    initial: missing\n    state a:\n");
+        assert!(err.contains("missing"), "got: {err}");
+    }
+
+    #[test]
+    fn vm_on_render_errors_pointing_at_session_13() {
+        let err = compile_err(
+            "scene S:\n    initial: a\n    state a:\n        on render():\n            print(1)\n",
+        );
+        assert!(err.contains("session 13"), "got: {err}");
+    }
+
+    #[test]
+    fn vm_matches_eval_on_play_loop_corpus() {
+        // Cross-check the play-loop programs through both interpreters
+        // using their respective tick drivers. Mirrors how the eval
+        // tests in tests/eval.rs run the same files via run_with_frames.
+        let cases: &[(&str, u32, f64)] = &[
+            // scene_counter.twe: 5 frames @ 100ms produces 1,2,3 then idle.
+            ("scene Counter:\n    var ticks: int = 0\n\n    initial: counting\n\n    state counting:\n        every 100ms:\n            ticks += 1\n            print(ticks)\n            if ticks >= 3:\n                -> done\n\n    state done:\n", 5, 0.100),
+            // state_on_update: 3 frames produces 1,2,3.
+            ("scene S:\n    var n: int = 0\n    initial: a\n    state a:\n        on update(dt):\n            n += 1\n            print(n)\n", 3, 0.016),
+            // top-level on_update: 3 frames produces 1,2,3.
+            ("var n = 0\non update(dt):\n    n += 1\n    print(n)\n", 3, 0.016),
+            // spawn + entity update with despawn.
+            ("entity Counter:\n    var n = 0\n    update(dt):\n        n += 1\n        print(n)\n        if n >= 2:\n            despawn self\n\nspawn Counter at (1, 0)\nspawn Counter at (2, 0)\n", 3, 0.016),
+            // entities.count after spawning.
+            ("entity Mob:\n    var hp = 1\n    update(dt):\n        # nothing\n\nspawn Mob at (0, 0)\nspawn Mob at (1, 0)\nprint(entities.count(Mob))\n", 0, 0.016),
+        ];
+        for (src, frames, dt) in cases {
+            let bytecode_out = run_program_frames(src, *frames, *dt)
+                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out = crate::eval::run_with_frames(
+                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
+                *frames,
+                *dt,
+            )
+            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(
+                bytecode_out, walker_out,
+                "results diverge on `{src}`",
+            );
+        }
     }
 
     #[test]

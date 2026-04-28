@@ -24,11 +24,11 @@
 //! integration come in session 12. Until then, those produce
 //! `CompileError`s that name the session where the feature lands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp};
-use crate::bytecode::{BcClassDef, BcFunction, Chunk, OpCode};
+use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, StateMember, UnOp};
+use crate::bytecode::{BcClassDef, BcFunction, BcStateDef, Chunk, OpCode};
 use crate::value::Value;
 
 /// What the compiler refuses to compile in the current session's
@@ -143,6 +143,11 @@ struct Frame {
     /// True if this is a method body. Slot 0 is the receiver
     /// (`self`); `Expr::SelfRef` reads from there.
     is_method: bool,
+    /// Inside a method or state body, the field names of the
+    /// enclosing class. A bare name that isn't a local routes to
+    /// `self.name` if it's in this set (matching the tree-walker's
+    /// scope chain: locals → self.fields → globals).
+    class_fields: Option<Rc<HashSet<String>>>,
     /// The function's name (for diagnostics) and arity. Only used
     /// when the frame closes — the resulting `BcFunction` carries
     /// these fields.
@@ -152,10 +157,16 @@ struct Frame {
 
 impl Frame {
     fn new(kind: FrameKind, name: impl Into<String>, arity: u8) -> Self {
-        Frame::with_method(kind, name, arity, false)
+        Frame::with_method(kind, name, arity, false, None)
     }
 
-    fn with_method(kind: FrameKind, name: impl Into<String>, arity: u8, is_method: bool) -> Self {
+    fn with_method(
+        kind: FrameKind,
+        name: impl Into<String>,
+        arity: u8,
+        is_method: bool,
+        class_fields: Option<Rc<HashSet<String>>>,
+    ) -> Self {
         // Slot 0 of every frame is reserved for the function value
         // itself (per Crafting Interpreters §24.4.2). For methods
         // it's the receiver. Either way it's nameless to the user.
@@ -168,6 +179,7 @@ impl Frame {
             loops: Vec::new(),
             kind,
             is_method,
+            class_fields,
             name: name.into(),
             arity,
         }
@@ -300,24 +312,57 @@ impl Compiler {
             Stmt::Decl { kind, name, parent, members, line, col } => {
                 self.emit_decl(*kind, name, parent.as_deref(), members, *line, *col)?;
             }
-            Stmt::OnUpdate { line, col, .. } => {
-                return Err(self.unsupported(
-                    "top-level `on update(dt):` (session 11)",
-                    *line,
-                    *col,
-                ));
+            Stmt::OnUpdate { param, body, line, col } => {
+                if !self.is_global_scope() {
+                    return Err(CompileError {
+                        line: *line,
+                        col: *col,
+                        message: "top-level `on update(dt):` is only valid at the script root"
+                            .to_string(),
+                    });
+                }
+                // Compile the handler as a non-method function with
+                // `dt` at slot 1; then OP_SET_ON_UPDATE binds it on
+                // the VM as the per-tick handler.
+                let func = self.compile_top_level_on_update(param, body, *line, *col)?;
+                let func_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::BcFunction(Rc::new(func)));
+                self.frame_mut().chunk.write_op(OpCode::SetOnUpdate, *line);
+                self.frame_mut().chunk.write_byte(func_idx, *line);
             }
             Stmt::For { var, iter, body, line, .. } => {
                 self.emit_for(var, iter, body, *line)?;
             }
-            Stmt::Transition { line, col, .. }
-            | Stmt::Spawn { line, col, .. }
-            | Stmt::Despawn { line, col, .. } => {
-                return Err(self.unsupported(
-                    "scene / entity flow control (session 11)",
-                    *line,
-                    *col,
-                ));
+            Stmt::Transition { target, line, .. } => {
+                let name_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::Str(Rc::new(target.clone())));
+                self.frame_mut().chunk.write_op(OpCode::Transition, *line);
+                self.frame_mut().chunk.write_byte(name_idx, *line);
+            }
+            Stmt::Spawn { class, at, line, .. } => {
+                // `spawn ClassName at <expr>` — emit at-value (if any),
+                // then the class as a global lookup, then OP_SPAWN with
+                // a flag indicating whether at is on the stack.
+                let with_at = at.is_some();
+                if let Some(at_expr) = at {
+                    self.emit_expr(at_expr)?;
+                }
+                let name_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::Str(Rc::new(class.clone())));
+                self.frame_mut().chunk.write_op(OpCode::GetGlobal, *line);
+                self.frame_mut().chunk.write_byte(name_idx, *line);
+                self.frame_mut().chunk.write_op(OpCode::Spawn, *line);
+                self.frame_mut().chunk.write_byte(if with_at { 1 } else { 0 }, *line);
+            }
+            Stmt::Despawn { target, line, .. } => {
+                self.emit_expr(target)?;
+                self.frame_mut().chunk.write_op(OpCode::Despawn, *line);
             }
         }
         Ok(())
@@ -610,6 +655,36 @@ impl Compiler {
                     }
                     self.frame_mut().chunk.write_op(OpCode::SetLocal, line);
                     self.frame_mut().chunk.write_byte(slot, line);
+                    self.frame_mut().chunk.write_op(OpCode::Pop, line);
+                } else if self.is_self_field(name) {
+                    // Bare-name assignment routes through self.field
+                    // when the class declares it. Compile shape mirrors
+                    // AssignTarget::Field but with the receiver pulled
+                    // from slot 0 instead of an explicit object expr.
+                    let name_idx = self
+                        .frame_mut()
+                        .chunk
+                        .add_constant(Value::Str(Rc::new(name.clone())));
+                    if matches!(op, AssignOp::Set) {
+                        // Stack: [self, value]
+                        self.frame_mut().chunk.write_op(OpCode::GetLocal, line);
+                        self.frame_mut().chunk.write_byte(0, line);
+                        self.emit_expr(value)?;
+                    } else {
+                        // Stack: [self, current, value], then arith → [self, new]
+                        self.frame_mut().chunk.write_op(OpCode::GetLocal, line);
+                        self.frame_mut().chunk.write_byte(0, line);
+                        self.frame_mut().chunk.write_op(OpCode::GetLocal, line);
+                        self.frame_mut().chunk.write_byte(0, line);
+                        self.frame_mut().chunk.write_op(OpCode::GetField, line);
+                        self.frame_mut().chunk.write_byte(name_idx, line);
+                        self.emit_expr(value)?;
+                        let arith = arith_for_compound(op);
+                        self.frame_mut().chunk.write_op(arith, line);
+                    }
+                    self.frame_mut().chunk.write_op(OpCode::SetField, line);
+                    self.frame_mut().chunk.write_byte(name_idx, line);
+                    self.frame_mut().chunk.write_op(OpCode::Pop, line);
                 } else {
                     // Global path. Add the name string to the constant
                     // pool once and reuse the index for the get + set.
@@ -628,10 +703,8 @@ impl Compiler {
                     }
                     self.frame_mut().chunk.write_op(OpCode::SetGlobal, line);
                     self.frame_mut().chunk.write_byte(name_idx, line);
+                    self.frame_mut().chunk.write_op(OpCode::Pop, line);
                 }
-                // Treat assignment as a statement: discard the produced
-                // value left on top of stack by Set{Local,Global}.
-                self.frame_mut().chunk.write_op(OpCode::Pop, line);
             }
             AssignTarget::Field { object, name } => {
                 // For `recv.name = value`, OP_SET_FIELD wants
@@ -706,6 +779,17 @@ impl Compiler {
                 if let Some(slot) = self.resolve_local(name) {
                     self.frame_mut().chunk.write_op(OpCode::GetLocal, *line);
                     self.frame_mut().chunk.write_byte(slot, *line);
+                } else if self.is_self_field(name) {
+                    // Bare name resolves to `self.name` inside a
+                    // method/state body when the class declares it.
+                    self.frame_mut().chunk.write_op(OpCode::GetLocal, *line);
+                    self.frame_mut().chunk.write_byte(0, *line);
+                    let name_idx = self
+                        .frame_mut()
+                        .chunk
+                        .add_constant(Value::Str(Rc::new(name.clone())));
+                    self.frame_mut().chunk.write_op(OpCode::GetField, *line);
+                    self.frame_mut().chunk.write_byte(name_idx, *line);
                 } else {
                     let name_idx = self
                         .frame_mut()
@@ -1001,6 +1085,20 @@ impl Compiler {
         None
     }
 
+    /// True when a bare name should rewrite to `self.name` — the
+    /// active frame is a method/state body and `name` is one of
+    /// the enclosing class's declared fields. Mirrors the tree-
+    /// walker's `lookup_name` self-field fallback.
+    fn is_self_field(&self, name: &str) -> bool {
+        if !self.frame().is_method {
+            return false;
+        }
+        match &self.frame().class_fields {
+            Some(set) => set.contains(name),
+            None => false,
+        }
+    }
+
     fn begin_scope(&mut self) {
         self.frame_mut().scope_depth += 1;
     }
@@ -1074,12 +1172,11 @@ impl Compiler {
     }
 
     /// Compile a class declaration (`entity` / `item` / `modifier`
-    /// / `inventory`). Field defaults must be const-evaluable
-    /// literals in this session — runtime-evaluated defaults arrive
-    /// when scenes land (session 12) since scenes need them too.
-    /// Methods compile as nested function frames whose slot 0 is
-    /// the receiver (`self`), with `is_method = true` so the body
-    /// can reach `self`.
+    /// / `inventory` / `scene`). Two-pass: first collect field
+    /// names + defaults, then compile methods + states with the
+    /// field set available so bare names inside method/state
+    /// bodies can route through `self.field`. Particles need
+    /// lifetime tracking that lands in session 13.
     fn emit_decl(
         &mut self,
         kind: DeclKind,
@@ -1089,25 +1186,14 @@ impl Compiler {
         line: u32,
         col: u32,
     ) -> Result<(), CompileError> {
-        // Scenes / particles ship with the play-loop integration in
-        // session 12 — they need state machines, every-clocks, and
-        // active-entity tracking that the bytecode VM doesn't have
-        // yet. Block them here with a clear pointer.
-        if matches!(kind, DeclKind::Scene | DeclKind::Particles) {
+        if matches!(kind, DeclKind::Particles) {
             return Err(self.unsupported(
-                &format!(
-                    "`{}` declarative block (session 12 brings the play-loop \
-                     integration that scenes / particles depend on)",
-                    kind.as_str()
-                ),
+                "`particles` declarative block (lifetime tracking lands in session 13)",
                 line,
                 col,
             ));
         }
         if parent.is_some() {
-            // Inheritance is straightforward (copy-down methods +
-            // default fields) but no test program exercises it yet,
-            // and we want to keep this session focused.
             return Err(self.unsupported(
                 "class inheritance (parent `extends ...`)",
                 line,
@@ -1125,10 +1211,10 @@ impl Compiler {
             });
         }
 
-        // Collect fields and methods from members. State / initial
-        // sub-members require scene support; flag them.
+        // Pass 1: scan fields. Const-fold each default. Track names.
         let mut field_defaults: HashMap<String, Value> = HashMap::new();
-        let mut methods: HashMap<String, Rc<BcFunction>> = HashMap::new();
+        let mut field_names: HashSet<String> = HashSet::new();
+        let mut initial_state: Option<String> = None;
         for member in members {
             match member {
                 DeclMember::Field { name: fname, value, line: fline, col: fcol } => {
@@ -1137,34 +1223,69 @@ impl Compiler {
                         col: *fcol,
                         message: format!(
                             "field `{fname}` default must be a literal constant in v0.1 \
-                             (int, float, bool, string, nil, or a tuple of those)"
+                             (int, float, bool, string, percent, or a tuple of those)"
                         ),
                     })?;
                     field_defaults.insert(fname.clone(), v);
+                    field_names.insert(fname.clone());
                 }
+                DeclMember::InitialState { name: sname, .. } => {
+                    initial_state = Some(sname.clone());
+                }
+                _ => {}
+            }
+        }
+        let class_fields = Rc::new(field_names);
+
+        // Pass 2: compile methods + states with class_fields known.
+        let mut methods: HashMap<String, Rc<BcFunction>> = HashMap::new();
+        let mut states: HashMap<String, Rc<BcStateDef>> = HashMap::new();
+        for member in members {
+            match member {
+                DeclMember::Field { .. } | DeclMember::InitialState { .. } => {}
                 DeclMember::Method { name: mname, params, body, line: mline, col: mcol } => {
-                    let func = self.compile_method(mname, params, body, *mline, *mcol)?;
+                    let func = self.compile_method(
+                        mname,
+                        params,
+                        body,
+                        class_fields.clone(),
+                        *mline,
+                        *mcol,
+                    )?;
                     methods.insert(mname.clone(), Rc::new(func));
                 }
-                DeclMember::InitialState { line: il, col: ic, .. }
-                | DeclMember::State { line: il, col: ic, .. } => {
-                    return Err(self.unsupported(
-                        "states / `initial:` (session 12 — needs the scene runtime)",
-                        *il,
-                        *ic,
-                    ));
+                DeclMember::State { name: sname, members: smembers, line: sline, col: scol } => {
+                    let state = self.compile_state(
+                        sname,
+                        smembers,
+                        class_fields.clone(),
+                        *sline,
+                        *scol,
+                    )?;
+                    states.insert(sname.clone(), Rc::new(state));
                 }
             }
         }
 
-        // Build the class value, embed it as a constant, and bind it
-        // to its name as a global. Constructor calls will pop this
-        // class value off the stack when they fire.
+        if let Some(start) = &initial_state {
+            if !states.contains_key(start) {
+                return Err(CompileError {
+                    line,
+                    col,
+                    message: format!(
+                        "`initial: {start}` references a state that doesn't exist on `{name}`"
+                    ),
+                });
+            }
+        }
+
         let class = Rc::new(BcClassDef {
             kind: kind.as_str(),
             name: name.to_string(),
             field_defaults,
             methods,
+            states,
+            initial_state,
         });
         let class_idx = self
             .frame_mut()
@@ -1178,6 +1299,14 @@ impl Compiler {
             .add_constant(Value::Str(Rc::new(name.to_string())));
         self.frame_mut().chunk.write_op(OpCode::DefineGlobal, line);
         self.frame_mut().chunk.write_byte(name_idx, line);
+        // Scene auto-instantiation happens at the VM, triggered by
+        // OP_INIT_SCENE which runs immediately after the class is
+        // bound. Keeps the runtime spawn logic out of compile time.
+        if matches!(kind, DeclKind::Scene) {
+            self.frame_mut().chunk.write_op(OpCode::GetGlobal, line);
+            self.frame_mut().chunk.write_byte(name_idx, line);
+            self.frame_mut().chunk.write_op(OpCode::InitScene, line);
+        }
         Ok(())
     }
 
@@ -1186,6 +1315,7 @@ impl Compiler {
         name: &str,
         params: &[String],
         body: &[Stmt],
+        class_fields: Rc<HashSet<String>>,
         line: u32,
         col: u32,
     ) -> Result<BcFunction, CompileError> {
@@ -1200,8 +1330,13 @@ impl Compiler {
             });
         }
         let arity = params.len() as u8;
-        self.frames
-            .push(Frame::with_method(FrameKind::Function, name, arity, true));
+        self.frames.push(Frame::with_method(
+            FrameKind::Function,
+            name,
+            arity,
+            true,
+            Some(class_fields),
+        ));
         // Slot 0 is `self`; params live at slots 1..=arity.
         for param in params {
             self.declare_local(param, line, col)?;
@@ -1215,6 +1350,183 @@ impl Compiler {
         self.frame_mut().chunk.write_op(OpCode::Return, last_line);
         let frame = self.frames.pop().expect("method frame we just pushed");
         Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+    }
+
+    /// Compile a state member set into a `BcStateDef`. on_render
+    /// and on_key_press defer to session 13; they're recognised
+    /// here so the parser still accepts them, but emit a clear
+    /// "not yet" error.
+    fn compile_state(
+        &mut self,
+        name: &str,
+        members: &[StateMember],
+        class_fields: Rc<HashSet<String>>,
+        line: u32,
+        _col: u32,
+    ) -> Result<BcStateDef, CompileError> {
+        let mut on_entry_stmts: Vec<Stmt> = Vec::new();
+        let mut every: Vec<(f64, Rc<BcFunction>)> = Vec::new();
+        let mut on_update: Option<Rc<BcFunction>> = None;
+        for sm in members {
+            match sm {
+                StateMember::Stmt(s) => on_entry_stmts.push(s.clone()),
+                StateMember::Every { interval, body, line: el, col: ec } => {
+                    let secs = const_eval_seconds(interval).ok_or_else(|| CompileError {
+                        line: *el,
+                        col: *ec,
+                        message: "`every <duration>:` interval must be a literal duration \
+                                  in v0.1 (e.g. `100ms`, `0.5s`)".to_string(),
+                    })?;
+                    let func = self.compile_state_body(
+                        &format!("{name}.every"),
+                        body,
+                        class_fields.clone(),
+                        *el,
+                        *ec,
+                    )?;
+                    every.push((secs, Rc::new(func)));
+                }
+                StateMember::OnUpdate { param, body, line: ul, col: uc } => {
+                    let func = self.compile_state_on_update(
+                        &format!("{name}.on_update"),
+                        param,
+                        body,
+                        class_fields.clone(),
+                        *ul,
+                        *uc,
+                    )?;
+                    on_update = Some(Rc::new(func));
+                }
+                StateMember::OnRender { line: rl, col: rc, .. } => {
+                    return Err(self.unsupported(
+                        "`on render():` (session 13 — needs the render-loop integration)",
+                        *rl,
+                        *rc,
+                    ));
+                }
+                StateMember::OnKeyPress { line: kl, col: kc, .. } => {
+                    return Err(self.unsupported(
+                        "`on key_press.<key>:` (session 13 — needs key-press dispatch)",
+                        *kl,
+                        *kc,
+                    ));
+                }
+            }
+        }
+        let on_entry = self.compile_state_body(
+            &format!("{name}.on_entry"),
+            &on_entry_stmts,
+            class_fields,
+            line,
+            0,
+        )?;
+        Ok(BcStateDef {
+            name: name.to_string(),
+            on_entry: Rc::new(on_entry),
+            every_clocks: every,
+            on_update,
+        })
+    }
+
+    /// Compile a state-scoped body (on_entry, every-clock body,
+    /// state on_update body) as a method-shape BcFunction with
+    /// `self` at slot 0. on_update bodies take a `dt` parameter
+    /// at slot 1.
+    fn compile_state_body(
+        &mut self,
+        name: &str,
+        body: &[Stmt],
+        class_fields: Rc<HashSet<String>>,
+        line: u32,
+        _col: u32,
+    ) -> Result<BcFunction, CompileError> {
+        self.frames.push(Frame::with_method(
+            FrameKind::Function,
+            name,
+            0,
+            true,
+            Some(class_fields),
+        ));
+        for stmt in body {
+            self.emit_stmt(stmt)?;
+        }
+        let last_line = body.last().map(stmt_line).unwrap_or(line);
+        self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
+        self.frame_mut().chunk.write_op(OpCode::Return, last_line);
+        let frame = self.frames.pop().expect("state-body frame we just pushed");
+        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+    }
+
+    /// Compile a top-level `on update(dt):` body as a non-method
+    /// function: slot 0 is the function value (unused by body),
+    /// slot 1 is `dt`. Globals reachable, no `self`.
+    fn compile_top_level_on_update(
+        &mut self,
+        param: &str,
+        body: &[Stmt],
+        line: u32,
+        col: u32,
+    ) -> Result<BcFunction, CompileError> {
+        self.frames
+            .push(Frame::new(FrameKind::Function, "<on_update>", 1));
+        self.declare_local(param, line, col)?;
+        self.mark_initialised();
+        for stmt in body {
+            self.emit_stmt(stmt)?;
+        }
+        let last_line = body.last().map(stmt_line).unwrap_or(line);
+        self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
+        self.frame_mut().chunk.write_op(OpCode::Return, last_line);
+        let frame = self.frames.pop().expect("on_update frame we just pushed");
+        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+    }
+
+    fn compile_state_on_update(
+        &mut self,
+        name: &str,
+        param: &str,
+        body: &[Stmt],
+        class_fields: Rc<HashSet<String>>,
+        line: u32,
+        col: u32,
+    ) -> Result<BcFunction, CompileError> {
+        self.frames.push(Frame::with_method(
+            FrameKind::Function,
+            name,
+            1,
+            true,
+            Some(class_fields),
+        ));
+        self.declare_local(param, line, col)?;
+        self.mark_initialised();
+        for stmt in body {
+            self.emit_stmt(stmt)?;
+        }
+        let last_line = body.last().map(stmt_line).unwrap_or(line);
+        self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
+        self.frame_mut().chunk.write_op(OpCode::Return, last_line);
+        let frame = self.frames.pop().expect("state on_update frame we just pushed");
+        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+    }
+}
+
+/// Constant-evaluate an `every` interval to seconds. Accepts a
+/// duration literal (`100ms`, `0.5s`, `2min`, `1h`) or a numeric
+/// literal (interpreted as seconds). Returns `None` for anything
+/// that depends on runtime state — the compiler then errors with
+/// a pointer to the limitation.
+fn const_eval_seconds(e: &Expr) -> Option<f64> {
+    match e {
+        Expr::Quantity { value, unit, .. } => match unit.as_str() {
+            "s" => Some(*value),
+            "ms" => Some(*value / 1000.0),
+            "min" => Some(*value * 60.0),
+            "h" => Some(*value * 3600.0),
+            _ => None,
+        },
+        Expr::Float { value, .. } => Some(*value),
+        Expr::Int { value, .. } => Some(*value as f64),
+        _ => None,
     }
 }
 
