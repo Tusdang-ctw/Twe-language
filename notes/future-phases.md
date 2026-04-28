@@ -88,6 +88,12 @@ compilation, stop. Note it here."):
 - Single-pass bytecode compiler from AST (Phase 3).
 - Incremental tracing GC (Phase 3).
 - Computed-goto interpreter loop (Phase 3).
+- **Cooperative fibers + `wait <duration>`** (Phase 3, deferred from Phase 2 per
+  `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`). Locked decision unchanged
+  (cooperative, single-threaded, no async coloring); only the implementation timing
+  moved. Bytecode IPs make fiber suspension/resumption natural; tree-walker would have
+  needed a CPS rewrite that gets thrown away. Surface to ship: `wait`, fiber-backed
+  `every` (rewrite of the current accumulator), readiness for `dialogue`/`ai` in Phase 5.
 - Strict-mode type checker (Phase 4).
 - Verified-mode JSON diagnostics (Phase 4+).
 - `visual` block → fragment shader compilation (Phase 5).

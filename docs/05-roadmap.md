@@ -111,7 +111,7 @@ Reasons:
 **Components added in this phase:**
 
 1. **macroquad bindings** for sprite drawing, input, audio.
-2. **Coroutines / fibers** in the interpreter (the design from `03-runtime.md`).
+2. ~~**Coroutines / fibers** in the interpreter~~ — **deferred to Phase 3** per `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`. No shipped Phase 2 example pressured the feature; the implementation work doesn't transfer to the bytecode VM.
 3. **Basic ECS world** under the interpreter — entities, components, simple queries.
 4. **`particles` block** with CPU-side particle updating.
 5. **Hot reload** of the running script.
@@ -145,6 +145,7 @@ This is the phase where the design becomes mature.
 - Single-pass compiler from AST to bytecode.
 - Bytecode interpreter loop with computed-goto where possible.
 - Incremental tracing GC.
+- **Cooperative fibers** (deferred from Phase 2 per `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`). Bytecode IPs naturally support suspension/resumption; the VM gets a per-fiber call stack and the runtime advances all live fibers each frame with budget protection. Surface: `wait <duration>`, fiber-backed `every <duration>:` (rewrite of the current per-state accumulator), and a `dialogue`-ready primitive for Phase 5.
 - Target: 5x–20x faster than tree-walker on hot code paths.
 
 **Other deliverables:**
