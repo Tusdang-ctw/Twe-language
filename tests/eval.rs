@@ -442,6 +442,30 @@ print(h.y)
 }
 
 #[test]
+fn sound_load_returns_handle_with_path_field() {
+    let src = r#"
+let s = sound.load("tests/assets/silence.wav")
+print(s.path)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "tests/assets/silence.wav\n");
+}
+
+#[test]
+fn sound_load_fails_fast_on_missing_asset() {
+    let err = run_program_str("let s = sound.load(\"nope.wav\")\n")
+        .expect_err("should fail");
+    assert!(err.contains("cannot find asset"), "got: {err}");
+}
+
+#[test]
+fn sound_play_rejects_non_handle() {
+    let err = run_program_str("sound.play(42)\n").expect_err("should fail");
+    assert!(err.contains("sound.play"), "got: {err}");
+    assert!(err.contains("handle"), "got: {err}");
+}
+
+#[test]
 fn sprite_outside_render_errors() {
     let src = r#"let h = load("tests/assets/hero.png")
 on update(dt):

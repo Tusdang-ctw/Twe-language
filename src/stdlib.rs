@@ -12,12 +12,33 @@ use crate::value::{Env, Object, RuntimeError, Value};
 thread_local! {
     static SPRITE_CACHE: RefCell<HashMap<String, macroquad::texture::Texture2D>>
         = RefCell::new(HashMap::new());
+    static SOUND_CACHE: RefCell<HashMap<String, macroquad::audio::Sound>>
+        = RefCell::new(HashMap::new());
 }
 
-/// Drop every cached `Texture2D`. The play loop calls this on hot reload
-/// so a swapped-out asset path actually reloads.
+/// Drop every cached `Texture2D` and `Sound`. The play loop calls this
+/// on hot reload so swapped asset paths pick up.
 pub fn clear_asset_caches() {
     SPRITE_CACHE.with(|c| c.borrow_mut().clear());
+    SOUND_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+/// Drive a future to completion synchronously. Used for macroquad's
+/// async asset APIs (e.g. `audio::load_sound_from_bytes`) whose
+/// underlying work is sync CPU; the futures only exist for browser
+/// compatibility and never actually pend on native. Uses
+/// `Waker::noop()` (stable since Rust 1.85) so no unsafe is needed —
+/// `unsafe_code = "forbid"` stays intact.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    use std::task::{Context, Poll, Waker};
+    let waker = Waker::noop();
+    let mut ctx = Context::from_waker(waker);
+    let mut f = std::pin::pin!(f);
+    loop {
+        if let Poll::Ready(out) = f.as_mut().poll(&mut ctx) {
+            return out;
+        }
+    }
 }
 
 pub fn install(env: &mut Env) {
@@ -72,6 +93,131 @@ pub fn install(env: &mut Env) {
     install_draw(env);
     install_entities(env);
     install_time(env);
+    install_sound(env);
+}
+
+fn install_sound(env: &mut Env) {
+    let mut sound = HashMap::new();
+    sound.insert(
+        "load".to_string(),
+        Value::Builtin {
+            name: "sound.load",
+            func: sound_load,
+        },
+    );
+    sound.insert(
+        "play".to_string(),
+        Value::Builtin {
+            name: "sound.play",
+            func: sound_play,
+        },
+    );
+    env.set(
+        "sound".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: sound,
+            kind: "module",
+        }))),
+    );
+}
+
+fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "sound.load")?;
+    let path = match &args[0] {
+        Value::Str(s) => s.as_ref().clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "sound.load expected a string path, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `sound.load(\"shot.wav\")`".to_string()),
+            });
+        }
+    };
+    if std::fs::metadata(&path).is_err() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("sound.load: cannot find asset '{path}'"),
+            help: Some(
+                "the path is relative to the working directory; check spelling and case"
+                    .to_string(),
+            ),
+        });
+    }
+    let mut fields = HashMap::new();
+    fields.insert("path".to_string(), Value::Str(Rc::new(path)));
+    Ok(Value::Object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "sound",
+    }))))
+}
+
+fn sound_play(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "sound.play")?;
+    let path = match &args[0] {
+        Value::Object(rc) => {
+            let o = rc.borrow();
+            if o.kind != "sound" {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!(
+                        "sound.play expects a sound handle from `sound.load(...)`, got {}",
+                        o.kind
+                    ),
+                    help: None,
+                });
+            }
+            match o.fields.get("path") {
+                Some(Value::Str(s)) => s.as_ref().clone(),
+                _ => {
+                    return Err(RuntimeError {
+                        line: 0,
+                        col: 0,
+                        message: "sound handle is missing a `path` field".to_string(),
+                        help: None,
+                    });
+                }
+            }
+        }
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "sound.play expects a sound handle from `sound.load(...)`, got {}",
+                    other.type_name()
+                ),
+                help: None,
+            });
+        }
+    };
+    SOUND_CACHE.with(|cache| -> Result<(), RuntimeError> {
+        let mut c = cache.borrow_mut();
+        if !c.contains_key(&path) {
+            let bytes = std::fs::read(&path).map_err(|e| RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("sound.play: cannot read '{path}': {e}"),
+                help: None,
+            })?;
+            let snd = block_on(macroquad::audio::load_sound_from_bytes(&bytes))
+                .map_err(|e| RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!("sound.play: failed to decode '{path}': {e}"),
+                    help: Some("supported formats: WAV, Ogg Vorbis".to_string()),
+                })?;
+            c.insert(path.clone(), snd);
+        }
+        macroquad::audio::play_sound_once(&c[&path]);
+        Ok(())
+    })?;
+    Ok(Value::Nil)
 }
 
 fn install_time(env: &mut Env) {

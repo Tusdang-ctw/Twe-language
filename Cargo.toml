@@ -12,7 +12,7 @@ unsafe_code = "forbid"
 all = { level = "warn", priority = -1 }
 
 [dependencies]
-macroquad = { version = "0.4", default-features = false }
+macroquad = { version = "0.4", default-features = false, features = ["audio"] }
 
 [dev-dependencies]
 insta = "1.41"
