@@ -88,6 +88,7 @@ pub enum DeclKind {
     Modifier,
     Inventory,
     Scene,
+    Particles,
 }
 
 impl DeclKind {
@@ -98,6 +99,7 @@ impl DeclKind {
             DeclKind::Modifier => "modifier",
             DeclKind::Inventory => "inventory",
             DeclKind::Scene => "scene",
+            DeclKind::Particles => "particles",
         }
     }
 }

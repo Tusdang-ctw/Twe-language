@@ -77,6 +77,7 @@ impl<'a> Parser<'a> {
             TokenKind::Modifier => return self.parse_decl(DeclKind::Modifier),
             TokenKind::Inventory => return self.parse_decl(DeclKind::Inventory),
             TokenKind::Scene => return self.parse_decl(DeclKind::Scene),
+            TokenKind::Particles => return self.parse_decl(DeclKind::Particles),
             TokenKind::Function => return self.parse_function(),
             TokenKind::Return => return self.parse_return(),
             TokenKind::While => return self.parse_while(),

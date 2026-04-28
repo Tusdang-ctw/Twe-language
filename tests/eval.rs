@@ -487,6 +487,43 @@ fn time_dt_reflects_real_frame_delta() {
 }
 
 #[test]
+fn particles_emitter_ages_and_despawns() {
+    // Frame 1: on update prints count=1; tick ages particles to 0.05.
+    // Frame 2: prints count=1; tick ages to 0.11 > 0.1 lifetime, all
+    //           particles dead, emitter despawns, prune drops it.
+    // Frame 3: prints count=0.
+    let out = run_program_frames("tests/programs/particles_block.twe", 3, 0.05)
+        .expect("program should run");
+    let lines: Vec<&str> = out.trim_end().split('\n').collect();
+    assert_eq!(lines, vec!["1", "1", "0"]);
+}
+
+#[test]
+fn particles_block_creates_count_particles_with_defaults() {
+    use twec::value::Value;
+    let src = r#"
+particles Spark:
+    count: 4
+    lifetime: 5.0
+
+spawn Spark at (50.0, 60.0)
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+    assert_eq!(env.active_entities.len(), 1);
+    let inst = env.active_entities[0].borrow();
+    let particles = inst.fields.get("__particles").expect("__particles");
+    let n = match particles {
+        Value::List(rc) => rc.borrow().len(),
+        _ => panic!("__particles should be a list"),
+    };
+    assert_eq!(n, 4);
+}
+
+#[test]
 fn entities_of_returns_only_live_instances_of_class() {
     let out = run_program("tests/programs/entity_query.twe").expect("program should run");
     // 3 mobs spawned, 1 bullet. entities.count returns 3, 1.

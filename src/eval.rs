@@ -7,7 +7,7 @@ use crate::ast::{
 };
 use crate::stdlib;
 use crate::value::{
-    ClassDef, Env, EveryClockDef, FunctionDef, Instance, MethodDef, OnUpdateHandler,
+    ClassDef, Env, EveryClockDef, FunctionDef, Instance, MethodDef, Object, OnUpdateHandler,
     RuntimeError, StateDef, Value,
 };
 
@@ -71,6 +71,10 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
             continue;
         }
         let class = entity.borrow().class.clone();
+        if class.kind == "particles" {
+            tick_particle_emitter(env, &entity, &class, dt)?;
+            continue;
+        }
         let method = match find_method(&class, "update") {
             Some(m) => m,
             None => continue,
@@ -89,6 +93,228 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
 
 fn prune_despawned(env: &mut Env) {
     env.active_entities.retain(|e| !e.borrow().despawned);
+}
+
+/// On `spawn EmitterClass at pos`, create the particle list as a hidden
+/// `__particles` field on the emitter Instance, run `on_spawn(p)` for
+/// each particle if defined. The emitter itself is then pushed to
+/// `active_entities` by the caller.
+fn seed_particle_emitter(
+    env: &mut Env,
+    emitter: &Rc<RefCell<Instance>>,
+    at: Option<&Value>,
+    line: u32,
+    col: u32,
+) -> Result<(), RuntimeError> {
+    let (count, lifetime, class) = {
+        let inst = emitter.borrow();
+        let count = match inst.fields.get("count") {
+            Some(Value::Int(n)) if *n >= 0 => *n as usize,
+            Some(other) => {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "particles `count` must be a non-negative int, got {}",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            }
+            None => 16,
+        };
+        let lifetime = match inst.fields.get("lifetime") {
+            Some(Value::Float(f)) => *f,
+            Some(Value::Int(n)) => *n as f64,
+            Some(Value::Quantity { value, .. }) => *value,
+            None => 1.0,
+            Some(other) => {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "particles `lifetime` must be a number or duration, got {}",
+                        other.type_name()
+                    ),
+                    help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
+                });
+            }
+        };
+        (count, lifetime, inst.class.clone())
+    };
+    let on_spawn = find_method(&class, "on_spawn");
+    let mut particles: Vec<Value> = Vec::with_capacity(count);
+    let initial_pos = at
+        .cloned()
+        .unwrap_or_else(|| Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])));
+    for _ in 0..count {
+        let p = make_particle(&initial_pos, lifetime);
+        if let Some(method) = on_spawn.clone() {
+            call_method(
+                env,
+                Value::Instance(emitter.clone()),
+                &method,
+                std::slice::from_ref(&p),
+                line,
+                col,
+            )?;
+        }
+        particles.push(p);
+    }
+    emitter.borrow_mut().fields.insert(
+        "__particles".to_string(),
+        Value::List(Rc::new(RefCell::new(particles))),
+    );
+    Ok(())
+}
+
+fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("pos".to_string(), initial_pos.clone());
+    fields.insert(
+        "velocity".to_string(),
+        Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])),
+    );
+    fields.insert(
+        "color".to_string(),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(1.0),
+            Value::Float(1.0),
+            Value::Float(1.0),
+            Value::Float(1.0),
+        ])),
+    );
+    fields.insert("size".to_string(), Value::Float(4.0));
+    fields.insert("age".to_string(), Value::Float(0.0));
+    fields.insert("age_ratio".to_string(), Value::Float(0.0));
+    fields.insert("lifetime".to_string(), Value::Float(lifetime));
+    Value::Object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "particle",
+    })))
+}
+
+fn tick_particle_emitter(
+    env: &mut Env,
+    emitter: &Rc<RefCell<Instance>>,
+    class: &Rc<ClassDef>,
+    dt: f64,
+) -> Result<(), RuntimeError> {
+    let on_update = find_method(class, "on_update");
+    let particles = match emitter.borrow().fields.get("__particles").cloned() {
+        Some(Value::List(rc)) => rc,
+        _ => return Ok(()),
+    };
+    let snapshot: Vec<Value> = particles.borrow().clone();
+    for p in &snapshot {
+        if let Some(method) = on_update.clone() {
+            call_method(
+                env,
+                Value::Instance(emitter.clone()),
+                &method,
+                &[p.clone(), Value::Float(dt)],
+                0,
+                0,
+            )?;
+        }
+        if let Value::Object(rc) = p {
+            let mut o = rc.borrow_mut();
+            let age = match o.fields.get("age") {
+                Some(Value::Float(a)) => *a + dt,
+                Some(Value::Int(a)) => *a as f64 + dt,
+                _ => dt,
+            };
+            let lifetime = match o.fields.get("lifetime") {
+                Some(Value::Float(l)) => *l,
+                _ => 1.0,
+            };
+            o.fields.insert("age".to_string(), Value::Float(age));
+            let ratio = if lifetime > 0.0 {
+                (age / lifetime).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            o.fields
+                .insert("age_ratio".to_string(), Value::Float(ratio));
+        }
+    }
+    // Drop dead particles.
+    particles.borrow_mut().retain(|p| match p {
+        Value::Object(rc) => match rc.borrow().fields.get("age") {
+            Some(Value::Float(age)) => match rc.borrow().fields.get("lifetime") {
+                Some(Value::Float(lt)) => *age < *lt,
+                _ => true,
+            },
+            _ => true,
+        },
+        _ => true,
+    });
+    if particles.borrow().is_empty() {
+        emitter.borrow_mut().despawned = true;
+    }
+    Ok(())
+}
+
+fn render_particle_emitter(
+    env: &mut Env,
+    emitter: &Rc<RefCell<Instance>>,
+    class: &Rc<ClassDef>,
+) -> Result<(), RuntimeError> {
+    // If the user defined a custom `render()`, defer to it and skip the
+    // built-in circle-per-particle path.
+    if let Some(method) = find_method(class, "render") {
+        return call_method(env, Value::Instance(emitter.clone()), &method, &[], 0, 0)
+            .map(|_| ());
+    }
+    let particles = match emitter.borrow().fields.get("__particles").cloned() {
+        Some(Value::List(rc)) => rc,
+        _ => return Ok(()),
+    };
+    if !env.in_render {
+        return Ok(());
+    }
+    for p in particles.borrow().iter() {
+        if let Value::Object(rc) = p {
+            let o = rc.borrow();
+            let (px, py) = match o.fields.get("pos") {
+                Some(Value::Tuple(elems)) if elems.len() >= 2 => (
+                    number_or_zero(&elems[0]),
+                    number_or_zero(&elems[1]),
+                ),
+                _ => (0.0, 0.0),
+            };
+            let radius = match o.fields.get("size") {
+                Some(Value::Float(f)) => *f as f32,
+                Some(Value::Int(n)) => *n as f32,
+                _ => 4.0,
+            };
+            let color = match o.fields.get("color") {
+                Some(Value::Tuple(elems)) if elems.len() >= 3 => {
+                    let r = number_or_zero(&elems[0]) as f32;
+                    let g = number_or_zero(&elems[1]) as f32;
+                    let b = number_or_zero(&elems[2]) as f32;
+                    let a = if elems.len() >= 4 {
+                        number_or_zero(&elems[3]) as f32
+                    } else {
+                        1.0
+                    };
+                    macroquad::color::Color::new(r, g, b, a)
+                }
+                _ => macroquad::color::WHITE,
+            };
+            macroquad::shapes::draw_circle(px as f32, py as f32, radius, color);
+        }
+    }
+    Ok(())
+}
+
+fn number_or_zero(v: &Value) -> f64 {
+    match v {
+        Value::Int(n) => *n as f64,
+        Value::Float(f) => *f,
+        Value::Quantity { value, .. } => *value,
+        _ => 0.0,
+    }
 }
 
 fn update_time_ambient(env: &mut Env, dt: f64) {
@@ -181,6 +407,10 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
             continue;
         }
         let class = entity.borrow().class.clone();
+        if class.kind == "particles" {
+            render_particle_emitter(env, &entity, &class)?;
+            continue;
+        }
         let method = match find_method(&class, "render") {
             Some(m) => m,
             None => continue,
@@ -495,11 +725,14 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 Some(expr) => Some(eval_expr(env, expr)?),
                 None => None,
             };
-            let inst_val = instantiate(class_rc);
-            if let (Some(at_value), Value::Instance(rc)) = (at_value, &inst_val) {
-                rc.borrow_mut().fields.insert("pos".to_string(), at_value);
+            let inst_val = instantiate(class_rc.clone());
+            if let (Some(at_value), Value::Instance(rc)) = (&at_value, &inst_val) {
+                rc.borrow_mut().fields.insert("pos".to_string(), at_value.clone());
             }
             if let Value::Instance(rc) = &inst_val {
+                if class_rc.kind == "particles" {
+                    seed_particle_emitter(env, rc, at_value.as_ref(), *line, *col)?;
+                }
                 env.active_entities.push(rc.clone());
             }
             Ok(())

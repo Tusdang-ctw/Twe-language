@@ -1,0 +1,19 @@
+# Phase-2 smoke test for the `particles` declarative block.
+# Spawns a 3-particle emitter with lifetime=0.1s. The runtime ages
+# each particle each frame; when all are dead, the emitter despawns.
+
+particles Burst:
+    count: 3
+    lifetime: 0.1
+
+    on_spawn(p):
+        p.color = (1.0, 0.0, 0.0, 1.0)
+        p.size = 2.0
+
+    on_update(p, dt):
+        # Empty body — let the runtime age them.
+
+spawn Burst at (10.0, 10.0)
+
+on update(dt):
+    print(entities.count(Burst))

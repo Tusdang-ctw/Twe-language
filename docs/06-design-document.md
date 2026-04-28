@@ -456,6 +456,8 @@ A `particles` block declares an emitter. The runtime instantiates particles up t
 
 Each particle has implicit fields: `pos`, `velocity`, `color`, `size`, `age` (in seconds), `age_ratio` (`age / lifetime`).
 
+**v0.1 implementation status:** the declarative block is in. `count` (int, default 16) and `lifetime` (float seconds, default 1.0) are read at spawn time; `on_spawn(p)` and `on_update(p, dt)` are called per particle if defined. The runtime ages each particle (`age += dt`, `age_ratio = age / lifetime`) every frame and despawns the emitter when no particles are left. Default rendering draws each particle as a `draw_circle(p.pos, p.size, p.color)` — define `function render():` on the particles block to override. `emit_pattern` and keyword args are deferred until F1 (per the Phase 2 frustration list).
+
 ### 4.11 Tilemaps
 
 A `tilemap` block declares a tile-based map. The runtime handles rendering and collision based on tile traits (`solid`, `walkable`, `slow`, `trigger`).

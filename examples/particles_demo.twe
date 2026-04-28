@@ -1,0 +1,49 @@
+# `twec play examples/particles_demo.twe`
+#
+# Phase-2 demo of the `particles` declarative block. Press space to
+# spawn a 32-particle radial burst at the cursor (well, the player
+# square). Each particle is auto-aged by the runtime; when it ages
+# past `lifetime`, it's removed; when the emitter has no live
+# particles left, it despawns.
+#
+# Default rendering: each particle is drawn as a colored circle at
+# `p.pos` with radius `p.size`. To override, define `function render():`
+# in the particles block.
+
+var player_x = 320.0
+var player_y = 240.0
+
+scene Demo:
+    var speed = 240.0
+
+    initial: playing
+
+    state playing:
+        every 16ms:
+            let step = speed * time.dt
+            if key.right: player_x += step
+            if key.left:  player_x -= step
+            if key.up:    player_y -= step
+            if key.down:  player_y += step
+
+        on key_press.space:
+            spawn Burst at (player_x, player_y)
+
+        on render():
+            rect((player_x - 8, player_y - 8), (16, 16), color.white)
+            text("space: burst   arrows: move", (10, 20), 16, color.gray)
+
+particles Burst:
+    count: 32
+    lifetime: 0.6
+
+    on_spawn(p):
+        let angle = random.float() * 6.2832
+        let speed = 100.0 + random.float() * 200.0
+        p.velocity = (math.sqrt(speed * speed) * 0.7, math.sqrt(speed * speed) * 0.7)
+        p.color = (1.0, 0.6, 0.1, 1.0)
+        p.size = 3.0
+
+    on_update(p, dt):
+        p.pos = (p.pos.x + p.velocity.x * dt, p.pos.y + p.velocity.y * dt)
+        p.size = 3.0 - 2.5 * p.age_ratio
