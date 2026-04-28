@@ -266,6 +266,25 @@ fn random_choice_on_empty_list_errors() {
 }
 
 #[test]
+fn runs_interpolation() {
+    let out = run_program("tests/programs/interpolation.twe").expect("program should run");
+    let expected = "hello, Twe!\n\
+                    Score: 42\n\
+                    42 + 42 = 84\n\
+                    at (10, 20)\n\
+                    first = 1, length = 3\n\
+                    a \\ b \"q\" c\n\
+                    brace: {not interpolated}\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn unterminated_interpolation_errors() {
+    let err = run_program_str("print(\"{x\")\n").expect_err("should fail");
+    assert!(err.contains("interpolation") || err.contains("unterminated"), "got: {err}");
+}
+
+#[test]
 fn range_roll_returns_value_in_range() {
     // Deterministic: same seed → same sequence. Just check the values
     // fall inside the range.

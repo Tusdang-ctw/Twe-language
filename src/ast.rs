@@ -119,6 +119,7 @@ pub enum AssignOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Str { value: String, line: u32, col: u32 },
+    Interp { parts: Vec<String>, exprs: Vec<Expr>, line: u32, col: u32 },
     Int { value: i64, line: u32, col: u32 },
     Float { value: f64, line: u32, col: u32 },
     Bool { value: bool, line: u32, col: u32 },
@@ -164,6 +165,7 @@ impl Expr {
     pub fn line(&self) -> u32 {
         match self {
             Expr::Str { line, .. }
+            | Expr::Interp { line, .. }
             | Expr::Int { line, .. }
             | Expr::Float { line, .. }
             | Expr::Bool { line, .. }
@@ -185,6 +187,7 @@ impl Expr {
     pub fn col(&self) -> u32 {
         match self {
             Expr::Str { col, .. }
+            | Expr::Interp { col, .. }
             | Expr::Int { col, .. }
             | Expr::Float { col, .. }
             | Expr::Bool { col, .. }

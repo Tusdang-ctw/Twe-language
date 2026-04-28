@@ -37,6 +37,15 @@ pub enum TokenKind {
     PercentLit(f64),
     UnitLit { value: f64, unit: String },
     Str(String),
+    /// Interpolated string. Alternating literal chunks and expression
+    /// source spans. e.g. `"hi {name}!"` lexes as
+    /// `InterpStr(["hi ", "!"], ["name"])`. The parser substitutes the
+    /// expression-source strings back through the lexer/parser to build
+    /// real Expr trees.
+    InterpStr {
+        parts: Vec<String>,
+        exprs: Vec<String>,
+    },
     Eq,
     EqEq,
     NotEq,
@@ -550,10 +559,12 @@ impl<'a> Lexer<'a> {
     fn lex_string(&mut self, line: u32, col: u32) -> Result<Token, LexError> {
         self.bump(); // opening "
         let mut out = String::new();
+        let mut parts: Vec<String> = Vec::new();
+        let mut exprs: Vec<String> = Vec::new();
         loop {
             let chunk_start = self.pos;
             while let Some(b) = self.peek() {
-                if b == b'"' || b == b'\n' || b == b'\\' {
+                if b == b'"' || b == b'\n' || b == b'\\' || b == b'{' {
                     break;
                 }
                 self.bump();
@@ -573,8 +584,16 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 Some(b'"') => {
                     self.bump();
+                    if exprs.is_empty() {
+                        return Ok(Token {
+                            kind: TokenKind::Str(out),
+                            line,
+                            col,
+                        });
+                    }
+                    parts.push(out);
                     return Ok(Token {
-                        kind: TokenKind::Str(out),
+                        kind: TokenKind::InterpStr { parts, exprs },
                         line,
                         col,
                     });
@@ -590,6 +609,51 @@ impl<'a> Lexer<'a> {
                                 .to_string(),
                         ),
                     });
+                }
+                Some(b'{') => {
+                    let interp_line = self.line;
+                    let interp_col = self.col;
+                    self.bump();
+                    let expr_start = self.pos;
+                    let mut depth: u32 = 1;
+                    while let Some(c) = self.peek() {
+                        match c {
+                            b'{' => {
+                                depth += 1;
+                                self.bump();
+                            }
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                self.bump();
+                            }
+                            b'"' | b'\n' => break,
+                            _ => self.bump(),
+                        }
+                    }
+                    if self.peek() != Some(b'}') {
+                        return Err(LexError {
+                            line: interp_line,
+                            col: interp_col,
+                            message: "unterminated interpolation '{...}'".to_string(),
+                            help: Some(
+                                "close with '}' before end of line / string".to_string(),
+                            ),
+                        });
+                    }
+                    let expr_text = std::str::from_utf8(&self.src[expr_start..self.pos])
+                        .map_err(|_| LexError {
+                            line: interp_line,
+                            col: interp_col,
+                            message: "invalid UTF-8 in interpolation expression".to_string(),
+                            help: None,
+                        })?
+                        .to_string();
+                    self.bump(); // closing '}'
+                    parts.push(std::mem::take(&mut out));
+                    exprs.push(expr_text);
                 }
                 Some(b'\\') => {
                     let esc_line = self.line;
@@ -608,13 +672,16 @@ impl<'a> Lexer<'a> {
                         b'\\' => '\\',
                         b'"' => '"',
                         b'0' => '\0',
+                        b'{' => '{',
+                        b'}' => '}',
                         other => {
                             return Err(LexError {
                                 line: esc_line,
                                 col: esc_col,
                                 message: format!("unknown escape '\\{}'", other as char),
                                 help: Some(
-                                    "supported: \\n \\r \\t \\\\ \\\" \\0".to_string(),
+                                    "supported: \\n \\r \\t \\\\ \\\" \\0 \\{ \\}"
+                                        .to_string(),
                                 ),
                             });
                         }
@@ -630,7 +697,7 @@ impl<'a> Lexer<'a> {
                         help: Some("add a closing '\"'".to_string()),
                     })
                 }
-                _ => unreachable!("loop only breaks on \", \\n, \\\\, or end-of-input"),
+                _ => unreachable!("loop breaks on quote, newline, backslash, brace, or eof"),
             }
         }
     }

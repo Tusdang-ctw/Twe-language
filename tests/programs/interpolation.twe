@@ -1,0 +1,17 @@
+let name = "Twe"
+let score = 42
+
+print("hello, {name}!")
+print("Score: {score}")
+print("{score} + {score} = {score + score}")
+
+# nested field / index access in interpolation
+let p = (10, 20)
+print("at ({p.x}, {p.y})")
+
+let xs = [1, 2, 3]
+print("first = {xs[0]}, length = {xs.length}")
+
+# escapes still work
+print("a \\ b \"q\" c")
+print("brace: \{not interpolated\}")

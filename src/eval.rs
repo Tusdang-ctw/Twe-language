@@ -301,6 +301,18 @@ fn compound(
 fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
     match expr {
         Expr::Str { value, .. } => Ok(Value::Str(Rc::new(value.clone()))),
+        Expr::Interp { parts, exprs, .. } => {
+            // parts.len() == exprs.len() + 1 by construction in lex_string.
+            let mut out = String::new();
+            for (i, p) in parts.iter().enumerate() {
+                out.push_str(p);
+                if let Some(e) = exprs.get(i) {
+                    let v = eval_expr(env, e)?;
+                    out.push_str(&v.display());
+                }
+            }
+            Ok(Value::Str(Rc::new(out)))
+        }
         Expr::Int { value, .. } => Ok(Value::Int(*value)),
         Expr::Float { value, .. } => Ok(Value::Float(*value)),
         Expr::Bool { value, .. } => Ok(Value::Bool(*value)),

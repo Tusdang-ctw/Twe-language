@@ -817,6 +817,18 @@ impl<'a> Parser<'a> {
                 line: tok.line,
                 col: tok.col,
             }),
+            TokenKind::InterpStr { parts, exprs } => {
+                let mut parsed_exprs = Vec::with_capacity(exprs.len());
+                for src in &exprs {
+                    parsed_exprs.push(parse_embedded_expr(src, tok.line, tok.col)?);
+                }
+                Ok(Expr::Interp {
+                    parts,
+                    exprs: parsed_exprs,
+                    line: tok.line,
+                    col: tok.col,
+                })
+            }
             TokenKind::Int(value) => Ok(Expr::Int {
                 value,
                 line: tok.line,
@@ -976,6 +988,82 @@ impl<'a> Parser<'a> {
                 })
             }
         }
+    }
+}
+
+fn parse_embedded_expr(src: &str, line: u32, col: u32) -> Result<Expr, ParseError> {
+    let tokens = crate::lexer::lex(src).map_err(|e| ParseError {
+        line,
+        col,
+        message: format!("error in interpolation: {}", e.message),
+        help: e.help,
+    })?;
+    let mut sub = Parser::new(&tokens);
+    let expr = sub.parse_expr()?;
+    Ok(shift_expr(expr, line, col))
+}
+
+/// Move every line/col on an expression tree to (line, col), since the
+/// embedded source has its own coordinate system.
+fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
+    match expr {
+        Expr::Str { value, .. } => Expr::Str { value, line, col },
+        Expr::Interp { parts, exprs, .. } => Expr::Interp { parts, exprs, line, col },
+        Expr::Int { value, .. } => Expr::Int { value, line, col },
+        Expr::Float { value, .. } => Expr::Float { value, line, col },
+        Expr::Bool { value, .. } => Expr::Bool { value, line, col },
+        Expr::Percent { value, .. } => Expr::Percent { value, line, col },
+        Expr::Quantity { value, unit, .. } => Expr::Quantity { value, unit, line, col },
+        Expr::Ident { name, .. } => Expr::Ident { name, line, col },
+        Expr::SelfRef { .. } => Expr::SelfRef { line, col },
+        Expr::Tuple { elems, .. } => Expr::Tuple {
+            elems: elems.into_iter().map(|e| shift_expr(e, line, col)).collect(),
+            line,
+            col,
+        },
+        Expr::List { elems, .. } => Expr::List {
+            elems: elems.into_iter().map(|e| shift_expr(e, line, col)).collect(),
+            line,
+            col,
+        },
+        Expr::Range { start, end, exclusive, .. } => Expr::Range {
+            start: Box::new(shift_expr(*start, line, col)),
+            end: Box::new(shift_expr(*end, line, col)),
+            exclusive,
+            line,
+            col,
+        },
+        Expr::Index { object, index, .. } => Expr::Index {
+            object: Box::new(shift_expr(*object, line, col)),
+            index: Box::new(shift_expr(*index, line, col)),
+            line,
+            col,
+        },
+        Expr::Field { object, name, .. } => Expr::Field {
+            object: Box::new(shift_expr(*object, line, col)),
+            name,
+            line,
+            col,
+        },
+        Expr::Call { callee, args, .. } => Expr::Call {
+            callee: Box::new(shift_expr(*callee, line, col)),
+            args: args.into_iter().map(|e| shift_expr(e, line, col)).collect(),
+            line,
+            col,
+        },
+        Expr::Unary { op, operand, .. } => Expr::Unary {
+            op,
+            operand: Box::new(shift_expr(*operand, line, col)),
+            line,
+            col,
+        },
+        Expr::Binary { op, left, right, .. } => Expr::Binary {
+            op,
+            left: Box::new(shift_expr(*left, line, col)),
+            right: Box::new(shift_expr(*right, line, col)),
+            line,
+            col,
+        },
     }
 }
 

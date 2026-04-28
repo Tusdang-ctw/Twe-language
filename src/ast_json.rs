@@ -193,6 +193,14 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Expr::Interp { parts, exprs, line, col } => {
+            s.push_str("{\"kind\":\"Interp\",\"parts\":");
+            write_str_array(s, parts);
+            s.push_str(",\"exprs\":");
+            write_expr_array(s, exprs);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Expr::Int { value, line, col } => {
             s.push_str("{\"kind\":\"Int\",\"value\":");
             s.push_str(&value.to_string());
