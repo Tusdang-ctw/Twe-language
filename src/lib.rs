@@ -2,6 +2,7 @@ pub mod ast;
 pub mod ast_json;
 pub mod bytecode;
 pub mod cli;
+pub mod compiler;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
