@@ -1,0 +1,245 @@
+==================
+item with field and method
+==================
+item Counter:
+    value: 0
+    bump(amount):
+        self.value = self.value + amount
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (field_declaration
+        name: (identifier)
+        value: (integer_literal))
+      (method_declaration
+        name: (identifier)
+        parameter: (parameter
+          (identifier))
+        body: (block
+          (assignment_statement
+            target: (field_expression
+              object: (self_expression)
+              name: (identifier))
+            value: (binary_expression
+              left: (field_expression
+                object: (self_expression)
+                name: (identifier))
+              right: (identifier))))))))
+==================
+entity with var field and verbose method
+==================
+entity Counter:
+    var n = 0
+    function update(dt):
+        n += 1
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (field_declaration
+        name: (identifier)
+        value: (integer_literal))
+      (method_declaration
+        name: (identifier)
+        parameter: (parameter
+          (identifier))
+        body: (block
+          (assignment_statement
+            target: (identifier)
+            value: (integer_literal)))))))
+==================
+inheritance via extends
+==================
+item FlameBlade extends Sword:
+    damage: 30
+---
+(source_file
+  (declaration
+    name: (identifier)
+    parent: (identifier)
+    body: (declaration_body
+      (field_declaration
+        name: (identifier)
+        value: (integer_literal)))))
+==================
+scene with state and every-clock
+==================
+scene S:
+    var n = 0
+    initial: a
+    state a:
+        every 100ms:
+            n += 1
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (field_declaration
+        name: (identifier)
+        value: (integer_literal))
+      (initial_state_declaration
+        name: (identifier))
+      (state_declaration
+        name: (identifier)
+        body: (state_body
+          (every_clock
+            interval: (quantity_literal)
+            body: (block
+              (assignment_statement
+                target: (identifier)
+                value: (integer_literal)))))))))
+==================
+state with on update and on render
+==================
+scene S:
+    initial: play
+    state play:
+        on update(dt):
+            n += 1
+        on render():
+            print(n)
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (initial_state_declaration
+        name: (identifier))
+      (state_declaration
+        name: (identifier)
+        body: (state_body
+          (on_update_handler
+            parameter: (identifier)
+            body: (block
+              (assignment_statement
+                target: (identifier)
+                value: (integer_literal))))
+          (on_render_handler
+            body: (block
+              (expression_statement
+                (call_expression
+                  function: (identifier)
+                  (identifier))))))))))
+==================
+state with on key_press
+==================
+scene S:
+    initial: play
+    state play:
+        on key_press.right:
+            print("go right")
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (initial_state_declaration
+        name: (identifier))
+      (state_declaration
+        name: (identifier)
+        body: (state_body
+          (on_key_press_handler
+            key: (identifier)
+            body: (block
+              (expression_statement
+                (call_expression
+                  function: (identifier)
+                  (string_literal))))))))))
+==================
+empty terminal state
+==================
+scene S:
+    initial: a
+    state a:
+    state done:
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (initial_state_declaration
+        name: (identifier))
+      (state_declaration
+        name: (identifier)
+        body: (state_body))
+      (state_declaration
+        name: (identifier)
+        body: (state_body)))))
+==================
+particles block
+==================
+particles Burst:
+    count: 3
+    lifetime: 0.1
+    on_spawn(p):
+        p.color = (1.0, 0.0, 0.0, 1.0)
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (field_declaration
+        name: (identifier)
+        value: (integer_literal))
+      (field_declaration
+        name: (identifier)
+        value: (float_literal))
+      (method_declaration
+        name: (identifier)
+        parameter: (parameter
+          (identifier))
+        body: (block
+          (assignment_statement
+            target: (field_expression
+              object: (identifier)
+              name: (identifier))
+            value: (tuple
+              (float_literal)
+              (float_literal)
+              (float_literal)
+              (float_literal))))))))
+==================
+spawn at position
+==================
+spawn Counter at (1, 0)
+---
+(source_file
+  (spawn_statement
+    class: (identifier)
+    at: (tuple
+      (integer_literal)
+      (integer_literal))))
+==================
+despawn self
+==================
+despawn self
+---
+(source_file
+  (despawn_statement
+    target: (self_expression)))
+==================
+transition arrow
+==================
+-> done
+---
+(source_file
+  (transition_statement
+    target: (identifier)))
+==================
+top-level on update
+==================
+on update(dt):
+    print(dt)
+---
+(source_file
+  (on_update_statement
+    parameter: (identifier)
+    body: (block
+      (expression_statement
+        (call_expression
+          function: (identifier)
+          (identifier))))))

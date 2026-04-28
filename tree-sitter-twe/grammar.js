@@ -1,19 +1,11 @@
 // Tree-sitter grammar for the Twe game scripting language.
 //
 // Pairs with src/scanner.c, which emits the indentation-aware
-// _newline / _indent / _dedent tokens. Together they parse the
-// hand-written grammar in src/parser.rs to a CST suitable for
-// editor tooling.
+// _newline / _indent / _dedent tokens.
 //
-// Session 18 (this commit): literals + expressions + simple
-// statements + blocks. Enough to parse `tests/programs/hello.twe`,
-// `methods.twe`, `arithmetic.twe`, and similar declarative-block-
-// free programs.
-//
-// Session 19 will extend with declarations (entity / scene /
-// particles), states, control flow (if / while / for), spawn /
-// despawn / transition, and the rest of the surface used by the
-// eleven examples.
+// Sessions 18 + 19 of Phase 3 — covers every construct used by
+// the eleven examples in `docs/01-examples.md` +
+// `docs/example-11-snake.md`.
 
 const PREC = {
   or: 1,
@@ -51,15 +43,17 @@ module.exports = grammar({
   word: $ => $.identifier,
 
   conflicts: $ => [
-    // Tuple `(x,)` vs parenthesized `(x)` — the parser needs a
-    // 1-token lookahead past `(expr` to see whether a comma
-    // follows. Tree-sitter handles this with a dynamic conflict.
-    [$.tuple, $.parenthesized_expression],
+    // Inside a state body, `on update(dt):` could match either
+    // on_update_handler (a state member) or on_update_statement
+    // (which leaks in via _state_member -> _statement). Tell
+    // tree-sitter to keep both interpretations live until the
+    // surrounding context disambiguates — `_state_member` lists
+    // on_update_handler first so it wins inside state bodies.
+    [$.on_update_handler, $.on_update_statement],
   ],
 
   rules: {
-    // A program is a sequence of top-level statements. The
-    // scanner emits _newline between consecutive statements.
+    // A program is a sequence of top-level statements.
     source_file: $ => repeat($._statement),
 
     // ----- statements -----
@@ -71,6 +65,15 @@ module.exports = grammar({
       $.return_statement,
       $.break_statement,
       $.continue_statement,
+      $.if_statement,
+      $.while_statement,
+      $.for_statement,
+      $.function_declaration,
+      $.declaration,
+      $.spawn_statement,
+      $.despawn_statement,
+      $.transition_statement,
+      $.on_update_statement,
       $.expression_statement,
     ),
 
@@ -84,8 +87,8 @@ module.exports = grammar({
     ),
 
     // `var x: int = 0` is the same shape as `let` — the parser
-    // collapses both forms to Stmt::Let, and the type annotation
-    // is parsed-and-discarded in v0.1.
+    // collapses both to Stmt::Let; the type annotation is parsed-
+    // and-discarded in v0.1.
     var_statement: $ => seq(
       'var',
       field('name', $.identifier),
@@ -97,10 +100,8 @@ module.exports = grammar({
 
     // Any postfix expression can be an assignment target — the
     // semantic check ("only identifier and field/index work") is
-    // pushed to the next pipeline stage. This lets `self.x = ...`
-    // and `xs[i] = ...` both parse without grammar ambiguity
-    // between `field_expression` (RHS) and a duplicate field
-    // target rule.
+    // pushed past parsing. This avoids LR ambiguity between
+    // `field_expression` (RHS) and a duplicate target rule.
     assignment_statement: $ => seq(
       field('target', $._postfix_expression),
       field('op', choice('=', '+=', '-=', '*=', '/=')),
@@ -117,20 +118,243 @@ module.exports = grammar({
     break_statement: $ => seq('break', $._newline),
     continue_statement: $ => seq('continue', $._newline),
 
+    if_statement: $ => seq(
+      'if',
+      field('condition', $._expression),
+      ':',
+      field('consequence', $.block),
+      repeat(field('elif', $.elif_clause)),
+      optional(field('else', $.else_clause)),
+    ),
+
+    elif_clause: $ => seq(
+      'elif',
+      field('condition', $._expression),
+      ':',
+      field('body', $.block),
+    ),
+
+    else_clause: $ => seq(
+      'else',
+      ':',
+      field('body', $.block),
+    ),
+
+    while_statement: $ => seq(
+      'while',
+      field('condition', $._expression),
+      ':',
+      field('body', $.block),
+    ),
+
+    for_statement: $ => seq(
+      'for',
+      field('var', $.identifier),
+      'in',
+      field('iter', $._expression),
+      ':',
+      field('body', $.block),
+    ),
+
+    function_declaration: $ => seq(
+      'function',
+      field('name', $.identifier),
+      '(',
+      optional(commaSep1(field('parameter', $.parameter))),
+      ')',
+      // `-> type` return annotation. Tokenized + discarded
+      // (semantically a no-op in v0.1's non-strict mode).
+      optional(seq('->', $._type_expr)),
+      optional($._type_annotation),
+      ':',
+      field('body', $.block),
+    ),
+
+    // Parameter with optional `: type` annotation.
+    parameter: $ => seq(
+      $.identifier,
+      optional($._type_annotation),
+    ),
+
+    // Declarative blocks: entity / item / modifier / inventory /
+    // scene / particles. The body is a sequence of declaration
+    // members (fields, methods, states, initial:).
+    declaration: $ => seq(
+      field('kind', choice(
+        'entity', 'item', 'modifier', 'inventory', 'scene', 'particles',
+      )),
+      field('name', $.identifier),
+      optional(seq('extends', field('parent', $.identifier))),
+      ':',
+      field('body', $.declaration_body),
+    ),
+
+    declaration_body: $ => seq(
+      $._indent,
+      repeat($._declaration_member),
+      $._dedent,
+    ),
+
+    _declaration_member: $ => choice(
+      $.field_declaration,
+      $.method_declaration,
+      $.initial_state_declaration,
+      $.state_declaration,
+    ),
+
+    // Field declarations come in two source-level forms:
+    //   `name: value`         — terse form for declarative blocks
+    //   `var name = value`    — verbose form, equivalent semantics
+    //   `var name: type = value` — verbose with type annotation
+    field_declaration: $ => choice(
+      seq(
+        field('name', $.identifier),
+        ':',
+        field('value', $._expression),
+        $._newline,
+      ),
+      seq(
+        'var',
+        field('name', $.identifier),
+        optional($._type_annotation),
+        '=',
+        field('value', $._expression),
+        $._newline,
+      ),
+    ),
+
+    // Methods come in two forms inside a declaration body:
+    //   `name(params):`           — terse
+    //   `function name(params):`  — verbose, equivalent
+    // The verbose form is what spawn_entities.twe + survive.twe
+    // use; the terse form is what methods.twe uses. The parser
+    // collapses both to DeclMember::Method.
+    method_declaration: $ => seq(
+      optional('function'),
+      field('name', $.identifier),
+      '(',
+      optional(commaSep1(field('parameter', $.parameter))),
+      ')',
+      optional(seq('->', $._type_expr)),
+      optional($._type_annotation),
+      ':',
+      field('body', $.block),
+    ),
+
+    initial_state_declaration: $ => seq(
+      'initial',
+      ':',
+      field('name', $.identifier),
+      $._newline,
+    ),
+
+    state_declaration: $ => seq(
+      'state',
+      field('name', $.identifier),
+      ':',
+      field('body', $.state_body),
+    ),
+
+    // A state body can be empty (terminal idle state, common for
+    // `state done:` patterns). Same shape as `block`.
+    state_body: $ => choice(
+      seq($._indent, repeat1($._state_member), $._dedent),
+      $._newline,
+    ),
+
+    _state_member: $ => choice(
+      $.every_clock,
+      $.on_render_handler,
+      $.on_update_handler,
+      $.on_key_press_handler,
+      $._statement,
+    ),
+
+    every_clock: $ => seq(
+      'every',
+      field('interval', $._expression),
+      ':',
+      field('body', $.block),
+    ),
+
+    on_render_handler: $ => seq(
+      'on',
+      'render',
+      '(',
+      ')',
+      ':',
+      field('body', $.block),
+    ),
+
+    on_update_handler: $ => seq(
+      'on',
+      'update',
+      '(',
+      field('parameter', $.identifier),
+      ')',
+      ':',
+      field('body', $.block),
+    ),
+
+    on_key_press_handler: $ => seq(
+      'on',
+      'key_press',
+      '.',
+      field('key', $.identifier),
+      ':',
+      field('body', $.block),
+    ),
+
+    // Top-level `on update(dt):` — same shape as the state-scoped
+    // handler but reachable as a script statement.
+    on_update_statement: $ => seq(
+      'on',
+      'update',
+      '(',
+      field('parameter', $.identifier),
+      ')',
+      ':',
+      field('body', $.block),
+    ),
+
+    spawn_statement: $ => seq(
+      'spawn',
+      field('class', $.identifier),
+      optional(seq('at', field('at', $._expression))),
+      $._newline,
+    ),
+
+    despawn_statement: $ => seq(
+      'despawn',
+      field('target', $._expression),
+      $._newline,
+    ),
+
+    transition_statement: $ => seq(
+      '->',
+      field('target', $.identifier),
+      $._newline,
+    ),
+
     expression_statement: $ => seq(
       $._expression,
       $._newline,
     ),
 
-    // Type annotations are accepted and discarded by the
-    // parser; we tokenize them so editor tooling can highlight.
+    // Indented block: either a real indented region, or just the
+    // line-terminator that closes the header (when the body is
+    // comment-only or no-content — the scanner doesn't emit
+    // INDENT in that case, matching the hand-written parser's
+    // `parse_block` in src/parser.rs which returns Vec::new()
+    // when it sees Newline-not-followed-by-Indent).
+    block: $ => choice(
+      seq($._indent, repeat1($._statement), $._dedent),
+      $._newline,
+    ),
+
     _type_annotation: $ => seq(':', $._type_expr),
 
-    _type_expr: $ => choice(
-      $.identifier,
-      // Future: tuple types, function types, etc. Keep simple
-      // for now.
-    ),
+    _type_expr: $ => $.identifier,
 
     // ----- expressions -----
 
@@ -186,8 +410,6 @@ module.exports = grammar({
       ']',
     ),
 
-    // Binary operators with precedence. Tree-sitter's `prec.left`
-    // / `prec.right` express associativity.
     binary_expression: $ => choice(
       prec.left(PREC.or,      seq(field('left', $._expression), field('op', 'or'),     field('right', $._expression))),
       prec.left(PREC.and,     seq(field('left', $._expression), field('op', 'and'),    field('right', $._expression))),
@@ -248,22 +470,24 @@ module.exports = grammar({
 
     integer_literal: $ => /\d[\d_]*/,
 
-    float_literal: $ => /\d[\d_]*\.\d[\d_]*/,
+    // Float: required `.` plus fractional part, optional scientific
+    // exponent (`e+3`, `e-12`, `E5`). Matches the lexer in
+    // src/lexer.rs.
+    float_literal: $ => /\d[\d_]*\.\d[\d_]*([eE][+-]?\d+)?/,
 
     percent_literal: $ => /\d[\d_]*(\.\d[\d_]*)?%/,
 
-    // Duration / mass / etc. literals — number followed by a
-    // unit suffix. The set of units the lexer recognizes:
-    // s, ms, min, h, kg.
+    // Duration / mass literals — number followed by a unit
+    // suffix. Matches the lexer in src/lexer.rs.
     quantity_literal: $ => /\d[\d_]*(\.\d[\d_]*)?(ms|min|h|kg|s)/,
 
     boolean_literal: $ => choice('true', 'false'),
     nil_literal: $ => 'nil',
 
-    // Strings: double-quoted, with `{...}` interpolation and
+    // Strings: double-quoted with `{...}` interpolation and
     // backslash escapes. Triple-quoted multi-line strings live
-    // in the same node — we don't structurally distinguish them
-    // for now (the editor tooling renders them the same).
+    // in the same node — not structurally distinguished here
+    // (editor highlighting renders them the same).
     string_literal: $ => choice(
       seq('"', repeat($._string_part), '"'),
       seq('"""', repeat(choice(/[^"]/, /"[^"]/, /""[^"]/)), '"""'),
@@ -281,11 +505,8 @@ module.exports = grammar({
 
     interpolation: $ => seq('{', $._expression, '}'),
 
-    // Identifiers must not start with a digit. The grammar's
-    // `word` field is set to this so keywords win on conflict.
     identifier: $ => /[a-zA-Z_][a-zA-Z_0-9]*/,
 
-    // Comments are extras: `# ...` to end of line.
     line_comment: $ => /#[^\n]*/,
   },
 });

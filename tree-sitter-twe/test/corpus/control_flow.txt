@@ -1,0 +1,122 @@
+==================
+if / elif / else
+==================
+
+if x < 3:
+    print("small")
+elif x < 6:
+    print("medium")
+else:
+    print("large")
+
+---
+
+(source_file
+  (if_statement
+    condition: (binary_expression
+      left: (identifier)
+      right: (integer_literal))
+    consequence: (block
+      (expression_statement
+        (call_expression
+          function: (identifier)
+          (string_literal))))
+    elif: (elif_clause
+      condition: (binary_expression
+        left: (identifier)
+        right: (integer_literal))
+      body: (block
+        (expression_statement
+          (call_expression
+            function: (identifier)
+            (string_literal)))))
+    else: (else_clause
+      body: (block
+        (expression_statement
+          (call_expression
+            function: (identifier)
+            (string_literal)))))))
+
+==================
+while loop with break
+==================
+
+while true:
+    if done:
+        break
+    n += 1
+
+---
+
+(source_file
+  (while_statement
+    condition: (boolean_literal)
+    body: (block
+      (if_statement
+        condition: (identifier)
+        consequence: (block
+          (break_statement)))
+      (assignment_statement
+        target: (identifier)
+        value: (integer_literal)))))
+
+==================
+for over range
+==================
+
+for i in 0..<5:
+    print(i)
+
+---
+
+(source_file
+  (for_statement
+    var: (identifier)
+    iter: (binary_expression
+      left: (integer_literal)
+      right: (integer_literal))
+    body: (block
+      (expression_statement
+        (call_expression
+          function: (identifier)
+          (identifier))))))
+
+==================
+function with typed params and return
+==================
+
+function add(a: int, b: int) -> int:
+    return a + b
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameter: (parameter
+      (identifier)
+      (identifier))
+    parameter: (parameter
+      (identifier)
+      (identifier))
+    (identifier)
+    body: (block
+      (return_statement
+        value: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+==================
+function untyped
+==================
+
+function noop():
+    return
+
+---
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    body: (block
+      (return_statement))))

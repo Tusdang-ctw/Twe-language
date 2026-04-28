@@ -87,6 +87,25 @@ bool tree_sitter_twe_external_scanner_scan(
 ) {
     Scanner *s = (Scanner *)payload;
 
+    // Closing multi-level blocks: when an inner `if`/`while`/`for`
+    // body ends right before a less-indented block opener (next
+    // `state`, next sibling member, etc.), the parser asks for
+    // DEDENT repeatedly until the stack top matches the lexer's
+    // current column. The column-based fast path handles
+    // subsequent DEDENT requests after the first call has already
+    // consumed the blank lines and positioned at the new line's
+    // first non-blank character.
+    if (valid_symbols[DEDENT] && lexer->lookahead != 0
+        && lexer->lookahead != '\n' && lexer->lookahead != '\r'
+        && lexer->lookahead != ' ' && lexer->lookahead != '\t'
+        && lexer->lookahead != '#'
+        && s->depth > 0
+        && lexer->get_column(lexer) < s->stack[s->depth]) {
+        s->depth--;
+        lexer->result_symbol = DEDENT;
+        return true;
+    }
+
     bool found_end_of_line = false;
     uint32_t indent_length = 0;
 
