@@ -422,9 +422,12 @@ impl<'a> Parser<'a> {
             return self.parse_state_member();
         }
         // `var name ...` / `let name ...` are explicit-mutability prefixes.
-        // v0.1 ignores the distinction (all fields are mutable) but accepts
-        // the keyword to keep examples like docs/example-11-snake.md valid.
-        if matches!(self.peek().kind, TokenKind::Var | TokenKind::Let) {
+        // After them, the syntax follows binding form: `name [: type] = value`,
+        // mirroring top-level `let`/`var`. v0.1 ignores the var/let
+        // distinction (all fields are mutable) but accepts the keyword for
+        // examples like docs/example-11-snake.md.
+        let mutability_prefixed = matches!(self.peek().kind, TokenKind::Var | TokenKind::Let);
+        if mutability_prefixed {
             self.bump();
         }
         let name_tok = self.bump().clone();
@@ -442,6 +445,22 @@ impl<'a> Parser<'a> {
                 })
             }
         };
+        // After a var/let prefix, accept binding-form `name [: type] = value`.
+        if mutability_prefixed {
+            if matches!(self.peek().kind, TokenKind::Colon) {
+                self.bump();
+                self.parse_type()?;
+            }
+            self.expect(TokenKind::Eq, "expected '=' in field declaration")?;
+            let value = self.parse_expr()?;
+            self.expect_stmt_end()?;
+            return Ok(DeclMember::Field {
+                name,
+                value,
+                line: name_tok.line,
+                col: name_tok.col,
+            });
+        }
         match self.peek().kind {
             TokenKind::LParen => {
                 self.bump();
@@ -590,6 +609,24 @@ impl<'a> Parser<'a> {
             let body = self.parse_block()?;
             return Ok(StateMember::Every {
                 interval,
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
+        // `on render():` — special-cased inside states. Other `on <event>:`
+        // forms (key_press, named events) ship in a follow-up commit.
+        if matches!(self.peek().kind, TokenKind::On)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "render")
+        {
+            let kw = self.bump().clone();
+            self.bump(); // ident "render"
+            self.expect(TokenKind::LParen, "expected '(' after `on render`")?;
+            self.expect(TokenKind::RParen, "expected ')' after `on render(`")?;
+            self.expect(TokenKind::Colon, "expected ':' after `on render()`")?;
+            let body = self.parse_block()?;
+            return Ok(StateMember::OnRender {
                 body,
                 line: kw.line,
                 col: kw.col,

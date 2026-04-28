@@ -39,6 +39,9 @@ pub fn install(env: &mut Env) {
 
     install_math(env);
     install_random(env);
+    install_color(env);
+    install_screen(env);
+    install_draw(env);
 }
 
 fn install_math(env: &mut Env) {
@@ -328,4 +331,205 @@ fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             help: None,
         }),
     }
+}
+
+fn install_color(env: &mut Env) {
+    let palette: &[(&str, f64, f64, f64, f64)] = &[
+        ("red", 1.0, 0.0, 0.0, 1.0),
+        ("green", 0.0, 1.0, 0.0, 1.0),
+        ("blue", 0.0, 0.0, 1.0, 1.0),
+        ("yellow", 1.0, 1.0, 0.0, 1.0),
+        ("orange", 1.0, 0.5, 0.0, 1.0),
+        ("purple", 0.5, 0.0, 0.5, 1.0),
+        ("white", 1.0, 1.0, 1.0, 1.0),
+        ("black", 0.0, 0.0, 0.0, 1.0),
+        ("gray", 0.5, 0.5, 0.5, 1.0),
+        ("transparent", 0.0, 0.0, 0.0, 0.0),
+    ];
+    let mut fields = HashMap::new();
+    for (name, r, g, b, a) in palette {
+        fields.insert(
+            (*name).to_string(),
+            Value::Tuple(Rc::new(vec![
+                Value::Float(*r),
+                Value::Float(*g),
+                Value::Float(*b),
+                Value::Float(*a),
+            ])),
+        );
+    }
+    env.set(
+        "color".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields,
+            kind: "module",
+        }))),
+    );
+}
+
+fn install_screen(env: &mut Env) {
+    // Default values; the play loop overwrites them each frame.
+    let mut fields = HashMap::new();
+    fields.insert(
+        "size".to_string(),
+        Value::Tuple(Rc::new(vec![Value::Float(640.0), Value::Float(480.0)])),
+    );
+    fields.insert(
+        "center".to_string(),
+        Value::Tuple(Rc::new(vec![Value::Float(320.0), Value::Float(240.0)])),
+    );
+    env.set(
+        "screen".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields,
+            kind: "module",
+        }))),
+    );
+}
+
+fn install_draw(env: &mut Env) {
+    env.set(
+        "rect".to_string(),
+        Value::Builtin {
+            name: "rect",
+            func: draw_rect,
+        },
+    );
+    env.set(
+        "circle".to_string(),
+        Value::Builtin {
+            name: "circle",
+            func: draw_circle,
+        },
+    );
+    env.set(
+        "line".to_string(),
+        Value::Builtin {
+            name: "line",
+            func: draw_line,
+        },
+    );
+    env.set(
+        "text".to_string(),
+        Value::Builtin {
+            name: "text",
+            func: draw_text,
+        },
+    );
+}
+
+fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
+    if !env.in_render {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{name}() must be called from inside `on render():`"),
+            help: Some(
+                "drawing primitives are only valid in a render handler; \
+                 do mutation in `every` / `on update(dt)` instead"
+                    .to_string(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
+    match v {
+        Value::Tuple(elems) if elems.len() >= 2 => {
+            Ok((number(&elems[0], what)?, number(&elems[1], what)?))
+        }
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what} expects a tuple of 2 numbers, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    }
+}
+
+fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeError> {
+    match v {
+        Value::Tuple(elems) if elems.len() >= 3 => {
+            let r = number(&elems[0], what)? as f32;
+            let g = number(&elems[1], what)? as f32;
+            let b = number(&elems[2], what)? as f32;
+            let a = if elems.len() >= 4 {
+                number(&elems[3], what)? as f32
+            } else {
+                1.0
+            };
+            Ok(macroquad::color::Color::new(r, g, b, a))
+        }
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what} expects an (r, g, b[, a]) tuple, got {}", other.type_name()),
+            help: Some("use color.red, color.green, … or build with `(0.5, 0.0, 0.0, 1.0)`".to_string()),
+        }),
+    }
+}
+
+fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
+    match v {
+        Value::Int(n) => Ok(*n as f64),
+        Value::Float(f) => Ok(*f),
+        Value::Quantity { value, .. } => Ok(*value),
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what} expects a number, got {}", other.type_name()),
+            help: None,
+        }),
+    }
+}
+
+fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "rect")?;
+    arity(args, 3, "rect")?;
+    let (x, y) = xy_of(&args[0], "rect.at")?;
+    let (w, h) = xy_of(&args[1], "rect.size")?;
+    let color = color_of(&args[2], "rect.color")?;
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, color);
+    Ok(Value::Nil)
+}
+
+fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "circle")?;
+    arity(args, 3, "circle")?;
+    let (x, y) = xy_of(&args[0], "circle.at")?;
+    let radius = number(&args[1], "circle.radius")? as f32;
+    let color = color_of(&args[2], "circle.color")?;
+    macroquad::shapes::draw_circle(x as f32, y as f32, radius, color);
+    Ok(Value::Nil)
+}
+
+fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "line")?;
+    arity(args, 4, "line")?;
+    let (x1, y1) = xy_of(&args[0], "line.from")?;
+    let (x2, y2) = xy_of(&args[1], "line.to")?;
+    let thickness = number(&args[2], "line.width")? as f32;
+    let color = color_of(&args[3], "line.color")?;
+    macroquad::shapes::draw_line(
+        x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color,
+    );
+    Ok(Value::Nil)
+}
+
+fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "text")?;
+    arity(args, 4, "text")?;
+    let content = match &args[0] {
+        Value::Str(s) => s.as_ref().clone(),
+        other => other.display(),
+    };
+    let (x, y) = xy_of(&args[1], "text.at")?;
+    let size = number(&args[2], "text.size")? as f32;
+    let color = color_of(&args[3], "text.color")?;
+    macroquad::text::draw_text(&content, x as f32, y as f32, size, color);
+    Ok(Value::Nil)
 }

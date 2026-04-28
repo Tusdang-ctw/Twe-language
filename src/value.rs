@@ -54,6 +54,7 @@ pub struct StateDef {
     pub name: String,
     pub on_entry: Vec<crate::ast::Stmt>,
     pub every_clocks: Vec<EveryClockDef>,
+    pub on_render: Option<Vec<crate::ast::Stmt>>,
 }
 
 #[derive(Debug)]
@@ -188,6 +189,7 @@ pub struct Env {
     pub transitioning: Option<String>,
     pub breaking: bool,
     pub continuing: bool,
+    pub in_render: bool,
     pub loop_depth: u32,
     pub call_depth: u32,
     rng_state: u64,
@@ -211,6 +213,7 @@ impl Env {
             transitioning: None,
             breaking: false,
             continuing: false,
+            in_render: false,
             loop_depth: 0,
             call_depth: 0,
             // xorshift64* seeded from a fixed constant for deterministic

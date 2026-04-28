@@ -4,5 +4,6 @@ pub mod cli;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
+pub mod play;
 pub mod stdlib;
 pub mod value;

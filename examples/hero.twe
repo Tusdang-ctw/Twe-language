@@ -1,0 +1,24 @@
+# `twec play examples/hero.twe`
+#
+# A red square you steer with the arrow keys. The smallest live
+# Twe-on-macroquad program — exercises `scene`, `state`, `every`,
+# `on render()`, real keyboard input, drawing primitives, and the
+# `color` and `screen` ambients.
+
+scene Hero:
+    var x = 320.0
+    var y = 240.0
+    var speed = 240.0   # pixels per second
+
+    initial: playing
+
+    state playing:
+        every 16ms:
+            let step = speed * 0.016
+            if key.right: x += step
+            if key.left:  x -= step
+            if key.up:    y -= step
+            if key.down:  y += step
+
+        on render():
+            rect((x - 25, y - 25), (50, 50), color.red)

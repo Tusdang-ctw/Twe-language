@@ -2,7 +2,8 @@ use std::env;
 use std::fs;
 use std::process;
 
-const USAGE: &str = "usage: twec [run [--frames N] <file> | parse <file> | version]";
+const USAGE: &str =
+    "usage: twec [run [--frames N] <file> | play <file> | parse <file> | version]";
 
 pub fn run() {
     let args: Vec<String> = env::args().collect();
@@ -12,6 +13,7 @@ pub fn run() {
     }
     match args[1].as_str() {
         "run" => process::exit(handle_run(&args[2..])),
+        "play" => process::exit(handle_play(&args[2..])),
         "parse" => process::exit(handle_parse(&args[2..])),
         "version" | "--version" | "-V" => print_version(),
         cmd => {
@@ -20,6 +22,15 @@ pub fn run() {
             process::exit(2);
         }
     }
+}
+
+fn handle_play(args: &[String]) -> i32 {
+    if args.len() != 1 {
+        eprintln!("error: `twec play` takes a single file path");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    crate::play::launch(args[0].clone())
 }
 
 fn handle_parse(args: &[String]) -> i32 {

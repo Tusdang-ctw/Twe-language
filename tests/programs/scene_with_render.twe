@@ -1,0 +1,22 @@
+# Scene with `every` and `on render():`. Headless tests don't run the
+# render handler (no graphics context), but the program must still
+# parse, declare the scene, and tick the every-clock per frame.
+
+scene Hero:
+    var x = 0
+
+    initial: playing
+
+    state playing:
+        every 16ms:
+            x += 5
+            print(x)
+            if x >= 30:
+                -> done
+
+        on render():
+            # Skipped under `twec run`; called by `twec play`.
+            rect((x, 0), (50, 50), color.red)
+
+    state done:
+        # idle

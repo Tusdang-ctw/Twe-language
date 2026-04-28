@@ -295,6 +295,27 @@ fn runs_scene_counter_with_state_machine() {
 }
 
 #[test]
+fn runs_scene_with_render_handler_headlessly() {
+    // `on render():` is registered but never called by `twec run`; the
+    // headless harness only ticks scenes via `tick_frame` (no render
+    // context). The every-clock body should still run normally.
+    let out = run_program_frames("tests/programs/scene_with_render.twe", 10, 0.016)
+        .expect("program should run");
+    assert_eq!(out, "5\n10\n15\n20\n25\n30\n");
+}
+
+#[test]
+fn rect_outside_render_errors() {
+    let src = r#"on update(dt):
+    rect((0, 0), (10, 10), (1.0, 0.0, 0.0))
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let err = twec::eval::run_with_frames(&program, 1, 0.016).expect_err("should fail");
+    assert!(err.message.contains("on render"), "got: {}", err.message);
+}
+
+#[test]
 fn transition_to_unknown_state_errors() {
     let src = r#"scene S:
     initial: a

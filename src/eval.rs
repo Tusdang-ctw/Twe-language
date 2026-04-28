@@ -22,26 +22,77 @@ pub fn run_with_frames(
 ) -> Result<String, RuntimeError> {
     let mut env = Env::new();
     stdlib::install(&mut env);
-    run_block(&mut env, &program.stmts)?;
-    if env.returning.take().is_some() {
-        // Top-level `return` — drop the value, stop here.
-        return Ok(env.out);
-    }
-    let scene = env.active_scene.clone();
-    let on_update = env.on_update.clone();
+    run_top_level(&mut env, program)?;
     for _ in 0..frames {
-        if let Some(handler) = &on_update {
-            env.set(handler.param.clone(), Value::Float(dt));
-            run_block(&mut env, &handler.body)?;
-            if env.returning.take().is_some() {
-                break;
-            }
-        }
-        if let Some(scene) = &scene {
-            tick_scene(&mut env, scene, dt)?;
+        tick_frame(&mut env, dt)?;
+        if env.returning.take().is_some() {
+            break;
         }
     }
     Ok(env.out)
+}
+
+/// Run the program's top-level statements. After this returns, `env`
+/// has any declared scenes / functions / globals bound. Callers use
+/// `tick_frame` / `render_frame` to drive the interactive loop.
+pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeError> {
+    run_block(env, &program.stmts)?;
+    if env.returning.take().is_some() {
+        // Top-level `return` is silently dropped.
+    }
+    Ok(())
+}
+
+/// Advance the active scene and any global on-update handler by `dt`
+/// seconds. Side-effects (prints, field mutations, transitions) are
+/// applied to `env`.
+pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
+    if let Some(handler) = env.on_update.clone() {
+        env.set(handler.param.clone(), Value::Float(dt));
+        run_block(env, &handler.body)?;
+        if env.returning.take().is_some() {
+            return Ok(());
+        }
+    }
+    if let Some(scene) = env.active_scene.clone() {
+        tick_scene(env, &scene, dt)?;
+    }
+    Ok(())
+}
+
+/// Run the active scene's current state's on-render handler, if any.
+/// Drawing primitives in stdlib check `env.in_render`; the caller is
+/// responsible for setting that flag (the macroquad `play` loop does
+/// it around this call).
+pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
+    let scene = match env.active_scene.clone() {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    let body = {
+        let inst = scene.borrow();
+        let state_name = match inst.current_state.clone() {
+            Some(n) => n,
+            None => return Ok(()),
+        };
+        match inst.class.states.get(&state_name) {
+            Some(state) => state.on_render.clone(),
+            None => return Ok(()),
+        }
+    };
+    if let Some(body) = body {
+        let prev_self = env.self_value.replace(Value::Instance(scene));
+        run_block(env, &body)?;
+        env.self_value = prev_self;
+        if let Some(target) = env.transitioning.take() {
+            // A transition during render is honoured at the next tick.
+            // For now stash it back into the active scene's state name.
+            // Cleaner option (later): queue it on the env and let
+            // tick_frame consume it.
+            env.transitioning = Some(target);
+        }
+    }
+    Ok(())
 }
 
 fn tick_scene(
@@ -1205,6 +1256,7 @@ fn eval_decl(
             DeclMember::State { name: sname, members: smembers, .. } => {
                 let mut on_entry = Vec::new();
                 let mut every_clocks = Vec::new();
+                let mut on_render: Option<Vec<Stmt>> = None;
                 for sm in smembers {
                     match sm {
                         StateMember::Stmt(stmt) => on_entry.push(stmt.clone()),
@@ -1214,6 +1266,9 @@ fn eval_decl(
                                 body: body.clone(),
                             });
                         }
+                        StateMember::OnRender { body, .. } => {
+                            on_render = Some(body.clone());
+                        }
                     }
                 }
                 states.insert(
@@ -1222,6 +1277,7 @@ fn eval_decl(
                         name: sname.clone(),
                         on_entry,
                         every_clocks,
+                        on_render,
                     }),
                 );
             }

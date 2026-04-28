@@ -209,6 +209,12 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        StateMember::OnRender { body, line, col } => {
+            s.push_str("{\"kind\":\"OnRender\",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
     }
 }
 

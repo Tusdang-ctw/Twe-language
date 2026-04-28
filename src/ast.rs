@@ -130,6 +130,12 @@ pub enum StateMember {
         line: u32,
         col: u32,
     },
+    /// `on render(): body` — runs each rendered frame while in the state.
+    OnRender {
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
