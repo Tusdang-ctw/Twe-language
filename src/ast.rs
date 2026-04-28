@@ -67,6 +67,17 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    Spawn {
+        class: String,
+        at: Option<Expr>,
+        line: u32,
+        col: u32,
+    },
+    Despawn {
+        target: Expr,
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
 }
 

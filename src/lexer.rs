@@ -34,6 +34,8 @@ pub enum TokenKind {
     In,
     Break,
     Continue,
+    Spawn,
+    Despawn,
     Ident(String),
     Int(i64),
     Float(f64),
@@ -957,6 +959,8 @@ impl<'a> Lexer<'a> {
             "in" => TokenKind::In,
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
+            "spawn" => TokenKind::Spawn,
+            "despawn" => TokenKind::Despawn,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }

@@ -74,6 +74,9 @@ pub struct Instance {
     pub every_timers: Vec<f64>,
     /// Cached interval seconds for each clock in `current_state`.
     pub every_intervals_secs: Vec<f64>,
+    /// Set by `despawn self`; the runtime drops this instance from
+    /// `Env::active_entities` at the end of the frame.
+    pub despawned: bool,
 }
 
 #[derive(Debug, Default)]
@@ -185,6 +188,7 @@ pub struct Env {
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
     pub active_scene: Option<Rc<RefCell<Instance>>>,
+    pub active_entities: Vec<Rc<RefCell<Instance>>>,
     pub self_value: Option<Value>,
     pub returning: Option<Value>,
     pub transitioning: Option<String>,
@@ -209,6 +213,7 @@ impl Env {
             out: String::new(),
             on_update: None,
             active_scene: None,
+            active_entities: Vec::new(),
             self_value: None,
             returning: None,
             transitioning: None,

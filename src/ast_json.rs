@@ -143,6 +143,23 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Stmt::Spawn { class, at, line, col } => {
+            s.push_str("{\"kind\":\"Spawn\",\"class\":");
+            write_str_value(s, class);
+            s.push_str(",\"at\":");
+            match at {
+                Some(e) => write_expr(s, e),
+                None => s.push_str("null"),
+            }
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        Stmt::Despawn { target, line, col } => {
+            s.push_str("{\"kind\":\"Despawn\",\"target\":");
+            write_expr(s, target);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Stmt::Expr(e) => {
             s.push_str("{\"kind\":\"ExprStmt\",\"expr\":");
             write_expr(s, e);

@@ -1,0 +1,11 @@
+entity Counter:
+    var n = 0
+
+    function update(dt):
+        n += 1
+        print(n)
+        if n >= 2:
+            despawn self
+
+spawn Counter at (1, 0)
+spawn Counter at (2, 0)

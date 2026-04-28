@@ -387,6 +387,41 @@ fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
 }
 
 #[test]
+fn spawn_and_despawn_drive_entity_updates() {
+    let out = run_program_frames("tests/programs/spawn_entities.twe", 5, 0.016)
+        .expect("program should run");
+    // Two entities, each ticking. Frame 1: both print 1. Frame 2: both
+    // print 2 then despawn. Frames 3-5 are empty.
+    assert_eq!(out, "1\n1\n2\n2\n");
+}
+
+#[test]
+fn spawn_at_sets_pos_field() {
+    use twec::value::Value;
+    let src = r#"
+entity Pin:
+    var pos = (0, 0)
+    function update(dt):
+        # nothing
+spawn Pin at (12, 34)
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+    assert_eq!(env.active_entities.len(), 1);
+    let inst = env.active_entities[0].borrow();
+    let pos = inst.fields.get("pos").expect("pos field");
+    let elems = match pos {
+        Value::Tuple(elems) => elems.clone(),
+        _ => panic!("pos should be a tuple"),
+    };
+    assert!(matches!(elems[0], Value::Int(12)));
+    assert!(matches!(elems[1], Value::Int(34)));
+}
+
+#[test]
 fn scene_methods_callable_by_bare_name() {
     let out = run_program_frames("tests/programs/scene_methods.twe", 20, 0.1)
         .expect("program should run");

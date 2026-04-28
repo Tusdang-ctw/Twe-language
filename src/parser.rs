@@ -103,6 +103,8 @@ impl<'a> Parser<'a> {
             {
                 return self.parse_transition();
             }
+            TokenKind::Spawn => return self.parse_spawn(),
+            TokenKind::Despawn => return self.parse_despawn(),
             _ => {}
         }
         let expr = self.parse_expr()?;
@@ -218,6 +220,37 @@ impl<'a> Parser<'a> {
         Ok(Stmt::OnUpdate {
             param,
             body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_spawn(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let class = self.expect_ident("expected class name after `spawn`")?;
+        // Optional `at <expr>` — `at` is a contextual keyword here, lexed
+        // as an Ident.
+        let at = if matches!(&self.peek().kind, TokenKind::Ident(s) if s == "at") {
+            self.bump();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        self.expect_stmt_end()?;
+        Ok(Stmt::Spawn {
+            class,
+            at,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    fn parse_despawn(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let target = self.parse_expr()?;
+        self.expect_stmt_end()?;
+        Ok(Stmt::Despawn {
+            target,
             line: kw.line,
             col: kw.col,
         })
@@ -674,17 +707,11 @@ impl<'a> Parser<'a> {
     fn parse_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
         if matches!(self.peek().kind, TokenKind::Newline) {
             self.bump();
+            // An empty body is allowed — the lexer doesn't emit Indent
+            // for comment-only or no-content body lines, so just bail
+            // out with no statements.
             if !matches!(self.peek().kind, TokenKind::Indent) {
-                let tok = self.peek().clone();
-                return Err(ParseError {
-                    line: tok.line,
-                    col: tok.col,
-                    message: "expected indented block".to_string(),
-                    help: Some(
-                        "indent the body, or put a single statement on the same line after ':'"
-                            .to_string(),
-                    ),
-                });
+                return Ok(Vec::new());
             }
             self.bump();
             let mut stmts = Vec::new();

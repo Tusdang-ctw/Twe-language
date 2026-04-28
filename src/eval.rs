@@ -58,7 +58,36 @@ pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
         dispatch_key_press(env, &scene)?;
         tick_scene(env, &scene, dt)?;
     }
+    tick_entities(env, dt)?;
+    prune_despawned(env);
     Ok(())
+}
+
+fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
+    let entities = env.active_entities.clone();
+    for entity in entities {
+        if entity.borrow().despawned {
+            continue;
+        }
+        let class = entity.borrow().class.clone();
+        let method = match find_method(&class, "update") {
+            Some(m) => m,
+            None => continue,
+        };
+        call_method(
+            env,
+            Value::Instance(entity),
+            &method,
+            &[Value::Float(dt)],
+            0,
+            0,
+        )?;
+    }
+    Ok(())
+}
+
+fn prune_despawned(env: &mut Env) {
+    env.active_entities.retain(|e| !e.borrow().despawned);
 }
 
 /// Look at `env.key_press` (an Object whose fields are bool flags set
@@ -116,37 +145,38 @@ fn dispatch_key_press(
     Ok(())
 }
 
-/// Run the active scene's current state's on-render handler, if any.
-/// Drawing primitives in stdlib check `env.in_render`; the caller is
-/// responsible for setting that flag (the macroquad `play` loop does
-/// it around this call).
+/// Run the active scene's current state's on-render handler, plus
+/// each active entity's `render()` method. Drawing primitives in
+/// stdlib check `env.in_render`; the caller is responsible for
+/// setting that flag (the macroquad `play` loop does it around this
+/// call).
 pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
-    let scene = match env.active_scene.clone() {
-        Some(s) => s,
-        None => return Ok(()),
-    };
-    let body = {
-        let inst = scene.borrow();
-        let state_name = match inst.current_state.clone() {
-            Some(n) => n,
-            None => return Ok(()),
+    if let Some(scene) = env.active_scene.clone() {
+        let body: Option<Vec<Stmt>> = {
+            let inst = scene.borrow();
+            inst.current_state
+                .as_ref()
+                .and_then(|n| inst.class.states.get(n))
+                .and_then(|state| state.on_render.clone())
         };
-        match inst.class.states.get(&state_name) {
-            Some(state) => state.on_render.clone(),
-            None => return Ok(()),
+        if let Some(body) = body {
+            let prev_self = env.self_value.replace(Value::Instance(scene));
+            run_block(env, &body)?;
+            env.self_value = prev_self;
         }
-    };
-    if let Some(body) = body {
-        let prev_self = env.self_value.replace(Value::Instance(scene));
-        run_block(env, &body)?;
-        env.self_value = prev_self;
-        if let Some(target) = env.transitioning.take() {
-            // A transition during render is honoured at the next tick.
-            // For now stash it back into the active scene's state name.
-            // Cleaner option (later): queue it on the env and let
-            // tick_frame consume it.
-            env.transitioning = Some(target);
+        env.transitioning.take();
+    }
+    let entities = env.active_entities.clone();
+    for entity in entities {
+        if entity.borrow().despawned {
+            continue;
         }
+        let class = entity.borrow().class.clone();
+        let method = match find_method(&class, "render") {
+            Some(m) => m,
+            None => continue,
+        };
+        call_method(env, Value::Instance(entity), &method, &[], 0, 0)?;
     }
     Ok(())
 }
@@ -430,6 +460,58 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
         Stmt::Transition { target, .. } => {
             env.transitioning = Some(target.clone());
             Ok(())
+        }
+        Stmt::Spawn { class, at, line, col } => {
+            let class_val = env.get(class).cloned().ok_or_else(|| RuntimeError {
+                line: *line,
+                col: *col,
+                message: format!("class '{class}' is not defined"),
+                help: Some(format!("declare it with `entity {class}:` first")),
+            })?;
+            let class_rc = match class_val {
+                Value::Class(c) => c,
+                other => {
+                    return Err(RuntimeError {
+                        line: *line,
+                        col: *col,
+                        message: format!(
+                            "`spawn {class}` expects a class, but {class} is a {}",
+                            other.type_name()
+                        ),
+                        help: None,
+                    });
+                }
+            };
+            let at_value = match at {
+                Some(expr) => Some(eval_expr(env, expr)?),
+                None => None,
+            };
+            let inst_val = instantiate(class_rc);
+            if let (Some(at_value), Value::Instance(rc)) = (at_value, &inst_val) {
+                rc.borrow_mut().fields.insert("pos".to_string(), at_value);
+            }
+            if let Value::Instance(rc) = &inst_val {
+                env.active_entities.push(rc.clone());
+            }
+            Ok(())
+        }
+        Stmt::Despawn { target, line, col } => {
+            let v = eval_expr(env, target)?;
+            match v {
+                Value::Instance(rc) => {
+                    rc.borrow_mut().despawned = true;
+                    Ok(())
+                }
+                other => Err(RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: format!(
+                        "`despawn` expects an instance, got {}",
+                        other.type_name()
+                    ),
+                    help: None,
+                }),
+            }
         }
         Stmt::OnUpdate { param, body, .. } => {
             env.on_update = Some(OnUpdateHandler {
@@ -1136,6 +1218,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
         current_state: None,
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
+        despawned: false,
     })))
 }
 
