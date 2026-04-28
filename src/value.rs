@@ -25,6 +25,12 @@ pub enum Value {
     /// `BcFunction` will fold into a single `Obj` pointer; until then
     /// the two coexist.
     BcFunction(Rc<crate::bytecode::BcFunction>),
+    /// Bytecode-VM class. Sibling of `Class` for the same reason —
+    /// the tree-walker stores AST methods, the bytecode VM stores
+    /// compiled chunks.
+    BcClass(Rc<crate::bytecode::BcClassDef>),
+    /// Bytecode-VM instance. Sibling of `Instance`.
+    BcInstance(Rc<RefCell<crate::bytecode::BcInstance>>),
     Builtin {
         name: &'static str,
         /// Parameter names for keyword-argument distribution.
@@ -121,6 +127,8 @@ impl fmt::Debug for Value {
             Value::Instance(i) => write!(f, "Instance({})", i.borrow().class.name),
             Value::Function(func) => write!(f, "Function({})", func.name),
             Value::BcFunction(func) => write!(f, "BcFunction({})", func.name),
+            Value::BcClass(c) => write!(f, "BcClass({} {})", c.kind, c.name),
+            Value::BcInstance(i) => write!(f, "BcInstance({})", i.borrow().class.name),
             Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
         }
     }
@@ -144,6 +152,8 @@ impl Value {
             Value::Instance(_) => "instance",
             Value::Function(_) => "function",
             Value::BcFunction(_) => "function",
+            Value::BcClass(_) => "class",
+            Value::BcInstance(_) => "instance",
             Value::Builtin { .. } => "function",
         }
     }
@@ -174,6 +184,8 @@ impl Value {
             Value::Instance(i) => format!("<{}>", i.borrow().class.name),
             Value::Function(func) => format!("<function {}>", func.name),
             Value::BcFunction(func) => format!("<function {}>", func.name),
+            Value::BcClass(c) => format!("<{} {}>", c.kind, c.name),
+            Value::BcInstance(i) => format!("<{}>", i.borrow().class.name),
             Value::Builtin { name, .. } => format!("<builtin {name}>"),
         }
     }
@@ -273,6 +285,13 @@ impl Env {
 
     pub fn remove(&mut self, name: &str) {
         self.bindings.remove(name);
+    }
+
+    /// Iterate over every (name, value) currently bound. Used by the
+    /// bytecode VM to seed its globals from `stdlib::install` without
+    /// duplicating the bootstrap.
+    pub fn iter_bindings(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.bindings.iter()
     }
 }
 

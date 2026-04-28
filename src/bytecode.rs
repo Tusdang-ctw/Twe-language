@@ -15,6 +15,9 @@
 //! lands. Until then, Rc-clones on Value are cheap enough for the
 //! bytecode pool.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use crate::value::Value;
 
 /// One instruction in the Twe bytecode. Each variant fits in a u8.
@@ -170,6 +173,16 @@ pub enum OpCode {
     /// loop variable as the next local). Range / List / Tuple
     /// receivers; mirrors `eval::run_for`.
     ForNext,
+
+    // --- Session 11: classes + instances + module builtins ---
+
+    /// Set a field by name (constant-pool index, 1 byte) on the
+    /// instance / object two-down on the stack to the value on
+    /// top. Stack on entry: `[..., recv, value]`. Stack after:
+    /// `[..., value]` — the assignment expression keeps its value
+    /// for the statement caller's `OP_POP`. BcInstance and Object
+    /// receivers; other types error.
+    SetField,
 }
 
 impl OpCode {
@@ -220,6 +233,7 @@ impl OpCode {
             38 => OpCode::GetField,
             39 => OpCode::Invoke,
             40 => OpCode::ForNext,
+            41 => OpCode::SetField,
             other => panic!("OpCode::from_u8: invalid byte {other}"),
         }
     }
@@ -289,6 +303,29 @@ impl BcFunction {
             chunk,
         }
     }
+}
+
+/// A bytecode-VM class. Mirrors `value::ClassDef` but stores
+/// methods as compiled `BcFunction`s and only carries the subset
+/// of class state the bytecode VM uses today: name, kind (entity
+/// / item / modifier / inventory), default fields, and methods.
+/// State machines, initial states, every-clocks, and the rest of
+/// the scene/particles surface area arrive in session 12 with the
+/// play-loop integration.
+#[derive(Debug)]
+pub struct BcClassDef {
+    pub kind: &'static str,
+    pub name: String,
+    pub field_defaults: HashMap<String, Value>,
+    pub methods: HashMap<String, Rc<BcFunction>>,
+}
+
+/// A live instance of a `BcClassDef`. Field reads/writes go
+/// through the inner `RefCell` so methods can mutate `self.x`.
+#[derive(Debug)]
+pub struct BcInstance {
+    pub class: Rc<BcClassDef>,
+    pub fields: HashMap<String, Value>,
 }
 
 /// Format a Chunk as a human-readable instruction listing. Mirrors
@@ -364,6 +401,7 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         OpCode::GetField => constant_instruction(out, "OP_GET_FIELD", chunk, offset),
         OpCode::Invoke => invoke_instruction(out, "OP_INVOKE", chunk, offset),
         OpCode::ForNext => for_next_instruction(out, "OP_FOR_NEXT", chunk, offset),
+        OpCode::SetField => constant_instruction(out, "OP_SET_FIELD", chunk, offset),
     }
 }
 
@@ -517,6 +555,7 @@ mod tests {
             OpCode::GetField,
             OpCode::Invoke,
             OpCode::ForNext,
+            OpCode::SetField,
         ] {
             assert_eq!(OpCode::from_u8(op as u8), op);
         }

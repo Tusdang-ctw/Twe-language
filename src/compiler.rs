@@ -12,16 +12,23 @@
 //! tuple `.x/.y/.z` and list `.length` field access, list/range
 //! built-in methods via `OP_INVOKE`, and `for x in iter:` over
 //! ranges, lists, and tuples.
+//! Phase-3 session 11: `entity` / `item` / `modifier` / `inventory`
+//! declarative blocks with field defaults and methods, instance
+//! field get/set including `self.x = ...`, instance method
+//! dispatch with `self` at slot 0, and module-builtin access
+//! (`math.min`, `key.right`, etc.) via `OP_GET_FIELD` and
+//! `OP_INVOKE` on `Value::Object`.
 //!
-//! Object/instance fields (for `math.min`, `time.dt`, scene fields,
-//! `self`) and the `entity` / `scene` / `particles` declarative
-//! blocks come in session 11. Until then, those produce
+//! Scenes, `particles`, states, every-clocks, `on update(dt):`,
+//! `spawn` / `despawn` / `transition`, and the play-loop
+//! integration come in session 12. Until then, those produce
 //! `CompileError`s that name the session where the feature lands.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{AssignOp, AssignTarget, BinOp, Expr, Program, Stmt, UnOp};
-use crate::bytecode::{BcFunction, Chunk, OpCode};
+use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, UnOp};
+use crate::bytecode::{BcClassDef, BcFunction, Chunk, OpCode};
 use crate::value::Value;
 
 /// What the compiler refuses to compile in the current session's
@@ -133,6 +140,9 @@ struct Frame {
     scope_depth: i32,
     loops: Vec<LoopFrame>,
     kind: FrameKind,
+    /// True if this is a method body. Slot 0 is the receiver
+    /// (`self`); `Expr::SelfRef` reads from there.
+    is_method: bool,
     /// The function's name (for diagnostics) and arity. Only used
     /// when the frame closes — the resulting `BcFunction` carries
     /// these fields.
@@ -142,9 +152,13 @@ struct Frame {
 
 impl Frame {
     fn new(kind: FrameKind, name: impl Into<String>, arity: u8) -> Self {
+        Frame::with_method(kind, name, arity, false)
+    }
+
+    fn with_method(kind: FrameKind, name: impl Into<String>, arity: u8, is_method: bool) -> Self {
         // Slot 0 of every frame is reserved for the function value
-        // itself (per Crafting Interpreters §24.4.2). The user can't
-        // see or shadow it because it's nameless.
+        // itself (per Crafting Interpreters §24.4.2). For methods
+        // it's the receiver. Either way it's nameless to the user.
         let mut locals = Vec::with_capacity(8);
         locals.push(Local { name: String::new(), depth: 0 });
         Self {
@@ -153,6 +167,7 @@ impl Frame {
             scope_depth: 0,
             loops: Vec::new(),
             kind,
+            is_method,
             name: name.into(),
             arity,
         }
@@ -282,12 +297,8 @@ impl Compiler {
             Stmt::FunctionDecl { name, params, body, line, col } => {
                 self.emit_function_decl(name, params, body, *line, *col)?;
             }
-            Stmt::Decl { line, col, kind, .. } => {
-                return Err(self.unsupported(
-                    &format!("`{}` declarative block (session 11)", kind.as_str()),
-                    *line,
-                    *col,
-                ));
+            Stmt::Decl { kind, name, parent, members, line, col } => {
+                self.emit_decl(*kind, name, parent.as_deref(), members, *line, *col)?;
             }
             Stmt::OnUpdate { line, col, .. } => {
                 return Err(self.unsupported(
@@ -582,7 +593,7 @@ impl Compiler {
         op: AssignOp,
         value: &Expr,
         line: u32,
-        col: u32,
+        _col: u32,
     ) -> Result<(), CompileError> {
         match target {
             AssignTarget::Name(name) => {
@@ -622,12 +633,37 @@ impl Compiler {
                 // value left on top of stack by Set{Local,Global}.
                 self.frame_mut().chunk.write_op(OpCode::Pop, line);
             }
-            AssignTarget::Field { .. } => {
-                return Err(self.unsupported(
-                    "assignment to a field (heap; session 10/11)",
-                    line,
-                    col,
-                ));
+            AssignTarget::Field { object, name } => {
+                // For `recv.name = value`, OP_SET_FIELD wants
+                // [..., recv, value] on the stack. Compound forms
+                // (`recv.name += value`) load via OP_GET_FIELD first,
+                // arith, then SET. Either way we end with OP_POP to
+                // discard the value SetField left on top.
+                if matches!(op, AssignOp::Set) {
+                    self.emit_expr(object)?;
+                    self.emit_expr(value)?;
+                } else {
+                    // Compound: emit object twice (once to load
+                    // current value, once as recv for the SET).
+                    self.emit_expr(object)?;
+                    self.emit_expr(object)?;
+                    let load_name = self
+                        .frame_mut()
+                        .chunk
+                        .add_constant(Value::Str(Rc::new(name.clone())));
+                    self.frame_mut().chunk.write_op(OpCode::GetField, line);
+                    self.frame_mut().chunk.write_byte(load_name, line);
+                    self.emit_expr(value)?;
+                    let arith = arith_for_compound(op);
+                    self.frame_mut().chunk.write_op(arith, line);
+                }
+                let name_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::Str(Rc::new(name.clone())));
+                self.frame_mut().chunk.write_op(OpCode::SetField, line);
+                self.frame_mut().chunk.write_byte(name_idx, line);
+                self.frame_mut().chunk.write_op(OpCode::Pop, line);
             }
         }
         Ok(())
@@ -803,9 +839,21 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::Interp, *line);
                 self.frame_mut().chunk.write_byte(total as u8, *line);
             }
-            // Future-session features.
             Expr::SelfRef { line, col } => {
-                return Err(self.unsupported("`self` (with method dispatch)", *line, *col));
+                // `self` is the receiver, sitting at slot 0 of every
+                // method's frame (Crafting Interpreters §28.5). Outside
+                // a method body it's a compile-time error.
+                if self.frame().kind == FrameKind::Script
+                    || !self.frame().is_method
+                {
+                    return Err(CompileError {
+                        line: *line,
+                        col: *col,
+                        message: "`self` is only valid inside a method body".to_string(),
+                    });
+                }
+                self.frame_mut().chunk.write_op(OpCode::GetLocal, *line);
+                self.frame_mut().chunk.write_byte(0, *line);
             }
             Expr::Quantity { value, unit, line, col } => {
                 return Err(self.unsupported(
@@ -1023,6 +1071,173 @@ impl Compiler {
             col,
             message: format!("bytecode compiler doesn't yet support {what}"),
         }
+    }
+
+    /// Compile a class declaration (`entity` / `item` / `modifier`
+    /// / `inventory`). Field defaults must be const-evaluable
+    /// literals in this session — runtime-evaluated defaults arrive
+    /// when scenes land (session 12) since scenes need them too.
+    /// Methods compile as nested function frames whose slot 0 is
+    /// the receiver (`self`), with `is_method = true` so the body
+    /// can reach `self`.
+    fn emit_decl(
+        &mut self,
+        kind: DeclKind,
+        name: &str,
+        parent: Option<&str>,
+        members: &[DeclMember],
+        line: u32,
+        col: u32,
+    ) -> Result<(), CompileError> {
+        // Scenes / particles ship with the play-loop integration in
+        // session 12 — they need state machines, every-clocks, and
+        // active-entity tracking that the bytecode VM doesn't have
+        // yet. Block them here with a clear pointer.
+        if matches!(kind, DeclKind::Scene | DeclKind::Particles) {
+            return Err(self.unsupported(
+                &format!(
+                    "`{}` declarative block (session 12 brings the play-loop \
+                     integration that scenes / particles depend on)",
+                    kind.as_str()
+                ),
+                line,
+                col,
+            ));
+        }
+        if parent.is_some() {
+            // Inheritance is straightforward (copy-down methods +
+            // default fields) but no test program exercises it yet,
+            // and we want to keep this session focused.
+            return Err(self.unsupported(
+                "class inheritance (parent `extends ...`)",
+                line,
+                col,
+            ));
+        }
+        if !self.is_global_scope() {
+            return Err(CompileError {
+                line,
+                col,
+                message: format!(
+                    "`{}` declarations are only supported at top level in v0.1",
+                    kind.as_str()
+                ),
+            });
+        }
+
+        // Collect fields and methods from members. State / initial
+        // sub-members require scene support; flag them.
+        let mut field_defaults: HashMap<String, Value> = HashMap::new();
+        let mut methods: HashMap<String, Rc<BcFunction>> = HashMap::new();
+        for member in members {
+            match member {
+                DeclMember::Field { name: fname, value, line: fline, col: fcol } => {
+                    let v = const_eval(value).ok_or_else(|| CompileError {
+                        line: *fline,
+                        col: *fcol,
+                        message: format!(
+                            "field `{fname}` default must be a literal constant in v0.1 \
+                             (int, float, bool, string, nil, or a tuple of those)"
+                        ),
+                    })?;
+                    field_defaults.insert(fname.clone(), v);
+                }
+                DeclMember::Method { name: mname, params, body, line: mline, col: mcol } => {
+                    let func = self.compile_method(mname, params, body, *mline, *mcol)?;
+                    methods.insert(mname.clone(), Rc::new(func));
+                }
+                DeclMember::InitialState { line: il, col: ic, .. }
+                | DeclMember::State { line: il, col: ic, .. } => {
+                    return Err(self.unsupported(
+                        "states / `initial:` (session 12 — needs the scene runtime)",
+                        *il,
+                        *ic,
+                    ));
+                }
+            }
+        }
+
+        // Build the class value, embed it as a constant, and bind it
+        // to its name as a global. Constructor calls will pop this
+        // class value off the stack when they fire.
+        let class = Rc::new(BcClassDef {
+            kind: kind.as_str(),
+            name: name.to_string(),
+            field_defaults,
+            methods,
+        });
+        let class_idx = self
+            .frame_mut()
+            .chunk
+            .add_constant(Value::BcClass(class));
+        self.frame_mut().chunk.write_op(OpCode::Constant, line);
+        self.frame_mut().chunk.write_byte(class_idx, line);
+        let name_idx = self
+            .frame_mut()
+            .chunk
+            .add_constant(Value::Str(Rc::new(name.to_string())));
+        self.frame_mut().chunk.write_op(OpCode::DefineGlobal, line);
+        self.frame_mut().chunk.write_byte(name_idx, line);
+        Ok(())
+    }
+
+    fn compile_method(
+        &mut self,
+        name: &str,
+        params: &[String],
+        body: &[Stmt],
+        line: u32,
+        col: u32,
+    ) -> Result<BcFunction, CompileError> {
+        if params.len() > u8::MAX as usize {
+            return Err(CompileError {
+                line,
+                col,
+                message: format!(
+                    "method `{name}` has too many parameters (max {})",
+                    u8::MAX
+                ),
+            });
+        }
+        let arity = params.len() as u8;
+        self.frames
+            .push(Frame::with_method(FrameKind::Function, name, arity, true));
+        // Slot 0 is `self`; params live at slots 1..=arity.
+        for param in params {
+            self.declare_local(param, line, col)?;
+            self.mark_initialised();
+        }
+        for stmt in body {
+            self.emit_stmt(stmt)?;
+        }
+        let last_line = body.last().map(stmt_line).unwrap_or(line);
+        self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
+        self.frame_mut().chunk.write_op(OpCode::Return, last_line);
+        let frame = self.frames.pop().expect("method frame we just pushed");
+        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+    }
+}
+
+/// Constant-evaluate an expression for use as a field default.
+/// Mirrors a small literal subset of `eval::eval_expr`. Returns
+/// `None` for any expression that depends on runtime state.
+fn const_eval(e: &Expr) -> Option<Value> {
+    match e {
+        Expr::Int { value, .. } => Some(Value::Int(*value)),
+        Expr::Float { value, .. } => Some(Value::Float(*value)),
+        Expr::Bool { value, .. } => Some(Value::Bool(*value)),
+        Expr::Str { value, .. } => Some(Value::Str(Rc::new(value.clone()))),
+        Expr::Percent { value, .. } => Some(Value::Percent(*value)),
+        Expr::Tuple { elems, .. } => {
+            let vals: Option<Vec<Value>> = elems.iter().map(const_eval).collect();
+            vals.map(|v| Value::Tuple(Rc::new(v)))
+        }
+        Expr::Unary { op: UnOp::Neg, operand, .. } => match const_eval(operand)? {
+            Value::Int(n) => Some(Value::Int(-n)),
+            Value::Float(x) => Some(Value::Float(-x)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

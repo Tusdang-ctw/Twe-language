@@ -1,4 +1,4 @@
-//! Bytecode dispatch loop. Phase-3 sessions 7–10.
+//! Bytecode dispatch loop. Phase-3 sessions 7–11.
 //!
 //! Reads a `Chunk` produced by `crate::compiler` and evaluates it
 //! against an internal value stack. Semantics match the tree-walker
@@ -26,8 +26,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::bytecode::{BcFunction, Chunk, OpCode};
-use crate::value::{RuntimeError, Value};
+use crate::bytecode::{BcClassDef, BcFunction, BcInstance, Chunk, OpCode};
+use crate::value::{Env, RuntimeError, Value};
 
 #[derive(Copy, Clone)]
 enum ArithOp {
@@ -66,6 +66,14 @@ pub struct VM {
     stack: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
+    /// Held tree-walker env. The bytecode VM doesn't share globals
+    /// with it; this exists only to give `Value::Builtin` calls a
+    /// `&mut Env` parameter (their existing signature). Builtins
+    /// that mutate Env state (random seeds, scene state, active
+    /// entities) currently won't fully work in the bytecode VM —
+    /// the play-loop integration arrives in session 12. Pure
+    /// builtins like `math.min` ignore Env and work fine.
+    builtin_env: Env,
     /// xorshift64* state for `range.roll`. Same algorithm and default
     /// seed as `Env` so a deterministic test seed yields the same
     /// sequence on the tree-walker and the VM.
@@ -83,10 +91,22 @@ impl Default for VM {
 
 impl VM {
     pub fn new() -> Self {
+        // Boot a tree-walker Env so we can reuse `stdlib::install`
+        // for module objects (`math`, `key`, `time`, `color`,
+        // `screen`, etc.). Each binding is then mirrored into the
+        // VM's own globals — Rc-shared values stay live in both
+        // tables, so a builtin that mutates an Object reaches both.
+        let mut env = Env::new();
+        crate::stdlib::install(&mut env);
+        let mut globals = HashMap::with_capacity(env.iter_bindings().count());
+        for (name, value) in env.iter_bindings() {
+            globals.insert(name.clone(), value.clone());
+        }
         Self {
             stack: Vec::with_capacity(256),
             frames: Vec::with_capacity(64),
-            globals: HashMap::new(),
+            globals,
+            builtin_env: env,
             rng: 0x9E37_79B9_7F4A_7C15,
             out: String::new(),
         }
@@ -421,6 +441,17 @@ impl VM {
                     let v = field_get(&recv, &name, line)?;
                     self.push(v);
                 }
+                OpCode::SetField => {
+                    let idx = self.read_byte() as usize;
+                    let name = self.read_string_constant(idx, line)?;
+                    // Stack: [..., recv, value]. Set leaves the value
+                    // on top so the assignment expression's caller can
+                    // OP_POP it (statement context) or use it (rare).
+                    let value = self.pop()?;
+                    let recv = self.pop()?;
+                    field_set(&recv, &name, value.clone(), line)?;
+                    self.push(value);
+                }
                 OpCode::Invoke => {
                     let name_idx = self.read_byte() as usize;
                     let arg_count = self.read_byte() as usize;
@@ -520,46 +551,94 @@ impl VM {
             })?;
         let callee = self.stack[callee_idx].clone();
         match callee {
-            Value::BcFunction(func) => {
-                if func.arity as usize != arg_count {
+            Value::BcFunction(func) => self.push_call_frame(func, callee_idx, arg_count, line),
+            Value::BcClass(class) => {
+                if arg_count != 0 {
                     return Err(RuntimeError {
                         line,
                         col: 0,
                         message: format!(
-                            "function `{}` expected {} arguments, got {}",
-                            func.name, func.arity, arg_count
+                            "constructor for {} takes no arguments yet (got {})",
+                            class.name, arg_count
                         ),
                         help: None,
                     });
                 }
-                if self.frames.len() >= FRAMES_MAX {
+                let inst = instantiate_bc(class);
+                // Pop the class value and replace with the instance.
+                self.stack.truncate(callee_idx);
+                self.push(inst);
+                Ok(())
+            }
+            Value::Builtin { name, params, func } => {
+                let args: Vec<Value> = self.stack.drain(callee_idx + 1..).collect();
+                if !params.is_empty() && args.len() != params.len() {
                     return Err(RuntimeError {
                         line,
                         col: 0,
-                        message: "stack overflow".to_string(),
-                        help: Some(format!(
-                            "call stack exceeded {FRAMES_MAX} frames — likely \
-                             unbounded recursion"
-                        )),
+                        message: format!(
+                            "builtin `{name}` expected {} arguments, got {}",
+                            params.len(),
+                            args.len()
+                        ),
+                        help: None,
                     });
                 }
-                self.frames.push(CallFrame {
-                    function: func,
-                    ip: 0,
-                    slot_base: callee_idx,
-                });
+                let result = func(&mut self.builtin_env, &args)?;
+                // Pop the builtin value, push result.
+                self.stack.pop();
+                self.push(result);
                 Ok(())
             }
             other => Err(RuntimeError {
                 line,
                 col: 0,
                 message: format!(
-                    "tried to call a {} (only functions are callable in bytecode v0.1)",
+                    "tried to call a {} (only functions and classes are callable)",
                     other.type_name()
                 ),
                 help: None,
             }),
         }
+    }
+
+    /// Push a CallFrame for a `BcFunction`. Validates arity and the
+    /// frame-stack bound. The function value at `callee_idx` becomes
+    /// the new frame's slot 0; args sit at slots 1..=arity.
+    fn push_call_frame(
+        &mut self,
+        func: Rc<BcFunction>,
+        callee_idx: usize,
+        arg_count: usize,
+        line: u32,
+    ) -> Result<(), RuntimeError> {
+        if func.arity as usize != arg_count {
+            return Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "function `{}` expected {} arguments, got {}",
+                    func.name, func.arity, arg_count
+                ),
+                help: None,
+            });
+        }
+        if self.frames.len() >= FRAMES_MAX {
+            return Err(RuntimeError {
+                line,
+                col: 0,
+                message: "stack overflow".to_string(),
+                help: Some(format!(
+                    "call stack exceeded {FRAMES_MAX} frames — likely unbounded recursion"
+                )),
+            });
+        }
+        self.frames.push(CallFrame {
+            function: func,
+            ip: 0,
+            slot_base: callee_idx,
+        });
+        Ok(())
     }
 
     /// Read a single byte from the active frame's chunk and bump IP.
@@ -658,6 +737,73 @@ impl VM {
                 ),
                 help: None,
             })?;
+        // BcInstance dispatch keeps the receiver on the stack as the
+        // method's slot 0 (`self`) and continues from the new frame —
+        // it doesn't drop into the simple "compute one value" pattern.
+        let recv_clone = self.stack[recv_idx].clone();
+        if let Value::BcInstance(inst_rc) = &recv_clone {
+            let method = inst_rc
+                .borrow()
+                .class
+                .methods
+                .get(name)
+                .cloned()
+                .ok_or_else(|| RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!(
+                        "method `.{name}` is not defined on instance of {}",
+                        inst_rc.borrow().class.name
+                    ),
+                    help: None,
+                })?;
+            return self.push_call_frame(method, recv_idx, arg_count, line);
+        }
+        // Object module access: `math.min(...)`. The "method" is
+        // really a Builtin field; look it up and call it with args.
+        if let Value::Object(rc) = &recv_clone {
+            let field = rc.borrow().fields.get(name).cloned().ok_or_else(|| {
+                RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!("module `{}` has no field '{name}'", rc.borrow().kind),
+                    help: None,
+                }
+            })?;
+            let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
+            self.stack.pop(); // drop the receiver
+            let result = match field {
+                Value::Builtin { name: bname, params, func } => {
+                    if !params.is_empty() && args.len() != params.len() {
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "builtin `{bname}` expected {} arguments, got {}",
+                                params.len(),
+                                args.len()
+                            ),
+                            help: None,
+                        });
+                    }
+                    func(&mut self.builtin_env, &args)?
+                }
+                other => {
+                    return Err(RuntimeError {
+                        line,
+                        col: 0,
+                        message: format!(
+                            "field `.{name}` on module is a {}, not callable",
+                            other.type_name()
+                        ),
+                        help: None,
+                    });
+                }
+            };
+            self.push(result);
+            return Ok(());
+        }
+        // Built-in receivers: list / range methods (session 10).
         let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
         let recv = self.stack.pop().expect("receiver");
         let result = match &recv {
@@ -670,8 +816,7 @@ impl VM {
                     line,
                     col: 0,
                     message: format!(
-                        "method `.{name}` is not defined on {} (instance methods land in \
-                         the declarative-blocks pass)",
+                        "method `.{name}` is not defined on {}",
                         other.type_name()
                     ),
                     help: None,
@@ -937,8 +1082,9 @@ fn index_get(obj: &Value, idx: &Value, line: u32) -> Result<Value, RuntimeError>
     }
 }
 
-/// Mirrors a subset of `eval::field_get` — tuple .x/.y/.z and
-/// list .length only. Object and Instance fields land in session 11.
+/// Mirrors `eval::field_get` for the subset the bytecode VM
+/// reaches: tuples, lists, BcInstances, and Objects (the latter
+/// covers module builtins like `math`, `time`, `key`).
 fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> {
     match obj {
         Value::Tuple(elems) => match name {
@@ -968,17 +1114,76 @@ fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> 
                 ),
             }),
         },
+        Value::BcInstance(rc) => {
+            let inst = rc.borrow();
+            inst.fields.get(name).cloned().ok_or_else(|| RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "field '{name}' is not defined on instance of {}",
+                    inst.class.name
+                ),
+                help: None,
+            })
+        }
+        Value::Object(rc) => rc.borrow().fields.get(name).cloned().ok_or_else(|| {
+            RuntimeError {
+                line,
+                col: 0,
+                message: format!("module `{}` has no field '{name}'", rc.borrow().kind),
+                help: None,
+            }
+        }),
         other => Err(RuntimeError {
             line,
             col: 0,
             message: format!(
-                "cannot read field '.{name}' on a {} (object/instance fields land in \
-                 the declarative-blocks pass)",
+                "cannot read field '.{name}' on a {}",
                 other.type_name()
             ),
             help: None,
         }),
     }
+}
+
+/// `recv.name = value`. BcInstance stores in its fields HashMap;
+/// Object likewise. Other receivers error.
+fn field_set(recv: &Value, name: &str, value: Value, line: u32) -> Result<(), RuntimeError> {
+    match recv {
+        Value::BcInstance(rc) => {
+            rc.borrow_mut().fields.insert(name.to_string(), value);
+            Ok(())
+        }
+        Value::Object(rc) => {
+            rc.borrow_mut().fields.insert(name.to_string(), value);
+            Ok(())
+        }
+        other => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!(
+                "cannot assign field '.{name}' on a {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    }
+}
+
+/// Walk the class's defaults to materialise a fresh instance.
+/// Defaults are cloned so each instance gets its own copy
+/// (Rc-shared values like Lists still share their interior, which
+/// matches the tree-walker semantics).
+fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
+    let fields: HashMap<String, Value> = class
+        .field_defaults
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    Value::BcInstance(Rc::new(RefCell::new(BcInstance {
+        class,
+        fields,
+    })))
 }
 
 /// Mirrors `eval::value_in`. List/Tuple/Range/Str membership.
@@ -1716,6 +1921,162 @@ mod tests {
                 "results diverge on `{src}`",
             );
         }
+    }
+
+    // --- Session 11: classes + methods + module builtins ---
+
+    #[test]
+    fn vm_runs_methods_test_program() {
+        // Mirrors `tests/programs/methods.twe` exactly.
+        let src = "item Counter:\n    value: 0\n\n    bump(amount):\n        self.value = self.value + amount\n\nlet c = Counter()\nprint(c.value)\nc.bump(5)\nprint(c.value)\nc.bump(7)\nprint(c.value)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "0\n5\n12\n");
+    }
+
+    #[test]
+    fn vm_instance_field_get_and_set() {
+        let src = "entity Hero:\n    var hp = 100\n\nlet h = Hero()\nprint(h.hp)\nh.hp = 50\nprint(h.hp)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "100\n50\n");
+    }
+
+    #[test]
+    fn vm_method_with_args_and_return() {
+        let src = "item Rect:\n    w: 0\n    h: 0\n\n    area():\n        return self.w * self.h\n\nlet r = Rect()\nr.w = 3\nr.h = 4\nprint(r.area())\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "12\n");
+    }
+
+    #[test]
+    fn vm_compound_field_assignment() {
+        let src = "item Score:\n    n: 0\n\nlet s = Score()\ns.n += 10\ns.n += 5\nprint(s.n)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "15\n");
+    }
+
+    #[test]
+    fn vm_self_outside_method_errors_at_compile() {
+        let err = compile_err("print(self)\n");
+        assert!(err.contains("`self`"), "got: {err}");
+    }
+
+    #[test]
+    fn vm_field_default_must_be_const() {
+        let err = compile_err("let g = 5\nitem Foo:\n    n: g\n");
+        assert!(err.contains("literal constant"), "got: {err}");
+    }
+
+    #[test]
+    fn vm_unknown_field_on_instance_errors() {
+        let src = "item Foo:\n    a: 1\n\nlet f = Foo()\nprint(f.b)\n";
+        let err = run_program(src).expect_err("should fail");
+        assert!(err.message.contains("not defined"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_unknown_method_on_instance_errors() {
+        let src = "item Foo:\n    a: 1\n\nlet f = Foo()\nf.bar()\n";
+        let err = run_program(src).expect_err("should fail");
+        assert!(err.message.contains("bar"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_constructor_with_args_errors() {
+        let src = "item Foo:\n    a: 1\n\nlet f = Foo(5)\n";
+        let err = run_program(src).expect_err("should fail");
+        assert!(err.message.contains("constructor"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn vm_scene_decl_errors_pointing_at_session_12() {
+        let err = compile_err("scene S:\n    var x = 0\n");
+        assert!(err.contains("session 12"), "got: {err}");
+    }
+
+    #[test]
+    fn vm_math_module_builtins() {
+        // `math.min`, `.max`, `.abs` go through OP_INVOKE on Object.
+        let out = run_program("print(math.min(3, 1))\nprint(math.max(3, 1))\nprint(math.abs(-7))\n")
+            .expect("ok");
+        assert_eq!(out, "1\n3\n7\n");
+    }
+
+    #[test]
+    fn vm_math_sqrt() {
+        let out = run_program("print(math.sqrt(9.0))\n").expect("ok");
+        assert_eq!(out, "3.0\n");
+    }
+
+    #[test]
+    fn vm_math_floor_ceil() {
+        let out = run_program("print(math.floor(2.9))\nprint(math.ceil(2.1))\n").expect("ok");
+        assert_eq!(out, "2\n3\n");
+    }
+
+    #[test]
+    fn vm_module_field_get() {
+        // `key.right` is a Bool field on the input Object — read-only
+        // for tests, but exercises the Object field path.
+        let out = run_program("print(key.right)\n").expect("ok");
+        assert_eq!(out, "false\n");
+    }
+
+    #[test]
+    fn vm_method_can_call_other_method_via_self() {
+        let src = "item Math:\n    base: 10\n\n    double():\n        return self.base * 2\n\n    quad():\n        return self.double() * 2\n\nlet m = Math()\nprint(m.quad())\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "40\n");
+    }
+
+    #[test]
+    fn vm_instances_have_independent_field_storage() {
+        // Default fields are cloned per instance — mutating one
+        // shouldn't mutate the other.
+        let src = "item Box:\n    n: 0\n\nlet a = Box()\nlet b = Box()\na.n = 7\nprint(a.n)\nprint(b.n)\n";
+        let out = run_program(src).expect("ok");
+        assert_eq!(out, "7\n0\n");
+    }
+
+    #[test]
+    fn vm_matches_eval_on_class_corpus() {
+        // Cross-check: every program here should produce identical
+        // output on the bytecode VM and the tree-walker. This is
+        // the session-11 canary against semantic drift on classes,
+        // methods, self, and module builtins.
+        let cases = [
+            // The methods.twe contract.
+            "item Counter:\n    value: 0\n\n    bump(amount):\n        self.value = self.value + amount\n\nlet c = Counter()\nprint(c.value)\nc.bump(5)\nprint(c.value)\nc.bump(7)\nprint(c.value)\n",
+            // Compound field assignment.
+            "item S:\n    n: 0\n\nlet s = S()\ns.n += 10\ns.n -= 3\nprint(s.n)\n",
+            // Method that returns based on self fields.
+            "item Rect:\n    w: 0\n    h: 0\n\n    area():\n        return self.w * self.h\n\nlet r = Rect()\nr.w = 6\nr.h = 7\nprint(r.area())\n",
+            // Method calling sibling method via self.
+            "item M:\n    base: 5\n\n    a():\n        return self.base + 1\n\n    b():\n        return self.a() * 10\n\nlet m = M()\nprint(m.b())\n",
+            // Math module builtins.
+            "print(math.abs(-7))\nprint(math.min(3, 1))\nprint(math.max(3.5, 2.5))\n",
+        ];
+        for src in cases {
+            let bytecode_out = run_program(src)
+                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out = crate::eval::run(
+                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
+            )
+            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(
+                bytecode_out, walker_out,
+                "results diverge on `{src}`",
+            );
+        }
+    }
+
+    /// Tiny helper for tests that expect a compile error on a program.
+    fn compile_err(src: &str) -> String {
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        crate::compiler::compile_program(&program)
+            .err()
+            .map(|e| e.message)
+            .unwrap_or_default()
     }
 
     #[test]
