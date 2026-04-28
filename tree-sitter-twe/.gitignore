@@ -1,0 +1,23 @@
+# Tree-sitter generates these from grammar.js.
+src/parser.c
+src/grammar.json
+src/node-types.json
+src/tree_sitter/
+
+# npm + node-gyp build output.
+node_modules/
+build/
+prebuilds/
+*.tgz
+
+# MSVC / clang link artifacts emitted by `tree-sitter test` on Windows.
+*.obj
+*.exp
+*.lib
+*.pdb
+*.dll
+*.so
+*.dylib
+
+# Editor / OS noise.
+.DS_Store

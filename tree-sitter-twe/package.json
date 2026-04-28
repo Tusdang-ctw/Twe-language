@@ -1,0 +1,24 @@
+{
+  "name": "tree-sitter-twe",
+  "version": "0.1.0-pre",
+  "description": "Tree-sitter grammar for the Twe game scripting language",
+  "main": "bindings/node",
+  "scripts": {
+    "build": "tree-sitter generate && node-gyp rebuild",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.twe",
+      "file-types": ["twe"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^twe$"
+    }
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  },
+  "license": "MIT",
+  "private": true
+}
