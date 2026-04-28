@@ -62,16 +62,16 @@ scene Survive:
                 -> game_over
 
         on render():
-            rect((player_x - 12, player_y - 12), (24, 24), color.green)
-            text("Time: {elapsed}s", (10, 20), 18, color.white)
-            text("Kills: {kills}", (10, 44), 18, color.yellow)
+            rect(at: (player_x - 12, player_y - 12), size: (24, 24), color: color.green)
+            text("Time: {elapsed}s", at: (10, 20), size: 18, color: color.white)
+            text("Kills: {kills}", at: (10, 44), size: 18, color: color.yellow)
 
     state game_over:
         on render():
-            text("Game Over", (260, 200), 36, color.red)
-            text("Survived: {elapsed}s", (240, 250), 20, color.white)
-            text("Kills: {kills}", (270, 280), 20, color.yellow)
-            text("Press R to restart", (220, 320), 16, color.gray)
+            text("Game Over", at: (260, 200), size: 36, color: color.red)
+            text("Survived: {elapsed}s", at: (240, 250), size: 20, color: color.white)
+            text("Kills: {kills}", at: (270, 280), size: 20, color: color.yellow)
+            text("Press R to restart", at: (220, 320), size: 16, color: color.gray)
 
         on key_press.r:
             elapsed = 0.0
@@ -103,7 +103,7 @@ entity Monster:
         pos = (pos.x + dx / mag * speed * dt, pos.y + dy / mag * speed * dt)
 
     function render():
-        rect((pos.x - 8, pos.y - 8), (16, 16), color.red)
+        rect(at: (pos.x - 8, pos.y - 8), size: (16, 16), color: color.red)
 
 
 entity Bullet:
@@ -126,4 +126,4 @@ entity Bullet:
                 return
 
     function render():
-        rect((pos.x - 2, pos.y - 6), (4, 12), color.yellow)
+        rect(at: (pos.x - 2, pos.y - 6), size: (4, 12), color: color.yellow)

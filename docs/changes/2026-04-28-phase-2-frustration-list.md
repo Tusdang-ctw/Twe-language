@@ -17,7 +17,7 @@ gaps** (things the tree-walker can't do that a real game wants),
 
 ## Runtime-model gaps
 
-### F1. No keyword arguments
+### F1. No keyword arguments — **CLOSED 2026-04-28 (Phase 3 session 1)**
 
 Snake's `rect(at: cell * cell_size, size: ..., color: color.green)`
 shape is in `docs/example-11-snake.md` NP5 and Examples 6, 7, 10.
@@ -26,10 +26,17 @@ The parser accepts only positional args. Every drawing call in
 `text("Score: {score}", (10, 20), 18, color.white)` reads worse than
 `text("Score: {score}", at: (10, 20), size: 18, color: color.white)`.
 
-**Fix shape (Phase 3 candidate):** add `name: value` to argument
-lists. For Twe-defined functions (FunctionDef carries param names),
-match by name. For builtins, declare expected param names alongside
-the BuiltinFn.
+**Fix shipped:** parser now accepts `name: value` in arg lists
+(positional-after-keyword is a parse error, same as Python).
+`Value::Builtin` carries a `params: &'static [&'static str]` slice;
+empty means variadic (kwargs rejected). A single `bind_kwargs`
+helper distributes kwargs into a positional Vec for both Twe
+functions/methods (uses `def.params`) and builtins (uses the
+declared slice). Errors are explicit: unknown name, duplicate
+binding, missing required param, kwargs on a variadic builtin.
+All four drawing primitives plus survive/snake/hero/sprite_demo/
+particles_demo are migrated to keyword-arg form. F15 closes with
+the same fix.
 
 ### F2. Entities can't read scene fields without globals
 
@@ -186,7 +193,7 @@ Doc 02 shows `hero = sprite.load("hero.png")`; doc 01 (post the
 2026-04-27 sprite reconciliation) shows `let hero = load("hero.png")`.
 Both work in v0.1. Already noted in `notes/future-phases.md`.
 
-### F15. `docs/example-11-snake.md` uses keyword args throughout
+### F15. `docs/example-11-snake.md` uses keyword args throughout — **CLOSED 2026-04-28**
 
 The Snake spec example uses `rect(at: ..., size: ..., color: ...)`
 and `text(..., at: ..., color: ..., size: ..., align: ...)`.
@@ -194,9 +201,11 @@ The Phase-2 implementation has no keyword args (F1). The shipping
 `examples/snake.twe` uses positional form and is therefore not
 byte-identical to the design doc's reference code.
 
-**Fix shape:** when keyword args ship (F1), update
-`examples/snake.twe` to match the doc, and add a note to the
-example-11 doc that the reference is canonical.
+**Fix shipped:** `examples/snake.twe` now uses keyword-arg form
+for every drawing call, matching `docs/example-11-snake.md`. The
+`align:` parameter on `text()` is still not supported (text is
+top-left only in v0.1) — that's a separate stdlib gap, not an F15
+problem.
 
 ## What survived contact unchanged
 

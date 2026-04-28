@@ -993,18 +993,12 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::LParen => {
                     let lp = self.bump().clone();
-                    let mut args = Vec::new();
-                    if !matches!(self.peek().kind, TokenKind::RParen) {
-                        args.push(self.parse_expr()?);
-                        while matches!(self.peek().kind, TokenKind::Comma) {
-                            self.bump();
-                            args.push(self.parse_expr()?);
-                        }
-                    }
+                    let (args, kwargs) = self.parse_call_args(lp.line, lp.col)?;
                     self.expect(TokenKind::RParen, "expected ')' to close call")?;
                     left = Expr::Call {
                         callee: Box::new(left),
                         args,
+                        kwargs,
                         line: lp.line,
                         col: lp.col,
                     };
@@ -1039,6 +1033,77 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(left)
+    }
+
+    /// Parse the contents of `(...)` at a call site. Supports a mix of
+    /// positional args followed by keyword args (`name: value`). Empty
+    /// arg list returns two empty vecs. Positional-after-keyword is a
+    /// hard error — same rule as Python.
+    #[allow(clippy::type_complexity)]
+    fn parse_call_args(
+        &mut self,
+        call_line: u32,
+        call_col: u32,
+    ) -> Result<(Vec<Expr>, Vec<(String, Expr)>), ParseError> {
+        let mut args = Vec::new();
+        let mut kwargs: Vec<(String, Expr)> = Vec::new();
+        if matches!(self.peek().kind, TokenKind::RParen) {
+            return Ok((args, kwargs));
+        }
+        loop {
+            // Lookahead: `Ident :` (and not `Ident :: ...`) means keyword arg.
+            // Anything else is parsed as a positional expression.
+            let is_kw = matches!(self.peek().kind, TokenKind::Ident(_))
+                && self.pos + 1 < self.tokens.len()
+                && matches!(self.tokens[self.pos + 1].kind, TokenKind::Colon);
+            if is_kw {
+                let name_tok = self.bump().clone();
+                let name = match name_tok.kind {
+                    TokenKind::Ident(s) => s,
+                    _ => unreachable!(),
+                };
+                self.bump(); // ':'
+                let value = self.parse_expr()?;
+                if kwargs.iter().any(|(n, _)| n == &name) {
+                    return Err(ParseError {
+                        line: name_tok.line,
+                        col: name_tok.col,
+                        message: format!("duplicate keyword argument `{name}:`"),
+                        help: Some(
+                            "each keyword argument may appear at most once".to_string(),
+                        ),
+                    });
+                }
+                kwargs.push((name, value));
+            } else {
+                if !kwargs.is_empty() {
+                    let tok = self.peek().clone();
+                    return Err(ParseError {
+                        line: tok.line,
+                        col: tok.col,
+                        message: "positional argument cannot follow keyword arguments"
+                            .to_string(),
+                        help: Some(
+                            "put all positional args before any `name: value` args, \
+                             same as Python"
+                                .to_string(),
+                        ),
+                    });
+                }
+                args.push(self.parse_expr()?);
+            }
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.bump();
+                if matches!(self.peek().kind, TokenKind::RParen) {
+                    // Trailing comma is allowed.
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        let _ = (call_line, call_col);
+        Ok((args, kwargs))
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
@@ -1277,9 +1342,13 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             line,
             col,
         },
-        Expr::Call { callee, args, .. } => Expr::Call {
+        Expr::Call { callee, args, kwargs, .. } => Expr::Call {
             callee: Box::new(shift_expr(*callee, line, col)),
             args: args.into_iter().map(|e| shift_expr(e, line, col)).collect(),
+            kwargs: kwargs
+                .into_iter()
+                .map(|(n, e)| (n, shift_expr(e, line, col)))
+                .collect(),
             line,
             col,
         },

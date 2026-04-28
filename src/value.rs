@@ -21,6 +21,10 @@ pub enum Value {
     Function(Rc<FunctionDef>),
     Builtin {
         name: &'static str,
+        /// Parameter names for keyword-argument distribution.
+        /// Empty slice = variadic (positional only, kwargs rejected).
+        /// Otherwise the call site reorders kwargs into this declaration order.
+        params: &'static [&'static str],
         func: BuiltinFn,
     },
 }

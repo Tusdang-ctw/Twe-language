@@ -189,7 +189,13 @@ pub enum Expr {
     Range { start: Box<Expr>, end: Box<Expr>, exclusive: bool, line: u32, col: u32 },
     Index { object: Box<Expr>, index: Box<Expr>, line: u32, col: u32 },
     Field { object: Box<Expr>, name: String, line: u32, col: u32 },
-    Call { callee: Box<Expr>, args: Vec<Expr>, line: u32, col: u32 },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+        kwargs: Vec<(String, Expr)>,
+        line: u32,
+        col: u32,
+    },
     Unary { op: UnOp, operand: Box<Expr>, line: u32, col: u32 },
     Binary { op: BinOp, left: Box<Expr>, right: Box<Expr>, line: u32, col: u32 },
 }

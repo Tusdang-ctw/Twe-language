@@ -275,6 +275,10 @@ postfix      := "." identifier
              | "[" expr "]"
              | "?"                     # optional unwrap, e.g., maybe_thing?
 
+arg_list     := arg ("," arg)* ","?
+arg          := expr                   # positional
+             | identifier ":" expr     # keyword (must follow all positional)
+
 primary :=
   | literal
   | identifier

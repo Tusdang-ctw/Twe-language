@@ -524,6 +524,71 @@ spawn Spark at (50.0, 60.0)
 }
 
 #[test]
+fn keyword_args_distribute_to_function_params_by_name() {
+    let src = r#"
+function rect_area(w, h):
+    return w * h
+
+print(rect_area(w: 4, h: 3))
+print(rect_area(h: 5, w: 6))
+print(rect_area(7, h: 8))
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "12\n30\n56\n");
+}
+
+#[test]
+fn keyword_args_unknown_name_errors() {
+    let src = r#"function add(a, b):
+    return a + b
+print(add(a: 1, c: 2))
+"#;
+    let err = run_program_str(src).expect_err("should fail");
+    assert!(err.contains("no parameter named `c`"), "got: {err}");
+}
+
+#[test]
+fn keyword_args_duplicate_binding_errors() {
+    let src = r#"function add(a, b):
+    return a + b
+print(add(1, a: 2))
+"#;
+    let err = run_program_str(src).expect_err("should fail");
+    assert!(err.contains("already bound"), "got: {err}");
+}
+
+#[test]
+fn keyword_args_missing_param_errors() {
+    let src = r#"function add(a, b):
+    return a + b
+print(add(a: 1))
+"#;
+    let err = run_program_str(src).expect_err("should fail");
+    assert!(err.contains("missing argument"), "got: {err}");
+    assert!(err.contains("`b`"), "got: {err}");
+}
+
+#[test]
+fn positional_after_keyword_is_a_parse_error() {
+    let src = "print(a: 1, 2)\n";
+    let err = run_program_str(src).expect_err("should fail");
+    assert!(
+        err.contains("positional argument cannot follow keyword"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn keyword_args_on_variadic_builtin_errors() {
+    let err =
+        run_program_str("print(label: \"hi\")\n").expect_err("should fail");
+    assert!(
+        err.contains("doesn't accept keyword arguments"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn entities_of_returns_only_live_instances_of_class() {
     let out = run_program("tests/programs/entity_query.twe").expect("program should run");
     // 3 mobs spawned, 1 bullet. entities.count returns 3, 1.

@@ -84,6 +84,7 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
             Value::Instance(entity),
             &method,
             &[Value::Float(dt)],
+            &[],
             0,
             0,
         )?;
@@ -155,6 +156,7 @@ fn seed_particle_emitter(
                 Value::Instance(emitter.clone()),
                 &method,
                 std::slice::from_ref(&p),
+                &[],
                 line,
                 col,
             )?;
@@ -213,6 +215,7 @@ fn tick_particle_emitter(
                 Value::Instance(emitter.clone()),
                 &method,
                 &[p.clone(), Value::Float(dt)],
+                &[],
                 0,
                 0,
             )?;
@@ -263,7 +266,7 @@ fn render_particle_emitter(
     // If the user defined a custom `render()`, defer to it and skip the
     // built-in circle-per-particle path.
     if let Some(method) = find_method(class, "render") {
-        return call_method(env, Value::Instance(emitter.clone()), &method, &[], 0, 0)
+        return call_method(env, Value::Instance(emitter.clone()), &method, &[], &[], 0, 0)
             .map(|_| ());
     }
     let particles = match emitter.borrow().fields.get("__particles").cloned() {
@@ -415,7 +418,7 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
             Some(m) => m,
             None => continue,
         };
-        call_method(env, Value::Instance(entity), &method, &[], 0, 0)?;
+        call_method(env, Value::Instance(entity), &method, &[], &[], 0, 0)?;
     }
     Ok(())
 }
@@ -1013,9 +1016,10 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
         Expr::Call {
             callee,
             args,
+            kwargs,
             line,
             col,
-        } => eval_call(env, callee, args, *line, *col),
+        } => eval_call(env, callee, args, kwargs, *line, *col),
         Expr::Unary {
             op,
             operand,
@@ -1159,6 +1163,7 @@ fn eval_call(
     env: &mut Env,
     callee: &Expr,
     args: &[Expr],
+    kwargs: &[(String, Expr)],
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
@@ -1171,11 +1176,17 @@ fn eval_call(
         if let Some(Value::Instance(rc)) = env.self_value.clone() {
             let class = rc.borrow().class.clone();
             if let Some(method) = find_method(&class, name) {
-                let mut arg_vals = Vec::with_capacity(args.len());
-                for a in args {
-                    arg_vals.push(eval_expr(env, a)?);
-                }
-                return call_method(env, Value::Instance(rc), &method, &arg_vals, line, col);
+                let arg_vals = eval_args(env, args)?;
+                let kwarg_vals = eval_kwargs(env, kwargs)?;
+                return call_method(
+                    env,
+                    Value::Instance(rc),
+                    &method,
+                    &arg_vals,
+                    &kwarg_vals,
+                    line,
+                    col,
+                );
             }
         }
     }
@@ -1185,11 +1196,17 @@ fn eval_call(
         let recv = eval_expr(env, object)?;
         // List built-in methods.
         if let Value::List(rc) = &recv {
+            if !kwargs.is_empty() {
+                return Err(no_kwargs_error(&format!("list.{name}"), line, col));
+            }
             if let Some(v) = list_method_call(env, rc, name, args, line, col)? {
                 return Ok(v);
             }
         }
         if let Value::Range { start, end, exclusive } = &recv {
+            if !kwargs.is_empty() {
+                return Err(no_kwargs_error(&format!("range.{name}"), line, col));
+            }
             if let Some(v) = range_method_call(
                 env,
                 *start,
@@ -1206,29 +1223,131 @@ fn eval_call(
         if let Value::Instance(rc) = &recv {
             let class = rc.borrow().class.clone();
             if let Some(method) = find_method(&class, name) {
-                let mut arg_vals = Vec::with_capacity(args.len());
-                for a in args {
-                    arg_vals.push(eval_expr(env, a)?);
-                }
-                return call_method(env, recv, &method, &arg_vals, line, col);
+                let arg_vals = eval_args(env, args)?;
+                let kwarg_vals = eval_kwargs(env, kwargs)?;
+                return call_method(env, recv, &method, &arg_vals, &kwarg_vals, line, col);
             }
             // Fall through to a normal field_get -> Call path, which will
             // produce a "field not defined" error below.
         }
         // Re-create the field-get + call path for non-instance receivers.
-        let mut arg_vals = Vec::with_capacity(args.len());
-        for a in args {
-            arg_vals.push(eval_expr(env, a)?);
-        }
+        let arg_vals = eval_args(env, args)?;
+        let kwarg_vals = eval_kwargs(env, kwargs)?;
         let f = field_get(&recv, name, line, col)?;
-        return apply_call(env, f, &arg_vals, line, col);
+        return apply_call(env, f, &arg_vals, &kwarg_vals, line, col);
     }
     let f = eval_expr(env, callee)?;
-    let mut arg_vals = Vec::with_capacity(args.len());
+    let arg_vals = eval_args(env, args)?;
+    let kwarg_vals = eval_kwargs(env, kwargs)?;
+    apply_call(env, f, &arg_vals, &kwarg_vals, line, col)
+}
+
+fn eval_args(env: &mut Env, args: &[Expr]) -> Result<Vec<Value>, RuntimeError> {
+    let mut out = Vec::with_capacity(args.len());
     for a in args {
-        arg_vals.push(eval_expr(env, a)?);
+        out.push(eval_expr(env, a)?);
     }
-    apply_call(env, f, &arg_vals, line, col)
+    Ok(out)
+}
+
+fn eval_kwargs(
+    env: &mut Env,
+    kwargs: &[(String, Expr)],
+) -> Result<Vec<(String, Value)>, RuntimeError> {
+    let mut out = Vec::with_capacity(kwargs.len());
+    for (n, e) in kwargs {
+        out.push((n.clone(), eval_expr(env, e)?));
+    }
+    Ok(out)
+}
+
+fn no_kwargs_error(callee: &str, line: u32, col: u32) -> RuntimeError {
+    RuntimeError {
+        line,
+        col,
+        message: format!("{callee} doesn't accept keyword arguments"),
+        help: Some("call it with positional arguments only".to_string()),
+    }
+}
+
+/// Distribute kwargs into a positional Vec given the callee's declared
+/// param names. Returns `Vec<Value>` of length `params.len()` with every
+/// slot filled, or an error for: extra positionals, unknown kw, duplicate
+/// binding (kw collides with positional or another kw), or missing params.
+fn bind_kwargs(
+    params: &[&str],
+    callee: &str,
+    positional: Vec<Value>,
+    kwargs: Vec<(String, Value)>,
+    line: u32,
+    col: u32,
+) -> Result<Vec<Value>, RuntimeError> {
+    if kwargs.is_empty() && positional.len() == params.len() {
+        return Ok(positional);
+    }
+    if positional.len() > params.len() {
+        return Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "{callee} expected {} arguments, got {} positional",
+                params.len(),
+                positional.len()
+            ),
+            help: None,
+        });
+    }
+    let mut slots: Vec<Option<Value>> = vec![None; params.len()];
+    for (i, v) in positional.into_iter().enumerate() {
+        slots[i] = Some(v);
+    }
+    for (kname, kval) in kwargs {
+        let idx = match params.iter().position(|p| *p == kname) {
+            Some(i) => i,
+            None => {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "{callee} has no parameter named `{kname}`"
+                    ),
+                    help: Some(format!(
+                        "expected parameters: {}",
+                        params.join(", ")
+                    )),
+                });
+            }
+        };
+        if slots[idx].is_some() {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "{callee}: parameter `{kname}` already bound by an earlier argument"
+                ),
+                help: None,
+            });
+        }
+        slots[idx] = Some(kval);
+    }
+    let mut result = Vec::with_capacity(slots.len());
+    for (i, slot) in slots.into_iter().enumerate() {
+        match slot {
+            Some(v) => result.push(v),
+            None => {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "{callee}: missing argument for parameter `{}`",
+                        params[i]
+                    ),
+                    help: None,
+                });
+            }
+        }
+    }
+    Ok(result)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1360,21 +1479,39 @@ fn apply_call(
     env: &mut Env,
     f: Value,
     args: &[Value],
+    kwargs: &[(String, Value)],
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
     match f {
-        Value::Builtin { func, .. } => func(env, args),
-        Value::Function(def) => call_function(env, &def, args, line, col),
+        Value::Builtin { name, params, func } => {
+            if params.is_empty() {
+                if !kwargs.is_empty() {
+                    return Err(no_kwargs_error(name, line, col));
+                }
+                func(env, args)
+            } else {
+                let bound = bind_kwargs(
+                    params,
+                    name,
+                    args.to_vec(),
+                    kwargs.to_vec(),
+                    line,
+                    col,
+                )?;
+                func(env, &bound)
+            }
+        }
+        Value::Function(def) => call_function(env, &def, args, kwargs, line, col),
         Value::Class(class) => {
-            if !args.is_empty() {
+            if !args.is_empty() || !kwargs.is_empty() {
                 return Err(RuntimeError {
                     line,
                     col,
                     message: format!(
                         "constructor for {} takes no arguments yet (got {})",
                         class.name,
-                        args.len()
+                        args.len() + kwargs.len()
                     ),
                     help: Some(
                         "v0.1 constructors initialise from field defaults; \
@@ -1400,22 +1537,37 @@ fn call_function(
     env: &mut Env,
     def: &FunctionDef,
     args: &[Value],
+    kwargs: &[(String, Value)],
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
-    if args.len() != def.params.len() {
-        return Err(RuntimeError {
+    let bound = if kwargs.is_empty() {
+        if args.len() != def.params.len() {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "function '{}' expected {} arguments, got {}",
+                    def.name,
+                    def.params.len(),
+                    args.len()
+                ),
+                help: None,
+            });
+        }
+        args.to_vec()
+    } else {
+        let param_refs: Vec<&str> = def.params.iter().map(|s| s.as_str()).collect();
+        bind_kwargs(
+            &param_refs,
+            &def.name,
+            args.to_vec(),
+            kwargs.to_vec(),
             line,
             col,
-            message: format!(
-                "function '{}' expected {} arguments, got {}",
-                def.name,
-                def.params.len(),
-                args.len()
-            ),
-            help: None,
-        });
-    }
+        )?
+    };
+    let args = &bound;
     let saved_returning = env.returning.take();
     let saved_params: Vec<(String, Option<Value>)> = def
         .params
@@ -1476,21 +1628,36 @@ fn call_method(
     recv: Value,
     method: &MethodDef,
     args: &[Value],
+    kwargs: &[(String, Value)],
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
-    if args.len() != method.params.len() {
-        return Err(RuntimeError {
+    let bound = if kwargs.is_empty() {
+        if args.len() != method.params.len() {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "method expected {} arguments, got {}",
+                    method.params.len(),
+                    args.len()
+                ),
+                help: None,
+            });
+        }
+        args.to_vec()
+    } else {
+        let param_refs: Vec<&str> = method.params.iter().map(|s| s.as_str()).collect();
+        bind_kwargs(
+            &param_refs,
+            "method",
+            args.to_vec(),
+            kwargs.to_vec(),
             line,
             col,
-            message: format!(
-                "method expected {} arguments, got {}",
-                method.params.len(),
-                args.len()
-            ),
-            help: None,
-        });
-    }
+        )?
+    };
+    let args = &bound;
     let saved_self = env.self_value.replace(recv);
     let saved_returning = env.returning.take();
     let saved_params: Vec<(String, Option<Value>)> = method

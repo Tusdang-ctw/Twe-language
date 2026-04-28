@@ -54,15 +54,15 @@ scene Snake:
 
         on render():
             for cell in snake:
-                rect((cell.x * 24, cell.y * 24), (24, 24), color.green)
-            rect((food.x * 24, food.y * 24), (24, 24), color.red)
-            text("Score: {score}", (10, 20), 20, color.white)
+                rect(at: (cell.x * 24, cell.y * 24), size: (24, 24), color: color.green)
+            rect(at: (food.x * 24, food.y * 24), size: (24, 24), color: color.red)
+            text("Score: {score}", at: (10, 20), size: 20, color: color.white)
 
     state game_over:
         on render():
-            text("Game Over", (200, 200), 32, color.red)
-            text("Final score: {score}", (170, 240), 20, color.white)
-            text("Press R to restart", (160, 280), 16, color.gray)
+            text("Game Over", at: (200, 200), size: 32, color: color.red)
+            text("Final score: {score}", at: (170, 240), size: 20, color: color.white)
+            text("Press R to restart", at: (160, 280), size: 16, color: color.gray)
 
         on key_press.r:
             snake = [(10, 7), (9, 7), (8, 7)]

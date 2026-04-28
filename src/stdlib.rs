@@ -46,6 +46,7 @@ pub fn install(env: &mut Env) {
         "print".to_string(),
         Value::Builtin {
             name: "print",
+            params: &[],
             func: print_impl,
         },
     );
@@ -53,6 +54,7 @@ pub fn install(env: &mut Env) {
         "load".to_string(),
         Value::Builtin {
             name: "load",
+            params: &["path"],
             func: load_impl,
         },
     );
@@ -102,6 +104,7 @@ fn install_sound(env: &mut Env) {
         "load".to_string(),
         Value::Builtin {
             name: "sound.load",
+            params: &["path"],
             func: sound_load,
         },
     );
@@ -109,6 +112,7 @@ fn install_sound(env: &mut Env) {
         "play".to_string(),
         Value::Builtin {
             name: "sound.play",
+            params: &["handle"],
             func: sound_play,
         },
     );
@@ -242,6 +246,7 @@ fn install_math(env: &mut Env) {
         "abs".to_string(),
         Value::Builtin {
             name: "math.abs",
+            params: &["x"],
             func: math_abs,
         },
     );
@@ -249,6 +254,7 @@ fn install_math(env: &mut Env) {
         "sqrt".to_string(),
         Value::Builtin {
             name: "math.sqrt",
+            params: &["x"],
             func: math_sqrt,
         },
     );
@@ -256,6 +262,7 @@ fn install_math(env: &mut Env) {
         "floor".to_string(),
         Value::Builtin {
             name: "math.floor",
+            params: &["x"],
             func: math_floor,
         },
     );
@@ -263,6 +270,7 @@ fn install_math(env: &mut Env) {
         "ceil".to_string(),
         Value::Builtin {
             name: "math.ceil",
+            params: &["x"],
             func: math_ceil,
         },
     );
@@ -270,6 +278,7 @@ fn install_math(env: &mut Env) {
         "min".to_string(),
         Value::Builtin {
             name: "math.min",
+            params: &["a", "b"],
             func: math_min,
         },
     );
@@ -277,6 +286,7 @@ fn install_math(env: &mut Env) {
         "max".to_string(),
         Value::Builtin {
             name: "math.max",
+            params: &["a", "b"],
             func: math_max,
         },
     );
@@ -434,6 +444,7 @@ fn install_random(env: &mut Env) {
         "int".to_string(),
         Value::Builtin {
             name: "random.int",
+            params: &["range"],
             func: random_int,
         },
     );
@@ -441,6 +452,7 @@ fn install_random(env: &mut Env) {
         "float".to_string(),
         Value::Builtin {
             name: "random.float",
+            params: &[],
             func: random_float,
         },
     );
@@ -448,6 +460,7 @@ fn install_random(env: &mut Env) {
         "choice".to_string(),
         Value::Builtin {
             name: "random.choice",
+            params: &["list"],
             func: random_choice,
         },
     );
@@ -455,6 +468,7 @@ fn install_random(env: &mut Env) {
         "seed".to_string(),
         Value::Builtin {
             name: "random.seed",
+            params: &["seed"],
             func: random_seed,
         },
     );
@@ -611,6 +625,7 @@ fn install_draw(env: &mut Env) {
         "rect".to_string(),
         Value::Builtin {
             name: "rect",
+            params: &["at", "size", "color"],
             func: draw_rect,
         },
     );
@@ -618,6 +633,7 @@ fn install_draw(env: &mut Env) {
         "circle".to_string(),
         Value::Builtin {
             name: "circle",
+            params: &["at", "radius", "color"],
             func: draw_circle,
         },
     );
@@ -625,6 +641,7 @@ fn install_draw(env: &mut Env) {
         "line".to_string(),
         Value::Builtin {
             name: "line",
+            params: &["from", "to", "width", "color"],
             func: draw_line,
         },
     );
@@ -632,13 +649,18 @@ fn install_draw(env: &mut Env) {
         "text".to_string(),
         Value::Builtin {
             name: "text",
+            params: &["content", "at", "size", "color"],
             func: draw_text,
         },
     );
+    // sprite() is variadic-style — 2 or 3 positional args, no kwargs in v0.1.
+    // Add named-param support when the optional `size` slot has a clean
+    // representation in bind_kwargs.
     env.set(
         "sprite".to_string(),
         Value::Builtin {
             name: "sprite",
+            params: &[],
             func: draw_sprite,
         },
     );
@@ -850,6 +872,7 @@ fn install_entities(env: &mut Env) {
         "of".to_string(),
         Value::Builtin {
             name: "entities.of",
+            params: &["class"],
             func: entities_of,
         },
     );
@@ -857,6 +880,7 @@ fn install_entities(env: &mut Env) {
         "count".to_string(),
         Value::Builtin {
             name: "entities.count",
+            params: &["class"],
             func: entities_count,
         },
     );

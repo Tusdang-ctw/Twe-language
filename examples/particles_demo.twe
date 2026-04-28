@@ -30,8 +30,8 @@ scene Demo:
             spawn Burst at (player_x, player_y)
 
         on render():
-            rect((player_x - 8, player_y - 8), (16, 16), color.white)
-            text("space: burst   arrows: move", (10, 20), 16, color.gray)
+            rect(at: (player_x - 8, player_y - 8), size: (16, 16), color: color.white)
+            text("space: burst   arrows: move", at: (10, 20), size: 16, color: color.gray)
 
 particles Burst:
     count: 32

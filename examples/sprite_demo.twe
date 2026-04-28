@@ -25,4 +25,4 @@ scene SpriteDemo:
 
         on render():
             sprite(hero, (x - 32, y - 32), (64, 64))
-            text("arrows to move", (10, 20), 16, color.white)
+            text("arrows to move", at: (10, 20), size: 16, color: color.white)

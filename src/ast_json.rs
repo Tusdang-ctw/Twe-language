@@ -357,11 +357,23 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Call { callee, args, line, col } => {
+        Expr::Call { callee, args, kwargs, line, col } => {
             s.push_str("{\"kind\":\"Call\",\"callee\":");
             write_expr(s, callee);
             s.push_str(",\"args\":");
             write_expr_array(s, args);
+            s.push_str(",\"kwargs\":[");
+            for (i, (k, v)) in kwargs.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str("{\"name\":");
+                write_str_value(s, k);
+                s.push_str(",\"value\":");
+                write_expr(s, v);
+                s.push('}');
+            }
+            s.push(']');
             write_pos(s, *line, *col);
             s.push('}');
         }

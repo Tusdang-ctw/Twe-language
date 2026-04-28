@@ -21,4 +21,4 @@ scene Hero:
             if key.down:  y += step
 
         on render():
-            rect((x - 25, y - 25), (50, 50), color.red)
+            rect(at: (x - 25, y - 25), size: (50, 50), color: color.red)
