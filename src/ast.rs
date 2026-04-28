@@ -127,7 +127,9 @@ pub enum Expr {
     Ident { name: String, line: u32, col: u32 },
     SelfRef { line: u32, col: u32 },
     Tuple { elems: Vec<Expr>, line: u32, col: u32 },
+    List { elems: Vec<Expr>, line: u32, col: u32 },
     Range { start: Box<Expr>, end: Box<Expr>, exclusive: bool, line: u32, col: u32 },
+    Index { object: Box<Expr>, index: Box<Expr>, line: u32, col: u32 },
     Field { object: Box<Expr>, name: String, line: u32, col: u32 },
     Call { callee: Box<Expr>, args: Vec<Expr>, line: u32, col: u32 },
     Unary { op: UnOp, operand: Box<Expr>, line: u32, col: u32 },
@@ -154,6 +156,8 @@ pub enum BinOp {
     Gte,
     And,
     Or,
+    In,
+    NotIn,
 }
 
 impl Expr {
@@ -168,7 +172,9 @@ impl Expr {
             | Expr::Ident { line, .. }
             | Expr::SelfRef { line, .. }
             | Expr::Tuple { line, .. }
+            | Expr::List { line, .. }
             | Expr::Range { line, .. }
+            | Expr::Index { line, .. }
             | Expr::Field { line, .. }
             | Expr::Call { line, .. }
             | Expr::Unary { line, .. }
@@ -187,7 +193,9 @@ impl Expr {
             | Expr::Ident { col, .. }
             | Expr::SelfRef { col, .. }
             | Expr::Tuple { col, .. }
+            | Expr::List { col, .. }
             | Expr::Range { col, .. }
+            | Expr::Index { col, .. }
             | Expr::Field { col, .. }
             | Expr::Call { col, .. }
             | Expr::Unary { col, .. }

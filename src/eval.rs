@@ -328,6 +328,18 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             }
             Ok(Value::Tuple(Rc::new(vals)))
         }
+        Expr::List { elems, .. } => {
+            let mut vals = Vec::with_capacity(elems.len());
+            for e in elems {
+                vals.push(eval_expr(env, e)?);
+            }
+            Ok(Value::List(Rc::new(RefCell::new(vals))))
+        }
+        Expr::Index { object, index, line, col } => {
+            let obj = eval_expr(env, object)?;
+            let idx = eval_expr(env, index)?;
+            index_get(&obj, &idx, *line, *col)
+        }
         Expr::Range {
             start,
             end,
@@ -399,6 +411,52 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
     }
 }
 
+fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, RuntimeError> {
+    match (obj, idx) {
+        (Value::List(rc), Value::Int(i)) => {
+            let v = rc.borrow();
+            let len = v.len() as i64;
+            let actual = if *i < 0 { *i + len } else { *i };
+            if actual < 0 || actual >= len {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!("list index {i} out of bounds (length {len})"),
+                    help: Some(
+                        "lists are 0-indexed; negative indices count from the end".to_string(),
+                    ),
+                });
+            }
+            Ok(v[actual as usize].clone())
+        }
+        (Value::Tuple(elems), Value::Int(i)) => {
+            let len = elems.len() as i64;
+            let actual = if *i < 0 { *i + len } else { *i };
+            if actual < 0 || actual >= len {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!("tuple index {i} out of bounds (length {len})"),
+                    help: None,
+                });
+            }
+            Ok(elems[actual as usize].clone())
+        }
+        (Value::List(_) | Value::Tuple(_), other) => Err(RuntimeError {
+            line,
+            col,
+            message: format!("index must be int, got {}", other.type_name()),
+            help: None,
+        }),
+        (other, _) => Err(RuntimeError {
+            line,
+            col,
+            message: format!("cannot index value of type {}", other.type_name()),
+            help: Some("indexing works on lists and tuples".to_string()),
+        }),
+    }
+}
+
 fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, RuntimeError> {
     match obj {
         Value::Tuple(elems) => match name {
@@ -411,6 +469,19 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 message: format!("tuple has no field '{name}'"),
                 help: Some(
                     "tuples expose .x, .y, .z (and only those for the leading components)"
+                        .to_string(),
+                ),
+            }),
+        },
+        Value::List(rc) => match name {
+            "length" => Ok(Value::Int(rc.borrow().len() as i64)),
+            _ => Err(RuntimeError {
+                line,
+                col,
+                message: format!("list has no field '{name}'"),
+                help: Some(
+                    "lists expose .length; methods are .append, .prepend, .pop_back, \
+                     .pop_front, .contains"
                         .to_string(),
                 ),
             }),
@@ -461,6 +532,26 @@ fn eval_call(
     // because methods aren't first-class values yet.
     if let Expr::Field { object, name, .. } = callee {
         let recv = eval_expr(env, object)?;
+        // List built-in methods.
+        if let Value::List(rc) = &recv {
+            if let Some(v) = list_method_call(env, rc, name, args, line, col)? {
+                return Ok(v);
+            }
+        }
+        if let Value::Range { start, end, exclusive } = &recv {
+            if let Some(v) = range_method_call(
+                env,
+                *start,
+                *end,
+                *exclusive,
+                name,
+                args,
+                line,
+                col,
+            )? {
+                return Ok(v);
+            }
+        }
         if let Value::Instance(rc) = &recv {
             let class = rc.borrow().class.clone();
             if let Some(method) = find_method(&class, name) {
@@ -487,6 +578,131 @@ fn eval_call(
         arg_vals.push(eval_expr(env, a)?);
     }
     apply_call(env, f, &arg_vals, line, col)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn list_method_call(
+    env: &mut Env,
+    rc: &Rc<RefCell<Vec<Value>>>,
+    name: &str,
+    args: &[Expr],
+    line: u32,
+    col: u32,
+) -> Result<Option<Value>, RuntimeError> {
+    let arity_check = |expected: usize| -> Result<(), RuntimeError> {
+        if args.len() != expected {
+            Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "list.{name} expected {expected} argument{}, got {}",
+                    if expected == 1 { "" } else { "s" },
+                    args.len()
+                ),
+                help: None,
+            })
+        } else {
+            Ok(())
+        }
+    };
+    match name {
+        "append" => {
+            arity_check(1)?;
+            let v = eval_expr(env, &args[0])?;
+            rc.borrow_mut().push(v);
+            Ok(Some(Value::Nil))
+        }
+        "prepend" => {
+            arity_check(1)?;
+            let v = eval_expr(env, &args[0])?;
+            rc.borrow_mut().insert(0, v);
+            Ok(Some(Value::Nil))
+        }
+        "pop_back" => {
+            arity_check(0)?;
+            rc.borrow_mut().pop().ok_or_else(|| RuntimeError {
+                line,
+                col,
+                message: "pop_back on an empty list".to_string(),
+                help: Some("guard with `if list.length > 0:` before popping".to_string()),
+            }).map(Some)
+        }
+        "pop_front" => {
+            arity_check(0)?;
+            let mut v = rc.borrow_mut();
+            if v.is_empty() {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: "pop_front on an empty list".to_string(),
+                    help: Some("guard with `if list.length > 0:` before popping".to_string()),
+                });
+            }
+            Ok(Some(v.remove(0)))
+        }
+        "contains" => {
+            arity_check(1)?;
+            let needle = eval_expr(env, &args[0])?;
+            let found = rc.borrow().iter().any(|v| values_equal(v, &needle));
+            Ok(Some(Value::Bool(found)))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn range_method_call(
+    env: &mut Env,
+    start: i64,
+    end: i64,
+    exclusive: bool,
+    name: &str,
+    args: &[Expr],
+    line: u32,
+    col: u32,
+) -> Result<Option<Value>, RuntimeError> {
+    match name {
+        "roll" => {
+            if !args.is_empty() {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!("range.roll expected 0 arguments, got {}", args.len()),
+                    help: None,
+                });
+            }
+            let upper = if exclusive { end } else { end + 1 };
+            if upper <= start {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: "range.roll on an empty range".to_string(),
+                    help: None,
+                });
+            }
+            let n = env.next_random_u64();
+            let span = (upper - start) as u64;
+            Ok(Some(Value::Int(start + (n % span) as i64)))
+        }
+        "contains" => {
+            if args.len() != 1 {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: "range.contains expected 1 argument".to_string(),
+                    help: None,
+                });
+            }
+            let v = eval_expr(env, &args[0])?;
+            let upper = if exclusive { end } else { end + 1 };
+            let result = match v {
+                Value::Int(n) => n >= start && n < upper,
+                _ => false,
+            };
+            Ok(Some(Value::Bool(result)))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn apply_call(
@@ -812,7 +1028,41 @@ fn eval_binary(
         BinOp::Gt => cmp_int(&l, &r, |a, b| a > b, |a, b| a > b, ">", line, col),
         BinOp::Lte => cmp_int(&l, &r, |a, b| a <= b, |a, b| a <= b, "<=", line, col),
         BinOp::Gte => cmp_int(&l, &r, |a, b| a >= b, |a, b| a >= b, ">=", line, col),
+        BinOp::In => Ok(Value::Bool(value_in(&l, &r, line, col)?)),
+        BinOp::NotIn => Ok(Value::Bool(!value_in(&l, &r, line, col)?)),
         BinOp::And | BinOp::Or => unreachable!("handled above"),
+    }
+}
+
+fn value_in(
+    needle: &Value,
+    haystack: &Value,
+    line: u32,
+    col: u32,
+) -> Result<bool, RuntimeError> {
+    match haystack {
+        Value::List(rc) => Ok(rc.borrow().iter().any(|v| values_equal(v, needle))),
+        Value::Tuple(elems) => Ok(elems.iter().any(|v| values_equal(v, needle))),
+        Value::Range { start, end, exclusive } => match needle {
+            Value::Int(n) => {
+                let upper = if *exclusive { *end } else { *end + 1 };
+                Ok(*n >= *start && *n < upper)
+            }
+            _ => Ok(false),
+        },
+        Value::Str(s) => match needle {
+            Value::Str(sub) => Ok(s.contains(sub.as_ref())),
+            _ => Ok(false),
+        },
+        other => Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "`in` expects a list, tuple, range, or string, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
     }
 }
 

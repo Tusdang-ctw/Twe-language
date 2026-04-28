@@ -219,6 +219,52 @@ fn runs_math_stdlib() {
     );
 }
 
+#[test]
+fn runs_lists() {
+    let out = run_program("tests/programs/lists.twe").expect("program should run");
+    let expected = "[1, 2, 3]\n3\n1\n2\n3\n\
+                    [1, 2, 3, 4]\n[0, 1, 2, 3, 4]\n\
+                    4\n[0, 1, 2, 3]\n\
+                    0\n[1, 2, 3]\n\
+                    true\nfalse\ntrue\n\
+                    true\n\
+                    true\nfalse\nfalse\n\
+                    2\n3\n\
+                    true\nfalse\n\
+                    6\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn list_index_out_of_bounds_errors() {
+    let err = run_program_str("let xs = [1, 2]\nprint(xs[5])\n").expect_err("should fail");
+    assert!(err.contains("out of bounds"), "got: {err}");
+}
+
+#[test]
+fn pop_back_on_empty_errors() {
+    let err = run_program_str("let xs = []\nxs.pop_back()\n").expect_err("should fail");
+    assert!(err.contains("empty list"), "got: {err}");
+}
+
+#[test]
+fn range_roll_returns_value_in_range() {
+    // Deterministic: same seed → same sequence. Just check the values
+    // fall inside the range.
+    let src = r#"
+let r = 1..6
+let total = 0
+for i in 0..<10:
+    let n = r.roll()
+    if n < 1 or n > 6:
+        print("out of range")
+        return
+print("ok")
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "ok\n");
+}
+
 fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;

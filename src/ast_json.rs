@@ -242,6 +242,20 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Expr::List { elems, line, col } => {
+            s.push_str("{\"kind\":\"List\",\"elems\":");
+            write_expr_array(s, elems);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        Expr::Index { object, index, line, col } => {
+            s.push_str("{\"kind\":\"Index\",\"object\":");
+            write_expr(s, object);
+            s.push_str(",\"index\":");
+            write_expr(s, index);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Expr::Range { start, end, exclusive, line, col } => {
             s.push_str("{\"kind\":\"Range\",\"start\":");
             write_expr(s, start);
@@ -392,6 +406,8 @@ fn bin_op_str(op: BinOp) -> &'static str {
         BinOp::Gte => ">=",
         BinOp::And => "and",
         BinOp::Or => "or",
+        BinOp::In => "in",
+        BinOp::NotIn => "not in",
     }
 }
 

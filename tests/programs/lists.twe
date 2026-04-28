@@ -1,0 +1,48 @@
+let xs = [1, 2, 3]
+print(xs)
+print(xs.length)
+print(xs[0])
+print(xs[1])
+print(xs[-1])
+
+xs.append(4)
+print(xs)
+xs.prepend(0)
+print(xs)
+
+let last = xs.pop_back()
+print(last)
+print(xs)
+
+let first = xs.pop_front()
+print(first)
+print(xs)
+
+# in / not in
+print(2 in xs)
+print(99 in xs)
+print(99 not in xs)
+
+# tuple membership
+let t = (1, 2, 3)
+print(2 in t)
+
+# range membership
+print(5 in 1..10)
+print(11 in 1..10)
+print(10 in 1..<10)
+
+# nested lists
+let grid = [[1, 2], [3, 4]]
+print(grid[0][1])
+print(grid[1][0])
+
+# contains() method
+print(xs.contains(2))
+print(xs.contains(99))
+
+# iterate over a list with for
+let total = 0
+for i in 0..<xs.length:
+    total += xs[i]
+print(total)

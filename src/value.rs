@@ -14,6 +14,7 @@ pub enum Value {
     Range { start: i64, end: i64, exclusive: bool },
     Str(Rc<String>),
     Tuple(Rc<Vec<Value>>),
+    List(Rc<RefCell<Vec<Value>>>),
     Object(Rc<RefCell<Object>>),
     Class(Rc<ClassDef>),
     Instance(Rc<RefCell<Instance>>),
@@ -75,6 +76,7 @@ impl fmt::Debug for Value {
             }
             Value::Str(s) => write!(f, "Str({s:?})"),
             Value::Tuple(t) => write!(f, "Tuple({t:?})"),
+            Value::List(l) => write!(f, "List({:?})", l.borrow()),
             Value::Object(o) => write!(f, "Object({})", o.borrow().kind),
             Value::Class(c) => write!(f, "Class({} {})", c.kind, c.name),
             Value::Instance(i) => write!(f, "Instance({})", i.borrow().class.name),
@@ -96,6 +98,7 @@ impl Value {
             Value::Range { .. } => "range",
             Value::Str(_) => "string",
             Value::Tuple(_) => "tuple",
+            Value::List(_) => "list",
             Value::Object(o) => o.borrow().kind,
             Value::Class(_) => "class",
             Value::Instance(_) => "instance",
@@ -120,6 +123,10 @@ impl Value {
             Value::Tuple(elems) => {
                 let parts: Vec<String> = elems.iter().map(Value::display).collect();
                 format!("({})", parts.join(", "))
+            }
+            Value::List(rc) => {
+                let parts: Vec<String> = rc.borrow().iter().map(Value::display).collect();
+                format!("[{}]", parts.join(", "))
             }
             Value::Object(o) => format!("<{}>", o.borrow().kind),
             Value::Class(c) => format!("<{} {}>", c.kind, c.name),
@@ -160,6 +167,7 @@ pub struct Env {
     pub continuing: bool,
     pub loop_depth: u32,
     pub call_depth: u32,
+    rng_state: u64,
 }
 
 #[derive(Clone)]
@@ -180,7 +188,25 @@ impl Env {
             continuing: false,
             loop_depth: 0,
             call_depth: 0,
+            // xorshift64* seeded from a fixed constant for deterministic
+            // tests. CLI can override via `twec run --seed N`.
+            rng_state: 0x9E37_79B9_7F4A_7C15,
         }
+    }
+
+    /// xorshift64* PRNG. Deterministic given a fixed seed.
+    pub fn next_random_u64(&mut self) -> u64 {
+        let mut x = self.rng_state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng_state = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    pub fn seed_rng(&mut self, seed: u64) {
+        // xorshift cannot be seeded with zero; substitute a non-zero value.
+        self.rng_state = if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed };
     }
 
     pub fn get(&self, name: &str) -> Option<&Value> {

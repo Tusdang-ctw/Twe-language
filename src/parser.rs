@@ -599,6 +599,34 @@ impl<'a> Parser<'a> {
 
     fn parse_compare(&mut self) -> Result<Expr, ParseError> {
         let left = self.parse_range()?;
+        // `in` / `not in` are lower-precedence than the comparisons but
+        // share the chain-rejection rule.
+        if matches!(self.peek().kind, TokenKind::In) {
+            let tok = self.bump().clone();
+            let right = self.parse_range()?;
+            return Ok(Expr::Binary {
+                op: BinOp::In,
+                left: Box::new(left),
+                right: Box::new(right),
+                line: tok.line,
+                col: tok.col,
+            });
+        }
+        if matches!(self.peek().kind, TokenKind::Not)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 1].kind, TokenKind::In)
+        {
+            let tok = self.bump().clone(); // not
+            self.bump(); // in
+            let right = self.parse_range()?;
+            return Ok(Expr::Binary {
+                op: BinOp::NotIn,
+                left: Box::new(left),
+                right: Box::new(right),
+                line: tok.line,
+                col: tok.col,
+            });
+        }
         let op = match self.peek().kind {
             TokenKind::EqEq => BinOp::Eq,
             TokenKind::NotEq => BinOp::Neq,
@@ -720,6 +748,17 @@ impl<'a> Parser<'a> {
         let mut left = self.parse_primary()?;
         loop {
             match self.peek().kind {
+                TokenKind::LBracket => {
+                    let lb = self.bump().clone();
+                    let index = self.parse_expr()?;
+                    self.expect(TokenKind::RBracket, "expected ']' to close index")?;
+                    left = Expr::Index {
+                        object: Box::new(left),
+                        index: Box::new(index),
+                        line: lb.line,
+                        col: lb.col,
+                    };
+                }
                 TokenKind::LParen => {
                     let lp = self.bump().clone();
                     let mut args = Vec::new();
@@ -821,6 +860,7 @@ impl<'a> Parser<'a> {
                 col: tok.col,
             }),
             TokenKind::LParen => self.parse_paren_or_tuple(tok.line, tok.col),
+            TokenKind::LBracket => self.parse_list(tok.line, tok.col),
             other => Err(ParseError {
                 line: tok.line,
                 col: tok.col,
@@ -828,6 +868,26 @@ impl<'a> Parser<'a> {
                 help: None,
             }),
         }
+    }
+
+    fn parse_list(&mut self, lb_line: u32, lb_col: u32) -> Result<Expr, ParseError> {
+        let mut elems = Vec::new();
+        if !matches!(self.peek().kind, TokenKind::RBracket) {
+            elems.push(self.parse_expr()?);
+            while matches!(self.peek().kind, TokenKind::Comma) {
+                self.bump();
+                if matches!(self.peek().kind, TokenKind::RBracket) {
+                    break;
+                }
+                elems.push(self.parse_expr()?);
+            }
+        }
+        self.expect(TokenKind::RBracket, "expected ']' to close list literal")?;
+        Ok(Expr::List {
+            elems,
+            line: lb_line,
+            col: lb_col,
+        })
     }
 
     fn parse_paren_or_tuple(&mut self, lp_line: u32, lp_col: u32) -> Result<Expr, ParseError> {
