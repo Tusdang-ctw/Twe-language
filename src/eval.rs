@@ -453,9 +453,13 @@ fn tick_scene(
         return Ok(());
     }
     let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
-    // Tick each clock.
-    for (clock_idx, (interval, body)) in clocks.into_iter().enumerate() {
-        // Bump the clock's accumulated time by dt.
+    // Tick each clock with bounded catch-up: a clock whose accumulated
+    // time covers N intervals fires up to MAX_CATCHUP_FIRES_PER_FRAME
+    // times, then drops the residual. The cap prevents a long pause
+    // (debugger, alt-tab, slow first frame) from causing a runaway
+    // catch-up loop that stalls the next frame too. Closes Phase 2
+    // frustration F4.
+    'clocks: for (clock_idx, (interval, body)) in clocks.into_iter().enumerate() {
         {
             let mut inst = scene.borrow_mut();
             if clock_idx >= inst.every_timers.len() {
@@ -463,33 +467,45 @@ fn tick_scene(
             }
             inst.every_timers[clock_idx] += dt;
         }
-        // Fire as many times as the accumulator covers, but never more
-        // than once per frame (avoids runaway catch-up after a long
-        // tick — phase-2 simplification; revisit if a vertical-slice
-        // game needs catch-up).
-        let should_fire = {
-            let inst = scene.borrow();
-            inst.every_timers
-                .get(clock_idx)
-                .copied()
-                .unwrap_or(0.0)
-                >= interval
-        };
-        if should_fire {
+        let mut fires: u32 = 0;
+        while fires < MAX_CATCHUP_FIRES_PER_FRAME {
+            let should_fire = {
+                let inst = scene.borrow();
+                inst.every_timers
+                    .get(clock_idx)
+                    .copied()
+                    .unwrap_or(0.0)
+                    >= interval
+            };
+            if !should_fire {
+                break;
+            }
             scene.borrow_mut().every_timers[clock_idx] -= interval;
+            fires += 1;
             run_block(env, &body)?;
             if env.returning.is_some() {
-                break;
+                break 'clocks;
             }
             if let Some(target) = env.transitioning.take() {
                 enter_state(env, scene, &target)?;
-                break;
+                break 'clocks;
             }
+        }
+        if fires >= MAX_CATCHUP_FIRES_PER_FRAME {
+            // Drop residual so next frame starts fresh and doesn't
+            // compound the backlog.
+            scene.borrow_mut().every_timers[clock_idx] = 0.0;
         }
     }
     env.self_value = prev_self;
     Ok(())
 }
+
+/// Cap on how many times a single `every <duration>:` clock can fire in
+/// one frame. Eight 16ms ticks ≈ 128ms of catch-up — comfortably enough
+/// to absorb a slow first frame or a brief stall, while still bounded
+/// so a long pause can't lock the runtime in catch-up forever.
+const MAX_CATCHUP_FIRES_PER_FRAME: u32 = 8;
 
 fn enter_state(
     env: &mut Env,

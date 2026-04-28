@@ -1,0 +1,14 @@
+# F4 closure: catch-up is bounded. With dt=2.0 and interval=100ms,
+# the clock would deserve 20 fires per frame but the cap is 8;
+# residual time is dropped so the next frame starts fresh.
+# Two frames → 16 fires total, not 40.
+
+scene S:
+    var n = 0
+
+    initial: a
+
+    state a:
+        every 100ms:
+            n += 1
+            print(n)

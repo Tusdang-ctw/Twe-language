@@ -410,6 +410,10 @@ Handlers are scoped:
 - Inside a `state` block, they run only while in that state and are deregistered on state exit.
 - Inside an `entity` declaration, they run for the lifetime of that entity instance.
 
+### 4.7a Every-clock catch-up (v0.1)
+
+Each `every <duration>:` clock keeps a per-instance accumulator. When `tick_frame(dt)` runs, the runtime adds `dt` to every active accumulator and fires the clock body once for every full interval that has accumulated, capped at **8 fires per clock per frame**. If the cap is hit, the accumulator is reset to zero so the backlog doesn't compound. This means: (1) at the normal 60fps frame rate, every-clocks fire exactly as expected; (2) after a brief stall, a small backlog catches up; (3) after a long pause (debugger, alt-tab), the runtime drops the missed time rather than freezing for catch-up.
+
 ### 4.8 State machines
 
 A `state` block inside an `ai` declaration (or any container that supports states) defines a state machine.

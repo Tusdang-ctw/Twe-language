@@ -68,7 +68,7 @@ grammar). Survive's Bullet now iterates `entities.of(Monster)` in
 its `update(dt)` and despawns both on overlap. F6 closes with the
 same fix.
 
-### F4. No catch-up on `every` clocks under big dt
+### F4. No catch-up on `every` clocks under big dt — **CLOSED 2026-04-28 (Phase 3 session 2)**
 
 `tick_scene` fires each every-clock at most once per frame. Real
 macroquad frames at 60fps run dt ≈ 16ms, so a 16ms every-clock
@@ -77,8 +77,16 @@ fires only once even though 31 ticks would be deserved — Survive's
 spawn-timer falls progressively behind as dt grows. The test for
 Survive had to use 120 small frames instead of 3 big ones.
 
-**Fix shape:** either bounded catch-up (fire up to N times per
-frame, drop the rest) or expose a "frame budget" concept.
+**Fix shipped:** bounded catch-up. `tick_scene` now wraps each
+clock's fire check in a `while` loop bounded by
+`MAX_CATCHUP_FIRES_PER_FRAME = 8`. When the cap is hit, the timer
+accumulator is reset to zero so the backlog doesn't compound on
+the next frame. Eight 16ms ticks ≈ 128ms — enough to absorb a
+slow first frame or a brief stall, while still bounded so a long
+pause (debugger / alt-tab) can't lock the runtime in catch-up
+forever. Tested via `tests/programs/catchup.twe` (5 deserved fires
+per frame, all 5 happen) and `tests/programs/catchup_capped.twe`
+(20 deserved per frame, exactly 8 happen).
 
 ### F5. No keyword distinguishing per-state on update
 

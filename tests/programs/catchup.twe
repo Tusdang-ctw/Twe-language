@@ -1,0 +1,14 @@
+# F4 closure: an every-clock whose interval is smaller than the
+# frame's dt should fire multiple times per frame (bounded catch-up),
+# not the old fire-once-per-frame behaviour. With dt=0.5 and
+# interval=100ms, we expect 5 fires per frame.
+
+scene S:
+    var n = 0
+
+    initial: a
+
+    state a:
+        every 100ms:
+            n += 1
+            print(n)

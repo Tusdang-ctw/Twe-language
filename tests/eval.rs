@@ -478,6 +478,28 @@ on update(dt):
 }
 
 #[test]
+fn every_clock_catches_up_when_dt_covers_multiple_intervals() {
+    // dt=0.5, interval=100ms: each frame deserves 5 fires. Two frames
+    // → counter reaches 10. (Was 2 with the F4 bug.)
+    let out = run_program_frames("tests/programs/catchup.twe", 2, 0.5)
+        .expect("program should run");
+    let lines: Vec<&str> = out.trim_end().split('\n').collect();
+    assert_eq!(lines, vec!["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+}
+
+#[test]
+fn every_clock_catchup_caps_at_eight_per_frame() {
+    // dt=2.0, interval=100ms: 20 deserved fires per frame, but the cap
+    // is 8 and residual is dropped. Two frames → 16 fires total.
+    let out = run_program_frames("tests/programs/catchup_capped.twe", 2, 2.0)
+        .expect("program should run");
+    let lines: Vec<&str> = out.trim_end().split('\n').collect();
+    let nums: Vec<i32> = lines.iter().map(|s| s.parse().unwrap()).collect();
+    assert_eq!(nums.len(), 16, "expected 16 fires (8 per frame, capped)");
+    assert_eq!(nums.last().copied(), Some(16));
+}
+
+#[test]
 fn time_dt_reflects_real_frame_delta() {
     // 3 frames of dt = 0.05s. Every-clock fires every 16ms, so it
     // fires once per frame and `time.dt` returns the frame's dt.

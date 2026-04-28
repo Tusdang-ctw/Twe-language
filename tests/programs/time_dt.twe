@@ -8,6 +8,8 @@ scene S:
     initial: a
 
     state a:
-        every 16ms:
+        # Interval matches the test's per-frame dt so the clock fires
+        # exactly once per frame, regardless of catch-up behaviour.
+        every 50ms:
             sum += time.dt
             print(sum)
