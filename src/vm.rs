@@ -99,6 +99,105 @@ impl VM {
                 OpCode::Return => {
                     return Ok(self.stack.pop().unwrap_or(Value::Nil));
                 }
+                OpCode::GetLocal => {
+                    let slot = chunk.code[ip] as usize;
+                    ip += 1;
+                    let v = self
+                        .stack
+                        .get(slot)
+                        .cloned()
+                        .ok_or_else(|| RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "vm: local slot {slot} out of range (stack has {})",
+                                self.stack.len()
+                            ),
+                            help: Some(
+                                "compiler bug — slot was emitted past the live frame".to_string(),
+                            ),
+                        })?;
+                    self.push(v);
+                }
+                OpCode::SetLocal => {
+                    let slot = chunk.code[ip] as usize;
+                    ip += 1;
+                    if slot >= self.stack.len() {
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "vm: SetLocal slot {slot} past stack top ({})",
+                                self.stack.len()
+                            ),
+                            help: None,
+                        });
+                    }
+                    // Peek, don't pop: the assignment expression keeps
+                    // its value on the stack so the producer (e.g. an
+                    // expression-statement OP_POP) drops it cleanly.
+                    let v = self.stack.last().cloned().unwrap();
+                    self.stack[slot] = v;
+                }
+                OpCode::JumpIfFalse => {
+                    let offset = read_u16(chunk, ip);
+                    ip += 2;
+                    let v = self.pop()?;
+                    if !is_truthy(&v) {
+                        ip += offset as usize;
+                    }
+                }
+                OpCode::JumpIfFalsePeek => {
+                    let offset = read_u16(chunk, ip);
+                    ip += 2;
+                    let truthy = self
+                        .stack
+                        .last()
+                        .map(is_truthy)
+                        .ok_or_else(|| RuntimeError {
+                            line,
+                            col: 0,
+                            message: "vm: stack underflow on JumpIfFalsePeek".to_string(),
+                            help: None,
+                        })?;
+                    if !truthy {
+                        ip += offset as usize;
+                    }
+                }
+                OpCode::JumpIfTruePeek => {
+                    let offset = read_u16(chunk, ip);
+                    ip += 2;
+                    let truthy = self
+                        .stack
+                        .last()
+                        .map(is_truthy)
+                        .ok_or_else(|| RuntimeError {
+                            line,
+                            col: 0,
+                            message: "vm: stack underflow on JumpIfTruePeek".to_string(),
+                            help: None,
+                        })?;
+                    if truthy {
+                        ip += offset as usize;
+                    }
+                }
+                OpCode::Jump => {
+                    let offset = read_u16(chunk, ip);
+                    ip += 2;
+                    ip += offset as usize;
+                }
+                OpCode::Loop => {
+                    let offset = read_u16(chunk, ip);
+                    ip += 2;
+                    ip = ip.checked_sub(offset as usize).ok_or_else(|| {
+                        RuntimeError {
+                            line,
+                            col: 0,
+                            message: "vm: OP_LOOP offset underflow".to_string(),
+                            help: None,
+                        }
+                    })?;
+                }
             }
         }
         Ok(self.stack.pop().unwrap_or(Value::Nil))
@@ -217,6 +316,10 @@ impl VM {
         self.push(result);
         Ok(())
     }
+}
+
+fn read_u16(chunk: &Chunk, ip: usize) -> u16 {
+    ((chunk.code[ip] as u16) << 8) | (chunk.code[ip + 1] as u16)
 }
 
 fn type_error(op: &str, l: &Value, r: &Value, line: u32) -> RuntimeError {
@@ -340,6 +443,88 @@ mod tests {
         let err = run_expr(r#"1 + "x""#).expect_err("should fail");
         assert!(err.message.contains("'+'"), "got: {}", err.message);
         assert!(err.message.contains("string"), "got: {}", err.message);
+    }
+
+    fn run_program(src: &str) -> Result<String, RuntimeError> {
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let chunk =
+            crate::compiler::compile_program(&program).expect("compile");
+        let mut vm = VM::new();
+        vm.run(&chunk)?;
+        Ok(std::mem::take(&mut vm.out))
+    }
+
+    #[test]
+    fn vm_runs_let_then_print() {
+        let out = run_program("let x = 5\nprint(x)").expect("ok");
+        assert_eq!(out, "5\n");
+    }
+
+    #[test]
+    fn vm_runs_compound_assignment() {
+        let out = run_program("let x = 10\nx += 5\nprint(x)").expect("ok");
+        assert_eq!(out, "15\n");
+    }
+
+    #[test]
+    fn vm_runs_if_else() {
+        let out = run_program("if 1 < 2:\n    print(1)\nelse:\n    print(2)").expect("ok");
+        assert_eq!(out, "1\n");
+        let out = run_program("if 2 < 1:\n    print(1)\nelse:\n    print(2)").expect("ok");
+        assert_eq!(out, "2\n");
+    }
+
+    #[test]
+    fn vm_runs_elif_chain() {
+        let out = run_program(
+            "let x = 5\nif x < 3:\n    print(\"small\")\nelif x < 10:\n    print(\"medium\")\nelse:\n    print(\"large\")",
+        )
+        .expect("ok");
+        assert_eq!(out, "medium\n");
+    }
+
+    #[test]
+    fn vm_runs_while_loop() {
+        let out = run_program("let n = 0\nwhile n < 3:\n    print(n)\n    n = n + 1").expect("ok");
+        assert_eq!(out, "0\n1\n2\n");
+    }
+
+    #[test]
+    fn vm_runs_break_inside_while() {
+        let out = run_program(
+            "let n = 0\nwhile n < 100:\n    if n == 3:\n        break\n    print(n)\n    n = n + 1",
+        )
+        .expect("ok");
+        assert_eq!(out, "0\n1\n2\n");
+    }
+
+    #[test]
+    fn vm_runs_continue_inside_while() {
+        let out = run_program(
+            "let n = 0\nwhile n < 5:\n    n = n + 1\n    if n == 2:\n        continue\n    print(n)",
+        )
+        .expect("ok");
+        assert_eq!(out, "1\n3\n4\n5\n");
+    }
+
+    #[test]
+    fn vm_short_circuits_and() {
+        // Twe `and` is value-returning: true and 42 → 42.
+        // The VM should produce the same result.
+        let out = run_program("print(true and 42)").expect("ok");
+        assert_eq!(out, "42\n");
+        let out = run_program("print(false and 42)").expect("ok");
+        assert_eq!(out, "false\n");
+    }
+
+    #[test]
+    fn vm_short_circuits_or() {
+        let out = run_program("print(false or 99)").expect("ok");
+        assert_eq!(out, "99\n");
+        let out = run_program("print(0 or \"default\")").expect("ok");
+        // 0 is truthy in Twe — Principle 3.
+        assert_eq!(out, "0\n");
     }
 
     #[test]

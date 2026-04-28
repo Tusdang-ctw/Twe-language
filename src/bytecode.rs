@@ -64,6 +64,35 @@ pub enum OpCode {
     /// Return from the current function. The dispatch loop ends when
     /// this fires at the top level.
     Return,
+
+    // --- Session 8: locals + control flow ---
+
+    /// Push the local at stack slot N (1-byte operand). Locals live
+    /// at the bottom of the stack; the compiler tracks names → slots
+    /// at compile time.
+    GetLocal,
+    /// Set the local at stack slot N to the value on top of stack.
+    /// Leaves the value on the stack so it can be the result of an
+    /// assignment expression.
+    SetLocal,
+    /// Pop top of stack; if it's falsy, jump forward by the unsigned
+    /// 16-bit operand (big-endian, two bytes after the opcode).
+    /// Pre-pop variant used by `if` and `while` conditions; the
+    /// short-circuit-preserving variants (`and`/`or`) use
+    /// `JumpIfFalsePeek` so the operand stays for use as the
+    /// expression's value.
+    JumpIfFalse,
+    /// Like `JumpIfFalse` but does NOT pop the condition; used by
+    /// `and` (jump if left is false, leaving left as the result).
+    JumpIfFalsePeek,
+    /// Like `JumpIfFalsePeek` but for `or` (jump if left is truthy).
+    JumpIfTruePeek,
+    /// Unconditional forward jump. 2-byte unsigned big-endian
+    /// operand.
+    Jump,
+    /// Unconditional backward jump for loops. 2-byte unsigned
+    /// big-endian operand subtracted from the post-operand IP.
+    Loop,
 }
 
 impl OpCode {
@@ -93,6 +122,13 @@ impl OpCode {
             17 => OpCode::LessEqual,
             18 => OpCode::Print,
             19 => OpCode::Return,
+            20 => OpCode::GetLocal,
+            21 => OpCode::SetLocal,
+            22 => OpCode::JumpIfFalse,
+            23 => OpCode::JumpIfFalsePeek,
+            24 => OpCode::JumpIfTruePeek,
+            25 => OpCode::Jump,
+            26 => OpCode::Loop,
             other => panic!("OpCode::from_u8: invalid byte {other}"),
         }
     }
@@ -189,7 +225,41 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         OpCode::LessEqual => simple_instruction(out, "OP_LESS_EQUAL", offset),
         OpCode::Print => simple_instruction(out, "OP_PRINT", offset),
         OpCode::Return => simple_instruction(out, "OP_RETURN", offset),
+        OpCode::GetLocal => byte_instruction(out, "OP_GET_LOCAL", chunk, offset),
+        OpCode::SetLocal => byte_instruction(out, "OP_SET_LOCAL", chunk, offset),
+        OpCode::JumpIfFalse => jump_instruction(out, "OP_JUMP_IF_FALSE", 1, chunk, offset),
+        OpCode::JumpIfFalsePeek => {
+            jump_instruction(out, "OP_JUMP_IF_FALSE_PEEK", 1, chunk, offset)
+        }
+        OpCode::JumpIfTruePeek => {
+            jump_instruction(out, "OP_JUMP_IF_TRUE_PEEK", 1, chunk, offset)
+        }
+        OpCode::Jump => jump_instruction(out, "OP_JUMP", 1, chunk, offset),
+        OpCode::Loop => jump_instruction(out, "OP_LOOP", -1, chunk, offset),
     }
+}
+
+fn byte_instruction(out: &mut String, name: &str, chunk: &Chunk, offset: usize) -> usize {
+    use std::fmt::Write;
+    let slot = chunk.code[offset + 1];
+    let _ = writeln!(out, "{name:<16} {slot:>4}");
+    offset + 2
+}
+
+fn jump_instruction(
+    out: &mut String,
+    name: &str,
+    sign: i32,
+    chunk: &Chunk,
+    offset: usize,
+) -> usize {
+    use std::fmt::Write;
+    let hi = chunk.code[offset + 1] as u16;
+    let lo = chunk.code[offset + 2] as u16;
+    let jump = (hi << 8) | lo;
+    let target = (offset + 3) as i32 + sign * jump as i32;
+    let _ = writeln!(out, "{name:<16} {offset:>4} -> {target}");
+    offset + 3
 }
 
 fn simple_instruction(out: &mut String, name: &str, offset: usize) -> usize {
@@ -274,6 +344,13 @@ mod tests {
             OpCode::LessEqual,
             OpCode::Print,
             OpCode::Return,
+            OpCode::GetLocal,
+            OpCode::SetLocal,
+            OpCode::JumpIfFalse,
+            OpCode::JumpIfFalsePeek,
+            OpCode::JumpIfTruePeek,
+            OpCode::Jump,
+            OpCode::Loop,
         ] {
             assert_eq!(OpCode::from_u8(op as u8), op);
         }
