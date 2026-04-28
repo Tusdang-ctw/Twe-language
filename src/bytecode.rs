@@ -1,0 +1,281 @@
+//! Bytecode representation for the Phase-3 VM.
+//!
+//! This module is the foundation: opcodes, the Chunk struct that
+//! holds compiled code + constants + line info, and a disassembler
+//! for debugging. The compiler (AST → bytecode) lands in a follow-up
+//! session; the dispatch loop lands after that. Until then, the
+//! tree-walker in `crate::eval` remains the active interpreter and
+//! these types are unused at runtime.
+//!
+//! Design follows *Crafting Interpreters* Chapter 14 closely. We
+//! reuse `crate::value::Value` for the constant pool rather than
+//! introducing a separate "compiled value" type — Phase-3 NaN
+//! tagging is a later session and changes Value globally when it
+//! lands. Until then, Rc-clones on Value are cheap enough for the
+//! bytecode pool.
+
+use crate::value::Value;
+
+/// One instruction in the Twe bytecode. Each variant fits in a u8.
+/// Variants that take operands consume additional bytes from the
+/// `code` stream — for now only `Constant` (one u8 = constant pool
+/// index, max 256 constants per chunk in this draft).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum OpCode {
+    /// Push a constant from the chunk's constant pool. 1-byte operand
+    /// is the constant index.
+    Constant = 0,
+    /// Push the literal value `nil`.
+    Nil,
+    /// Push the literal value `true`.
+    True,
+    /// Push the literal value `false`.
+    False,
+    /// Pop the top of the stack and discard it. Used at end of
+    /// statement-expressions.
+    Pop,
+
+    // Binary arithmetic — pop two, push one.
+    Add,
+    Sub,
+    Mul,
+    Div,
+    /// Modulo (`%`).
+    Mod,
+
+    /// Unary negation.
+    Neg,
+    /// Boolean `not` — pops, pushes strict-Bool inversion of truthiness.
+    Not,
+
+    // Comparisons — pop two, push one Bool.
+    Equal,
+    NotEqual,
+    Greater,
+    GreaterEqual,
+    Less,
+    LessEqual,
+
+    /// Print top-of-stack with a trailing newline (placeholder until the
+    /// `print` builtin is reachable through bytecode call sites).
+    Print,
+
+    /// Return from the current function. The dispatch loop ends when
+    /// this fires at the top level.
+    Return,
+}
+
+impl OpCode {
+    /// Decode a u8 read from a `Chunk::code` stream into an OpCode.
+    /// Panics if the byte is not a valid opcode — bytecode is produced
+    /// by the compiler in this crate and never read from disk in v0.1,
+    /// so an invalid byte is a compiler bug rather than untrusted input.
+    pub fn from_u8(byte: u8) -> Self {
+        match byte {
+            0 => OpCode::Constant,
+            1 => OpCode::Nil,
+            2 => OpCode::True,
+            3 => OpCode::False,
+            4 => OpCode::Pop,
+            5 => OpCode::Add,
+            6 => OpCode::Sub,
+            7 => OpCode::Mul,
+            8 => OpCode::Div,
+            9 => OpCode::Mod,
+            10 => OpCode::Neg,
+            11 => OpCode::Not,
+            12 => OpCode::Equal,
+            13 => OpCode::NotEqual,
+            14 => OpCode::Greater,
+            15 => OpCode::GreaterEqual,
+            16 => OpCode::Less,
+            17 => OpCode::LessEqual,
+            18 => OpCode::Print,
+            19 => OpCode::Return,
+            other => panic!("OpCode::from_u8: invalid byte {other}"),
+        }
+    }
+}
+
+/// One compiled function body: a stream of bytecode bytes, the
+/// constants those bytes reference, and a parallel line-number array
+/// for error reporting. The line vec has one entry per byte in `code`,
+/// not per instruction — keeps decoding simple at the cost of some
+/// memory.
+#[derive(Debug, Default, Clone)]
+pub struct Chunk {
+    pub code: Vec<u8>,
+    pub constants: Vec<Value>,
+    pub lines: Vec<u32>,
+}
+
+impl Chunk {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append a single byte to the code stream with its source line.
+    pub fn write_byte(&mut self, byte: u8, line: u32) {
+        self.code.push(byte);
+        self.lines.push(line);
+    }
+
+    /// Append an opcode with its source line.
+    pub fn write_op(&mut self, op: OpCode, line: u32) {
+        self.write_byte(op as u8, line);
+    }
+
+    /// Add a constant to the pool and return its index. Caller emits
+    /// `OpCode::Constant` followed by this index as a u8 operand.
+    /// Panics if the pool grows past 256 entries — that's a v0.1
+    /// limit we'll lift when the compiler grows beyond toy programs
+    /// (Crafting Interpreters Ch. 21 covers OP_CONSTANT_LONG).
+    pub fn add_constant(&mut self, value: Value) -> u8 {
+        let idx = self.constants.len();
+        if idx >= 256 {
+            panic!("chunk constant pool exceeded 256 entries");
+        }
+        self.constants.push(value);
+        idx as u8
+    }
+}
+
+/// Format a Chunk as a human-readable instruction listing. Mirrors
+/// the style from *Crafting Interpreters* §14.6: 4-digit offset,
+/// source line (`|` repeats), opcode name, and an operand value
+/// where applicable.
+pub fn disassemble(chunk: &Chunk, name: &str) -> String {
+    let mut out = format!("== {name} ==\n");
+    let mut offset = 0;
+    while offset < chunk.code.len() {
+        offset = disassemble_instruction(&mut out, chunk, offset);
+    }
+    out
+}
+
+/// Disassemble one instruction starting at `offset`; append the
+/// formatted line to `out` and return the offset of the next
+/// instruction. Public so test harnesses and a future `twec
+/// disasm` CLI subcommand can step instruction-by-instruction.
+pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -> usize {
+    use std::fmt::Write;
+    let _ = write!(out, "{offset:04} ");
+    let line = chunk.lines[offset];
+    if offset > 0 && line == chunk.lines[offset - 1] {
+        out.push_str("   | ");
+    } else {
+        let _ = write!(out, "{line:>4} ");
+    }
+    let op = OpCode::from_u8(chunk.code[offset]);
+    match op {
+        OpCode::Constant => constant_instruction(out, "OP_CONSTANT", chunk, offset),
+        OpCode::Nil => simple_instruction(out, "OP_NIL", offset),
+        OpCode::True => simple_instruction(out, "OP_TRUE", offset),
+        OpCode::False => simple_instruction(out, "OP_FALSE", offset),
+        OpCode::Pop => simple_instruction(out, "OP_POP", offset),
+        OpCode::Add => simple_instruction(out, "OP_ADD", offset),
+        OpCode::Sub => simple_instruction(out, "OP_SUB", offset),
+        OpCode::Mul => simple_instruction(out, "OP_MUL", offset),
+        OpCode::Div => simple_instruction(out, "OP_DIV", offset),
+        OpCode::Mod => simple_instruction(out, "OP_MOD", offset),
+        OpCode::Neg => simple_instruction(out, "OP_NEG", offset),
+        OpCode::Not => simple_instruction(out, "OP_NOT", offset),
+        OpCode::Equal => simple_instruction(out, "OP_EQUAL", offset),
+        OpCode::NotEqual => simple_instruction(out, "OP_NOT_EQUAL", offset),
+        OpCode::Greater => simple_instruction(out, "OP_GREATER", offset),
+        OpCode::GreaterEqual => simple_instruction(out, "OP_GREATER_EQUAL", offset),
+        OpCode::Less => simple_instruction(out, "OP_LESS", offset),
+        OpCode::LessEqual => simple_instruction(out, "OP_LESS_EQUAL", offset),
+        OpCode::Print => simple_instruction(out, "OP_PRINT", offset),
+        OpCode::Return => simple_instruction(out, "OP_RETURN", offset),
+    }
+}
+
+fn simple_instruction(out: &mut String, name: &str, offset: usize) -> usize {
+    out.push_str(name);
+    out.push('\n');
+    offset + 1
+}
+
+fn constant_instruction(out: &mut String, name: &str, chunk: &Chunk, offset: usize) -> usize {
+    use std::fmt::Write;
+    let idx = chunk.code[offset + 1];
+    let value = chunk
+        .constants
+        .get(idx as usize)
+        .map(Value::display)
+        .unwrap_or_else(|| "<missing>".to_string());
+    let _ = writeln!(out, "{name:<16} {idx:>4} '{value}'");
+    offset + 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_chunk_disassembles_to_just_a_header() {
+        let chunk = Chunk::new();
+        let out = disassemble(&chunk, "test");
+        assert_eq!(out, "== test ==\n");
+    }
+
+    #[test]
+    fn write_and_disassemble_constant_plus_return() {
+        let mut chunk = Chunk::new();
+        let idx = chunk.add_constant(Value::Float(1.2));
+        chunk.write_op(OpCode::Constant, 1);
+        chunk.write_byte(idx, 1);
+        chunk.write_op(OpCode::Return, 1);
+        let out = disassemble(&chunk, "demo");
+        assert_eq!(
+            out,
+            "== demo ==\n0000    1 OP_CONSTANT         0 '1.2'\n0002    | OP_RETURN\n"
+        );
+    }
+
+    #[test]
+    fn line_marker_repeats_within_same_source_line() {
+        let mut chunk = Chunk::new();
+        chunk.write_op(OpCode::True, 5);
+        chunk.write_op(OpCode::False, 5);
+        chunk.write_op(OpCode::Pop, 6);
+        let out = disassemble(&chunk, "lines");
+        let lines: Vec<&str> = out.lines().collect();
+        // First instruction at line 5 — explicit "5".
+        assert!(lines[1].contains("   5 OP_TRUE"), "line 1: {}", lines[1]);
+        // Second still at 5 — `|` marker.
+        assert!(lines[2].contains("   | OP_FALSE"), "line 2: {}", lines[2]);
+        // Third at line 6 — explicit "6".
+        assert!(lines[3].contains("   6 OP_POP"), "line 3: {}", lines[3]);
+    }
+
+    #[test]
+    fn opcode_round_trips_through_u8() {
+        for op in [
+            OpCode::Constant,
+            OpCode::Nil,
+            OpCode::True,
+            OpCode::False,
+            OpCode::Pop,
+            OpCode::Add,
+            OpCode::Sub,
+            OpCode::Mul,
+            OpCode::Div,
+            OpCode::Mod,
+            OpCode::Neg,
+            OpCode::Not,
+            OpCode::Equal,
+            OpCode::NotEqual,
+            OpCode::Greater,
+            OpCode::GreaterEqual,
+            OpCode::Less,
+            OpCode::LessEqual,
+            OpCode::Print,
+            OpCode::Return,
+        ] {
+            assert_eq!(OpCode::from_u8(op as u8), op);
+        }
+    }
+}
