@@ -653,6 +653,25 @@ impl<'a> Parser<'a> {
                 col: kw.col,
             });
         }
+        // `on update(dt):` — state-scoped frame handler. Closes F5.
+        if matches!(self.peek().kind, TokenKind::On)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "update")
+        {
+            let kw = self.bump().clone();
+            self.bump(); // ident "update"
+            self.expect(TokenKind::LParen, "expected '(' after `on update`")?;
+            let param = self.expect_ident("expected param name (usually `dt`) after `on update(`")?;
+            self.expect(TokenKind::RParen, "expected ')' after `on update(<param>`")?;
+            self.expect(TokenKind::Colon, "expected ':' after `on update(<param>)`")?;
+            let body = self.parse_block()?;
+            return Ok(StateMember::OnUpdate {
+                param,
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
         // `on render():` — special-cased inside states.
         if matches!(self.peek().kind, TokenKind::On)
             && self.pos + 1 < self.tokens.len()

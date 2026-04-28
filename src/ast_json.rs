@@ -240,6 +240,14 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        StateMember::OnUpdate { param, body, line, col } => {
+            s.push_str("{\"kind\":\"OnUpdate\",\"param\":");
+            write_str_value(s, param);
+            s.push_str(",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
     }
 }
 

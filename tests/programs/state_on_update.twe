@@ -1,0 +1,24 @@
+# F5 closure: state-scoped `on update(dt):` fires once per frame with
+# the real dt while in that state. Top-level on_update still runs too.
+
+var top_count = 0
+
+scene S:
+    var a_count = 0
+
+    initial: a
+
+    state a:
+        on update(dt):
+            a_count += 1
+            print("a {a_count} dt={dt}")
+            if a_count >= 2:
+                -> b
+
+    state b:
+        on update(dt):
+            print("b dt={dt}")
+
+on update(dt):
+    top_count += 1
+    print("top {top_count}")

@@ -453,6 +453,30 @@ fn tick_scene(
         return Ok(());
     }
     let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    // State-scoped `on update(dt):` fires once per frame BEFORE the
+    // every-clocks for this state. The top-level on_update has
+    // already run (in tick_frame). A transition or return inside
+    // the body skips the rest of this state's clocks.
+    let state_on_update: Option<OnUpdateHandler> = {
+        let inst = scene.borrow();
+        inst.current_state
+            .as_ref()
+            .and_then(|n| inst.class.states.get(n))
+            .and_then(|state| state.on_update.clone())
+    };
+    if let Some(handler) = state_on_update {
+        env.set(handler.param.clone(), Value::Float(dt));
+        run_block(env, &handler.body)?;
+        if env.returning.is_some() {
+            env.self_value = prev_self;
+            return Ok(());
+        }
+        if let Some(target) = env.transitioning.take() {
+            enter_state(env, scene, &target)?;
+            env.self_value = prev_self;
+            return Ok(());
+        }
+    }
     // Tick each clock with bounded catch-up: a clock whose accumulated
     // time covers N intervals fires up to MAX_CATCHUP_FIRES_PER_FRAME
     // times, then drops the residual. The cap prevents a long pause
@@ -1854,6 +1878,7 @@ fn eval_decl(
                 let mut every_clocks = Vec::new();
                 let mut on_render: Option<Vec<Stmt>> = None;
                 let mut on_key_press: HashMap<String, Vec<Stmt>> = HashMap::new();
+                let mut on_update: Option<OnUpdateHandler> = None;
                 for sm in smembers {
                     match sm {
                         StateMember::Stmt(stmt) => on_entry.push(stmt.clone()),
@@ -1869,6 +1894,12 @@ fn eval_decl(
                         StateMember::OnKeyPress { key, body, .. } => {
                             on_key_press.insert(key.clone(), body.clone());
                         }
+                        StateMember::OnUpdate { param, body, .. } => {
+                            on_update = Some(OnUpdateHandler {
+                                param: param.clone(),
+                                body: body.clone(),
+                            });
+                        }
                     }
                 }
                 states.insert(
@@ -1879,6 +1910,7 @@ fn eval_decl(
                         every_clocks,
                         on_render,
                         on_key_press,
+                        on_update,
                     }),
                 );
             }

@@ -156,6 +156,15 @@ pub enum StateMember {
         line: u32,
         col: u32,
     },
+    /// `on update(dt): body` — fires once per frame while in the state.
+    /// State-scoped equivalent of the top-level `on update(dt):` handler;
+    /// closes Phase 2 frustration F5.
+    OnUpdate {
+        param: String,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

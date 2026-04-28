@@ -60,6 +60,9 @@ pub struct StateDef {
     pub every_clocks: Vec<EveryClockDef>,
     pub on_render: Option<Vec<crate::ast::Stmt>>,
     pub on_key_press: HashMap<String, Vec<crate::ast::Stmt>>,
+    /// State-scoped `on update(dt):`. Fires once per frame with the
+    /// real dt while this state is active. Closes Phase 2 F5.
+    pub on_update: Option<OnUpdateHandler>,
 }
 
 #[derive(Debug)]
@@ -204,7 +207,7 @@ pub struct Env {
     rng_state: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OnUpdateHandler {
     pub param: String,
     pub body: Vec<crate::ast::Stmt>,

@@ -88,7 +88,7 @@ forever. Tested via `tests/programs/catchup.twe` (5 deserved fires
 per frame, all 5 happen) and `tests/programs/catchup_capped.twe`
 (20 deserved per frame, exactly 8 happen).
 
-### F5. No keyword distinguishing per-state on update
+### F5. No keyword distinguishing per-state on update — **CLOSED 2026-04-28 (Phase 3 session 3)**
 
 State bodies have `every <duration>:` and `on render():` but no
 state-scoped `on update(dt):`. The top-level `on update(dt):` is
@@ -97,10 +97,17 @@ by putting all per-frame logic into a single `every 16ms:` clock,
 but that loses the dt parameter (the body uses `let dt = 0.016`,
 a literal).
 
-**Fix shape:** allow `on update(dt):` inside state bodies, dispatched
-each frame with the real dt. Or fold `every <duration>:` and
-`on update:` into a single concept where the duration of `on update`
-is "every frame".
+**Fix shipped:** `on update(dt):` is now a valid state body member.
+Parser accepts it alongside `every`, `on render()`, `on key_press`.
+Eval fires it once per frame with the real dt before the state's
+every-clocks. Top-level `on update(dt):` still runs first
+(unchanged); state-scoped runs only while in that state.
+Transitions and returns inside the body break the rest of the
+state's clocks, same as before. The `every <duration>:` /
+`on update:` unification (the second option in the original fix
+shape) was rejected: keeping them distinct lets users say "every
+frame" with `on update` and "every N seconds" with `every`, no
+overload.
 
 ### F6. No direct way to query active-entities count or filter — **CLOSED 2026-04-28**
 

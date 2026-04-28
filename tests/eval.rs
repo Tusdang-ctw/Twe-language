@@ -478,6 +478,20 @@ on update(dt):
 }
 
 #[test]
+fn state_scoped_on_update_fires_per_frame_with_dt() {
+    // Top-level on_update runs first (prints "top N"), then the
+    // active state's on_update (prints "a N dt=..."). After 2 fires
+    // in state a, transition to b. Frame 3 prints "top 3" then the
+    // new state's on_update.
+    let out = run_program_frames("tests/programs/state_on_update.twe", 3, 0.5)
+        .expect("program should run");
+    assert_eq!(
+        out,
+        "top 1\na 1 dt=0.5\ntop 2\na 2 dt=0.5\ntop 3\nb dt=0.5\n"
+    );
+}
+
+#[test]
 fn every_clock_catches_up_when_dt_covers_multiple_intervals() {
     // dt=0.5, interval=100ms: each frame deserves 5 fires. Two frames
     // → counter reaches 10. (Was 2 with the F4 bug.)
