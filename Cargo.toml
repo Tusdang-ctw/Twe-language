@@ -13,6 +13,17 @@ all = { level = "warn", priority = -1 }
 
 [dependencies]
 macroquad = { version = "0.4", default-features = false, features = ["audio"] }
+# Phase 5 task 5 session 1: wgpu-driven 3D rendering for `twec play3d`.
+# winit handles the window + event loop; pollster blocks on the few
+# async wgpu calls (adapter + device acquisition). bytemuck only
+# enters when vertex / uniform layout work lands in a later session.
+wgpu = "22.0"
+winit = "0.30"
+pollster = "0.3"
+# Phase 5 task 5 session (b): vertex / uniform buffer layout via
+# `#[derive(Pod, Zeroable)]`. Required as soon as the GPU sees
+# anything other than a clear color.
+bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 insta = "1.41"

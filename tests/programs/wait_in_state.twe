@@ -1,0 +1,30 @@
+# Phase 5 task 2: `wait <duration>` suspends a state's on-entry
+# sequence and resumes after the duration elapses.
+#
+# State `alert` enters, prints, waits 0.5s, prints, transitions
+# to `done`. With dt = 0.25s per frame, the wait spans two
+# frames. Expected output, with each line tagged by which frame
+# produced it:
+#
+#   frame 1: enter `alert` → print "alert enter" → wait 0.5s
+#            (wait_remaining = 0.5)
+#   frame 2: tick scene, decrement wait by 0.25 → wait_remaining
+#            = 0.25, still suspended, print nothing
+#   frame 3: decrement wait by 0.25 → 0.0, resume from index 2,
+#            print "alert resume" → -> done → enter `done` →
+#            print "done enter"
+#
+# Total prints across three frames: alert enter, alert resume,
+# done enter (in that order).
+
+scene Demo:
+    initial: alert
+
+    state alert:
+        print("alert enter")
+        wait 0.5s
+        print("alert resume")
+        -> done
+
+    state done:
+        print("done enter")

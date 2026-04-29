@@ -1,20 +1,22 @@
-//! Hindley-Milner type inference for the Twe non-strict mode.
+//! Hindley-Milner type inference for Twe.
 //!
 //! Phase 4a: literal-driven bottom-up inference.
 //! Phase 4b: introduced `Type::Var` + unification (in `types.rs`).
-//! Phase 4c (this commit): refactored around an `Inferer` struct
-//! that threads a fresh-variable generator + substitution + a
-//! scope chain through the walk. Function declarations now
-//! allocate fresh vars for each parameter + the return, walk
-//! their body collecting constraints (operator argument types,
-//! return statements, ident references), and the substitution
-//! resolves the signature when usage pins the types down.
+//! Phase 4c: refactored around an `Inferer` struct that threads a
+//! fresh-variable generator + substitution + a scope chain through
+//! the walk.
+//! Phase 6 session 1 (this commit): strict mode. The same
+//! inference engine, with reporting policy as a flag — non-strict
+//! silently absorbs unification failures (Luau's no-false-positives
+//! contract); strict surfaces them as `TypeError` diagnostics with
+//! line/col context. Opt-in via a `# strict` directive in the first
+//! few lines of the file.
 //!
-//! Per `docs/02-type-system.md`'s non-strict guarantee: when a
-//! constraint can't be solved, the offending unification error
-//! is **silently absorbed** — the involved type stays `Unknown`
-//! rather than becoming a user-facing error. Strict mode (v0.2)
-//! will surface those errors at function boundaries.
+//! Non-strict guarantee: when a constraint can't be solved, the
+//! offending unification error is **silently absorbed** — the
+//! involved type stays `Unknown` rather than becoming a user-facing
+//! error. This is the v0.1 default; programs see strict reporting
+//! only after they explicitly opt in.
 //!
 //! The walk doesn't yet:
 //!   - infer types for class methods (the `self.field` shape
@@ -41,12 +43,81 @@ use crate::types::{apply_subst, unify, Substitution, Type, TypeVarGen};
 /// land here as `Type::Unknown`.
 pub type Bindings = HashMap<String, Type>;
 
+/// One strict-mode type-checking diagnostic. Carries source
+/// position + a human-readable summary; `kind` distinguishes the
+/// constraint that failed (`"comparison"`, `"return"`, `"call"`)
+/// so error messages can name the form that triggered the failure.
+/// Phase 6 session 1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeError {
+    pub line: u32,
+    pub col: u32,
+    pub message: String,
+    pub help: Option<String>,
+}
+
+impl std::fmt::Display for TypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}: {}", self.line, self.col, self.message)
+    }
+}
+
+/// Detect a strict-mode opt-in directive in the source. Twe v0.1
+/// uses a magic-comment style — `# strict` (or `#! strict`,
+/// shebang-friendly) on one of the first ten non-blank lines of
+/// the file.
+///
+/// Magic comment over a top-level keyword because: (1) a keyword
+/// would steal the identifier from existing programs (one of the
+/// 32 on-disk programs could legally have `let strict = true`),
+/// and (2) the comment form is the established convention (Perl
+/// `use strict`, Luau `--!strict`, Python `# coding: utf-8`).
+///
+/// Restricted to the first ten lines so a `# strict` deep in the
+/// file (in dead code or a string-formatted help text) doesn't
+/// flip the mode by accident.
+pub fn detect_strict(source: &str) -> bool {
+    let needle_a = "# strict";
+    let needle_b = "#! strict";
+    let needle_c = "#strict";
+    let needle_d = "#!strict";
+    for line in source.lines().take(10) {
+        let trimmed = line.trim();
+        if trimmed == needle_a
+            || trimmed == needle_b
+            || trimmed == needle_c
+            || trimmed == needle_d
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Public entry point. Creates a fresh `Inferer`, walks the
-/// program, and returns the resolved top-level bindings.
+/// program, and returns the resolved top-level bindings. Always
+/// runs in non-strict mode — strict callers should use
+/// `infer_program_strict` so they can surface diagnostics.
 pub fn infer_program(program: &Program) -> Bindings {
-    let mut inferer = Inferer::new();
+    let mut inferer = Inferer::new(false);
     inferer.walk_program(program);
     inferer.resolved_top_level()
+}
+
+/// Strict-aware entry point. Walks the program, returns the
+/// resolved top-level bindings AND any `TypeError` diagnostics
+/// the strict reporter accumulated. With `strict = false`, the
+/// returned `Vec<TypeError>` is always empty (non-strict drops
+/// failures), so callers that want strict reporting just pass
+/// `true`.
+pub fn infer_program_strict(
+    program: &Program,
+    strict: bool,
+) -> (Bindings, Vec<TypeError>) {
+    let mut inferer = Inferer::new(strict);
+    inferer.walk_program(program);
+    let bindings = inferer.resolved_top_level();
+    (bindings, inferer.errors)
 }
 
 /// Public for `lsp.rs` hover lookup of arbitrary expressions —
@@ -55,7 +126,7 @@ pub fn infer_program(program: &Program) -> Bindings {
 /// initial top-level scope. No constraint propagation back to
 /// the caller's bindings — that's a one-shot best effort.
 pub fn infer_expr(expr: &Expr, bindings: &Bindings) -> Type {
-    let mut inferer = Inferer::new();
+    let mut inferer = Inferer::new(false);
     for (name, ty) in bindings {
         inferer.scopes[0].insert(name.clone(), ty.clone());
     }
@@ -86,16 +157,73 @@ struct Inferer {
     /// name so `self` and bare-name field references resolve
     /// correctly. None outside of methods.
     current_class: Option<String>,
+    /// Reporting policy. False (the default) drops unification
+    /// failures silently — Luau's no-false-positives stance.
+    /// True accumulates them in `errors` for the caller to
+    /// surface. Phase 6 session 1.
+    strict: bool,
+    /// Diagnostics collected when `strict = true`. Kept in source
+    /// order (each unify call site pushes immediately on failure).
+    errors: Vec<TypeError>,
 }
 
 impl Inferer {
-    fn new() -> Self {
-        Self {
+    fn new(strict: bool) -> Self {
+        let mut inferer = Self {
             var_gen: TypeVarGen::new(),
             subst: Substitution::new(),
             scopes: vec![HashMap::new()],
             class_shapes: HashMap::new(),
             current_class: None,
+            strict,
+            errors: Vec::new(),
+        };
+        // Phase 6 session 5: seed the outermost scope with stdlib
+        // names so strict-mode "unknown name" doesn't fire for
+        // every `print` / `vec3` / `math.*` call. The seeded names
+        // get `Type::Unknown` because the inferer doesn't know
+        // their signatures (a future session that pulls signatures
+        // from stdlib metadata can replace this).
+        for n in stdlib_names() {
+            inferer.scopes[0].insert((*n).to_string(), Type::Unknown);
+        }
+        inferer
+    }
+
+    /// Wrapper around `unify` that drops the error in non-strict
+    /// mode (the existing v0.1 behaviour) and pushes a `TypeError`
+    /// in strict mode. `kind` names the constraint that failed
+    /// (`"comparison"`, `"return"`, `"call argument"`) so the
+    /// diagnostic reads naturally; `line`/`col` come from the
+    /// triggering Expr.
+    fn try_unify(
+        &mut self,
+        a: &Type,
+        b: &Type,
+        line: u32,
+        col: u32,
+        kind: &str,
+    ) {
+        let result = unify(a, b, &mut self.subst);
+        if !self.strict {
+            return;
+        }
+        if let Err(e) = result {
+            let (a_str, b_str) = match &e {
+                crate::types::UnifyError::Mismatch { a, b } => (a.clone(), b.clone()),
+                crate::types::UnifyError::OccursCheck { var, ty } => {
+                    (format!("type variable {var:?}"), ty.clone())
+                }
+            };
+            self.errors.push(TypeError {
+                line,
+                col,
+                message: format!("{kind}: type mismatch — {a_str} vs {b_str}"),
+                help: Some(
+                    "the inferred operand types disagree under strict mode; either change one side or annotate the expected type"
+                        .to_string(),
+                ),
+            });
         }
     }
 
@@ -114,20 +242,44 @@ impl Inferer {
 
     fn walk_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, value, .. } => {
-                let t = self.expr_type(value);
-                self.bind(name.clone(), t);
+            Stmt::Let { name, value, ty, line, col } => {
+                let inferred = self.expr_type(value);
+                // Phase 6 session 2: if the user annotated the
+                // binding (`let x: int = ...`), unify the value's
+                // inferred type against the annotation. Strict
+                // surfaces a mismatch; non-strict drops it.
+                if let Some(annotated) = ty {
+                    self.try_unify(&inferred, annotated, *line, *col, "let annotation");
+                    self.bind(name.clone(), annotated.clone());
+                } else {
+                    self.bind(name.clone(), inferred);
+                }
             }
-            Stmt::FunctionDecl { name, params, body, .. } => {
+            Stmt::FunctionDecl { name, params, ret, body, line, col } => {
                 // Allocate fresh vars for params + return. Register
                 // the function's type BEFORE walking the body so
                 // recursive self-reference (`function fact(n): ...
                 // fact(n - 1) ...`) sees a typed signature.
+                //
+                // Phase 6 session 2: when a param or return type is
+                // annotated, unify its fresh var against the
+                // annotation right here. Subsequent constraints
+                // (call-site arg types, body return values) then
+                // either fit cleanly or trigger a strict-mode
+                // diagnostic via `try_unify`.
                 let param_vars: Vec<Type> = params.iter().map(|_| self.fresh_var()).collect();
                 let ret_var = self.fresh_var();
+                for (i, p) in params.iter().enumerate() {
+                    if let Some(ann) = &p.ty {
+                        self.try_unify(&param_vars[i], ann, *line, *col, "param annotation");
+                    }
+                }
+                if let Some(ann) = ret {
+                    self.try_unify(&ret_var, ann, *line, *col, "return annotation");
+                }
                 let func_t = Type::func(param_vars.clone(), ret_var.clone());
                 self.bind(name.clone(), func_t);
-                self.walk_function_body(params, body, &param_vars, &ret_var);
+                self.walk_function_body(params, body, &param_vars, &ret_var, *line, *col);
             }
             Stmt::Decl { name, members, .. } => {
                 self.bind(name.clone(), Type::Class(Rc::new(name.clone())));
@@ -191,8 +343,52 @@ impl Inferer {
                 }
                 self.pop_scope();
             }
+            Stmt::OnRender { body, .. } => {
+                self.push_scope();
+                for s in body {
+                    self.walk_stmt(s);
+                }
+                self.pop_scope();
+            }
             Stmt::Expr(e) => {
                 let _ = self.expr_type(e);
+            }
+            Stmt::Wait { duration, .. } => {
+                // The duration expression should be a quantity with a
+                // time unit. We don't enforce that in non-strict;
+                // just walk the expression so any sub-expressions get
+                // their types resolved.
+                let _ = self.expr_type(duration);
+            }
+            Stmt::DialogueDecl { name, body, .. } => {
+                // Treat a dialogue decl like a parameterless
+                // function: bind the name as a callable in scope,
+                // walk the body so member expressions resolve. The
+                // body's `say`/`choice`/`wait` arms type-check via
+                // their own arms.
+                let dialogue_ty =
+                    crate::types::Type::func(Vec::new(), crate::types::Type::Unknown);
+                self.scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), dialogue_ty);
+                for s in body {
+                    self.walk_stmt(s);
+                }
+            }
+            Stmt::Say { actor, text, .. } => {
+                if let Some(a) = actor {
+                    let _ = self.expr_type(a);
+                }
+                let _ = self.expr_type(text);
+            }
+            Stmt::Choice { branches, .. } => {
+                for (label, body) in branches {
+                    let _ = self.expr_type(label);
+                    for s in body {
+                        self.walk_stmt(s);
+                    }
+                }
             }
             // Statements that don't introduce inference signal:
             Stmt::Break { .. }
@@ -215,11 +411,19 @@ impl Inferer {
         let mut shape: BTreeMap<String, Type> = BTreeMap::new();
 
         // Pass 1: infer field types from their default-value
-        // expressions.
+        // expressions. Phase 6 session 4: when a field carries
+        // an explicit annotation, unify the value's type against
+        // it (strict surfaces a mismatch) and record the
+        // annotation as the field's canonical type.
         for m in members {
-            if let DeclMember::Field { name, value, .. } = m {
-                let t = self.expr_type(value);
-                shape.insert(name.clone(), self.resolve(&t));
+            if let DeclMember::Field { name, value, ty, line, col } = m {
+                let inferred = self.expr_type(value);
+                if let Some(annotated) = ty {
+                    self.try_unify(&inferred, annotated, *line, *col, "field annotation");
+                    shape.insert(name.clone(), annotated.clone());
+                } else {
+                    shape.insert(name.clone(), self.resolve(&inferred));
+                }
             }
         }
 
@@ -228,11 +432,22 @@ impl Inferer {
         // call sites like `instance.method()` can resolve via
         // the same Field-on-Instance lookup field access uses.
         // Stored as Type::Function — call dispatch flows through.
+        // Phase 6 session 4: param + return annotations on the
+        // method are unified against the fresh vars at this
+        // point so usage refines (or violates, in strict) them.
         let mut method_meta: Vec<(String, Vec<Type>, Type)> = Vec::new();
         for m in members {
-            if let DeclMember::Method { name, params, .. } = m {
+            if let DeclMember::Method { name, params, ret, line, col, .. } = m {
                 let pv: Vec<Type> = params.iter().map(|_| self.fresh_var()).collect();
                 let rv = self.fresh_var();
+                for (i, p) in params.iter().enumerate() {
+                    if let Some(ann) = &p.ty {
+                        self.try_unify(&pv[i], ann, *line, *col, "method param annotation");
+                    }
+                }
+                if let Some(ann) = ret {
+                    self.try_unify(&rv, ann, *line, *col, "method return annotation");
+                }
                 shape.insert(name.clone(), Type::func(pv.clone(), rv.clone()));
                 method_meta.push((name.clone(), pv, rv));
             }
@@ -247,13 +462,13 @@ impl Inferer {
         // signatures get further refined here through return
         // constraints and operator-driven param pinning.
         for (m_idx, m) in members.iter().enumerate() {
-            if let DeclMember::Method { params, body, .. } = m {
+            if let DeclMember::Method { params, body, line, col, .. } = m {
                 let (_, pv, rv) = &method_meta[method_count_up_to(members, m_idx)];
                 self.push_scope();
                 let prev_class = self.current_class.take();
                 self.current_class = Some(class_name.to_string());
-                for (n, t) in params.iter().zip(pv.iter()) {
-                    self.bind(n.clone(), t.clone());
+                for (p, t) in params.iter().zip(pv.iter()) {
+                    self.bind(p.name.clone(), t.clone());
                 }
                 // Bare-name reads of class fields / methods
                 // inside the method body resolve via the scope
@@ -268,7 +483,7 @@ impl Inferer {
                 }
                 let mut returns: Vec<Type> = Vec::new();
                 self.walk_function_block(body, &mut returns);
-                self.finalise_return_type(rv, returns);
+                self.finalise_return_type(rv, returns, *line, *col);
                 self.current_class = prev_class;
                 self.pop_scope();
             }
@@ -292,18 +507,20 @@ impl Inferer {
     /// get their own scope-chain entries.
     fn walk_function_body(
         &mut self,
-        params: &[String],
+        params: &[crate::ast::Param],
         body: &[Stmt],
         param_vars: &[Type],
         ret_var: &Type,
+        line: u32,
+        col: u32,
     ) {
         self.push_scope();
-        for (name, ty) in params.iter().zip(param_vars.iter()) {
-            self.bind(name.clone(), ty.clone());
+        for (p, ty) in params.iter().zip(param_vars.iter()) {
+            self.bind(p.name.clone(), ty.clone());
         }
         let mut returns: Vec<Type> = Vec::new();
         self.walk_function_block(body, &mut returns);
-        self.finalise_return_type(ret_var, returns);
+        self.finalise_return_type(ret_var, returns, line, col);
         self.pop_scope();
     }
 
@@ -314,13 +531,19 @@ impl Inferer {
     /// Zero return statements leaves `ret_var` unconstrained
     /// (caller-side may pin it via a call site, otherwise it
     /// prints as `?N` per non-strict).
-    fn finalise_return_type(&mut self, ret_var: &Type, returns: Vec<Type>) {
+    fn finalise_return_type(
+        &mut self,
+        ret_var: &Type,
+        returns: Vec<Type>,
+        line: u32,
+        col: u32,
+    ) {
         if returns.is_empty() {
             return;
         }
         let resolved: Vec<Type> = returns.iter().map(|t| self.resolve(t)).collect();
         let combined = Type::union(resolved);
-        let _ = unify(ret_var, &combined, &mut self.subst);
+        self.try_unify(ret_var, &combined, line, col, "return");
     }
 
     /// Walk a block-of-statements that's part of a function body,
@@ -377,13 +600,21 @@ impl Inferer {
                 Stmt::Expr(e) => {
                     let _ = self.expr_type(e);
                 }
-                Stmt::FunctionDecl { name, params, body, .. } => {
+                Stmt::FunctionDecl { name, params, ret, body, line, col } => {
                     // Nested function decl — same logic as top
                     // level, isolated from the enclosing return.
                     let pv: Vec<Type> = params.iter().map(|_| self.fresh_var()).collect();
                     let rv = self.fresh_var();
+                    for (i, p) in params.iter().enumerate() {
+                        if let Some(ann) = &p.ty {
+                            self.try_unify(&pv[i], ann, *line, *col, "param annotation");
+                        }
+                    }
+                    if let Some(ann) = ret {
+                        self.try_unify(&rv, ann, *line, *col, "return annotation");
+                    }
                     self.bind(name.clone(), Type::func(pv.clone(), rv.clone()));
-                    self.walk_function_body(params, body, &pv, &rv);
+                    self.walk_function_body(params, body, &pv, &rv, *line, *col);
                 }
                 _ => {}
             }
@@ -400,7 +631,39 @@ impl Inferer {
             Expr::Str { .. } | Expr::Interp { .. } => Type::Str,
             Expr::Percent { .. } => Type::Percent,
             Expr::Quantity { unit, .. } => Type::Quantity(Rc::new(unit.clone())),
-            Expr::Ident { name, .. } => self.lookup(name).unwrap_or(Type::Unknown),
+            Expr::Ident { name, line, col } => {
+                match self.lookup(name) {
+                    Some(t) => t,
+                    None => {
+                        // Phase 6 session 5: strict mode surfaces
+                        // unknown identifiers as a "did you mean"
+                        // diagnostic. Non-strict drops to Unknown
+                        // silently — no false-positive contract.
+                        if self.strict {
+                            let names: Vec<&String> = self
+                                .scopes
+                                .iter()
+                                .flat_map(|s| s.keys())
+                                .collect();
+                            let suggestion = crate::value::did_you_mean(name, &names)
+                                .map(str::to_string);
+                            self.errors.push(TypeError {
+                                line: *line,
+                                col: *col,
+                                message: format!("unknown name `{name}`"),
+                                help: match suggestion {
+                                    Some(s) => Some(format!("did you mean `{s}`?")),
+                                    None => Some(
+                                        "names must be declared with `let` / `var` / `function` / a class definition before use"
+                                            .to_string(),
+                                    ),
+                                },
+                            });
+                        }
+                        Type::Unknown
+                    }
+                }
+            }
             Expr::SelfRef { .. } => match &self.current_class {
                 Some(c) => Type::Instance(Rc::new(c.clone())),
                 None => Type::Unknown,
@@ -451,7 +714,7 @@ impl Inferer {
                     _ => Type::Unknown,
                 }
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, line, col, .. } => {
                 let callee_raw = self.expr_type(callee);
                 let callee_t = self.resolve(&callee_raw);
                 let arg_ts: Vec<Type> = args.iter().map(|a| self.expr_type(a)).collect();
@@ -464,7 +727,7 @@ impl Inferer {
                         // are still fresh vars, this is the
                         // mechanism that pins them down.)
                         for (a, p) in arg_ts.iter().zip(params.iter()) {
-                            let _ = unify(a, p, &mut self.subst);
+                            self.try_unify(a, p, *line, *col, "call argument");
                         }
                         (*ret).clone()
                     }
@@ -491,22 +754,23 @@ impl Inferer {
                     UnOp::Not => Type::Bool,
                 }
             }
-            Expr::Binary { op, left, right, .. } => {
+            Expr::Binary { op, left, right, line, col } => {
                 let l = self.expr_type(left);
                 let r = self.expr_type(right);
-                self.binop_type(*op, &l, &r)
+                self.binop_type(*op, &l, &r, *line, *col)
             }
         }
     }
 
-    fn binop_type(&mut self, op: BinOp, l: &Type, r: &Type) -> Type {
+    fn binop_type(&mut self, op: BinOp, l: &Type, r: &Type, line: u32, col: u32) -> Type {
         match op {
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
                 // Unify operand types so a known concrete on one
                 // side pins a fresh var on the other (e.g. `n < 0`
-                // pins n : int). Failure is silently absorbed per
-                // non-strict's no-false-positives stance.
-                let _ = unify(l, r, &mut self.subst);
+                // pins n : int). Failure is silently absorbed in
+                // non-strict; strict mode reports a "comparison"
+                // mismatch.
+                self.try_unify(l, r, line, col, "comparison");
                 Type::Bool
             }
             BinOp::In | BinOp::NotIn => Type::Bool,
@@ -514,15 +778,15 @@ impl Inferer {
                 // Value-returning short-circuit per the F11 decision.
                 // Result type is the common type of both sides;
                 // unify them so a known type on either side flows.
-                let _ = unify(l, r, &mut self.subst);
+                self.try_unify(l, r, line, col, "and/or operands");
                 self.resolve(l)
             }
-            BinOp::Add => self.infer_add(l, r),
-            BinOp::Sub | BinOp::Mul | BinOp::Div => self.infer_arith(op, l, r),
+            BinOp::Add => self.infer_add(l, r, line, col),
+            BinOp::Sub | BinOp::Mul | BinOp::Div => self.infer_arith(op, l, r, line, col),
         }
     }
 
-    fn infer_add(&mut self, l: &Type, r: &Type) -> Type {
+    fn infer_add(&mut self, l: &Type, r: &Type, line: u32, col: u32) -> Type {
         let lr = self.resolve(l);
         let rr = self.resolve(r);
         if matches!((&lr, &rr), (Type::Str, Type::Str)) {
@@ -534,16 +798,16 @@ impl Inferer {
         // matches what's known.)
         match (&lr, &rr) {
             (Type::Str, Type::Var(_)) | (Type::Var(_), Type::Str) => {
-                let _ = unify(&lr, &Type::Str, &mut self.subst);
-                let _ = unify(&rr, &Type::Str, &mut self.subst);
+                self.try_unify(&lr, &Type::Str, line, col, "string `+`");
+                self.try_unify(&rr, &Type::Str, line, col, "string `+`");
                 return Type::Str;
             }
             _ => {}
         }
-        self.infer_arith(BinOp::Add, l, r)
+        self.infer_arith(BinOp::Add, l, r, line, col)
     }
 
-    fn infer_arith(&mut self, op: BinOp, l: &Type, r: &Type) -> Type {
+    fn infer_arith(&mut self, op: BinOp, l: &Type, r: &Type, line: u32, col: u32) -> Type {
         let lr = self.resolve(l);
         let rr = self.resolve(r);
         // Dimensional unit checking. Per docs/02-type-system.md
@@ -575,22 +839,26 @@ impl Inferer {
                 let elems: Vec<Type> = a
                     .iter()
                     .zip(b.iter())
-                    .map(|(x, y)| self.infer_arith(op, x, y))
+                    .map(|(x, y)| self.infer_arith(op, x, y, line, col))
                     .collect();
                 return Type::Tuple(elems);
             }
         }
         if let Type::Tuple(elems) = &lr {
             if matches!(op, BinOp::Mul | BinOp::Div) && is_scalar_type(&rr) {
-                let elems: Vec<Type> =
-                    elems.iter().map(|x| self.infer_arith(op, x, &rr)).collect();
+                let elems: Vec<Type> = elems
+                    .iter()
+                    .map(|x| self.infer_arith(op, x, &rr, line, col))
+                    .collect();
                 return Type::Tuple(elems);
             }
         }
         if let Type::Tuple(elems) = &rr {
             if matches!(op, BinOp::Mul) && is_scalar_type(&lr) {
-                let elems: Vec<Type> =
-                    elems.iter().map(|y| self.infer_arith(op, &lr, y)).collect();
+                let elems: Vec<Type> = elems
+                    .iter()
+                    .map(|y| self.infer_arith(op, &lr, y, line, col))
+                    .collect();
                 return Type::Tuple(elems);
             }
         }
@@ -607,17 +875,37 @@ impl Inferer {
             (Type::Var(_), other) | (other, Type::Var(_))
                 if matches!(other, Type::Int | Type::Float) =>
             {
-                let _ = unify(&lr, other, &mut self.subst);
-                let _ = unify(&rr, other, &mut self.subst);
+                self.try_unify(&lr, other, line, col, "arithmetic");
+                self.try_unify(&rr, other, line, col, "arithmetic");
                 other.clone()
             }
             (Type::Var(_), Type::Var(_)) => {
-                let _ = unify(&lr, &rr, &mut self.subst);
+                self.try_unify(&lr, &rr, line, col, "arithmetic");
                 let v = self.fresh_var();
-                let _ = unify(&lr, &v, &mut self.subst);
+                self.try_unify(&lr, &v, line, col, "arithmetic");
                 v
             }
-            _ => Type::Unknown,
+            _ => {
+                // Two concrete types that don't pattern-match —
+                // this is the heart of "5m + 3s is a type error"
+                // (per docs/02 §"Dimensional units"). Strict mode
+                // surfaces it; non-strict drops to Unknown.
+                if self.strict {
+                    self.errors.push(TypeError {
+                        line,
+                        col,
+                        message: format!(
+                            "arithmetic: type mismatch — {} vs {}",
+                            self.resolve(&lr),
+                            self.resolve(&rr)
+                        ),
+                        help: Some(
+                            "operands of `+` / `-` / `*` / `/` must be numeric (or matching units / tuples)".to_string(),
+                        ),
+                    });
+                }
+                Type::Unknown
+            }
         }
     }
 
@@ -654,10 +942,17 @@ impl Inferer {
     }
 
     /// Snapshot the top-level bindings with all type variables
-    /// fully substituted. Called after `walk_program`.
+    /// fully substituted. Called after `walk_program`. Excludes
+    /// the stdlib seed names (Phase 6 session 5) — those are
+    /// scope-machinery for strict-mode resolution, not user
+    /// bindings, so `twec types <file>` shouldn't print them.
     fn resolved_top_level(&self) -> Bindings {
         let mut out = Bindings::new();
+        let seeds: std::collections::HashSet<&str> = stdlib_names().iter().copied().collect();
         for (name, ty) in &self.scopes[0] {
+            if seeds.contains(name.as_str()) {
+                continue;
+            }
             out.insert(name.clone(), self.resolve(ty));
         }
         out
@@ -666,6 +961,35 @@ impl Inferer {
 
 fn is_scalar_type(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Float)
+}
+
+/// Names the stdlib registers as globals — the seed list for
+/// strict-mode identifier resolution. Mirrors the `install_*`
+/// functions in `src/stdlib.rs`. Plus `true` / `false` (parser-
+/// recognised literal forms) and `self` / `nil` (also handled at
+/// the parser level, listed here so the strict-mode unknown-name
+/// check has uniform coverage). Phase 6 session 5.
+///
+/// When the stdlib grows (or shrinks) a top-level binding, this
+/// list needs an update — it's a parallel registry. A future
+/// session that pulls signatures from a single shared
+/// `stdlib::globals()` table can replace this. Until then, drift
+/// here means strict mode complains about a real builtin or
+/// silently accepts a typo.
+fn stdlib_names() -> &'static [&'static str] {
+    &[
+        // top-level builtins
+        "print", "load", "vec3", "cube", "rect", "circle", "line", "text",
+        "sprite", "sound", "screen", "time", "math", "random", "key",
+        "key_press", "color", "entities", "camera",
+        // rarity tier symbols (installed in stdlib::install)
+        "common", "uncommon", "rare", "epic", "legendary",
+        // boolean literal forms accepted by the parser
+        "true", "false",
+        // self / nil — both have explicit Expr handling but listing
+        // them keeps the strict check's coverage uniform
+        "self", "nil",
+    ]
 }
 
 impl Inferer {
@@ -742,6 +1066,15 @@ mod tests {
             .get(name)
             .cloned()
             .unwrap_or_else(|| panic!("no binding for `{name}`"))
+    }
+
+    fn strict_errors(src: &str) -> Vec<TypeError> {
+        let with_newline = format!("{src}\n");
+        let tokens = lexer::lex(&with_newline).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let strict = detect_strict(&with_newline);
+        let (_bindings, errors) = infer_program_strict(&program, strict);
+        errors
     }
 
     // --- 4a behaviour, regression tested ---
@@ -1126,5 +1459,303 @@ mod tests {
         // can't test access syntactically. This test just
         // confirms the type for S binds without error.
         assert_eq!(bs.get("S").map(|t| t.to_string()).as_deref(), Some("<class S>"));
+    }
+
+    // --- Phase 6 session 1: strict mode ---
+
+    #[test]
+    fn detect_strict_recognises_canonical_directive() {
+        assert!(detect_strict("# strict\nlet x = 1"));
+        assert!(detect_strict("#! strict\nlet x = 1"));
+        assert!(detect_strict("#strict\nlet x = 1"));
+        assert!(detect_strict("#!strict\nlet x = 1"));
+    }
+
+    #[test]
+    fn detect_strict_finds_directive_in_first_ten_lines() {
+        let src = "# the program\n\n# strict\nlet x = 1";
+        assert!(detect_strict(src));
+    }
+
+    #[test]
+    fn detect_strict_ignores_directive_past_first_ten_lines() {
+        // Eleven blank/non-directive lines first, then the magic
+        // comment — should NOT trigger strict mode.
+        let mut src = String::new();
+        for _ in 0..11 {
+            src.push_str("# noise\n");
+        }
+        src.push_str("# strict\n");
+        src.push_str("let x = 1\n");
+        assert!(!detect_strict(&src));
+    }
+
+    #[test]
+    fn detect_strict_ignores_partial_match() {
+        // `# strict mode` (with trailing words) is not the
+        // canonical directive — keep the surface tight.
+        assert!(!detect_strict("# strict mode\nlet x = 1"));
+        assert!(!detect_strict("# strict-ish\nlet x = 1"));
+    }
+
+    #[test]
+    fn non_strict_program_collects_no_errors() {
+        // Same shape as the strict test below, but no directive.
+        // The unification failures still happen internally; they
+        // just stay silent.
+        let errors = strict_errors("let bad = \"hi\" < 5\n");
+        assert!(errors.is_empty(), "non-strict should drop errors, got {errors:?}");
+    }
+
+    #[test]
+    fn strict_mode_surfaces_comparison_mismatch() {
+        // `<` between Str and Int — unify fails. Strict mode
+        // surfaces it as a "comparison: type mismatch" error.
+        let errors = strict_errors("# strict\nlet bad = \"hi\" < 5\n");
+        assert_eq!(errors.len(), 1, "expected one error, got {errors:?}");
+        let e = &errors[0];
+        assert!(
+            e.message.contains("comparison") && e.message.contains("type mismatch"),
+            "got: {}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn strict_mode_surfaces_return_type_conflict() {
+        // Multi-return functions where the branches disagree on
+        // type should surface the union/unify failure under strict.
+        // Note: with the current Optional+Union widening, two
+        // distinct concrete returns produce a Union, so the
+        // ret_var unifies cleanly. To trigger a conflict we need
+        // a function whose body's USE pins ret_var to a concrete
+        // type (e.g. via call-site arg unify) before the union
+        // is built. The simplest fire is calling a function with
+        // mismatched arg types so the call-site arg-unify fails.
+        let errors = strict_errors(
+            "# strict\nfunction f(n):\n    return n + 1\n\nlet x = f(\"hi\") + 1\n",
+        );
+        // The call site `f("hi")` passes Str where param is Int
+        // (pinned by `n + 1` inside the body). Strict should
+        // surface the call-arg mismatch.
+        assert!(
+            errors.iter().any(|e| e.message.contains("call argument")),
+            "expected call-argument error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn strict_mode_carries_line_and_col_from_source() {
+        let errors = strict_errors("# strict\nlet bad = \"hi\" < 5\n");
+        assert_eq!(errors.len(), 1);
+        // Line 2 of the program (line 1 is the directive).
+        assert_eq!(errors[0].line, 2);
+        // Column points at the `<` operator (col 16: 1-indexed
+        // position right after `"hi" `).
+        assert!(
+            errors[0].col >= 11 && errors[0].col <= 20,
+            "col was {}",
+            errors[0].col
+        );
+    }
+
+    #[test]
+    fn strict_mode_includes_help_text() {
+        let errors = strict_errors("# strict\nlet bad = \"hi\" < 5\n");
+        assert!(errors[0].help.is_some(), "errors should carry help text");
+    }
+
+    // --- Phase 6 session 2: annotation-driven enforcement ---
+
+    #[test]
+    fn strict_let_annotation_violation_surfaces() {
+        // `let x: int = "hi"` — annotated int, value is string.
+        // Strict surfaces a "let annotation: type mismatch."
+        let errors = strict_errors("# strict\nlet x: int = \"hi\"\n");
+        assert!(
+            errors.iter().any(|e| e.message.contains("let annotation")),
+            "expected let-annotation error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn strict_let_annotation_clean_passes() {
+        let errors = strict_errors("# strict\nlet x: int = 42\n");
+        assert!(errors.is_empty(), "expected no errors, got {errors:?}");
+    }
+
+    #[test]
+    fn strict_param_annotation_pins_arg_check() {
+        // Without annotations, `add(n)` would accept any n. With
+        // `n: int`, the param's fresh var is unified to Int at
+        // function-decl time; the call site `add("hi")` then fails
+        // the "call argument" unify in strict mode.
+        let src = "# strict\nfunction add(n: int):\n    return n + 1\n\nadd(\"hi\")\n";
+        let errors = strict_errors(src);
+        assert!(
+            errors.iter().any(|e| e.message.contains("call argument")),
+            "expected call-argument error from annotated param, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn strict_return_annotation_violation_surfaces() {
+        // `function f() -> int: return "hi"` — annotated int return,
+        // body returns string. The return-type union becomes Str;
+        // unifying against the int-pinned ret_var fails.
+        let src = "# strict\nfunction f() -> int:\n    return \"hi\"\n";
+        let errors = strict_errors(src);
+        assert!(
+            !errors.is_empty(),
+            "expected an error from return-annotation violation, got none"
+        );
+    }
+
+    #[test]
+    fn non_strict_drops_annotation_violations() {
+        // Same shape as the strict cases but no `# strict`. Errors
+        // stay silent — the v0.1 default contract.
+        let errors_let = strict_errors("let x: int = \"hi\"\n");
+        let errors_param = strict_errors(
+            "function add(n: int):\n    return n + 1\n\nadd(\"hi\")\n",
+        );
+        let errors_ret = strict_errors("function f() -> int:\n    return \"hi\"\n");
+        assert!(errors_let.is_empty());
+        assert!(errors_param.is_empty());
+        assert!(errors_ret.is_empty());
+    }
+
+    #[test]
+    fn unrecognised_type_name_silently_skips_enforcement() {
+        // `User` is not a primitive. Strict mode shouldn't error
+        // just because the annotation refers to a class we don't
+        // model — `parse_type` returns `None` and the inferer
+        // never gets an annotation to unify against.
+        let errors = strict_errors("# strict\nlet u: User = 42\n");
+        assert!(errors.is_empty(), "expected no errors, got {errors:?}");
+    }
+
+    // --- Phase 6 session 5: strict-mode identifier resolution ---
+
+    #[test]
+    fn strict_unknown_identifier_surfaces() {
+        // `gibberish_name` isn't bound anywhere. Strict reports
+        // "unknown name" with a help line; non-strict drops to
+        // Type::Unknown silently.
+        let errors = strict_errors("# strict\nlet x = gibberish_name + 1\n");
+        assert!(
+            errors.iter().any(|e| e.message.contains("unknown name `gibberish_name`")),
+            "expected unknown-name error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn strict_unknown_identifier_suggests_close_match() {
+        // `goblion` (mid-word `i` typo) is one edit-distance from
+        // user-bound `goblin` — strict surfaces "did you mean".
+        let src = "# strict\nlet goblin = 42\nlet x = goblion + 1\n";
+        let errors = strict_errors(src);
+        let unknown = errors
+            .iter()
+            .find(|e| e.message.contains("unknown name `goblion`"))
+            .expect("expected unknown-name error");
+        assert!(
+            unknown.help.as_ref().map(|h| h.contains("did you mean `goblin`?")).unwrap_or(false),
+            "expected did-you-mean suggestion, got {:?}",
+            unknown.help
+        );
+    }
+
+    #[test]
+    fn strict_doesnt_complain_about_stdlib_names() {
+        // `print`, `vec3`, `math`, etc. are seeded into the
+        // outermost scope so a strict program doesn't get one
+        // diagnostic per stdlib call.
+        let src = "# strict\nprint(\"hi\")\nlet v = vec3(1, 2, 3)\n";
+        let errors = strict_errors(src);
+        // The `print` and `vec3` calls return Type::Unknown
+        // (we don't have signatures), so no `let` annotation
+        // unifies; should be no errors at all.
+        assert!(
+            errors.is_empty(),
+            "stdlib names shouldn't trip strict mode, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn non_strict_doesnt_report_unknown_identifier() {
+        // The existing `unknown_propagates_silently` test pins
+        // this for non-strict via `infer_program`; this one pins
+        // it for `infer_program_strict(_, false)` too.
+        let errors = strict_errors("let x = totally_unknown_name + 1\n");
+        assert!(errors.is_empty(), "non-strict must drop, got {errors:?}");
+    }
+
+    // --- Phase 6 session 4: class member annotations ---
+
+    #[test]
+    fn strict_field_annotation_violation_surfaces() {
+        let src = "# strict\nentity Hero:\n    hp: int = \"hi\"\n";
+        let errors = strict_errors(src);
+        assert!(
+            errors.iter().any(|e| e.message.contains("field annotation")),
+            "expected field-annotation error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn strict_field_annotation_clean_passes() {
+        let src = "# strict\nentity Hero:\n    hp: int = 100\n";
+        let errors = strict_errors(src);
+        assert!(errors.is_empty(), "expected no errors, got {errors:?}");
+    }
+
+    #[test]
+    fn strict_method_param_annotation_pins_call_site() {
+        // `take_damage(amount: int)` annotates the param. A
+        // body that adds amount to a string would pin amount to
+        // string, conflicting with the int annotation; strict
+        // reports the param-annotation conflict.
+        let src = concat!(
+            "# strict\n",
+            "entity Hero:\n",
+            "    hp: int = 100\n",
+            "    take_damage(amount: int):\n",
+            "        return amount + \"oops\"\n",
+        );
+        let errors = strict_errors(src);
+        assert!(
+            !errors.is_empty(),
+            "expected at least one strict-mode error, got none"
+        );
+    }
+
+    #[test]
+    fn strict_method_return_annotation_violation_surfaces() {
+        // Method declares return int, body returns string.
+        let src = concat!(
+            "# strict\n",
+            "entity Hero:\n",
+            "    hp: int = 100\n",
+            "    name() -> int:\n",
+            "        return \"hi\"\n",
+        );
+        let errors = strict_errors(src);
+        assert!(
+            !errors.is_empty(),
+            "expected return-annotation conflict to surface"
+        );
+    }
+
+    #[test]
+    fn non_strict_drops_class_annotation_violations() {
+        let src = concat!(
+            "entity Hero:\n",
+            "    hp: int = \"hi\"\n",
+            "    name() -> int:\n",
+            "        return \"oops\"\n",
+        );
+        let errors = strict_errors(src);
+        assert!(errors.is_empty(), "non-strict should drop, got {errors:?}");
     }
 }

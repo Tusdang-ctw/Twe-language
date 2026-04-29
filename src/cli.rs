@@ -5,6 +5,7 @@ use std::process;
 const USAGE: &str =
     "usage: twec [run [--vm tree|bytecode] [--frames N] <file> | \
      play [--vm tree|bytecode] <file> | \
+     play3d <file> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -39,6 +40,7 @@ pub fn run() {
     match args[1].as_str() {
         "run" => process::exit(handle_run(&args[2..])),
         "play" => process::exit(handle_play(&args[2..])),
+        "play3d" => process::exit(handle_play3d(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
         "lsp" => process::exit(handle_lsp(&args[2..])),
         "types" => process::exit(handle_types(&args[2..])),
@@ -69,6 +71,36 @@ fn handle_play(args: &[String]) -> i32 {
         Backend::Tree => crate::play::launch(path),
         Backend::Bytecode => crate::play::launch_bytecode(path),
     }
+}
+
+/// `twec play3d <file>` — wgpu-driven 3D backend (Phase 5 task 5
+/// session 1: clear-color window). No `--vm` flag yet; the 3D
+/// surface only runs the script's top-level code at startup, so
+/// the choice of interpreter doesn't matter until the loop drives
+/// per-frame work in a later session.
+fn handle_play3d(args: &[String]) -> i32 {
+    if args.is_empty() {
+        eprintln!("error: `twec play3d` requires a file path");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    // Reject unknown flags so a typo doesn't get silently
+    // interpreted as the file path.
+    let mut path: Option<String> = None;
+    for a in args {
+        if a.starts_with('-') {
+            eprintln!("error: unknown flag for `play3d`: {a}");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+        if path.is_some() {
+            eprintln!("error: `twec play3d` takes one file path");
+            return 2;
+        }
+        path = Some(a.clone());
+    }
+    let path = path.expect("non-empty args + no flags ⇒ at least one positional");
+    crate::play3d::launch(path)
 }
 
 /// `twec fmt [--in-place|--check] <file>` — print the canonical
@@ -212,13 +244,31 @@ fn handle_types(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let bindings = crate::infer::infer_program(&program);
+    // Strict mode is opted into by a `# strict` (or `#! strict`)
+    // line in the first ten lines of the source. Without the
+    // directive, behaviour matches v0.1 (silently absorb
+    // unification failures); with it, the inferer accumulates
+    // diagnostics that we surface here and the exit code goes
+    // non-zero. Phase 6 session 1.
+    let strict = crate::infer::detect_strict(&src);
+    let (bindings, errors) = crate::infer::infer_program_strict(&program, strict);
     // Sort by name for deterministic output (handy for snapshot
     // testing + diffing across runs).
     let mut entries: Vec<(&String, &crate::types::Type)> = bindings.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
     for (name, ty) in entries {
         println!("{name}: {ty}");
+    }
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("{path}:{}:{}: type error: {}", e.line, e.col, e.message);
+            if let Some(help) = &e.help {
+                eprintln!("  help: {help}");
+            }
+        }
+        // Exit non-zero so CI / pre-commit hooks gate strict files
+        // on success. Non-strict files never reach this branch.
+        return 1;
     }
     0
 }

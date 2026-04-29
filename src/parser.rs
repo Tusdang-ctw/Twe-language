@@ -69,7 +69,7 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         match self.peek().kind {
-            TokenKind::Let | TokenKind::Var => return self.parse_let(),
+            TokenKind::Let | TokenKind::Var | TokenKind::Actor => return self.parse_let(),
             TokenKind::If => return self.parse_if(),
             TokenKind::On => return self.parse_on(),
             TokenKind::Entity => return self.parse_decl(DeclKind::Entity),
@@ -106,6 +106,10 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Spawn => return self.parse_spawn(),
             TokenKind::Despawn => return self.parse_despawn(),
+            TokenKind::Wait => return self.parse_wait(),
+            TokenKind::Dialogue => return self.parse_dialogue_decl(),
+            TokenKind::Say => return self.parse_say(),
+            TokenKind::Choice => return self.parse_choice(),
             _ => {}
         }
         let expr = self.parse_expr()?;
@@ -186,44 +190,63 @@ impl<'a> Parser<'a> {
                     line: event_tok.line,
                     col: event_tok.col,
                     message: format!("expected event name after `on`, got {other:?}"),
-                    help: Some("e.g. `on update(dt):`".to_string()),
+                    help: Some("e.g. `on update(dt):` or `on render():`".to_string()),
                 })
             }
         };
-        if event_name != "update" {
-            return Err(ParseError {
+        match event_name.as_str() {
+            "update" => {
+                self.expect(TokenKind::LParen, "expected '(' after `on update`")?;
+                let param_tok = self.bump().clone();
+                let param = match param_tok.kind {
+                    TokenKind::Ident(s) => s,
+                    other => {
+                        return Err(ParseError {
+                            line: param_tok.line,
+                            col: param_tok.col,
+                            message: format!("expected parameter name, got {other:?}"),
+                            help: Some(
+                                "`on update(dt):` binds dt as the frame delta".to_string(),
+                            ),
+                        })
+                    }
+                };
+                self.expect(TokenKind::RParen, "expected ')' to close parameter list")?;
+                self.expect(TokenKind::Colon, "expected ':' after `on update(...)`")?;
+                let body = self.parse_block()?;
+                Ok(Stmt::OnUpdate {
+                    param,
+                    body,
+                    line: kw.line,
+                    col: kw.col,
+                })
+            }
+            "render" => {
+                // Top-level `on render():` — fires per rendered frame in
+                // `twec play3d`. No params (no dt — render is "compose
+                // the next frame," not a tick).
+                self.expect(TokenKind::LParen, "expected '(' after `on render`")?;
+                self.expect(TokenKind::RParen, "expected ')' after `on render(`")?;
+                self.expect(TokenKind::Colon, "expected ':' after `on render()`")?;
+                let body = self.parse_block()?;
+                Ok(Stmt::OnRender {
+                    body,
+                    line: kw.line,
+                    col: kw.col,
+                })
+            }
+            other => Err(ParseError {
                 line: event_tok.line,
                 col: event_tok.col,
                 message: format!(
-                    "only `on update(dt):` is supported in v0.1, got `on {event_name}`"
+                    "top-level handler `on {other}` is not supported in v0.1"
                 ),
                 help: Some(
-                    "named, predicate, and lifecycle events ship in Phase 2".to_string(),
+                    "v0.1 supports `on update(dt):` and `on render():` at the top level; predicate / named events live inside states."
+                        .to_string(),
                 ),
-            });
+            }),
         }
-        self.expect(TokenKind::LParen, "expected '(' after `on update`")?;
-        let param_tok = self.bump().clone();
-        let param = match param_tok.kind {
-            TokenKind::Ident(s) => s,
-            other => {
-                return Err(ParseError {
-                    line: param_tok.line,
-                    col: param_tok.col,
-                    message: format!("expected parameter name, got {other:?}"),
-                    help: Some("`on update(dt):` binds dt as the frame delta".to_string()),
-                })
-            }
-        };
-        self.expect(TokenKind::RParen, "expected ')' to close parameter list")?;
-        self.expect(TokenKind::Colon, "expected ':' after `on update(...)`")?;
-        let body = self.parse_block()?;
-        Ok(Stmt::OnUpdate {
-            param,
-            body,
-            line: kw.line,
-            col: kw.col,
-        })
     }
 
     fn parse_spawn(&mut self) -> Result<Stmt, ParseError> {
@@ -252,6 +275,128 @@ impl<'a> Parser<'a> {
         self.expect_stmt_end()?;
         Ok(Stmt::Despawn {
             target,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    /// `wait <duration>`. The duration expression must evaluate to a
+    /// quantity with a time unit (`s`, `ms`, etc.) — checked at
+    /// runtime, not at parse time. Mirrors the `every <duration>:`
+    /// rule for that reason. Phase 5 task 2.
+    fn parse_wait(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let duration = self.parse_expr()?;
+        self.expect_stmt_end()?;
+        Ok(Stmt::Wait {
+            duration,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    /// `dialogue <Name>:` followed by an indented body of statements.
+    /// Phase 5 task 3. The body can include any statement plus the
+    /// dialogue-only forms (`say`, `choice`, `wait`).
+    fn parse_dialogue_decl(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let name = self.expect_ident("expected dialogue name after `dialogue`")?;
+        self.expect(TokenKind::Colon, "expected ':' after dialogue name")?;
+        let body = self.parse_block()?;
+        Ok(Stmt::DialogueDecl {
+            name,
+            body,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    /// `say [<actor> :] <text-expr>`. The actor form is detected by
+    /// peeking past an expression for a colon — to avoid backtracking
+    /// pain we use a simpler heuristic: if the next token after `say`
+    /// is an identifier and the token after that is a colon, treat
+    /// it as `say <actor>: <text>`. Otherwise it's `say <text>`.
+    fn parse_say(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        // Parse the first expression, then peek: if a colon follows,
+        // it was the actor and the next expression is the text;
+        // otherwise the first expression *is* the text. Works for
+        // any actor expression (identifier `merchant`, string
+        // literal `"Merchant"`, field access `scene.npc("...")`,
+        // etc.) without relying on a token-shape heuristic.
+        let first = self.parse_expr()?;
+        if matches!(self.peek().kind, TokenKind::Colon) {
+            self.bump();
+            let text = self.parse_expr()?;
+            self.expect_stmt_end()?;
+            Ok(Stmt::Say {
+                actor: Some(first),
+                text,
+                line: kw.line,
+                col: kw.col,
+            })
+        } else {
+            self.expect_stmt_end()?;
+            Ok(Stmt::Say {
+                actor: None,
+                text: first,
+                line: kw.line,
+                col: kw.col,
+            })
+        }
+    }
+
+    /// `choice:` followed by an indented list of branches. Each
+    /// branch is `<label-expr>:` then an indented body. Phase 5
+    /// task 3. Labels are typically string literals but we accept
+    /// any expression for forward compatibility (e.g., a condition
+    /// could gate a branch in a future version).
+    fn parse_choice(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        self.expect(TokenKind::Colon, "expected ':' after `choice`")?;
+        // The body of a `choice:` is an indented list of branches.
+        // Match parse_block's framing: skip the trailing Newline,
+        // expect Indent, walk branches until Dedent.
+        if matches!(self.peek().kind, TokenKind::Newline) {
+            self.bump();
+        }
+        if !matches!(self.peek().kind, TokenKind::Indent) {
+            return Err(ParseError {
+                line: kw.line,
+                col: kw.col,
+                message: "`choice:` requires at least one indented branch".to_string(),
+                help: Some(
+                    "indent under `choice:` and add `\"<label>\":` branches".to_string(),
+                ),
+            });
+        }
+        self.bump();
+        let mut branches = Vec::new();
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek().kind, TokenKind::Dedent | TokenKind::Eof) {
+                break;
+            }
+            let label = self.parse_expr()?;
+            self.expect(TokenKind::Colon, "expected ':' after choice label")?;
+            let body = self.parse_block()?;
+            branches.push((label, body));
+        }
+        if matches!(self.peek().kind, TokenKind::Dedent) {
+            self.bump();
+        }
+        if branches.is_empty() {
+            return Err(ParseError {
+                line: kw.line,
+                col: kw.col,
+                message: "`choice:` requires at least one branch".to_string(),
+                help: Some(
+                    "add at least one `\"<label>\":` branch with an indented body".to_string(),
+                ),
+            });
+        }
+        Ok(Stmt::Choice {
+            branches,
             line: kw.line,
             col: kw.col,
         })
@@ -304,7 +449,7 @@ impl<'a> Parser<'a> {
         let kw = self.bump().clone();
         let name = self.expect_ident("expected function name after `function`")?;
         self.expect(TokenKind::LParen, "expected '(' after function name")?;
-        let mut params = Vec::new();
+        let mut params: Vec<crate::ast::Param> = Vec::new();
         if !matches!(self.peek().kind, TokenKind::RParen) {
             params.push(self.parse_param()?);
             while matches!(self.peek().kind, TokenKind::Comma) {
@@ -315,6 +460,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::RParen, "expected ')' to close parameter list")?;
         // Optional return type `-> type`. Currently no Arrow token; the
         // design uses `->` which lexes as Minus + Gt. Recognise that pair.
+        let mut ret: Option<crate::types::Type> = None;
         if matches!(self.peek().kind, TokenKind::Minus) {
             // peek ahead one — we only consume both if the second is `>`.
             if self.pos + 1 < self.tokens.len()
@@ -322,7 +468,7 @@ impl<'a> Parser<'a> {
             {
                 self.bump();
                 self.bump();
-                self.parse_type()?;
+                ret = self.parse_type()?;
             }
         }
         self.expect(TokenKind::Colon, "expected ':' after function signature")?;
@@ -330,19 +476,21 @@ impl<'a> Parser<'a> {
         Ok(Stmt::FunctionDecl {
             name,
             params,
+            ret,
             body,
             line: kw.line,
             col: kw.col,
         })
     }
 
-    fn parse_param(&mut self) -> Result<String, ParseError> {
+    fn parse_param(&mut self) -> Result<crate::ast::Param, ParseError> {
         let name = self.expect_ident("expected parameter name")?;
+        let mut ty: Option<crate::types::Type> = None;
         if matches!(self.peek().kind, TokenKind::Colon) {
             self.bump();
-            self.parse_type()?;
+            ty = self.parse_type()?;
         }
-        Ok(name)
+        Ok(crate::ast::Param { name, ty })
     }
 
     fn parse_return(&mut self) -> Result<Stmt, ParseError> {
@@ -486,9 +634,10 @@ impl<'a> Parser<'a> {
         };
         // After a var/let prefix, accept binding-form `name [: type] = value`.
         if mutability_prefixed {
+            let mut field_ty: Option<crate::types::Type> = None;
             if matches!(self.peek().kind, TokenKind::Colon) {
                 self.bump();
-                self.parse_type()?;
+                field_ty = self.parse_type()?;
             }
             self.expect(TokenKind::Eq, "expected '=' in field declaration")?;
             let value = self.parse_expr()?;
@@ -496,6 +645,7 @@ impl<'a> Parser<'a> {
             return Ok(DeclMember::Field {
                 name,
                 value,
+                ty: field_ty,
                 line: name_tok.line,
                 col: name_tok.col,
             });
@@ -503,7 +653,7 @@ impl<'a> Parser<'a> {
         match self.peek().kind {
             TokenKind::LParen => {
                 self.bump();
-                let mut params = Vec::new();
+                let mut params: Vec<crate::ast::Param> = Vec::new();
                 if !matches!(self.peek().kind, TokenKind::RParen) {
                     params.push(self.parse_param()?);
                     while matches!(self.peek().kind, TokenKind::Comma) {
@@ -512,20 +662,24 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect(TokenKind::RParen, "expected ')' after parameter list")?;
-                // Optional return type `-> type` parsed-and-ignored.
+                // Phase 6 session 4: keep the return-type annotation
+                // on the AST so strict mode can enforce it. Same
+                // shape as `parse_function`'s `-> type` parsing.
+                let mut ret: Option<crate::types::Type> = None;
                 if matches!(self.peek().kind, TokenKind::Minus)
                     && self.pos + 1 < self.tokens.len()
                     && matches!(self.tokens[self.pos + 1].kind, TokenKind::Gt)
                 {
                     self.bump();
                     self.bump();
-                    self.parse_type()?;
+                    ret = self.parse_type()?;
                 }
                 self.expect(TokenKind::Colon, "expected ':' after parameter list")?;
                 let body = self.parse_block()?;
                 Ok(DeclMember::Method {
                     name,
                     params,
+                    ret,
                     body,
                     line: name_tok.line,
                     col: name_tok.col,
@@ -534,11 +688,11 @@ impl<'a> Parser<'a> {
             TokenKind::Colon => {
                 self.bump();
                 // Optional type annotation `field: type = value` per docs/06 §3.3.
-                // We don't have type-only fields yet; v0.1 always expects a value.
-                // If the next-next is `=`, drop the type. Otherwise treat the
-                // expression after ':' as the value.
+                // Phase 6 session 4: keep the parsed type on the AST
+                // so strict mode can enforce it.
+                let mut field_ty: Option<crate::types::Type> = None;
                 if self.looks_like_typed_field() {
-                    self.parse_type()?;
+                    field_ty = self.parse_type()?;
                     self.expect(TokenKind::Eq, "expected '=' after field type")?;
                 }
                 // Special case: `initial: <state_name>` is a state-machine
@@ -563,6 +717,7 @@ impl<'a> Parser<'a> {
                 Ok(DeclMember::Field {
                     name,
                     value,
+                    ty: field_ty,
                     line: name_tok.line,
                     col: name_tok.col,
                 })
@@ -707,6 +862,26 @@ impl<'a> Parser<'a> {
                 col: kw.col,
             });
         }
+        // `on <predicate>: body` — predicate event handler. Falls
+        // through to here after the three name-shaped on-handlers
+        // above. The predicate is any expression; the runtime
+        // evaluates it each frame and fires the body on a
+        // false→true transition. Phase 5 task 4 (Example 4 surface).
+        if matches!(self.peek().kind, TokenKind::On) {
+            let kw = self.bump().clone();
+            let predicate = self.parse_expr()?;
+            self.expect(
+                TokenKind::Colon,
+                "expected ':' after `on <predicate>`",
+            )?;
+            let body = self.parse_block()?;
+            return Ok(StateMember::OnPredicate {
+                predicate,
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
         let stmt = self.parse_stmt()?;
         Ok(StateMember::Stmt(stmt))
     }
@@ -766,10 +941,13 @@ impl<'a> Parser<'a> {
             }
         };
         // Optional type annotation `: type` per docs/06 §3.2.
-        // v0.1 non-strict mode parses but ignores types (docs/02 §5.2.1).
+        // Phase 6 session 2: kept on the AST so strict mode can
+        // unify the value's inferred type against it. Non-strict
+        // still ignores.
+        let mut ty: Option<crate::types::Type> = None;
         if matches!(self.peek().kind, TokenKind::Colon) {
             self.bump();
-            self.parse_type()?;
+            ty = self.parse_type()?;
         }
         self.expect(TokenKind::Eq, "expected '=' after `let <name>`")?;
         let value = self.parse_expr()?;
@@ -777,28 +955,40 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Let {
             name,
             value,
+            ty,
             line: kw.line,
             col: kw.col,
         })
     }
 
-    /// Parses a type expression and discards it. Non-strict mode does no
-    /// type checking; strict / verified modes (v0.2+) will replace this
-    /// with a real type tree on the AST.
-    fn parse_type(&mut self) -> Result<(), ParseError> {
+    /// Parse a type expression. Returns `Some(Type)` for primitive
+    /// names that the inferer recognises (`int`, `float`, `bool`,
+    /// `string`, `nil`), `None` for everything else (user class
+    /// names, qualified identifiers like `vector.x`, or types we
+    /// don't yet model). Non-strict mode ignores annotations
+    /// either way; strict mode (Phase 6 session 2) only enforces
+    /// when a recognised primitive was annotated, so unmapped
+    /// names degrade gracefully — they parse, they just don't
+    /// constrain.
+    fn parse_type(&mut self) -> Result<Option<crate::types::Type>, ParseError> {
         // Minimal type grammar covering the v0.1 examples:
-        //   type := identifier ("." identifier)*    # qualified names like Hero, vector
+        //   type := identifier ("." identifier)*
         //         | "list" "of" type
         //         | "map" "of" type "=>" type
         let tok = self.peek().clone();
         match tok.kind {
-            TokenKind::Ident(_) => {
+            TokenKind::Ident(name) => {
                 self.bump();
+                let mut qualified = false;
                 while matches!(self.peek().kind, TokenKind::Dot) {
                     self.bump();
                     self.expect_ident("expected qualified type segment after '.'")?;
+                    qualified = true;
                 }
-                Ok(())
+                if qualified {
+                    return Ok(None);
+                }
+                Ok(primitive_name_to_type(&name))
             }
             other => Err(ParseError {
                 line: tok.line,
@@ -1025,21 +1215,32 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.bump();
                     let name_tok = self.bump().clone();
+                    // After `.` the token is unambiguously a field
+                    // name — no possible parse conflict with the
+                    // surrounding statement grammar — so accept the
+                    // source spelling of any keyword too. Without
+                    // this, adding a new keyword would silently
+                    // break existing programs that use it as a
+                    // method name (e.g., `random.choice(list)`
+                    // after `choice` became a Phase 5 keyword).
                     let name = match name_tok.kind {
                         TokenKind::Ident(s) => s,
-                        other => {
-                            return Err(ParseError {
-                                line: name_tok.line,
-                                col: name_tok.col,
-                                message: format!(
-                                    "expected field name after '.', got {other:?}"
-                                ),
-                                help: Some(
-                                    "field names must be identifiers; keywords are reserved"
-                                        .to_string(),
-                                ),
-                            })
-                        }
+                        ref other => match keyword_spelling(other) {
+                            Some(s) => s.to_string(),
+                            None => {
+                                return Err(ParseError {
+                                    line: name_tok.line,
+                                    col: name_tok.col,
+                                    message: format!(
+                                        "expected field name after '.', got {other:?}"
+                                    ),
+                                    help: Some(
+                                        "field names must be identifiers or keywords"
+                                            .to_string(),
+                                    ),
+                                });
+                            }
+                        },
                     };
                     left = Expr::Field {
                         object: Box::new(left),
@@ -1396,4 +1597,71 @@ fn expr_to_target(e: &Expr) -> Option<AssignTarget> {
         }),
         _ => None,
     }
+}
+
+/// Map a primitive type name to the corresponding `Type` variant.
+/// Returns `None` for names we don't model — user class names,
+/// qualified types, generic forms — so strict mode degrades
+/// gracefully (no enforcement, but no spurious error either).
+/// Phase 6 session 2.
+fn primitive_name_to_type(name: &str) -> Option<crate::types::Type> {
+    use crate::types::Type;
+    match name {
+        "int" => Some(Type::Int),
+        "float" => Some(Type::Float),
+        "bool" => Some(Type::Bool),
+        "string" | "str" => Some(Type::Str),
+        "nil" => Some(Type::Nil),
+        "range" => Some(Type::Range),
+        // Class names, `Hero`, `vector`, etc. don't map to a
+        // built-in primitive. The inferer's class-shape registry
+        // (built from `entity` / `item` / `scene` decls) handles
+        // those when the value-side type appears as
+        // `Type::Instance(name)`.
+        _ => None,
+    }
+}
+
+/// Return the source spelling of a keyword `TokenKind`, or `None`
+/// for non-keyword tokens. Used by field access (`obj.<name>`) so
+/// keywords can also serve as field/method names — necessary for
+/// stdlib calls like `random.choice(list)` not to break when a
+/// new statement keyword (`choice`, `wait`, …) gets added.
+fn keyword_spelling(t: &TokenKind) -> Option<&'static str> {
+    Some(match t {
+        TokenKind::Let => "let",
+        TokenKind::Var => "var",
+        TokenKind::On => "on",
+        TokenKind::If => "if",
+        TokenKind::Elif => "elif",
+        TokenKind::Else => "else",
+        TokenKind::And => "and",
+        TokenKind::Or => "or",
+        TokenKind::Not => "not",
+        TokenKind::Entity => "entity",
+        TokenKind::Item => "item",
+        TokenKind::Modifier => "modifier",
+        TokenKind::Inventory => "inventory",
+        TokenKind::Scene => "scene",
+        TokenKind::Particles => "particles",
+        TokenKind::State => "state",
+        TokenKind::Every => "every",
+        TokenKind::Extends => "extends",
+        TokenKind::KwSelf => "self",
+        TokenKind::Function => "function",
+        TokenKind::Return => "return",
+        TokenKind::While => "while",
+        TokenKind::For => "for",
+        TokenKind::In => "in",
+        TokenKind::Break => "break",
+        TokenKind::Continue => "continue",
+        TokenKind::Spawn => "spawn",
+        TokenKind::Despawn => "despawn",
+        TokenKind::Wait => "wait",
+        TokenKind::Dialogue => "dialogue",
+        TokenKind::Say => "say",
+        TokenKind::Choice => "choice",
+        TokenKind::Actor => "actor",
+        _ => return None,
+    })
 }

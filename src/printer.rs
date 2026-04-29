@@ -46,7 +46,7 @@ pub fn print_program(p: &Program) -> String {
 fn takes_blank_neighbor(stmt: &Stmt) -> bool {
     matches!(
         stmt,
-        Stmt::Decl { .. } | Stmt::FunctionDecl { .. } | Stmt::OnUpdate { .. }
+        Stmt::Decl { .. } | Stmt::FunctionDecl { .. } | Stmt::OnUpdate { .. } | Stmt::OnRender { .. }
     )
 }
 
@@ -105,6 +105,11 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str("):\n");
             print_block(out, body, depth + 1);
         }
+        Stmt::OnRender { body, .. } => {
+            push_indent(out, depth);
+            out.push_str("on render():\n");
+            print_block(out, body, depth + 1);
+        }
         Stmt::Decl { kind, name, parent, members, .. } => {
             push_indent(out, depth);
             out.push_str(kind.as_str());
@@ -117,13 +122,18 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str(":\n");
             print_decl_members(out, members, depth + 1, *kind);
         }
-        Stmt::FunctionDecl { name, params, body, .. } => {
+        Stmt::FunctionDecl { name, params, ret, body, .. } => {
             push_indent(out, depth);
             out.push_str("function ");
             out.push_str(name);
             out.push('(');
             push_params(out, params);
-            out.push_str("):\n");
+            out.push(')');
+            if let Some(ret_ty) = ret {
+                out.push_str(" -> ");
+                out.push_str(&ret_ty.to_string());
+            }
+            out.push_str(":\n");
             print_block(out, body, depth + 1);
         }
         Stmt::Return { value, .. } => {
@@ -180,6 +190,39 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str("despawn ");
             print_expr(out, target, Prec::Lowest);
             out.push('\n');
+        }
+        Stmt::Wait { duration, .. } => {
+            push_indent(out, depth);
+            out.push_str("wait ");
+            print_expr(out, duration, Prec::Lowest);
+            out.push('\n');
+        }
+        Stmt::DialogueDecl { name, body, .. } => {
+            push_indent(out, depth);
+            out.push_str("dialogue ");
+            out.push_str(name);
+            out.push_str(":\n");
+            print_block(out, body, depth + 1);
+        }
+        Stmt::Say { actor, text, .. } => {
+            push_indent(out, depth);
+            out.push_str("say ");
+            if let Some(a) = actor {
+                print_expr(out, a, Prec::Lowest);
+                out.push_str(": ");
+            }
+            print_expr(out, text, Prec::Lowest);
+            out.push('\n');
+        }
+        Stmt::Choice { branches, .. } => {
+            push_indent(out, depth);
+            out.push_str("choice:\n");
+            for (label, body) in branches {
+                push_indent(out, depth + 1);
+                print_expr(out, label, Prec::Lowest);
+                out.push_str(":\n");
+                print_block(out, body, depth + 2);
+            }
         }
         Stmt::Expr(e) => {
             push_indent(out, depth);
@@ -241,27 +284,46 @@ fn member_takes_blank_line(m: &DeclMember) -> bool {
 
 fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize) {
     match m {
-        DeclMember::Field { name, value, .. } => {
+        DeclMember::Field { name, value, ty, .. } => {
             push_indent(out, depth);
             // `var X = expr` reads better than `X: expr` for
             // variable fields — but the AST doesn't distinguish
             // `var` from `:` form; both parse to DeclMember::Field.
             // We use the `:` form (equivalent in semantics, and
             // shorter) because it round-trips through the parser.
+            // Phase 6 session 4: when the field has an explicit
+            // annotation, render it as `name: type = value` so
+            // strict-mode-annotated programs round-trip.
             out.push_str(name);
-            out.push_str(": ");
-            print_expr(out, value, Prec::Lowest);
+            match ty {
+                Some(t) => {
+                    out.push_str(": ");
+                    out.push_str(&t.to_string());
+                    out.push_str(" = ");
+                    print_expr(out, value, Prec::Lowest);
+                }
+                None => {
+                    out.push_str(": ");
+                    print_expr(out, value, Prec::Lowest);
+                }
+            }
             out.push('\n');
         }
-        DeclMember::Method { name, params, body, .. } => {
+        DeclMember::Method { name, params, ret, body, .. } => {
             push_indent(out, depth);
-            // Method form: `name(params):` — same shape as
-            // free-function `function name(params):` but without
-            // the leading `function` keyword.
+            // Method form: `name(params)[ -> ret]:`. Phase 6
+            // session 4 lifted method param + return annotations
+            // onto the AST; print them so the formatter
+            // round-trips annotated methods.
             out.push_str(name);
             out.push('(');
             push_params(out, params);
-            out.push_str("):\n");
+            out.push(')');
+            if let Some(rt) = ret {
+                out.push_str(" -> ");
+                out.push_str(&rt.to_string());
+            }
+            out.push_str(":\n");
             print_block(out, body, depth + 1);
         }
         DeclMember::InitialState { name, .. } => {
@@ -335,19 +397,31 @@ fn print_state_member(out: &mut String, m: &StateMember, depth: usize) {
             out.push_str("):\n");
             print_block(out, body, depth + 1);
         }
+        StateMember::OnPredicate { predicate, body, .. } => {
+            push_indent(out, depth);
+            out.push_str("on ");
+            print_expr(out, predicate, Prec::Lowest);
+            out.push_str(":\n");
+            print_block(out, body, depth + 1);
+        }
     }
 }
 
-fn push_params(out: &mut String, params: &[String]) {
+fn push_params(out: &mut String, params: &[crate::ast::Param]) {
     let mut first = true;
     for p in params {
         if !first {
             out.push_str(", ");
         }
         first = false;
-        out.push_str(p);
+        out.push_str(&p.name);
+        if let Some(ty) = &p.ty {
+            out.push_str(": ");
+            out.push_str(&ty.to_string());
+        }
     }
 }
+
 
 fn print_assign_target(out: &mut String, target: &AssignTarget) {
     match target {
@@ -700,11 +774,12 @@ mod tests {
     #[test]
     fn formats_scene_with_state_and_every() {
         let src = "scene S:\n    var n: int = 0\n\n    initial: a\n\n    state a:\n        every 100ms:\n            n += 1\n";
-        // var/type annotations are dropped (the AST doesn't carry them).
-        // Expect: field as `n: 0`, blank line, initial, blank line, state.
+        // Phase 6 session 4: field annotations are now kept on
+        // the AST, so the formatter round-trips `n: int = 0`
+        // verbatim instead of stripping the type.
         let got = fmt(src);
         assert!(got.contains("scene S:\n"), "got: {got}");
-        assert!(got.contains("    n: 0\n"), "got: {got}");
+        assert!(got.contains("    n: int = 0\n"), "got: {got}");
         assert!(got.contains("    initial: a\n"), "got: {got}");
         assert!(got.contains("    state a:\n"), "got: {got}");
         assert!(got.contains("        every 100ms:\n"), "got: {got}");

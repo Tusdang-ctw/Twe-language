@@ -37,6 +37,40 @@ use crate::value::{Env, RuntimeError, Value};
 /// the bytecode VM too.
 const MAX_CATCHUP_FIRES_PER_FRAME: u32 = 8;
 
+/// Convert a runtime value to seconds for `wait <duration>`. Mirrors
+/// `eval::quantity_to_seconds` — kept separate so the bytecode VM
+/// doesn't reach into the tree-walker's eval module. The two will
+/// reconcile when the value layer unifies (post-NaN-tagging).
+fn wait_duration_to_seconds(v: &Value, line: u32) -> Result<f64, RuntimeError> {
+    match v {
+        Value::Quantity { value, unit } => match unit.as_str() {
+            "s" => Ok(*value),
+            "ms" => Ok(*value / 1000.0),
+            "min" => Ok(*value * 60.0),
+            "h" => Ok(*value * 3600.0),
+            other => Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!(
+                    "wait <duration> needs a time unit (s, ms, min, h), got '{other}'"
+                ),
+                help: None,
+            }),
+        },
+        Value::Float(f) => Ok(*f),
+        Value::Int(n) => Ok(*n as f64),
+        other => Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!(
+                "wait <duration> expects a duration quantity, got {}",
+                other.type_name()
+            ),
+            help: Some("e.g. `wait 0.5s` or `wait 250ms`".to_string()),
+        }),
+    }
+}
+
 #[derive(Copy, Clone)]
 enum ArithOp {
     Add,
@@ -305,6 +339,45 @@ impl VM {
                         return Ok(result);
                     }
                     self.push(result);
+                    reload!();
+                }
+                OpCode::Wait => {
+                    // Phase 5 fibers. Pop the duration value, convert
+                    // to seconds, save the resume IP + chunk + the
+                    // remaining wait time on the active scene's
+                    // BcInstance, and collapse the current frame the
+                    // same way `Return` does (with synthetic Nil).
+                    // `tick_scene` resumes the chunk from the saved
+                    // IP once `entry_wait_remaining` reaches zero.
+                    sync_ip!();
+                    let dur = self.pop()?;
+                    let secs = wait_duration_to_seconds(&dur, line)?;
+                    let scene = self.active_scene.clone().ok_or_else(|| RuntimeError {
+                        line,
+                        col: 0,
+                        message: "`wait` requires an active scene".to_string(),
+                        help: Some(
+                            "`wait` only fires from inside a state's on_entry body, which executes under an active scene".to_string(),
+                        ),
+                    })?;
+                    let frame = self.frames.pop().expect("frame to suspend on wait");
+                    {
+                        let mut inst = scene.borrow_mut();
+                        inst.entry_resume_function = Some(Rc::clone(&frame.function));
+                        // `ip` was advanced past the OP_WAIT byte; resume
+                        // at exactly that point next frame.
+                        inst.entry_resume_ip = Some(ip);
+                        inst.entry_wait_remaining = secs;
+                    }
+                    self.stack.truncate(frame.slot_base);
+                    if self.frames.len() < target_depth {
+                        self.push(Value::Nil);
+                        return Ok(Value::Nil);
+                    }
+                    if self.frames.is_empty() {
+                        return Ok(Value::Nil);
+                    }
+                    self.push(Value::Nil);
                     reload!();
                 }
                 OpCode::GetLocal => {
@@ -1096,6 +1169,33 @@ impl VM {
         scene: &Rc<RefCell<BcInstance>>,
         dt: f64,
     ) -> Result<(), RuntimeError> {
+        // Phase 5 fibers: if on_entry is suspended, count down by
+        // dt. Either keep waiting (skip the rest of this state's
+        // tick — the state is "asleep") or resume the saved chunk
+        // from the saved IP. Mirrors `eval::tick_scene`'s leading
+        // resume-or-skip block.
+        let resume_pending = {
+            let inst = scene.borrow();
+            inst.entry_resume_ip.is_some()
+        };
+        if resume_pending {
+            let new_remaining = scene.borrow().entry_wait_remaining - dt;
+            if new_remaining > 0.0 {
+                scene.borrow_mut().entry_wait_remaining = new_remaining;
+                return Ok(());
+            }
+            self.resume_state_entry(scene)?;
+            if let Some(target) = self.transitioning.take() {
+                return self.enter_state(scene, &target);
+            }
+            // Resuming may have hit another `wait` — the
+            // BcInstance now carries fresh resume state. Bail
+            // out of the rest of this tick (clocks + on_update
+            // stay paused while suspended).
+            if scene.borrow().entry_resume_ip.is_some() {
+                return Ok(());
+            }
+        }
         // Snapshot the current state's bodies before running so a
         // transition mid-tick doesn't fire the new state's clocks
         // this frame (matches `eval::tick_scene`).
@@ -1123,6 +1223,47 @@ impl VM {
             )?;
             if let Some(target) = self.transitioning.take() {
                 return self.enter_state(scene, &target);
+            }
+        }
+
+        // Phase 5 task 4: predicate hooks. Same edge-triggered
+        // semantics as the tree-walker — invoke each predicate
+        // chunk, compare against per-instance last value, fire body
+        // on false → true. A transition inside a body short-circuits
+        // and re-enters immediately.
+        let predicates: Vec<(Rc<BcFunction>, Rc<BcFunction>)> = {
+            let inst = scene.borrow();
+            inst.current_state
+                .as_ref()
+                .and_then(|n| inst.class.states.get(n))
+                .map(|s| s.on_predicates.clone())
+                .unwrap_or_default()
+        };
+        for (idx, (pred_func, body_func)) in predicates.iter().enumerate() {
+            let value = self.invoke_method_value(
+                pred_func.clone(),
+                Value::BcInstance(scene.clone()),
+                &[],
+            )?;
+            let now_true = is_truthy(&value);
+            let prev = scene
+                .borrow()
+                .predicate_last_values
+                .get(idx)
+                .copied()
+                .unwrap_or(false);
+            if idx < scene.borrow().predicate_last_values.len() {
+                scene.borrow_mut().predicate_last_values[idx] = now_true;
+            }
+            if now_true && !prev {
+                self.invoke_method_value(
+                    body_func.clone(),
+                    Value::BcInstance(scene.clone()),
+                    &[],
+                )?;
+                if let Some(target) = self.transitioning.take() {
+                    return self.enter_state(scene, &target);
+                }
             }
         }
 
@@ -1179,28 +1320,45 @@ impl VM {
         scene: &Rc<RefCell<BcInstance>>,
         state_name: &str,
     ) -> Result<(), RuntimeError> {
-        let state = scene
-            .borrow()
-            .class
-            .states
-            .get(state_name)
-            .cloned()
-            .ok_or_else(|| RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!("no state named '{state_name}'"),
-                help: Some(
-                    "transitions must target a `state <name>:` declared in the same scene"
-                        .to_string(),
-                ),
-            })?;
+        let state = match scene.borrow().class.states.get(state_name).cloned() {
+            Some(s) => s,
+            None => {
+                let inst = scene.borrow();
+                let names: Vec<&String> = inst.class.states.keys().collect();
+                let suggestion = crate::value::did_you_mean(state_name, &names).map(str::to_string);
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!("no state named '{state_name}'"),
+                    help: Some(match suggestion {
+                        Some(s) => format!("did you mean `-> {s}`?"),
+                        None => "transitions must target a `state <name>:` declared in the same scene"
+                            .to_string(),
+                    }),
+                });
+            }
+        };
         {
             let mut inst = scene.borrow_mut();
             inst.current_state = Some(state.name.clone());
             inst.every_timers = vec![0.0; state.every_clocks.len()];
             inst.every_intervals_secs = state.every_clocks.iter().map(|(s, _)| *s).collect();
+            // Phase 5 fibers: clear any stale resume state from the
+            // previous state. Entering a state always restarts its
+            // on_entry from the top.
+            inst.entry_resume_function = None;
+            inst.entry_resume_ip = None;
+            inst.entry_wait_remaining = 0.0;
+            // Phase 5 task 4: reset predicate edge state. Initial
+            // value is `false` so a predicate already true on the
+            // first tick fires immediately (matches the
+            // tree-walker's behavior).
+            inst.predicate_last_values = vec![false; state.on_predicates.len()];
         }
-        // Run on_entry. A transition inside the body cascades.
+        // Run on_entry. A transition inside the body cascades. A
+        // `wait` inside the body emits OP_WAIT, which collapses the
+        // call frame after writing resume state to the BcInstance —
+        // `invoke_method_value` returns Nil and we fall through.
         self.invoke_method_value(
             state.on_entry.clone(),
             Value::BcInstance(scene.clone()),
@@ -1209,6 +1367,53 @@ impl VM {
         if let Some(next) = self.transitioning.take() {
             return self.enter_state(scene, &next);
         }
+        Ok(())
+    }
+
+    /// Resume a state's on_entry from where an `OP_WAIT` suspended
+    /// it. Pushes a fresh frame for the saved chunk, sets its IP to
+    /// the saved value (one byte past the OP_WAIT), and dispatches
+    /// until the chunk returns or hits another wait. `slot_base` is
+    /// the receiver slot — `self` (the BcInstance) is pushed at
+    /// that position so `OP_GET_LOCAL 0` resolves correctly during
+    /// the resumed body.
+    fn resume_state_entry(
+        &mut self,
+        scene: &Rc<RefCell<BcInstance>>,
+    ) -> Result<(), RuntimeError> {
+        let (function, resume_ip) = {
+            let mut inst = scene.borrow_mut();
+            let func = inst.entry_resume_function.take().ok_or_else(|| RuntimeError {
+                line: 0,
+                col: 0,
+                message: "vm: resume_state_entry called without a saved chunk".to_string(),
+                help: None,
+            })?;
+            let ip = inst.entry_resume_ip.take().unwrap_or(0);
+            inst.entry_wait_remaining = 0.0;
+            (func, ip)
+        };
+        let recv_idx = self.stack.len();
+        self.stack.push(Value::BcInstance(scene.clone()));
+        let target_depth = self.frames.len();
+        if self.frames.len() >= FRAMES_MAX {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: "stack overflow".to_string(),
+                help: Some(format!(
+                    "call stack exceeded {FRAMES_MAX} frames during state-entry resume"
+                )),
+            });
+        }
+        self.frames.push(CallFrame {
+            function,
+            ip: resume_ip,
+            slot_base: recv_idx,
+        });
+        let _result = self.dispatch(target_depth + 1)?;
+        // dispatch() left the result on top; pop it so the stack stays clean.
+        self.stack.pop();
         Ok(())
     }
 
@@ -1893,6 +2098,10 @@ fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
         despawned: false,
+        entry_resume_function: None,
+        entry_resume_ip: None,
+        entry_wait_remaining: 0.0,
+        predicate_last_values: Vec::new(),
     })))
 }
 
@@ -2851,6 +3060,132 @@ mod tests {
         let src = "var n = 0\non update(dt):\n    n += 1\n    print(n)\n";
         let out = run_program_frames(src, 3, 0.016).expect("ok");
         assert_eq!(out, "1\n2\n3\n");
+    }
+
+    // --- Phase 5 fibers in the bytecode VM ---
+
+    #[test]
+    fn vm_wait_in_state_suspends_until_duration_elapses() {
+        // dt = 0.25, three frames, wait 0.5s → frames 1+2 produce
+        // only the on_entry prefix, frame 3 resumes through the
+        // transition into `done`. Same shape as the tree-walker
+        // test in `tests/eval.rs`.
+        let src = concat!(
+            "scene Demo:\n",
+            "    initial: alert\n",
+            "\n",
+            "    state alert:\n",
+            "        print(\"alert enter\")\n",
+            "        wait 0.5s\n",
+            "        print(\"alert resume\")\n",
+            "        -> done\n",
+            "\n",
+            "    state done:\n",
+            "        print(\"done enter\")\n",
+        );
+        let out = run_program_frames(src, 3, 0.25).expect("ok");
+        assert_eq!(out, "alert enter\nalert resume\ndone enter\n");
+    }
+
+    #[test]
+    fn vm_wait_resumes_in_one_frame_when_dt_covers_duration() {
+        // Single frame, dt = 1.0 covers the 0.5s wait — entry,
+        // resume, and the transition all run in the same tick.
+        let src = concat!(
+            "scene Demo:\n",
+            "    initial: alert\n",
+            "\n",
+            "    state alert:\n",
+            "        print(\"alert enter\")\n",
+            "        wait 0.5s\n",
+            "        print(\"alert resume\")\n",
+            "        -> done\n",
+            "\n",
+            "    state done:\n",
+            "        print(\"done enter\")\n",
+        );
+        let out = run_program_frames(src, 1, 1.0).expect("ok");
+        assert_eq!(out, "alert enter\nalert resume\ndone enter\n");
+    }
+
+    #[test]
+    fn vm_wait_outside_state_body_is_a_compile_error() {
+        // `wait` inside a function body is rejected by the
+        // bytecode compiler — the runtime suspension mechanism
+        // only handles state on_entry.
+        let src = "function pause():\n    wait 0.5s\n\npause()\n";
+        let err = compile_err(src);
+        assert!(
+            err.contains("`wait` is only supported")
+                || err.contains("wait is only supported"),
+            "expected wait-context error, got: {err}"
+        );
+    }
+
+    // --- Phase 5 task 4: predicate hooks in the bytecode VM ---
+
+    #[test]
+    fn vm_predicate_hook_transitions_on_false_to_true() {
+        // chase decrements hp via its every-clock; on hp <= 30 the
+        // predicate transitions to dead. Edge-triggered: only one
+        // "dead" print no matter how many frames after.
+        let src = concat!(
+            "scene Goblin:\n",
+            "    var hp: int = 100\n",
+            "    initial: chase\n",
+            "    state chase:\n",
+            "        every 100ms:\n",
+            "            hp -= 25\n",
+            "        on hp <= 30:\n",
+            "            -> dead\n",
+            "    state dead:\n",
+            "        print(\"dead\")\n",
+        );
+        let out = run_program_frames(src, 30, 0.050).expect("ok");
+        // 30 frames * 50ms = 1500ms total. With every 100ms, we
+        // get 15 fires of `hp -= 25`. Predicate fires when hp
+        // first drops to <= 30 (after 3 fires: 75, 50, 25). dead
+        // prints exactly once.
+        assert!(out.contains("dead"), "expected dead, got: {out:?}");
+        assert_eq!(out.matches("dead").count(), 1, "edge-triggered: {out:?}");
+    }
+
+    #[test]
+    fn vm_predicate_hook_stable_true_fires_once() {
+        let src = concat!(
+            "scene S:\n",
+            "    var fired: int = 0\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        on true:\n",
+            "            fired += 1\n",
+            "            print(fired)\n",
+        );
+        let out = run_program_frames(src, 5, 0.020).expect("ok");
+        // True from the start and stays true — body fires exactly
+        // once (the false → true edge on the first frame).
+        assert_eq!(out, "1\n");
+    }
+
+    #[test]
+    fn vm_wait_inside_if_in_state_body_is_a_compile_error() {
+        // Same constraint as the tree-walker: `wait` must be a
+        // direct statement of state on_entry. Wrapping it in an
+        // `if` makes it a sub-block, which `compile_on_entry`
+        // delegates to `emit_stmt`, surfacing the error.
+        let src = concat!(
+            "scene Demo:\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        if true:\n",
+            "            wait 0.1s\n",
+        );
+        let err = compile_err(src);
+        assert!(
+            err.contains("`wait` is only supported")
+                || err.contains("wait is only supported"),
+            "expected wait-context error, got: {err}"
+        );
     }
 
     #[test]

@@ -3,9 +3,26 @@ pub struct Program {
     pub stmts: Vec<Stmt>,
 }
 
+/// A function parameter — name plus an optional type annotation.
+/// Non-strict mode parses the annotation but ignores it (the
+/// inferer just allocates a fresh var); strict mode unifies the
+/// fresh var against the annotation at function-decl time so a
+/// call site that disagrees errors. Phase 6 session 2.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub ty: Option<crate::types::Type>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    Let { name: String, value: Expr, line: u32, col: u32 },
+    Let {
+        name: String,
+        value: Expr,
+        ty: Option<crate::types::Type>,
+        line: u32,
+        col: u32,
+    },
     Assign { target: AssignTarget, op: AssignOp, value: Expr, line: u32, col: u32 },
     If {
         cond: Expr,
@@ -21,6 +38,16 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    /// Top-level `on render():` handler — fires once per rendered
+    /// frame in `twec play3d`. Distinct from
+    /// `StateMember::OnRender` (state-scoped, 2D macroquad path);
+    /// the top-level form is the 3D-rendering entry point and is
+    /// stored on `Env::top_on_render`. Phase 5 task 5 session (d).
+    OnRender {
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
     Decl {
         kind: DeclKind,
         name: String,
@@ -31,7 +58,8 @@ pub enum Stmt {
     },
     FunctionDecl {
         name: String,
-        params: Vec<String>,
+        params: Vec<Param>,
+        ret: Option<crate::types::Type>,
         body: Vec<Stmt>,
         line: u32,
         col: u32,
@@ -78,6 +106,46 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    /// `wait <duration>` — cooperative suspension. Inside a state's
+    /// on-entry sequence, the runtime stores the next-statement
+    /// index and resumes after `duration` elapses. Outside that
+    /// context, the tree-walker raises a runtime error (Phase 5
+    /// task 2 ships state-entry only; dialogue / `every` rewrite
+    /// follow).
+    Wait {
+        duration: Expr,
+        line: u32,
+        col: u32,
+    },
+    /// `dialogue <Name>:` — top-level declaration of a dialogue
+    /// routine. The body is a sequence of statements (say, choice,
+    /// wait, regular code). Calling `<Name>()` runs the body. Phase
+    /// 5 task 3.
+    DialogueDecl {
+        name: String,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
+    /// `say [<actor>:] "<text>"` — dialogue line. With an actor
+    /// expression the runtime prints `Actor: text`; without one,
+    /// just the text. Phase 5 task 3.
+    Say {
+        actor: Option<Expr>,
+        text: Expr,
+        line: u32,
+        col: u32,
+    },
+    /// `choice:` — branching dialogue prompt. Each branch has a
+    /// label expression (typically a string literal) and a body.
+    /// V0.1 always picks the first branch (deterministic for
+    /// testing); real interactive selection ships in a Phase 5
+    /// follow-on once the UI surface is designed.
+    Choice {
+        branches: Vec<(Expr, Vec<Stmt>)>,
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
 }
 
@@ -109,12 +177,23 @@ pub enum DeclMember {
     Field {
         name: String,
         value: Expr,
+        /// Optional `: <type>` annotation. Strict mode (Phase 6
+        /// session 4) unifies the value's inferred type against
+        /// this; non-strict ignores. None when the field was
+        /// written without a colon-prefixed type.
+        ty: Option<crate::types::Type>,
         line: u32,
         col: u32,
     },
     Method {
         name: String,
-        params: Vec<String>,
+        /// Method parameters now carry their annotations the same
+        /// way top-level functions do (Phase 6 session 4). Phase 6
+        /// session 2 dropped them into `Vec<String>`; this lifts
+        /// them back so strict mode can enforce them.
+        params: Vec<Param>,
+        /// Return type annotation, when present.
+        ret: Option<crate::types::Type>,
         body: Vec<Stmt>,
         line: u32,
         col: u32,
@@ -161,6 +240,16 @@ pub enum StateMember {
     /// closes Phase 2 frustration F5.
     OnUpdate {
         param: String,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
+    /// `on <predicate>: body` — predicate event handler. The runtime
+    /// evaluates the predicate each frame and fires the body when
+    /// the value transitions from false → true (edge-triggered).
+    /// Only active while in the enclosing state. Phase 5 task 4.
+    OnPredicate {
+        predicate: Expr,
         body: Vec<Stmt>,
         line: u32,
         col: u32,

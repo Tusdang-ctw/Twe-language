@@ -75,6 +75,18 @@ pub struct StateDef {
     /// State-scoped `on update(dt):`. Fires once per frame with the
     /// real dt while this state is active. Closes Phase 2 F5.
     pub on_update: Option<OnUpdateHandler>,
+    /// State-scoped `on <predicate>:` handlers. Each entry is the
+    /// predicate expression and its body. The runtime tracks each
+    /// predicate's last evaluated truthiness on the active
+    /// instance and fires the body on a false → true transition
+    /// (edge-triggered). Phase 5 task 4 (Example 4 surface).
+    pub on_predicates: Vec<PredicateHandlerDef>,
+}
+
+#[derive(Debug)]
+pub struct PredicateHandlerDef {
+    pub predicate: crate::ast::Expr,
+    pub body: Vec<crate::ast::Stmt>,
 }
 
 #[derive(Debug)]
@@ -96,6 +108,20 @@ pub struct Instance {
     /// Set by `despawn self`; the runtime drops this instance from
     /// `Env::active_entities` at the end of the frame.
     pub despawned: bool,
+    /// Phase 5 fibers: when `Some(idx)`, the on-entry sequence of
+    /// the current state is paused on a `wait` and should resume
+    /// from statement `idx` once `entry_wait_remaining` reaches
+    /// zero. `None` means the entry sequence ran to completion (or
+    /// the state has no entry body / hasn't been entered).
+    pub entry_resume_index: Option<usize>,
+    /// Seconds left on the active `wait`. Decremented by `dt` each
+    /// frame the instance ticks.
+    pub entry_wait_remaining: f64,
+    /// Phase 5 task 4: parallel-indexed to the active state's
+    /// `on_predicates`. Records the last evaluated truthiness of
+    /// each predicate so the runtime can detect false → true
+    /// transitions (edge-triggered firing). Reset on state entry.
+    pub predicate_last_values: Vec<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -215,6 +241,10 @@ pub struct Env {
     bindings: HashMap<String, Value>,
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
+    /// Top-level `on render():` handler — runs once per rendered
+    /// frame in `twec play3d`. State-scoped on_render lives on
+    /// `StateDef` and is for the 2D macroquad path.
+    pub top_on_render: Option<Vec<crate::ast::Stmt>>,
     pub active_scene: Option<Rc<RefCell<Instance>>>,
     pub active_entities: Vec<Rc<RefCell<Instance>>>,
     pub self_value: Option<Value>,
@@ -225,7 +255,32 @@ pub struct Env {
     pub in_render: bool,
     pub loop_depth: u32,
     pub call_depth: u32,
+    /// 3D draw queue accumulated across one frame's `on render():`
+    /// body. `cube(at:, color:, size:)` and friends push here; the
+    /// `play3d` render loop drains and consumes after the body
+    /// finishes. Cleared at the start of each frame.
+    pub render_queue3d: Vec<DrawCall3d>,
     rng_state: u64,
+}
+
+/// One queued 3D primitive. Phase 6 session 7 added the `Primitive`
+/// tag — a single render queue can now mix cubes and spheres,
+/// dispatched as separate instanced draw calls in `play3d::render`.
+#[derive(Debug, Clone, Copy)]
+pub struct DrawCall3d {
+    pub primitive: Primitive,
+    pub at: [f32; 3],
+    pub color: [f32; 4],
+    pub size: f32,
+}
+
+/// The mesh shape behind a `DrawCall3d`. Each variant has its own
+/// vertex/index buffer in `play3d`; a frame's queue is partitioned
+/// per-primitive and each subset becomes one instanced draw call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Primitive {
+    Cube,
+    Sphere,
 }
 
 #[derive(Clone, Debug)]
@@ -240,6 +295,7 @@ impl Env {
             bindings: HashMap::new(),
             out: String::new(),
             on_update: None,
+            top_on_render: None,
             active_scene: None,
             active_entities: Vec::new(),
             self_value: None,
@@ -250,6 +306,7 @@ impl Env {
             in_render: false,
             loop_depth: 0,
             call_depth: 0,
+            render_queue3d: Vec::new(),
             // xorshift64* seeded from a fixed constant for deterministic
             // tests. CLI can override via `twec run --seed N`.
             rng_state: 0x9E37_79B9_7F4A_7C15,
@@ -298,5 +355,139 @@ impl Env {
 impl Default for Env {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Find the closest match in `candidates` for the misspelled name
+/// `target`, using Damerau-style edit distance ≤ 2. Returns
+/// `Some(name)` only when a clear single best candidate exists —
+/// no result for empty candidate sets, names that already match
+/// exactly, or ties that would be unhelpful to print. Phase 6
+/// session 4 (error-message polish).
+///
+/// Bounded distance: 1 for short names (≤ 4 chars), 2 for longer
+/// names. Stops users seeing "did you mean: foo?" when they typed
+/// something that bears no relation to any known name. The cost
+/// of a false suggestion (confused user pursuing a wrong fix) is
+/// higher than the cost of no suggestion.
+pub fn did_you_mean<'a, I, S>(target: &str, candidates: I) -> Option<&'a str>
+where
+    I: IntoIterator<Item = &'a S>,
+    S: AsRef<str> + 'a + ?Sized,
+{
+    if target.is_empty() {
+        return None;
+    }
+    let limit = if target.chars().count() <= 4 { 1 } else { 2 };
+    let mut best: Option<(&str, usize)> = None;
+    for c in candidates {
+        let cand = c.as_ref();
+        if cand == target {
+            // Exact match — no suggestion to make.
+            return None;
+        }
+        let d = edit_distance(target, cand, limit + 1);
+        if d <= limit {
+            match best {
+                None => best = Some((cand, d)),
+                Some((_, bd)) if d < bd => best = Some((cand, d)),
+                Some((_, bd)) if d == bd => {
+                    // Tie: don't print either. Two equally close
+                    // matches usually means the user had a
+                    // different name in mind entirely.
+                    best = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    best.map(|(name, _)| name)
+}
+
+/// Bounded Levenshtein distance — returns the actual distance up
+/// to `cap`, or any value > `cap` when the strings are further
+/// apart than that. The cap turns the inner loop into early-exit
+/// once a row's minimum exceeds the cap, which keeps `did_you_mean`
+/// fast on long candidate lists.
+fn edit_distance(a: &str, b: &str, cap: usize) -> usize {
+    let a_bytes: Vec<char> = a.chars().collect();
+    let b_bytes: Vec<char> = b.chars().collect();
+    let n = a_bytes.len();
+    let m = b_bytes.len();
+    if n.abs_diff(m) > cap {
+        return cap + 1;
+    }
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut curr: Vec<usize> = vec![0; m + 1];
+    for i in 1..=n {
+        curr[0] = i;
+        let mut row_min = curr[0];
+        for j in 1..=m {
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+            if curr[j] < row_min {
+                row_min = curr[j];
+            }
+        }
+        if row_min > cap {
+            return cap + 1;
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[m]
+}
+
+#[cfg(test)]
+mod did_you_mean_tests {
+    use super::*;
+
+    #[test]
+    fn finds_one_char_typo() {
+        let candidates = vec!["math.abs".to_string(), "math.cos".to_string()];
+        assert_eq!(did_you_mean("math.cs", &candidates), Some("math.cos"));
+    }
+
+    #[test]
+    fn returns_none_for_unrelated() {
+        let candidates = vec!["math.abs".to_string()];
+        assert_eq!(did_you_mean("xyzzy", &candidates), None);
+    }
+
+    #[test]
+    fn returns_none_on_exact_match() {
+        let candidates = vec!["foo".to_string()];
+        assert_eq!(did_you_mean("foo", &candidates), None);
+    }
+
+    #[test]
+    fn returns_none_on_tie() {
+        // Two equally close — don't pick either.
+        let candidates = vec!["abc".to_string(), "abd".to_string()];
+        assert_eq!(did_you_mean("abe", &candidates), None);
+    }
+
+    #[test]
+    fn short_names_use_distance_1() {
+        // "ax" vs "by" is distance 2 — too far for a 2-char target.
+        let candidates = vec!["by".to_string()];
+        assert_eq!(did_you_mean("ax", &candidates), None);
+        // Distance 1 is fine.
+        let candidates = vec!["ay".to_string()];
+        assert_eq!(did_you_mean("ax", &candidates), Some("ay"));
+    }
+
+    #[test]
+    fn longer_names_use_distance_2() {
+        // "function" vs "funciton" — two char swaps from each other.
+        let candidates = vec!["function".to_string()];
+        assert_eq!(did_you_mean("funciton", &candidates), Some("function"));
     }
 }

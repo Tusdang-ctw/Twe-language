@@ -37,6 +37,18 @@ pub enum TokenKind {
     Continue,
     Spawn,
     Despawn,
+    /// `wait <duration>` — suspends the current state-entry body for
+    /// the given duration. Phase 5 task 2 (cooperative fibers).
+    Wait,
+    /// `dialogue Name:` — declares a dialogue routine. Phase 5 task 3.
+    Dialogue,
+    /// `say [<actor>:] "<text>"` — dialogue-line statement.
+    Say,
+    /// `choice:` — branching dialogue prompt. Phase 5 task 3.
+    Choice,
+    /// `actor <name> = <expr>` — alias for `let` inside dialogue
+    /// bodies (Example 3 surface). Phase 5 task 3.
+    Actor,
     Ident(String),
     Int(i64),
     Float(f64),
@@ -963,6 +975,11 @@ impl<'a> Lexer<'a> {
             "continue" => TokenKind::Continue,
             "spawn" => TokenKind::Spawn,
             "despawn" => TokenKind::Despawn,
+            "wait" => TokenKind::Wait,
+            "dialogue" => TokenKind::Dialogue,
+            "say" => TokenKind::Say,
+            "choice" => TokenKind::Choice,
+            "actor" => TokenKind::Actor,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }

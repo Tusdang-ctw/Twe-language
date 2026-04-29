@@ -78,19 +78,24 @@ Behavior:
 - The checker is sound: if it doesn't flag something, you have a guarantee.
 - Used by: shipping code, library authors, anyone who wants compile-time safety.
 
-Activation: `--! strict` at the top of a file, or per-block with a directive.
+Activation: a `# strict` (or `#! strict`) magic-comment line on one of the first ten lines of the source. Twe uses `#` for comments, so the directive is a regular comment that the inferer pre-scans for. Luau-style `--!` is also fine but `#` is the established Twe spelling.
+
+**v0.1 implementation status (Phase 6, closed).** The directive + reporting policy + `Vec<TypeError>` accumulation ship in both `twec types` (exits non-zero on errors) and the LSP (`severity: Error` diagnostics inline). Strict mode catches: comparison mismatches, return-type conflicts, function-call argument mismatches, concrete-type arithmetic mismatches, `let` / function-param / function-return annotation violations, class field annotation violations, method param + return annotation violations, and unknown-identifier references (with `did_you_mean` suggestions). Stdlib globals are pre-seeded so `print` / `vec3` / `math.*` don't trip. See the Phase 6 closeout note `docs/changes/2026-04-29-phase-6-closeout.md`. **Deferred to v0.2:** structural-record subtyping under strict (e.g., a `{a, b}`-shaped function accepting an instance with extra fields), Luau-style "lax strict" widening rules.
 
 Example:
 
 ```twe
---! strict
+# strict
 
 function damage(target: Entity, amount: int) -> bool:
     if target.invulnerable: return false
     target.hp -= amount
     return true
 
-# this errors at compile time:
+# this errors at compile time (after session 2 lands annotation
+# enforcement; today, the comparison/arithmetic strict checks
+# fire on most real type mismatches but not yet on annotation
+# violations):
 damage(player, "lots")
 #               ^^^^^ expected int, got string
 ```

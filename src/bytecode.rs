@@ -212,6 +212,15 @@ pub enum OpCode {
     /// the top-level `on update(dt):` handler. Stored on the VM
     /// and fired once per `tick(dt)` before the scene tick.
     SetOnUpdate,
+    /// Phase 5 fibers: pop the stack-top duration value (interpreted
+    /// as seconds), record the active scene's resume IP + chunk + the
+    /// remaining wait time on the BcInstance, then collapse the
+    /// current frame the same way `Return` does (pushes Nil as the
+    /// synthetic result so the VM-side caller in `enter_state` /
+    /// `tick_scene` receives a normal return). Only emitted by the
+    /// compiler at the top level of a state's on_entry body — the
+    /// `Stmt::Wait` arm of `emit_stmt` errors elsewhere.
+    Wait,
 }
 
 impl OpCode {
@@ -268,6 +277,7 @@ impl OpCode {
             44 => OpCode::Despawn,
             45 => OpCode::Transition,
             46 => OpCode::SetOnUpdate,
+            47 => OpCode::Wait,
             other => panic!("OpCode::from_u8: invalid byte {other}"),
         }
     }
@@ -377,6 +387,13 @@ pub struct BcStateDef {
     /// while the state is active. Keyed by the key name (`right`,
     /// `space`, etc.). Body takes no params.
     pub on_key_press: HashMap<String, Rc<BcFunction>>,
+    /// `on <predicate>:` handlers (Phase 5 task 4). The first tuple
+    /// element is a no-arg method-shape function whose chunk
+    /// evaluates the predicate and returns the value; the second is
+    /// the handler body. The VM tick loop invokes the predicate
+    /// each frame, checks truthiness against the per-instance
+    /// last-value vec, and fires the body on a false → true edge.
+    pub on_predicates: Vec<(Rc<BcFunction>, Rc<BcFunction>)>,
 }
 
 /// A live instance of a `BcClassDef`. Field reads/writes go
@@ -394,6 +411,19 @@ pub struct BcInstance {
     /// Set by `despawn self`; the runtime drops this instance from
     /// `VM::active_entities` at the end of the frame.
     pub despawned: bool,
+    /// Phase 5 fibers: when on_entry hits an `OP_WAIT`, the VM
+    /// records the active chunk + the resume IP here. Subsequent
+    /// `tick_scene` calls decrement `entry_wait_remaining` and
+    /// re-invoke the chunk from the saved IP when zero. `None` =
+    /// not suspended.
+    pub entry_resume_function: Option<Rc<BcFunction>>,
+    pub entry_resume_ip: Option<usize>,
+    pub entry_wait_remaining: f64,
+    /// Phase 5 task 4: parallel-indexed to the active state's
+    /// `on_predicates`. Records the last evaluated truthiness so the
+    /// VM can detect false → true transitions for edge-triggered
+    /// firing. Reset on state entry.
+    pub predicate_last_values: Vec<bool>,
 }
 
 /// Format a Chunk as a human-readable instruction listing. Mirrors
@@ -475,6 +505,7 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         OpCode::Despawn => simple_instruction(out, "OP_DESPAWN", offset),
         OpCode::Transition => constant_instruction(out, "OP_TRANSITION", chunk, offset),
         OpCode::SetOnUpdate => constant_instruction(out, "OP_SET_ON_UPDATE", chunk, offset),
+        OpCode::Wait => simple_instruction(out, "OP_WAIT", offset),
     }
 }
 

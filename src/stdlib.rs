@@ -96,6 +96,7 @@ pub fn install(env: &mut Env) {
     install_entities(env);
     install_time(env);
     install_sound(env);
+    install_3d(env);
 }
 
 fn install_sound(env: &mut Env) {
@@ -290,6 +291,26 @@ fn install_math(env: &mut Env) {
             func: math_max,
         },
     );
+    math.insert(
+        "sin".to_string(),
+        Value::Builtin {
+            name: "math.sin",
+            params: &["x"],
+            func: math_sin,
+        },
+    );
+    math.insert(
+        "cos".to_string(),
+        Value::Builtin {
+            name: "math.cos",
+            params: &["x"],
+            func: math_cos,
+        },
+    );
+    math.insert(
+        "pi".to_string(),
+        Value::Float(std::f64::consts::PI),
+    );
     env.set(
         "math".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
@@ -436,6 +457,16 @@ fn math_max(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             Ok(Value::Float(af.max(bf)))
         }
     }
+}
+
+fn math_sin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "math.sin")?;
+    Ok(Value::Float(as_f64(&args[0], "math.sin")?.sin()))
+}
+
+fn math_cos(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "math.cos")?;
+    Ok(Value::Float(as_f64(&args[0], "math.cos")?.cos()))
 }
 
 fn install_random(env: &mut Env) {
@@ -966,4 +997,169 @@ fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let color = color_of(&args[3], "text.color")?;
     macroquad::text::draw_text(&content, x as f32, y as f32, size, color);
     Ok(Value::Nil)
+}
+
+// --- Phase 5 task 5 sessions (d) + (e): 3D rendering surface ---
+
+fn install_3d(env: &mut Env) {
+    // `vec3(x, y, z)` constructor — returns a 3-tuple. Twe tuples
+    // already expose `.x`/`.y`/`.z` and component-wise +/-/* with
+    // scalars (see `eval::field_get` and tuple arithmetic), so a
+    // 3-tuple already behaves as a vec3. The constructor is just
+    // sugar that reads better at call sites:
+    //   `cube(at: vec3(0, 1, 0), …)`
+    env.set(
+        "vec3".to_string(),
+        Value::Builtin {
+            name: "vec3",
+            params: &["x", "y", "z"],
+            func: vec3_impl,
+        },
+    );
+
+    // `cube(at: vec3, color: (r, g, b, a), size: float)` — queues a
+    // unit-cube draw at `at`, scaled by `size`, tinted by `color`.
+    // Only valid inside `on render():` (require_render guards).
+    env.set(
+        "cube".to_string(),
+        Value::Builtin {
+            name: "cube",
+            params: &["at", "color", "size"],
+            func: cube_impl,
+        },
+    );
+
+    // `sphere(at: vec3, color: (r, g, b, a), size: float)` — same
+    // shape as `cube`, different mesh. Phase 6 session 7 (the
+    // first v0.2 carry-over to actually ship in v0.1).
+    env.set(
+        "sphere".to_string(),
+        Value::Builtin {
+            name: "sphere",
+            params: &["at", "color", "size"],
+            func: sphere_impl,
+        },
+    );
+
+    // `camera` ambient — eye / target / up are mutable Tuple fields
+    // the script writes via `camera.eye = vec3(...)`. The `play3d`
+    // render loop reads them each frame to build the view matrix.
+    let mut fields = HashMap::new();
+    fields.insert(
+        "eye".to_string(),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(0.0),
+            Value::Float(1.5),
+            Value::Float(3.0),
+        ])),
+    );
+    fields.insert(
+        "target".to_string(),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(0.0),
+            Value::Float(0.0),
+            Value::Float(0.0),
+        ])),
+    );
+    fields.insert(
+        "up".to_string(),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(0.0),
+            Value::Float(1.0),
+            Value::Float(0.0),
+        ])),
+    );
+    env.set(
+        "camera".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields,
+            kind: "camera",
+        }))),
+    );
+}
+
+fn vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "vec3")?;
+    let x = number(&args[0], "vec3.x")?;
+    let y = number(&args[1], "vec3.y")?;
+    let z = number(&args[2], "vec3.z")?;
+    Ok(Value::Tuple(Rc::new(vec![
+        Value::Float(x),
+        Value::Float(y),
+        Value::Float(z),
+    ])))
+}
+
+fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "cube")?;
+    arity(args, 3, "cube")?;
+    let at = xyz_of(&args[0], "cube.at")?;
+    let color = rgba_of(&args[1], "cube.color")?;
+    let size = number(&args[2], "cube.size")? as f32;
+    env.render_queue3d.push(crate::value::DrawCall3d {
+        primitive: crate::value::Primitive::Cube,
+        at,
+        color,
+        size,
+    });
+    Ok(Value::Nil)
+}
+
+fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "sphere")?;
+    arity(args, 3, "sphere")?;
+    let at = xyz_of(&args[0], "sphere.at")?;
+    let color = rgba_of(&args[1], "sphere.color")?;
+    let size = number(&args[2], "sphere.size")? as f32;
+    env.render_queue3d.push(crate::value::DrawCall3d {
+        primitive: crate::value::Primitive::Sphere,
+        at,
+        color,
+        size,
+    });
+    Ok(Value::Nil)
+}
+
+/// Pull a 3-component float vector out of a Twe tuple. Used by the
+/// 3D builtins. Mirrors `xy_of` but for the third axis.
+fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
+    match v {
+        Value::Tuple(elems) if elems.len() == 3 => Ok([
+            number(&elems[0], what)? as f32,
+            number(&elems[1], what)? as f32,
+            number(&elems[2], what)? as f32,
+        ]),
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what} expects a 3-component tuple (vec3), got {}",
+                other.type_name()
+            ),
+            help: Some("e.g. `vec3(0, 1, 0)` or `(0, 1, 0)`".to_string()),
+        }),
+    }
+}
+
+/// Pull an RGBA float quartet out of a Twe tuple.
+fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
+    match v {
+        Value::Tuple(elems) if elems.len() == 4 => Ok([
+            number(&elems[0], what)? as f32,
+            number(&elems[1], what)? as f32,
+            number(&elems[2], what)? as f32,
+            number(&elems[3], what)? as f32,
+        ]),
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what} expects a 4-component color tuple, got {}",
+                other.type_name()
+            ),
+            help: Some(
+                "use `color.red` etc. or build with `(r, g, b, a)` floats".to_string(),
+            ),
+        }),
+    }
 }

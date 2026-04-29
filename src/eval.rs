@@ -383,6 +383,29 @@ fn dispatch_key_press(
     Ok(())
 }
 
+/// Run the top-level `on render():` body for the wgpu/3D path.
+/// Clears the per-frame render queue first so `cube()` calls don't
+/// pile up across frames; the caller drains `env.render_queue3d`
+/// after this returns. `in_render` gates the drawing builtins so
+/// they can't be called outside a render frame. Phase 5 task 5
+/// session (d).
+pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
+    env.render_queue3d.clear();
+    let body = match env.top_on_render.clone() {
+        Some(b) => b,
+        None => return Ok(()),
+    };
+    let prev_render = env.in_render;
+    env.in_render = true;
+    let result = run_block(env, &body);
+    env.in_render = prev_render;
+    // A `return` in the top-level on_render body just stops the
+    // current frame's draw composition; clear the flag so
+    // subsequent frames aren't affected.
+    env.returning.take();
+    result
+}
+
 /// Run the active scene's current state's on-render handler, plus
 /// each active entity's `render()` method. Drawing primitives in
 /// stdlib check `env.in_render`; the caller is responsible for
@@ -453,6 +476,50 @@ fn tick_scene(
         return Ok(());
     }
     let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    // Phase 5 fibers: if the on-entry sequence is suspended on a
+    // `wait`, count down by `dt` and either keep waiting (skip the
+    // rest of this state's tick — the state is "asleep") or
+    // resume the sequence from the stored index.
+    let resume_info: Option<(usize, f64)> = {
+        let inst = scene.borrow();
+        inst.entry_resume_index.map(|idx| (idx, inst.entry_wait_remaining))
+    };
+    if let Some((resume_idx, remaining)) = resume_info {
+        let new_remaining = remaining - dt;
+        if new_remaining > 0.0 {
+            scene.borrow_mut().entry_wait_remaining = new_remaining;
+            env.self_value = prev_self;
+            return Ok(());
+        }
+        // Wait elapsed — resume the on-entry body. Pull the
+        // statement list out under a single borrow.
+        let on_entry: Vec<Stmt> = {
+            let inst = scene.borrow();
+            inst.current_state
+                .as_ref()
+                .and_then(|n| inst.class.states.get(n))
+                .map(|s| s.on_entry.clone())
+                .unwrap_or_default()
+        };
+        run_state_entry(env, scene, &on_entry, resume_idx)?;
+        if let Some(target) = env.transitioning.take() {
+            enter_state(env, scene, &target)?;
+            env.self_value = prev_self;
+            return Ok(());
+        }
+        // Resuming may have hit another `wait` — if so, the
+        // instance now has a fresh `entry_resume_index`. Bail out
+        // of the rest of this tick (clocks + on_update stay
+        // paused while the entry is suspended).
+        if scene.borrow().entry_resume_index.is_some() {
+            env.self_value = prev_self;
+            return Ok(());
+        }
+        if env.returning.is_some() {
+            env.self_value = prev_self;
+            return Ok(());
+        }
+    }
     // State-scoped `on update(dt):` fires once per frame BEFORE the
     // every-clocks for this state. The top-level on_update has
     // already run (in tick_frame). A transition or return inside
@@ -475,6 +542,52 @@ fn tick_scene(
             enter_state(env, scene, &target)?;
             env.self_value = prev_self;
             return Ok(());
+        }
+    }
+    // Phase 5 task 4: evaluate predicate hooks (`on hp < 20%:`,
+    // `on player.within(8m):`, …). Each predicate's current
+    // truthiness is compared against the last-seen value on the
+    // instance; on a false → true transition we run the body.
+    // Edge-triggered, so a predicate that stays true doesn't
+    // re-fire. A transition inside a body cascades into the new
+    // state immediately and skips the rest of this state's
+    // predicates + clocks for this frame.
+    let predicates: Vec<(crate::ast::Expr, Vec<Stmt>)> = {
+        let inst = scene.borrow();
+        inst.current_state
+            .as_ref()
+            .and_then(|n| inst.class.states.get(n))
+            .map(|s| {
+                s.on_predicates
+                    .iter()
+                    .map(|p| (p.predicate.clone(), p.body.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for (idx, (pred, body)) in predicates.iter().enumerate() {
+        let value = eval_expr(env, pred)?;
+        let now_true = is_truthy(&value);
+        let prev = scene
+            .borrow()
+            .predicate_last_values
+            .get(idx)
+            .copied()
+            .unwrap_or(false);
+        if idx < scene.borrow().predicate_last_values.len() {
+            scene.borrow_mut().predicate_last_values[idx] = now_true;
+        }
+        if now_true && !prev {
+            run_block(env, body)?;
+            if env.returning.is_some() {
+                env.self_value = prev_self;
+                return Ok(());
+            }
+            if let Some(target) = env.transitioning.take() {
+                enter_state(env, scene, &target)?;
+                env.self_value = prev_self;
+                return Ok(());
+            }
         }
     }
     // Tick each clock with bounded catch-up: a clock whose accumulated
@@ -539,19 +652,23 @@ fn enter_state(
     // Resolve the target state on the class.
     let state = {
         let inst = scene.borrow();
-        inst.class
-            .states
-            .get(state_name)
-            .cloned()
-            .ok_or_else(|| RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!("no state named '{state_name}'"),
-                help: Some(
-                    "transitions must target a `state <name>:` declared in the same scene"
-                        .to_string(),
-                ),
-            })?
+        match inst.class.states.get(state_name).cloned() {
+            Some(s) => s,
+            None => {
+                let names: Vec<&String> = inst.class.states.keys().collect();
+                let suggestion = crate::value::did_you_mean(state_name, &names).map(str::to_string);
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!("no state named '{state_name}'"),
+                    help: Some(match suggestion {
+                        Some(s) => format!("did you mean `-> {s}`?"),
+                        None => "transitions must target a `state <name>:` declared in the same scene"
+                            .to_string(),
+                    }),
+                });
+            }
+        }
     };
     // Replace current_state, reset timers / intervals.
     {
@@ -559,6 +676,12 @@ fn enter_state(
         inst.current_state = Some(state.name.clone());
         inst.every_timers = vec![0.0; state.every_clocks.len()];
         inst.every_intervals_secs.clear();
+        // Phase 5 task 4: reset predicate edge-detection state.
+        // Initial value is `false` so a predicate that's already
+        // true on the first tick after entry fires immediately —
+        // matches game-state-machine intuition while keeping the
+        // edge-triggered contract.
+        inst.predicate_last_values = vec![false; state.on_predicates.len()];
     }
     // Resolve each every-clock interval (in seconds) by evaluating the
     // interval expression with self bound to the scene instance.
@@ -569,14 +692,68 @@ fn enter_state(
         intervals.push(quantity_to_seconds(&v, clock.interval.line(), clock.interval.col())?);
     }
     scene.borrow_mut().every_intervals_secs = intervals;
-    // Run the on-entry body.
-    run_block(env, &state.on_entry)?;
+    // Reset suspension state — entering a new state restarts the
+    // entry sequence from the top regardless of where the previous
+    // state was paused.
+    {
+        let mut inst = scene.borrow_mut();
+        inst.entry_resume_index = None;
+        inst.entry_wait_remaining = 0.0;
+    }
+    // Run the on-entry body resumably. If the body hits a `wait`,
+    // run_state_entry stores the resume index + remaining seconds
+    // on the instance and returns normally — `tick_scene` picks up
+    // the work next frame after the wait elapses.
+    run_state_entry(env, scene, &state.on_entry, 0)?;
     // A transition during on_entry is followed immediately.
     if let Some(next) = env.transitioning.take() {
         env.self_value = prev_self;
         return enter_state(env, scene, &next);
     }
     env.self_value = prev_self;
+    Ok(())
+}
+
+/// Walk a state's on-entry statements from `start_at`, stopping
+/// early on `wait` (suspending) or any other control-flow signal
+/// (return / break / continue / transition). When a `Stmt::Wait`
+/// is hit, evaluate its duration to seconds, write the next
+/// statement index + remaining seconds to the instance, and
+/// return; the tick loop resumes the body once the timer elapses.
+///
+/// `wait` is only meaningful at this top level — it's intercepted
+/// here directly rather than dispatched through `eval_stmt`. The
+/// `Stmt::Wait` arm of `eval_stmt` errors, which catches `wait`
+/// inside conditional / loop / function bodies (any path that goes
+/// through `run_block`).
+fn run_state_entry(
+    env: &mut Env,
+    scene: &Rc<RefCell<Instance>>,
+    stmts: &[Stmt],
+    start_at: usize,
+) -> Result<(), RuntimeError> {
+    for (i, stmt) in stmts.iter().enumerate().skip(start_at) {
+        if let Stmt::Wait { duration, line, col } = stmt {
+            let v = eval_expr(env, duration)?;
+            let secs = quantity_to_seconds(&v, *line, *col)?;
+            let mut inst = scene.borrow_mut();
+            inst.entry_resume_index = Some(i + 1);
+            inst.entry_wait_remaining = secs;
+            return Ok(());
+        }
+        eval_stmt(env, stmt)?;
+        if env.returning.is_some()
+            || env.breaking
+            || env.continuing
+            || env.transitioning.is_some()
+        {
+            return Ok(());
+        }
+    }
+    // Body completed normally — clear any stale resume state.
+    let mut inst = scene.borrow_mut();
+    inst.entry_resume_index = None;
+    inst.entry_wait_remaining = 0.0;
     Ok(())
 }
 
@@ -606,7 +783,10 @@ fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeErr
                 message: format!(
                     "every <duration> needs a time unit (s, ms, min, h), got '{other}'"
                 ),
-                help: None,
+                help: Some(
+                    "duration literals carry a unit suffix: `100ms`, `0.5s`, `2min`, `1h`"
+                        .to_string(),
+                ),
             }),
         },
         Value::Float(f) => Ok(*f),
@@ -674,11 +854,16 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             Ok(())
         }
         Stmt::FunctionDecl { name, params, body, .. } => {
+            // Annotations don't affect runtime semantics; the
+            // tree-walker still binds bare-name params. Strict
+            // mode (Phase 6 session 2) uses the annotations
+            // statically in `infer.rs`.
+            let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
             env.set(
                 name.clone(),
                 Value::Function(Rc::new(FunctionDef {
                     name: name.clone(),
-                    params: params.clone(),
+                    params: param_names,
                     body: body.clone(),
                 })),
             );
@@ -691,7 +876,11 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     col: *col,
                     message: "`return` is only valid inside a function or method body"
                         .to_string(),
-                    help: None,
+                    help: Some(
+                        "to exit early from a state body, use `-> <state>` to transition; \
+                         to exit a dialogue, the dialogue's body ends naturally"
+                            .to_string(),
+                    ),
                 });
             }
             let v = match value {
@@ -721,7 +910,10 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     line: *line,
                     col: *col,
                     message: "`break` is only valid inside a loop".to_string(),
-                    help: None,
+                    help: Some(
+                        "loops are `while <cond>:` and `for <var> in <iter>:` — `break` exits the nearest enclosing one"
+                            .to_string(),
+                    ),
                 });
             }
             env.breaking = true;
@@ -733,7 +925,10 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     line: *line,
                     col: *col,
                     message: "`continue` is only valid inside a loop".to_string(),
-                    help: None,
+                    help: Some(
+                        "loops are `while <cond>:` and `for <var> in <iter>:` — `continue` skips to the next iteration of the nearest enclosing one"
+                            .to_string(),
+                    ),
                 });
             }
             env.continuing = true;
@@ -798,11 +993,103 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 }),
             }
         }
+        Stmt::DialogueDecl { name, body, .. } => {
+            // Register the dialogue as a parameterless callable. We
+            // reuse `Value::Function` so the existing call-site
+            // machinery (function-call lookup, scoping, return
+            // semantics) Just Works. The dialogue's body runs to
+            // completion when invoked; v0.1 does not pause on
+            // `wait` inside a dialogue (the wait runtime error
+            // surfaces if a user tries it — see the
+            // `wait`-context error in the Stmt::Wait arm). A
+            // per-dialogue scheduler is a Phase 5 task 3 follow-on.
+            let dialogue = Value::Function(Rc::new(FunctionDef {
+                name: name.clone(),
+                params: Vec::new(),
+                body: body.clone(),
+            }));
+            env.set(name.clone(), dialogue);
+            Ok(())
+        }
+        Stmt::Say { actor, text, line, col } => {
+            let text_value = eval_expr(env, text)?;
+            let text_str = text_value.display();
+            let actor_str = match actor {
+                Some(a) => Some(eval_expr(env, a)?),
+                None => None,
+            };
+            match actor_str {
+                Some(av) => {
+                    // Render the actor with whatever's most natural
+                    // for the value: instances show their class name
+                    // (Wren-style), strings show themselves, anything
+                    // else falls back to `display`. Output is a
+                    // single line per `say`.
+                    let label = match &av {
+                        Value::Instance(inst) => inst.borrow().class.name.clone(),
+                        Value::Str(s) => s.as_ref().clone(),
+                        other => other.display(),
+                    };
+                    env.out.push_str(&format!("{label}: {text_str}\n"));
+                }
+                None => {
+                    env.out.push_str(&text_str);
+                    env.out.push('\n');
+                }
+            }
+            // Suppress the line/col warning when neither actor nor
+            // text errors — they're carried for diagnostics if a
+            // future strict pass cares.
+            let _ = (*line, *col);
+            Ok(())
+        }
+        Stmt::Choice { branches, line, col } => {
+            // Print each label so a transcript shows the user what
+            // was on offer. v0.1 always picks the first branch — the
+            // deterministic surface is enough to ship dialogue;
+            // interactive selection is a Phase 5 task 3 follow-on.
+            for (i, (label, _)) in branches.iter().enumerate() {
+                let label_value = eval_expr(env, label)?;
+                env.out.push_str(&format!(
+                    "  [{}] {}\n",
+                    i + 1,
+                    label_value.display()
+                ));
+            }
+            // Pick branch 0. Empty branches list was rejected at
+            // parse time, so unwrap is safe.
+            let (_, body) = branches.first().expect("choice has at least one branch");
+            run_block(env, body)?;
+            let _ = (*line, *col);
+            Ok(())
+        }
+        Stmt::Wait { line, col, .. } => {
+            // Phase 5 task 2: `wait` is intercepted directly by
+            // `run_state_entry` before reaching this arm. Any path
+            // that lands here ran through `run_block`, which means
+            // `wait` was used somewhere we don't yet support
+            // (function body, every-clock, on update, …). Surface
+            // the limitation explicitly rather than silently sleep
+            // for zero seconds.
+            Err(RuntimeError {
+                line: *line,
+                col: *col,
+                message: "`wait` is only supported as a direct statement of a state body in v0.1"
+                    .to_string(),
+                help: Some(
+                    "move the `wait` to the top level of a `state <name>:` body — fiber-aware contexts (functions, every, dialogue) ship in later Phase 5 sessions".to_string(),
+                ),
+            })
+        }
         Stmt::OnUpdate { param, body, .. } => {
             env.on_update = Some(OnUpdateHandler {
                 param: param.clone(),
                 body: body.clone(),
             });
+            Ok(())
+        }
+        Stmt::OnRender { body, .. } => {
+            env.top_on_render = Some(body.clone());
             Ok(())
         }
         Stmt::Decl {
@@ -902,14 +1189,24 @@ fn eval_assign(
                         new_value
                     } else {
                         let current = rc.borrow().fields.get(name).cloned().ok_or_else(|| {
+                            let inst = rc.borrow();
+                            let names: Vec<&String> = inst.fields.keys().collect();
+                            let suggestion =
+                                crate::value::did_you_mean(name, &names).map(str::to_string);
                             RuntimeError {
                                 line,
                                 col,
                                 message: format!(
                                     "field '{name}' is not defined on instance of {}",
-                                    rc.borrow().class.name
+                                    inst.class.name
                                 ),
-                                help: None,
+                                help: match suggestion {
+                                    Some(s) => Some(format!("did you mean `{s}`?")),
+                                    None => Some(
+                                        "use `<instance>.<field> = <value>` only for fields declared on the class"
+                                            .to_string(),
+                                    ),
+                                },
                             }
                         })?;
                         compound(op, &current, &new_value, line, col)?
@@ -996,7 +1293,10 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             line: *line,
             col: *col,
             message: "`self` is only valid inside a method body".to_string(),
-            help: None,
+            help: Some(
+                "method bodies inside `entity` / `item` / `scene` blocks bind `self` to the instance; outside that, refer to values by name"
+                    .to_string(),
+            ),
         }),
         Expr::Tuple { elems, .. } => {
             let mut vals = Vec::with_capacity(elems.len());
@@ -1115,7 +1415,10 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
                     line,
                     col,
                     message: format!("tuple index {i} out of bounds (length {len})"),
-                    help: None,
+                    help: Some(format!(
+                        "tuple indices are 0-based, so a length-{len} tuple uses indices 0..{}",
+                        len.saturating_sub(1)
+                    )),
                 });
             }
             Ok(elems[actual as usize].clone())
@@ -1653,6 +1956,9 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
         despawned: false,
+        entry_resume_index: None,
+        entry_wait_remaining: 0.0,
+        predicate_last_values: Vec::new(),
     })))
 }
 
@@ -1862,10 +2168,15 @@ fn eval_decl(
                 body,
                 ..
             } => {
+                // Annotations don't affect runtime semantics; the
+                // tree-walker still binds bare-name params. Strict
+                // mode (Phase 6 session 4) consumes the annotations
+                // statically in `infer.rs`.
+                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 methods.insert(
                     mname.clone(),
                     Rc::new(MethodDef {
-                        params: params.clone(),
+                        params: param_names,
                         body: body.clone(),
                     }),
                 );
@@ -1879,6 +2190,7 @@ fn eval_decl(
                 let mut on_render: Option<Vec<Stmt>> = None;
                 let mut on_key_press: HashMap<String, Vec<Stmt>> = HashMap::new();
                 let mut on_update: Option<OnUpdateHandler> = None;
+                let mut on_predicates: Vec<crate::value::PredicateHandlerDef> = Vec::new();
                 for sm in smembers {
                     match sm {
                         StateMember::Stmt(stmt) => on_entry.push(stmt.clone()),
@@ -1900,6 +2212,12 @@ fn eval_decl(
                                 body: body.clone(),
                             });
                         }
+                        StateMember::OnPredicate { predicate, body, .. } => {
+                            on_predicates.push(crate::value::PredicateHandlerDef {
+                                predicate: predicate.clone(),
+                                body: body.clone(),
+                            });
+                        }
                     }
                 }
                 states.insert(
@@ -1911,6 +2229,7 @@ fn eval_decl(
                         on_render,
                         on_key_press,
                         on_update,
+                        on_predicates,
                     }),
                 );
             }

@@ -185,6 +185,8 @@ This is a deliberate move *away* from Lua's classic GC behavior, which has bitte
 
 Cooperative fibers + a single-threaded VM. No threads in v0.1.
 
+**v0.1 status (Phase 5 tasks 2 & 3):** `wait <duration>` ships in **both** backends (tree-walker and bytecode VM) for state on-entry bodies. `dialogue` / `say` / `choice` ship in the tree-walker as a sequential runtime — say prints, choice picks the first branch, wait inside dialogue is deferred to a per-dialogue scheduler in a follow-on session. Other fiber-using surfaces (function-body wait, fiber-backed `every` rewrite, bytecode dialogue) are listed in `notes/future-phases.md`.
+
 The reasoning:
 
 - The vast majority of game scripting is not CPU-bound.

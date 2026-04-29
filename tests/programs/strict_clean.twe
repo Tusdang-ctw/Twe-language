@@ -1,0 +1,13 @@
+# strict
+#
+# Phase 6 session 1: a strict-mode program that type-checks
+# cleanly. Same shape as a non-strict program — strict mode is
+# additive when every constraint resolves consistently.
+
+let x = 42
+let y = x + 1
+
+function double(n):
+    return n * 2
+
+let r = double(7)

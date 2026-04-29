@@ -47,6 +47,8 @@ The reason: language design is infinitely deep, but games are concrete. A workin
 
 ## Phase 1 — Tree-walking interpreter
 
+**Status:** closed. See `notes/future-phases.md` "Phase 1 retro" — runs Examples 1, 2 (simplified), and the in-tree test programs at ~3000 LOC of Rust.
+
 **Duration:** 6–10 weeks.
 
 **Goal:** the simplest possible Twe interpreter that runs the ten example programs (or simplified versions of them).
@@ -90,6 +92,8 @@ Total target: ~6000 LOC of Rust.
 
 ## Phase 2 — Vertical-slice game
 
+**Status:** closed 2026-04-28. Five of six components shipped; cooperative fibers deferred per `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`. All four exit-criteria bullets pass — `examples/survive.twe` runs (~120 lines), hot reload works, the 15-item frustration list at `docs/changes/2026-04-28-phase-2-frustration-list.md` is the input for Phase 3.
+
 **Duration:** 4–8 weeks.
 
 **Goal:** a small but complete 2D game written in Twe, using a real graphics backend.
@@ -128,6 +132,8 @@ Reasons:
 
 ## Phase 3 — Design correction + bytecode VM
 
+**Status:** closed 2026-04-29. See `docs/changes/2026-04-29-phase-3-and-4-closeout.md` for the full ledger. All four exit-criteria bullets pass; F1 / F4 / F5+F8 / F11 frustrations resolved; bytecode VM, `twec fmt`, tree-sitter grammar, and basic LSP all ship. NaN tagging, incremental tracing GC, computed-goto, and cooperative fibers were re-deferred — fibers move to Phase 5 entry; NaN tagging + GC move to v0.2 / post-v0.1; computed-goto requires nightly Rust and is satisfied vacuously by LLVM jump-table lowering.
+
 **Duration:** 8–12 weeks.
 
 **Goal:** apply the lessons from Phase 2's frustration list, then upgrade from tree-walking to bytecode for performance.
@@ -165,6 +171,8 @@ This is the phase where the design becomes mature.
 
 ## Phase 4 — Type system v1 (non-strict mode)
 
+**Status:** closed 2026-04-29. See `docs/changes/2026-04-29-phase-3-and-4-closeout.md`. All seven components ship: type AST, HM unification, function-body constraint solving, structural class shapes, Optional / Union from multi-return, dimensional unit checking, LSP hover. `twec types` runs cleanly on every on-disk Twe program (5 examples + 27 test programs). Exit criteria: hover passes; type-driven autocomplete shipped on the Phase 5 entry session (same day); "all ten examples type-check unmodified" partially closes (every on-disk program passes) and reopens for the seven Phase-5-blocked programs as those constructs land.
+
 **Duration:** 6–10 weeks.
 
 **Goal:** ship the non-strict mode of the type system from `02-type-system.md`.
@@ -189,6 +197,8 @@ This is the phase where the design becomes mature.
 
 ## Phase 5 — 3D + scenes + dialogue
 
+**Status:** closed at v0.1-minimum-viable on 2026-04-29. See `docs/changes/2026-04-29-phase-5-closeout.md` for the full ledger. Tasks 1–4 (LSP autocomplete, state-body fibers in both backends, dialogue runtime, predicate hooks) substantively ship. Task 5 (3D backend) ships across sessions (a)–(e) plus a carry-over session for input + hot reload + lighting — `twec play3d examples/hello_3d.twe` runs a Twe-driven scene of cubes the user controls with WASD, lit by a Lambertian directional sun, with mtime-poll hot reload. Tasks 6 (tilemap) and 7 (save schemas) defer to v0.2 along with task-5 follow-ons: `.glb` mesh import, generic primitives, bytecode VM 3D path, `mat4`/`quat`, proper lighting, mouse input.
+
 **Duration:** 8–12 weeks.
 
 **Goal:** ship the rest of the example programs. Specifically, get Examples 3 (dialogue), 4 (state-machine AI), 7 (save/load), 8 (3D camera), 9 (tilemap), and 10 (boss fight) running.
@@ -212,6 +222,8 @@ This is the phase where the design becomes mature.
 
 ## Phase 6 — Tooling, polish, documentation
 
+**Status:** closed 2026-04-29 per `docs/changes/2026-04-29-phase-6-closeout.md`. Eight sessions: strict-mode reporting policy (1), annotation enforcement on lets / function params / function returns (2), tutorial draft (3), error-message polish + `did_you_mean` helper (4), strict-mode unknown-identifier diagnostics (5), VS Code packaging readiness (6), `sphere()` primitive + per-primitive instanced render path (7), class field / method annotation enforcement (8). 427 tests pass. Structural-record subtyping + Luau lax-strict widening + tutorial iteration pass-2 deferred to v0.2. Marketplace publish + binaries + website + blog post are Phase 7.
+
 **Duration:** 6–10 weeks.
 
 **Goal:** Twe is usable by people who aren't the implementer.
@@ -234,6 +246,8 @@ This is the phase where the design becomes mature.
 ---
 
 ## Phase 7 — v0.1 public release
+
+**Status:** active as of 2026-04-29 (Phase 6 closed). Mostly non-code work: release engineering, packaging, writing, and the marketplace push. The codebase itself has the v0.1 surface; Phase 7 makes it discoverable.
 
 **Duration:** 2–4 weeks of release prep.
 

@@ -1,0 +1,51 @@
+# Phase 5–6 demo. Drives the wgpu loop entirely from Twe.
+#
+# - `on update(dt):` reads `key.*` to drive the camera.
+# - `on render():` queues the scene each frame. Mix of cubes
+#   and spheres demonstrating the per-primitive instanced
+#   render path (Phase 6 session 7).
+# - Hot reload: edit this file, save, the window picks up
+#   the change without restart.
+
+let radius = 2.0
+let cam_distance = 4.0
+let turn_speed = 1.5
+var orbit = 0.0
+var auto_orbit_speed = 0.6
+
+on update(dt):
+    var manual = false
+    if key.a or key.left:
+        orbit = orbit - turn_speed * dt
+        manual = true
+    if key.d or key.right:
+        orbit = orbit + turn_speed * dt
+        manual = true
+    if not manual:
+        orbit = orbit + auto_orbit_speed * dt
+
+    var height = 1.5
+    if key.w or key.up:
+        height = 2.5
+    if key.s or key.down:
+        height = 0.5
+
+    camera.eye = vec3(
+        cam_distance * math.sin(orbit),
+        height,
+        cam_distance * math.cos(orbit),
+    )
+    camera.target = vec3(0, 0, 0)
+
+on render():
+    # Center sphere — slightly larger, white. Lit by the same
+    # directional sun as the cubes; the curvature reads.
+    sphere(at: vec3(0, 0, 0), color: (0.95, 0.95, 0.95, 1.0), size: 0.9)
+    # Ring of cubes around the X / Z axes.
+    cube(at: vec3( radius, 0, 0), color: color.red,    size: 0.5)
+    cube(at: vec3(-radius, 0, 0), color: color.green,  size: 0.5)
+    cube(at: vec3(0, 0,  radius), color: color.blue,   size: 0.5)
+    cube(at: vec3(0, 0, -radius), color: color.yellow, size: 0.5)
+    # Spheres on the Y axis.
+    sphere(at: vec3(0,  radius, 0), color: color.purple, size: 0.4)
+    sphere(at: vec3(0, -radius, 0), color: color.orange, size: 0.4)

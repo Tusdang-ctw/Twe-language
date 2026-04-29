@@ -132,8 +132,14 @@ fn runs_example_1_three_frames() {
 
 #[test]
 fn on_update_outside_v01_event_set_errors() {
+    // v0.1 accepts `on update(dt):` and `on render():` at the top
+    // level; anything else (named events, predicates) is reserved
+    // for state bodies.
     let err = run_program_str("on click(e):\n    print(e)\n").expect_err("should fail");
-    assert!(err.contains("only `on update(dt):`"), "got: {err}");
+    assert!(
+        err.contains("`on click` is not supported"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -819,4 +825,238 @@ fn run_program_str(src: &str) -> Result<String, String> {
     let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
     let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;
     eval::run(&program).map_err(|e| format!("eval: {e}"))
+}
+
+// --- Phase 5 task 2: cooperative fibers via `wait <duration>` ---
+
+#[test]
+fn wait_in_state_suspends_until_duration_elapses() {
+    // Frame 1 (dt=0.25): enter `alert` → "alert enter" → wait 0.5s.
+    //                    Suspended with 0.5s remaining.
+    // Frame 2 (dt=0.25): tick scene → 0.25s left, still suspended.
+    //                    No prints.
+    // Frame 3 (dt=0.25): tick scene → wait elapses, resume from
+    //                    statement after `wait` → "alert resume" →
+    //                    -> done → enter `done` → "done enter".
+    let out = run_program_frames("tests/programs/wait_in_state.twe", 3, 0.25)
+        .expect("program should run");
+    assert_eq!(out, "alert enter\nalert resume\ndone enter\n");
+}
+
+#[test]
+fn wait_resumes_in_one_frame_when_dt_covers_duration() {
+    // Same program, but a single frame with dt = 1.0 covers the
+    // full 0.5s wait — the resume runs in the same frame and
+    // produces all three lines back-to-back.
+    let out = run_program_frames("tests/programs/wait_in_state.twe", 1, 1.0)
+        .expect("program should run");
+    assert_eq!(out, "alert enter\nalert resume\ndone enter\n");
+}
+
+#[test]
+fn wait_outside_state_body_is_a_runtime_error() {
+    // `wait` only works at the top level of a state body in v0.1.
+    // Using it inside a function body should error with a clear
+    // help message rather than silently doing nothing.
+    let src = r#"
+function pause():
+    wait 0.5s
+
+pause()
+"#;
+    let err = run_program_str(src).expect_err("should fail");
+    assert!(
+        err.contains("`wait` is only supported"),
+        "expected the wait-context error, got: {err}"
+    );
+}
+
+#[test]
+fn wait_inside_if_in_state_body_is_a_runtime_error() {
+    // Even at the top of a state body, `wait` must be a *direct*
+    // statement — wrapping it in an `if` makes it part of a
+    // sub-block run via `run_block`, which surfaces the same
+    // error. The constraint is documented; this test pins it.
+    let src = r#"
+scene Demo:
+    initial: a
+    state a:
+        if true:
+            wait 0.1s
+"#;
+    let err = run_program_frames_str(src, 1, 0.5).expect_err("should fail");
+    assert!(
+        err.contains("`wait` is only supported"),
+        "expected the wait-context error, got: {err}"
+    );
+}
+
+fn run_program_frames_str(src: &str, frames: u32, dt: f64) -> Result<String, String> {
+    let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
+    let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;
+    eval::run_with_frames(&program, frames, dt).map_err(|e| format!("eval: {e}"))
+}
+
+// --- Phase 5 task 4: predicate hooks ---
+
+#[test]
+fn predicate_hook_fires_on_false_to_true_transition() {
+    // chase's every-clock decrements hp by 25 each 100ms; once hp
+    // hits 30, the `on hp <= 30:` predicate fires and transitions
+    // to flee. flee's clock decrements hp by 50; `on hp <= 0:`
+    // transitions to dead.
+    let out = run_program_frames("tests/programs/predicate_hook.twe", 50, 0.020)
+        .expect("program should run");
+    let lines: Vec<&str> = out.trim_end().split('\n').collect();
+    assert!(
+        lines.starts_with(&["chase"]),
+        "expected to start in chase, got {lines:?}"
+    );
+    assert!(
+        lines.contains(&"flee"),
+        "expected predicate to fire and reach flee, got {lines:?}"
+    );
+    assert!(
+        lines.contains(&"dead"),
+        "expected second predicate to reach dead, got {lines:?}"
+    );
+    // Edge-triggered: each state's print lines appear exactly once
+    // (no re-firing while predicate stays true).
+    assert_eq!(lines.iter().filter(|s| **s == "flee").count(), 1);
+    assert_eq!(lines.iter().filter(|s| **s == "dead").count(), 1);
+}
+
+#[test]
+fn predicate_hook_does_not_re_fire_while_stable_true() {
+    // Predicate is true on first frame and stays true. Body must
+    // run exactly once (false → true edge), not every frame.
+    let src = r#"
+scene S:
+    var fired: int = 0
+    initial: a
+    state a:
+        on true:
+            fired += 1
+            print(fired)
+
+on update(dt):
+    pass_var = 0
+"#;
+    // The dummy `on update(dt)` lets us tick frames; body is a no-op
+    // assignment. Run several frames and verify the predicate fired
+    // exactly once.
+    let _ = src; // The above program won't compile (`pass_var = 0` requires var declaration).
+    // Use a simpler shape:
+    let src = r#"
+scene S:
+    var fired: int = 0
+    initial: a
+    state a:
+        on true:
+            fired += 1
+            print(fired)
+"#;
+    let out = run_program_frames_str(src, 5, 0.020).expect("program should run");
+    // Edge-triggered: only one "1" print across 5 frames.
+    assert_eq!(out, "1\n");
+}
+
+// --- Phase 5 task 3: dialogue runtime (minimum viable) ---
+
+#[test]
+fn dialogue_minimal_runs_say_choice_and_first_branch() {
+    let out = run_program("tests/programs/dialogue_minimal.twe")
+        .expect("program should run");
+    // Bare `say "..."` prints just the text.
+    // `say <actor>: "..."` prints `Actor: text`.
+    // `choice:` prints the labels (numbered) and runs the first branch.
+    assert_eq!(
+        out,
+        "Welcome, traveler.\n\
+         Merchant: Looking to trade?\n\
+         \x20\x20[1] Yes, show me your wares.\n\
+         \x20\x20[2] Just browsing.\n\
+         Merchant: Gold first.\n"
+    );
+}
+
+#[test]
+fn actor_keyword_is_alias_for_let() {
+    // `actor merchant = scene.npc(...)` reads cleaner inside a
+    // dialogue than `let merchant = ...`. Implementation: lex
+    // `actor` as a keyword that dispatches to `parse_let`. No
+    // semantic difference.
+    let src = r#"
+entity Merchant:
+    name: "default"
+
+dialogue Trade:
+    actor merchant = Merchant()
+    say merchant: "Welcome."
+
+Trade()
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "Merchant: Welcome.\n");
+}
+
+#[test]
+fn dialogue_with_actor_identifier_uses_class_name() {
+    // Per the design, an instance actor renders as its class name
+    // (Wren-style). This makes `say merchant: "..."` produce
+    // `Merchant: ...` when `merchant` is a `merchant` instance.
+    let src = r#"
+entity Merchant:
+    name: "default"
+
+let merchant = Merchant()
+
+dialogue Trade:
+    say merchant: "Welcome to the shop."
+
+Trade()
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "Merchant: Welcome to the shop.\n");
+}
+
+#[test]
+fn dialogue_choice_first_branch_is_deterministic() {
+    // V0.1 always picks branch 0. This test pins that behavior so
+    // a future change to interactive selection doesn't silently
+    // break programs that rely on the deterministic shape.
+    let src = r#"
+dialogue Pick:
+    choice:
+        "first":
+            print("a")
+        "second":
+            print("b")
+
+Pick()
+"#;
+    let out = run_program_str(src).expect("program should run");
+    // The labels come first, then the body of branch 0.
+    assert_eq!(out, "  [1] first\n  [2] second\na\n");
+}
+
+#[test]
+fn dialogue_wait_inside_dialogue_body_is_a_runtime_error() {
+    // V0.1 ships dialogue without per-dialogue suspension. `wait`
+    // inside a dialogue body still hits the same runtime error
+    // every other non-state-entry context produces, so the
+    // limitation is consistent.
+    let src = r#"
+dialogue Pause:
+    say "before"
+    wait 0.1s
+    say "after"
+
+Pause()
+"#;
+    let err = run_program_str(src).expect_err("should fail");
+    assert!(
+        err.contains("`wait` is only supported"),
+        "expected the wait-context error, got: {err}"
+    );
 }

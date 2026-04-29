@@ -403,6 +403,13 @@ This function is a fiber. Calling it yields control back to the scheduler at eac
 
 Fibers cannot escape their declaring scope (no first-class fiber values in v0.1; this may relax in v0.2).
 
+**v0.1 implementation status (Phase 5 task 2).** `wait <duration>` is implemented as a *direct* statement of a state's on-entry body in **both backends**:
+
+- **Tree-walker:** the runtime stores a resume index + remaining seconds on the instance; `tick_scene` decrements the timer and resumes the body when it elapses.
+- **Bytecode VM:** `OP_WAIT` pops a duration, saves the chunk + resume IP + remaining seconds on the `BcInstance`, then collapses the call frame (synthetic Nil return). `tick_scene` re-pushes the saved frame and continues dispatch from the saved IP once the timer elapses.
+
+While suspended, the state's `every`-clocks and `on update(dt):` are paused — the state is "asleep" until the wait fires. Outstanding work (later Phase 5 sessions): function-body `wait`, fiber-backed `every` rewrite, `wait` inside `dialogue`. Using `wait` outside a state on-entry surfaces a clear error (compile-time on the bytecode VM, runtime on the tree-walker) pointing at the limitation.
+
 ### 4.7 Events
 
 The `on <event>:` form registers an event handler. There are three event kinds:
@@ -445,6 +452,7 @@ Semantics:
 - `every <duration>:` blocks are scheduled when entering, cancelled on exit.
 - `-> <state>` transitions immediately. Code after the transition is dead.
 - Statement-level `wait` inside a state suspends without leaving the state.
+- `on <predicate>:` registers an edge-triggered handler scoped to the state. The runtime evaluates the predicate each frame and fires the body on the false → true transition. The body is *not* re-fired while the predicate stays true (Phase 5 task 4 — both backends ship this).
 
 ### 4.9 Visual blocks
 
@@ -472,6 +480,28 @@ A `particles` block declares an emitter. The runtime instantiates particles up t
 Each particle has implicit fields: `pos`, `velocity`, `color`, `size`, `age` (in seconds), `age_ratio` (`age / lifetime`).
 
 **v0.1 implementation status:** the declarative block is in. `count` (int, default 16) and `lifetime` (float seconds, default 1.0) are read at spawn time; `on_spawn(p)` and `on_update(p, dt)` are called per particle if defined. The runtime ages each particle (`age += dt`, `age_ratio = age / lifetime`) every frame and despawns the emitter when no particles are left. Default rendering draws each particle as a `draw_circle(p.pos, p.size, p.color)` — define `function render():` on the particles block to override. `emit_pattern` and keyword args are deferred until F1 (per the Phase 2 frustration list).
+
+### 4.10a Dialogue runtime (Phase 5 task 3, partial)
+
+`dialogue <Name>:` declares a sequenced block of statements. Calling `<Name>()` runs the body to completion. Inside a dialogue body, three statement forms are recognised (in addition to all normal statements):
+
+```
+dialogue MeetMerchant:
+    say "A traveler approaches."           # bare narration
+    say merchant: "Looking to trade?"      # actor-prefixed line
+    choice:
+        "Yes, show me your wares.":
+            merchant.open_shop()
+        "Just browsing.":
+            ...
+```
+
+- `say <text-expr>` — prints the text to the runtime out buffer with a trailing newline.
+- `say <actor-expr>: <text-expr>` — prints `Actor: text`. The actor expression's display: an `Instance` shows its class name (Wren-style); a string shows itself; anything else falls back to `display`.
+- `choice:` — an indented list of `<label>:` branches. The runtime prints each label (numbered `[1]`, `[2]`, …) and runs the **first** branch's body. Real interactive selection is a follow-on once the UI surface (input modality, prompt rendering) is designed.
+- `wait` inside a dialogue body raises a runtime error in v0.1 — per-dialogue suspension needs a separate scheduler from the per-state-instance one, planned for a Phase 5 follow-on.
+
+The bytecode VM rejects `dialogue` / `say` / `choice` at compile time with a pointer at `--vm tree`; the tree-walker is the canonical execution path for this surface in v0.1.
 
 ### 4.11 Tilemaps
 
@@ -780,7 +810,7 @@ This AST is the canonical, round-trippable form. The formatter regenerates sourc
 
 A non-exhaustive list of unresolved questions that need answering before Phase 1 is locked:
 
-1. **Should `say <actor>: "..."` be a keyword form or a special-cased method call?** Keyword form is more readable; special-cased call is more uniform. Tentative: keyword form, only legal inside `dialogue` blocks.
+1. ~~**Should `say <actor>: "..."` be a keyword form or a special-cased method call?**~~ **Resolved 2026-04-29:** keyword form. `say` is lexed as a keyword and parsed as `Stmt::Say { actor: Option<Expr>, text: Expr }`. Both forms (`say "text"` and `say <actor>: "text"`) work. Phase 5 task 3 ships this in the tree-walker.
 2. **Should `then` be a real keyword?** It appears in `telegraph(...) then if player.in_zone: ...` (Example 10). May be a parse hazard. Tentative: yes, but only in expression position after specific runtime functions that return a future.
 3. **Should percent be its own type or a `float` with a unit?** Tentative: own type (`percent`), with explicit conversion. Cleaner semantics.
 4. **Should array literals use `[...]` or `list(...)`?** `[...]` is universal. Going with `[...]`.

@@ -1,0 +1,27 @@
+# Phase 5 task 4: edge-triggered predicate hooks. Each frame,
+# `chase`'s every-clock decrements hp by 25; the `on hp <= 30:`
+# hook transitions to `flee` on the false→true edge. `flee` does
+# the same against `hp <= 0` and transitions to `dead`.
+
+scene Goblin:
+    var hp: int = 100
+
+    initial: chase
+
+    state chase:
+        print("chase")
+        every 100ms:
+            hp -= 25
+            print(hp)
+        on hp <= 30:
+            -> flee
+
+    state flee:
+        print("flee")
+        every 100ms:
+            hp -= 50
+        on hp <= 0:
+            -> dead
+
+    state dead:
+        print("dead")

@@ -1,10 +1,27 @@
 {
   "name": "twe-language",
   "displayName": "Twe Language",
-  "description": "Syntax + LSP support for the Twe game scripting language",
+  "description": "Syntax highlighting + LSP for the Twe game scripting language: diagnostics, hover-with-types, go-to-definition, completion, strict-mode type errors.",
   "version": "0.1.0-pre",
   "publisher": "twe-lang",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/twe-lang/twe-language"
+  },
+  "homepage": "https://github.com/twe-lang/twe-language",
+  "bugs": {
+    "url": "https://github.com/twe-lang/twe-language/issues"
+  },
+  "keywords": [
+    "twe",
+    "game",
+    "scripting",
+    "language",
+    "gamedev",
+    "lsp"
+  ],
   "engines": {
     "vscode": "^1.75.0"
   },

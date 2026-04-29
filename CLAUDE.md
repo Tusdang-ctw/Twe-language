@@ -92,18 +92,31 @@ Every conversation should end with the codebase in a working state. Like git com
 
 ### Phase discipline
 
-We are in **Phase 3** (design corrections + bytecode VM) per `docs/05-roadmap.md`. Phase 1 (tree-walking interpreter) is complete: see commits `844fd9a` through `7c4c06c`. Phase 2 (vertical-slice game) closed 2026-04-28 with five of six components shipped (macroquad bindings including audio, ECS-style entity queries, `particles` block, hot reload, game stdlib including `time.dt`); cooperative fibers were formally deferred to Phase 3 per `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`. The four Phase 2 exit-criteria bullets all pass: Survive runs as a real bullet-vs-monster game (`examples/survive.twe`, ~120 lines), hot reload works, and the 15-item frustration list (`docs/changes/2026-04-28-phase-2-frustration-list.md`) is the input for Phase 3.
+We are entering **Phase 7** (v0.1 public release) per `docs/05-roadmap.md`. Closed phases:
 
-**Phase 3 plan** has two halves the roadmap calls out:
+- **Phase 1** (tree-walking interpreter) — commits `844fd9a` through `7c4c06c`.
+- **Phase 2** (vertical-slice game) — closed 2026-04-28; five of six components shipped, cooperative fibers deferred per `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`. The 15-item frustration list at `docs/changes/2026-04-28-phase-2-frustration-list.md` drove Phase 3.
+- **Phase 3** (design corrections + bytecode VM + tooling) — closed 2026-04-29 per `docs/changes/2026-04-29-phase-3-and-4-closeout.md`. F1 / F4 / F5+F8 / F11 frustrations resolved; bytecode VM, `twec fmt`, tree-sitter grammar, and basic LSP all ship. NaN tagging, incremental tracing GC, computed-goto, and cooperative fibers were re-deferred — see the closeout note for reasons and target re-entry.
+- **Phase 4** (type system v1, non-strict) — closed 2026-04-29 in the same note. HM inference, structural class shapes, Optional / Union, dimensional unit checking, and LSP hover all ship.
+- **Phase 5** (3D + scenes + dialogue) — closed at v0.1-minimum-viable 2026-04-29 per `docs/changes/2026-04-29-phase-5-closeout.md`. LSP autocomplete + fibers + dialogue + predicate hooks + `twec play3d` with cubes / spheres / WASD / hot reload / Lambertian lighting. Tilemap and save schemas defer to v0.2 along with `.glb` import, bytecode VM 3D, mouse input, and `mat4`/`quat`.
+- **Phase 6** (tooling, polish, documentation) — closed 2026-04-29 per `docs/changes/2026-04-29-phase-6-closeout.md`. Strict mode (8 sessions, full enforcement on lets / function params / function returns / class fields / method params / method returns), `did_you_mean` for unknown idents / fields / states, tutorial draft, error-message polish, VS Code packaging readiness, `sphere()` primitive. Structural subtyping + Luau lax-strict widening deferred to v0.2. **427 tests pass.**
 
-1. **Design corrections** driven by the frustration list. The high-leverage open items, in priority order from that list's closing section: F1 keyword arguments → unblocks F15 (Snake doc alignment) and reads better in every drawing call; F4 every-clock catch-up; F5/F8 state-scoped `on update(dt):`; F11 `or`/`and` strict-bool decision.
-2. **Bytecode VM** per *Crafting Interpreters* Chapters 14–25 + Wren's `wren_compiler.c` / `wren_vm.c`. NaN-tagged values (Ch. 30), single-pass compiler from AST to bytecode, computed-goto interpreter loop where the host compiler supports it, incremental tracing GC, and **cooperative fibers** (the deferred Phase 2 item — bytecode IPs make suspension/resumption natural). Target: 5x–20x speedup on hot paths.
+**Phase 7 plan** per `docs/05-roadmap.md` §"Phase 7":
 
-Tooling deliverables that ride along: `twec fmt`, tree-sitter grammar, basic LSP.
+1. **GitHub Release with binaries** for Windows / macOS / Linux. `cargo dist` is the canonical Rust path.
+2. **VS Code marketplace publish** — packaging is ready (`vsce package` works); the publish itself rides the release tag and needs a publisher account.
+3. **Project website** with docs / playground / examples gallery. Static-site-generator route (mdBook for the docs, possibly a wgpu-in-browser playground later).
+4. **Show-HN-quality blog post + demo video.** The hello-3d demo is good content; the tutorial walkthrough is too.
+5. **Contribution guide + governance model.** `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, license decision (`README.md` says TBD: MIT or Apache-2.0).
+6. **README polish** — hero image, "what is Twe in 60 seconds," install instructions, link to tutorial.
 
-Do not rabbit-hole into Phase 4 (strict types) or Phase 5 (3D / dialogue) ideas. If you find yourself thinking about Hindley-Milner constraint solving or wgpu pipelines, stop. Note it in `notes/future-phases.md` and return to the bytecode work or the next frustration-list item.
+These are mostly *non-code* sessions — release engineering, writing, packaging. The codebase itself doesn't need new features for v0.1.
 
-The exit criteria for Phase 3 are in the roadmap §"Phase 3": Phase-2 game runs at 60fps with 500+ entities, format/parse round-trips on every test file, tree-sitter parses the eleven examples, LSP gives syntax highlighting + go-to-def + inline errors in VS Code.
+Or schedule **v0.2 work in parallel** — `.glb` mesh import, tilemap, save schemas, bytecode VM 3D path, structural subtyping, NaN tagging, function-body `wait`. See `notes/future-phases.md` "Carried into v0.2."
+
+Do not rabbit-hole into v0.2-and-later items. If you find yourself thinking about playground hosting, native code generation, Tier-3 verified mode, NaN tagging, or `.glb` import as part of a Phase 7 session, stop. Note it in `notes/future-phases.md` and return to the release-prep task in flight.
+
+**Phase boundaries are now closed with explicit closeout notes** in `docs/changes/`. Pattern: what shipped (against exit criteria), what slipped (explicit deferral decisions with reasons and target re-entry phase), doc edits applied. This is the only mechanism that keeps this brief honest.
 
 ### Test discipline
 
@@ -122,11 +135,11 @@ Every meaningful code change updates the relevant doc:
 
 Commit messages follow the form: `phase-N: <verb> <what>`, where N is the current phase. Examples:
 
-- `phase-3: add keyword arguments to call sites`
-- `phase-3: scaffold bytecode opcodes`
-- `phase-3: ship the bytecode dispatch loop`
+- `phase-7: cargo-dist scaffold for cross-platform binaries`
+- `phase-7: contribution guide + license decision`
+- `phase-7: README hero + install instructions`
 
-Phase 1 commits used `phase-1:`; Phase 2 used `phase-2:`.
+Phases 1–6 used their respective `phase-N:` prefix. The closeout-note pattern means each `phase-N:` series ends with a `docs/changes/<date>-phase-N-closeout.md` commit before the next phase opens.
 
 ---
 

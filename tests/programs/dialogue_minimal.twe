@@ -1,0 +1,16 @@
+# Phase 5 task 3: minimum-viable dialogue runtime.
+#
+# Defines a dialogue, then invokes it from top-level code. The
+# body uses `say` (with and without an actor) plus `choice` (which
+# in v0.1 always picks the first branch).
+
+dialogue Greet:
+    say "Welcome, traveler."
+    say "Merchant": "Looking to trade?"
+    choice:
+        "Yes, show me your wares.":
+            say "Merchant": "Gold first."
+        "Just browsing.":
+            say "Merchant": "Take your time."
+
+Greet()

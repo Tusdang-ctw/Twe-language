@@ -93,7 +93,12 @@ fn stmt_line(s: &Stmt) -> u32 {
         | Stmt::Continue { line, .. }
         | Stmt::Transition { line, .. }
         | Stmt::Spawn { line, .. }
-        | Stmt::Despawn { line, .. } => *line,
+        | Stmt::Despawn { line, .. }
+        | Stmt::Wait { line, .. }
+        | Stmt::DialogueDecl { line, .. }
+        | Stmt::Say { line, .. }
+        | Stmt::Choice { line, .. }
+        | Stmt::OnRender { line, .. } => *line,
         Stmt::Expr(e) => e.line(),
     }
 }
@@ -209,7 +214,7 @@ impl Compiler {
 
     fn emit_stmt(&mut self, stmt: &Stmt) -> Result<(), CompileError> {
         match stmt {
-            Stmt::Let { name, value, line, col } => {
+            Stmt::Let { name, value, line, col, .. } => {
                 self.emit_let(name, value, *line, *col)?;
             }
             Stmt::Assign { target, op, value, line, col } => {
@@ -306,8 +311,9 @@ impl Compiler {
                 }
                 self.frame_mut().chunk.write_op(OpCode::Return, *line);
             }
-            Stmt::FunctionDecl { name, params, body, line, col } => {
-                self.emit_function_decl(name, params, body, *line, *col)?;
+            Stmt::FunctionDecl { name, params, body, line, col, .. } => {
+                let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                self.emit_function_decl(name, &names, body, *line, *col)?;
             }
             Stmt::Decl { kind, name, parent, members, line, col } => {
                 self.emit_decl(*kind, name, parent.as_deref(), members, *line, *col)?;
@@ -331,6 +337,17 @@ impl Compiler {
                     .add_constant(Value::BcFunction(Rc::new(func)));
                 self.frame_mut().chunk.write_op(OpCode::SetOnUpdate, *line);
                 self.frame_mut().chunk.write_byte(func_idx, *line);
+            }
+            Stmt::OnRender { line, col, .. } => {
+                // Top-level `on render():` only flows through the
+                // tree-walker `play3d` path in v0.1. Bytecode VM
+                // wiring rides a later Phase 5 task 5 session
+                // alongside per-frame tick integration.
+                return Err(self.unsupported(
+                    "top-level `on render():` (Phase 5 task 5 — tree-walker only for now; run `twec play3d` against `--vm tree`)",
+                    *line,
+                    *col,
+                ));
             }
             Stmt::For { var, iter, body, line, .. } => {
                 self.emit_for(var, iter, body, *line)?;
@@ -363,6 +380,37 @@ impl Compiler {
             Stmt::Despawn { target, line, .. } => {
                 self.emit_expr(target)?;
                 self.frame_mut().chunk.write_op(OpCode::Despawn, *line);
+            }
+            Stmt::Wait { line, col, .. } => {
+                // `wait` is intercepted by `compile_on_entry` at
+                // the top level of a state's on-entry body and
+                // emitted as `OP_WAIT`. Reaching this arm means
+                // the wait is in a sub-block (function body,
+                // `if`/`for`/`while` branch, every-clock, on
+                // update — anywhere that goes through `emit_stmt`
+                // recursively). Match the tree-walker's runtime
+                // error message so users see the same constraint
+                // either way.
+                return Err(CompileError {
+                    line: *line,
+                    col: *col,
+                    message:
+                        "`wait` is only supported as a direct statement of a state body in v0.1; fiber-aware contexts (functions, every, dialogue) ship in later Phase 5 sessions"
+                            .to_string(),
+                });
+            }
+            Stmt::DialogueDecl { line, col, .. }
+            | Stmt::Say { line, col, .. }
+            | Stmt::Choice { line, col, .. } => {
+                // Phase 5 task 3 ships dialogue for the tree-walker
+                // first; the bytecode VM gets it in a follow-on
+                // session along with the per-dialogue scheduler
+                // that pause-on-`wait` will need.
+                return Err(self.unsupported(
+                    "dialogue / say / choice (Phase 5 task 3 — tree-walker only for now; run with the default `--vm tree`)",
+                    *line,
+                    *col,
+                ));
             }
         }
         Ok(())
@@ -1210,7 +1258,7 @@ impl Compiler {
         let mut initial_state: Option<String> = None;
         for member in members {
             match member {
-                DeclMember::Field { name: fname, value, line: fline, col: fcol } => {
+                DeclMember::Field { name: fname, value, line: fline, col: fcol, .. } => {
                     let v = const_eval(value).ok_or_else(|| CompileError {
                         line: *fline,
                         col: *fcol,
@@ -1236,10 +1284,11 @@ impl Compiler {
         for member in members {
             match member {
                 DeclMember::Field { .. } | DeclMember::InitialState { .. } => {}
-                DeclMember::Method { name: mname, params, body, line: mline, col: mcol } => {
+                DeclMember::Method { name: mname, params, body, line: mline, col: mcol, .. } => {
+                    let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                     let func = self.compile_method(
                         mname,
-                        params,
+                        &names,
                         body,
                         class_fields.clone(),
                         *mline,
@@ -1362,6 +1411,7 @@ impl Compiler {
         let mut on_update: Option<Rc<BcFunction>> = None;
         let mut on_render: Option<Rc<BcFunction>> = None;
         let mut on_key_press: HashMap<String, Rc<BcFunction>> = HashMap::new();
+        let mut on_predicates: Vec<(Rc<BcFunction>, Rc<BcFunction>)> = Vec::new();
         for sm in members {
             match sm {
                 StateMember::Stmt(s) => on_entry_stmts.push(s.clone()),
@@ -1412,9 +1462,25 @@ impl Compiler {
                     )?;
                     on_key_press.insert(key.clone(), Rc::new(func));
                 }
+                StateMember::OnPredicate { predicate, body, line: pl, col: _pc } => {
+                    let pred_func = self.compile_predicate(
+                        &format!("{name}.predicate"),
+                        predicate,
+                        class_fields.clone(),
+                        *pl,
+                    )?;
+                    let body_func = self.compile_state_body(
+                        &format!("{name}.on_predicate"),
+                        body,
+                        class_fields.clone(),
+                        *pl,
+                        0,
+                    )?;
+                    on_predicates.push((Rc::new(pred_func), Rc::new(body_func)));
+                }
             }
         }
-        let on_entry = self.compile_state_body(
+        let on_entry = self.compile_on_entry(
             &format!("{name}.on_entry"),
             &on_entry_stmts,
             class_fields,
@@ -1428,7 +1494,89 @@ impl Compiler {
             on_update,
             on_render,
             on_key_press,
+            on_predicates,
         })
+    }
+
+    /// Phase 5 task 4: compile a predicate expression as a no-arg
+    /// method-shape `BcFunction` whose chunk evaluates the
+    /// expression and returns the value. The VM invokes it once
+    /// per frame, then checks truthiness for edge-triggered
+    /// firing.
+    fn compile_predicate(
+        &mut self,
+        name: &str,
+        predicate: &Expr,
+        class_fields: Rc<HashSet<String>>,
+        line: u32,
+    ) -> Result<BcFunction, CompileError> {
+        self.frames.push(Frame::with_method(
+            FrameKind::Function,
+            name,
+            0,
+            true,
+            Some(class_fields),
+        ));
+        self.emit_expr(predicate)?;
+        self.frame_mut().chunk.write_op(OpCode::Return, line);
+        let frame = self.frames.pop().expect("predicate frame we just pushed");
+        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+    }
+
+    /// Compile a state's on_entry body as a method-shape
+    /// BcFunction. Same as `compile_state_body` except top-level
+    /// `Stmt::Wait` is recognised and emitted as `OP_WAIT` (the
+    /// runtime suspends the chunk and resumes from the next IP
+    /// once the wait elapses). Wait inside a sub-block falls
+    /// through to `emit_stmt` and surfaces the same compile-time
+    /// error as `wait` outside on_entry — pinning the
+    /// "direct statement only" constraint that mirrors the
+    /// tree-walker's `run_state_entry`.
+    fn compile_on_entry(
+        &mut self,
+        name: &str,
+        body: &[Stmt],
+        class_fields: Rc<HashSet<String>>,
+        line: u32,
+        _col: u32,
+    ) -> Result<BcFunction, CompileError> {
+        self.frames.push(Frame::with_method(
+            FrameKind::Function,
+            name,
+            0,
+            true,
+            Some(class_fields),
+        ));
+        for stmt in body {
+            if let Stmt::Wait { duration, line: stmt_line, .. } = stmt {
+                // Const-fold a literal duration to seconds and emit
+                // it as a Float constant — mirrors `every`'s
+                // compile-time fold and side-steps the bytecode
+                // VM's not-yet-supported `Expr::Quantity` path.
+                // Non-literal expressions (`wait time.dt`,
+                // `wait my_secs`) fall through to `emit_expr`,
+                // which works for Int/Float/local-load shapes the
+                // VM already handles.
+                if let Some(secs) = const_eval_seconds(duration) {
+                    let idx = self
+                        .frame_mut()
+                        .chunk
+                        .add_constant(Value::Float(secs));
+                    self.frame_mut().chunk.write_op(OpCode::Constant, *stmt_line);
+                    self.frame_mut().chunk.write_byte(idx, *stmt_line);
+                } else {
+                    self.emit_expr(duration)?;
+                }
+                self.frame_mut().chunk.write_op(OpCode::Wait, *stmt_line);
+                continue;
+            }
+            self.emit_stmt(stmt)?;
+        }
+        let last_line = body.last().map(stmt_line).unwrap_or(line);
+        self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
+        self.frame_mut().chunk.write_op(OpCode::Return, last_line);
+        let frame = self.frames.pop().expect("on_entry frame we just pushed");
+        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
     }
 
     /// Compile a state-scoped body (on_entry, every-clock body,

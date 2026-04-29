@@ -1,10 +1,9 @@
 //! Minimal Language Server Protocol implementation for Twe.
 //!
-//! Speaks JSON-RPC 2.0 over stdio. The MVP scope is **diagnostics
-//! only** — the editor opens a `.twe` file, we re-lex + re-parse
-//! on every `didChange`, and any lex/parse error becomes an
-//! `Error` diagnostic at its line:col. Hover, go-to-def, and
-//! completion stay deferred for a follow-up session.
+//! Speaks JSON-RPC 2.0 over stdio. Supported requests: diagnostics
+//! (republished on every open / change), hover with inferred type,
+//! go-to-definition, and completion. Phase 5 entry shipped completion;
+//! prior phases shipped the rest.
 //!
 //! Lifecycle:
 //!   1. Client sends `initialize` request → we reply with our
@@ -167,6 +166,19 @@ impl Server {
                 self.send_response(output, id, result)?;
                 Ok(true)
             }
+            Some("textDocument/completion") => {
+                let result = self
+                    .completions_for(msg)
+                    .map(|items| {
+                        obj([
+                            ("isIncomplete", Value::Bool(false)),
+                            ("items", Value::Array(items)),
+                        ])
+                    })
+                    .unwrap_or(Value::Null);
+                self.send_response(output, id, result)?;
+                Ok(true)
+            }
             Some("textDocument/hover") => {
                 let result = self
                     .resolve_position(msg)
@@ -305,6 +317,21 @@ impl Server {
         let symbols = collect_symbols(&program);
         let sym = symbols.into_iter().find(|s| s.name == name)?;
         Some((uri, sym))
+    }
+
+    /// Build the completion list for the document referenced by
+    /// `msg`. Returns `None` only if the request is malformed or
+    /// the URI isn't tracked; a parse error in the document still
+    /// yields keywords + stdlib (the user is typing — they need
+    /// completions *especially* when the file is broken).
+    fn completions_for(&self, msg: &Value) -> Option<Vec<Value>> {
+        let uri = msg
+            .get("params")?
+            .get("textDocument")?
+            .get("uri")?
+            .as_str()?;
+        let text = self.documents.get(uri)?;
+        Some(compute_completions(text))
     }
 }
 
@@ -471,7 +498,8 @@ fn collect_from_state_member(m: &StateMember, out: &mut Vec<Symbol>) {
         StateMember::Every { body, .. }
         | StateMember::OnRender { body, .. }
         | StateMember::OnKeyPress { body, .. }
-        | StateMember::OnUpdate { body, .. } => {
+        | StateMember::OnUpdate { body, .. }
+        | StateMember::OnPredicate { body, .. } => {
             for s in body {
                 collect_from_stmt(s, out);
             }
@@ -632,6 +660,19 @@ fn initialize_result() -> Value {
             ("textDocumentSync", Value::Int(1)),
             ("definitionProvider", Value::Bool(true)),
             ("hoverProvider", Value::Bool(true)),
+            (
+                "completionProvider",
+                obj([
+                    // No trigger characters — VS Code asks for
+                    // completion on every identifier keystroke
+                    // by default. `.` would be useful for dotted
+                    // builtins (math.abs, random.int) but the
+                    // current stdlib registers them as flat
+                    // names; revisit when namespaces become
+                    // first-class.
+                    ("resolveProvider", Value::Bool(false)),
+                ]),
+            ),
         ]),
     ),
         (
@@ -641,6 +682,130 @@ fn initialize_result() -> Value {
                 ("version", Value::Str(env!("CARGO_PKG_VERSION").into())),
             ]),
         )])
+}
+
+// LSP `CompletionItemKind` constants (LSP §3.18). Inlined as a
+// `mod` of `i64`s rather than an enum to keep the JSON surface
+// unambiguous — these go straight into the wire format.
+mod ck {
+    pub const FUNCTION: i64 = 3;
+    pub const FIELD: i64 = 5;
+    pub const VARIABLE: i64 = 6;
+    pub const CLASS: i64 = 7;
+    pub const METHOD: i64 = 2;
+    pub const ENUM: i64 = 13;
+    pub const KEYWORD: i64 = 14;
+    pub const CONSTANT: i64 = 21;
+}
+
+/// Twe keyword set, mirrored from the lexer's identifier-to-keyword
+/// match in `src/lexer.rs:938`. Plus `true` / `false`, which the
+/// parser at `src/parser.rs:1170` recognises as bool literals
+/// (they are not lexer keywords but they look and feel like ones
+/// to the user). If the lexer grows a keyword, add it here too.
+const TWE_KEYWORDS: &[&str] = &[
+    "and", "break", "continue", "despawn", "elif", "else", "entity", "every", "extends", "false",
+    "for", "function", "if", "in", "initial", "inventory", "item", "let", "modifier", "not", "on",
+    "or", "particles", "render", "return", "scene", "self", "spawn", "state", "true", "update",
+    "var", "while",
+];
+
+/// Build the completion list for `text`. Layered: user-declared
+/// names (with inferred type when known), language keywords,
+/// stdlib globals. Order doesn't affect the editor's filter — VS
+/// Code re-sorts by match score — but a stable order makes
+/// snapshot-style tests easier.
+pub fn compute_completions(text: &str) -> Vec<Value> {
+    let mut items: Vec<Value> = Vec::new();
+
+    // User symbols. Even a partial parse is useful — when the
+    // file is broken the parser bails, but on a clean file we
+    // also get inferred types to annotate each item.
+    if let Ok(tokens) = lexer::lex(text) {
+        if let Ok(program) = parser::parse(&tokens) {
+            let bindings = crate::infer::infer_program(&program);
+            for sym in collect_symbols(&program) {
+                let detail = bindings
+                    .get(&sym.name)
+                    .filter(|t| !t.is_unknown())
+                    .map(|t| t.to_string());
+                items.push(completion_item(
+                    &sym.name,
+                    symbol_kind_to_completion_kind(sym.kind),
+                    detail.as_deref(),
+                ));
+            }
+        }
+    }
+
+    for kw in TWE_KEYWORDS {
+        items.push(completion_item(kw, ck::KEYWORD, None));
+    }
+
+    // Stdlib builtins. We bootstrap a fresh `Env`, run
+    // `stdlib::install`, and read the resulting binding names.
+    // This keeps completion in sync with the runtime: every name
+    // a program can call shows up automatically. The cost is one
+    // env construction per request; for editor traffic it's
+    // negligible and the alternative (a parallel hardcoded list)
+    // would drift.
+    //
+    // Namespaces (`math`, `random`, `key`, `screen`, `time`, …)
+    // ship as `Value::Object` whose fields are the namespace
+    // members. We surface both forms — the bare namespace
+    // (`math`) so the user gets it as soon as they type `m`, and
+    // every dotted member (`math.abs`) so completion still works
+    // after the dot. VS Code's filtering takes care of the rest.
+    let mut env = crate::value::Env::new();
+    crate::stdlib::install(&mut env);
+    for (name, value) in env.iter_bindings() {
+        match value {
+            crate::value::Value::Object(obj_rc) => {
+                items.push(completion_item(name, ck::VARIABLE, None));
+                let obj = obj_rc.borrow();
+                for field in obj.fields.keys() {
+                    items.push(completion_item(
+                        &format!("{name}.{field}"),
+                        ck::FUNCTION,
+                        None,
+                    ));
+                }
+            }
+            _ => {
+                items.push(completion_item(name, ck::FUNCTION, None));
+            }
+        }
+    }
+
+    items
+}
+
+fn symbol_kind_to_completion_kind(kind: SymbolKind) -> i64 {
+    match kind {
+        SymbolKind::Let => ck::CONSTANT,
+        SymbolKind::Var => ck::VARIABLE,
+        SymbolKind::Function => ck::FUNCTION,
+        SymbolKind::Method => ck::METHOD,
+        SymbolKind::Field => ck::FIELD,
+        SymbolKind::Entity
+        | SymbolKind::Item
+        | SymbolKind::Modifier
+        | SymbolKind::Inventory
+        | SymbolKind::Scene
+        | SymbolKind::Particles => ck::CLASS,
+        SymbolKind::State | SymbolKind::InitialState => ck::ENUM,
+    }
+}
+
+fn completion_item(label: &str, kind: i64, detail: Option<&str>) -> Value {
+    let mut fields = vec![
+        ("label", Value::Str(label.into())),
+        ("kind", Value::Int(kind)),
+    ];
+    if let Some(d) = detail {
+        fields.push(("detail", Value::Str(d.into())));
+    }
+    obj(fields)
 }
 
 fn parse_did_open(msg: &Value) -> Option<(String, String)> {
@@ -670,15 +835,27 @@ fn parse_did_close(msg: &Value) -> Option<String> {
 }
 
 /// Lex + parse `text` and produce LSP `Diagnostic` objects for any
-/// errors. Returns an empty Vec when the file parses cleanly.
+/// errors. Returns an empty Vec when the file parses cleanly. Phase
+/// 6 session 1: when the file opts into strict mode (`# strict`
+/// directive), strict-mode type errors flow through here too so
+/// VS Code shows them inline alongside parse errors.
 fn collect_diagnostics(text: &str) -> Vec<Value> {
-    match lexer::lex(text) {
-        Err(e) => vec![diagnostic_at(e.line, e.col, &e.message)],
-        Ok(tokens) => match parser::parse(&tokens) {
-            Err(e) => vec![diagnostic_at(e.line, e.col, &e.message)],
-            Ok(_) => Vec::new(),
-        },
+    let tokens = match lexer::lex(text) {
+        Err(e) => return vec![diagnostic_at(e.line, e.col, &e.message)],
+        Ok(t) => t,
+    };
+    let program = match parser::parse(&tokens) {
+        Err(e) => return vec![diagnostic_at(e.line, e.col, &e.message)],
+        Ok(p) => p,
+    };
+    if !crate::infer::detect_strict(text) {
+        return Vec::new();
     }
+    let (_bindings, errors) = crate::infer::infer_program_strict(&program, true);
+    errors
+        .iter()
+        .map(|e| diagnostic_at(e.line, e.col, &format!("type error: {}", e.message)))
+        .collect()
 }
 
 fn diagnostic_at(line: u32, col: u32, message: &str) -> Value {
@@ -1051,6 +1228,116 @@ mod tests {
         let caps = init.get("result").unwrap().get("capabilities").unwrap();
         assert_eq!(caps.get("definitionProvider"), Some(&Value::Bool(true)));
         assert_eq!(caps.get("hoverProvider"), Some(&Value::Bool(true)));
+    }
+
+    // --- Phase 5 entry: completion ---
+
+    fn completion_labels(items: &Value) -> Vec<String> {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.get("label").and_then(|s| s.as_str()).map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn initialize_advertises_completion_provider() {
+        let out = lsp_exchange(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#,
+            r#"{"jsonrpc":"2.0","method":"exit"}"#,
+        ]);
+        let init = json::parse(&split_messages(&out)[0]).expect("init");
+        let caps = init.get("result").unwrap().get("capabilities").unwrap();
+        assert!(caps.get("completionProvider").is_some());
+    }
+
+    #[test]
+    fn completion_includes_user_let_with_inferred_type() {
+        // `let n = 42` — completion should offer `n` with detail `int`.
+        let text = "let n = 42\n";
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///c.twe"},"position":{"line":1,"character":0}}}"#;
+        let msgs = lsp_with_doc("file:///c.twe", text, &[req]);
+        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let v = json::parse(reply).expect("parse");
+        let items = v.get("result").unwrap().get("items").unwrap();
+        let labels = completion_labels(items);
+        assert!(labels.contains(&"n".to_string()), "labels: {labels:?}");
+        // Find the `n` item and confirm the detail carries the type.
+        let n_item = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i.get("label").and_then(|s| s.as_str()) == Some("n"))
+            .expect("n item");
+        let detail = n_item.get("detail").and_then(|s| s.as_str()).expect("detail");
+        assert!(detail.contains("int"), "detail: {detail}");
+    }
+
+    #[test]
+    fn completion_includes_keywords_and_stdlib() {
+        let text = "let x = 1\n";
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///c.twe"},"position":{"line":1,"character":0}}}"#;
+        let msgs = lsp_with_doc("file:///c.twe", text, &[req]);
+        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let v = json::parse(reply).expect("parse");
+        let labels = completion_labels(v.get("result").unwrap().get("items").unwrap());
+        // Spot-check a keyword and a few stdlib names.
+        assert!(labels.contains(&"function".to_string()), "no `function` keyword");
+        assert!(labels.contains(&"for".to_string()), "no `for` keyword");
+        assert!(labels.contains(&"print".to_string()), "no `print` builtin");
+        assert!(labels.contains(&"load".to_string()), "no `load` builtin");
+        assert!(labels.contains(&"math.abs".to_string()), "no `math.abs` builtin");
+    }
+
+    #[test]
+    fn completion_survives_unparseable_file() {
+        // User mid-typing — file doesn't parse — completion still
+        // emits keywords + stdlib so they have something to pick.
+        let text = "let "; // partial input
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///broken.twe"},"position":{"line":0,"character":4}}}"#;
+        let msgs = lsp_with_doc("file:///broken.twe", text, &[req]);
+        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let v = json::parse(reply).expect("parse");
+        let labels = completion_labels(v.get("result").unwrap().get("items").unwrap());
+        assert!(labels.contains(&"function".to_string()));
+        assert!(labels.contains(&"print".to_string()));
+    }
+
+    #[test]
+    fn completion_returns_null_for_unknown_uri() {
+        // Completion requested for a URI we never opened — reply
+        // should be `null` (graceful) rather than a server error.
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///nope.twe"},"position":{"line":0,"character":0}}}"#;
+        let out = lsp_exchange(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            req,
+            r#"{"jsonrpc":"2.0","id":3,"method":"shutdown"}"#,
+            r#"{"jsonrpc":"2.0","method":"exit"}"#,
+        ]);
+        let msgs = split_messages(&out);
+        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let v = json::parse(reply).expect("parse");
+        assert_eq!(v.get("result"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn completion_marks_user_function_with_function_kind() {
+        // Different SymbolKinds map to different LSP CompletionItemKinds —
+        // sanity-check the function path.
+        let text = "function greet():\n    return 0\n";
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///c.twe"},"position":{"line":2,"character":0}}}"#;
+        let msgs = lsp_with_doc("file:///c.twe", text, &[req]);
+        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let v = json::parse(reply).expect("parse");
+        let items = v.get("result").unwrap().get("items").unwrap().as_array().unwrap();
+        let greet = items
+            .iter()
+            .find(|i| i.get("label").and_then(|s| s.as_str()) == Some("greet"))
+            .expect("greet item");
+        // ck::FUNCTION = 3
+        assert_eq!(greet.get("kind").and_then(|v| v.as_i64()), Some(3));
     }
 
     #[test]

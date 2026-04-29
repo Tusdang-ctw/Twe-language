@@ -17,11 +17,16 @@ pub fn to_json(program: &Program) -> String {
 
 fn write_stmt(s: &mut String, stmt: &Stmt) {
     match stmt {
-        Stmt::Let { name, value, line, col } => {
+        Stmt::Let { name, value, ty, line, col } => {
             s.push_str("{\"kind\":\"Let\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"value\":");
             write_expr(s, value);
+            s.push_str(",\"annotation\":");
+            match ty {
+                Some(t) => write_str_value(s, &t.to_string()),
+                None => s.push_str("null"),
+            }
             write_pos(s, *line, *col);
             s.push('}');
         }
@@ -69,6 +74,12 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Stmt::OnRender { body, line, col } => {
+            s.push_str("{\"kind\":\"OnRender\",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Stmt::Decl { kind, name, parent, members, line, col } => {
             s.push_str("{\"kind\":\"Decl\",\"declKind\":");
             write_str_value(s, decl_kind_str(*kind));
@@ -90,11 +101,28 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::FunctionDecl { name, params, body, line, col } => {
+        Stmt::FunctionDecl { name, params, ret, body, line, col } => {
             s.push_str("{\"kind\":\"FunctionDecl\",\"name\":");
             write_str_value(s, name);
-            s.push_str(",\"params\":");
-            write_str_array(s, params);
+            s.push_str(",\"params\":[");
+            for (i, p) in params.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str("{\"name\":");
+                write_str_value(s, &p.name);
+                s.push_str(",\"annotation\":");
+                match &p.ty {
+                    Some(t) => write_str_value(s, &t.to_string()),
+                    None => s.push_str("null"),
+                }
+                s.push('}');
+            }
+            s.push_str("],\"returnAnnotation\":");
+            match ret {
+                Some(t) => write_str_value(s, &t.to_string()),
+                None => s.push_str("null"),
+            }
             s.push_str(",\"body\":");
             write_block(s, body);
             write_pos(s, *line, *col);
@@ -160,6 +188,58 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Stmt::Wait { duration, line, col } => {
+            s.push_str("{\"kind\":\"Wait\",\"duration\":");
+            write_expr(s, duration);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        Stmt::DialogueDecl { name, body, line, col } => {
+            s.push_str("{\"kind\":\"DialogueDecl\",\"name\":");
+            write_str_value(s, name);
+            s.push_str(",\"body\":[");
+            for (i, st) in body.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                write_stmt(s, st);
+            }
+            s.push(']');
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        Stmt::Say { actor, text, line, col } => {
+            s.push_str("{\"kind\":\"Say\",\"actor\":");
+            match actor {
+                Some(a) => write_expr(s, a),
+                None => s.push_str("null"),
+            }
+            s.push_str(",\"text\":");
+            write_expr(s, text);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        Stmt::Choice { branches, line, col } => {
+            s.push_str("{\"kind\":\"Choice\",\"branches\":[");
+            for (i, (label, body)) in branches.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str("{\"label\":");
+                write_expr(s, label);
+                s.push_str(",\"body\":[");
+                for (j, st) in body.iter().enumerate() {
+                    if j > 0 {
+                        s.push(',');
+                    }
+                    write_stmt(s, st);
+                }
+                s.push_str("]}");
+            }
+            s.push(']');
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Stmt::Expr(e) => {
             s.push_str("{\"kind\":\"ExprStmt\",\"expr\":");
             write_expr(s, e);
@@ -170,19 +250,41 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
 
 fn write_member(s: &mut String, m: &DeclMember) {
     match m {
-        DeclMember::Field { name, value, line, col } => {
+        DeclMember::Field { name, value, ty, line, col } => {
             s.push_str("{\"kind\":\"Field\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"value\":");
             write_expr(s, value);
+            s.push_str(",\"annotation\":");
+            match ty {
+                Some(t) => write_str_value(s, &t.to_string()),
+                None => s.push_str("null"),
+            }
             write_pos(s, *line, *col);
             s.push('}');
         }
-        DeclMember::Method { name, params, body, line, col } => {
+        DeclMember::Method { name, params, ret, body, line, col } => {
             s.push_str("{\"kind\":\"Method\",\"name\":");
             write_str_value(s, name);
-            s.push_str(",\"params\":");
-            write_str_array(s, params);
+            s.push_str(",\"params\":[");
+            for (i, p) in params.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str("{\"name\":");
+                write_str_value(s, &p.name);
+                s.push_str(",\"annotation\":");
+                match &p.ty {
+                    Some(t) => write_str_value(s, &t.to_string()),
+                    None => s.push_str("null"),
+                }
+                s.push('}');
+            }
+            s.push_str("],\"returnAnnotation\":");
+            match ret {
+                Some(t) => write_str_value(s, &t.to_string()),
+                None => s.push_str("null"),
+            }
             s.push_str(",\"body\":");
             write_block(s, body);
             write_pos(s, *line, *col);
@@ -243,6 +345,14 @@ fn write_state_member(s: &mut String, m: &StateMember) {
         StateMember::OnUpdate { param, body, line, col } => {
             s.push_str("{\"kind\":\"OnUpdate\",\"param\":");
             write_str_value(s, param);
+            s.push_str(",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        StateMember::OnPredicate { predicate, body, line, col } => {
+            s.push_str("{\"kind\":\"OnPredicate\",\"predicate\":");
+            write_expr(s, predicate);
             s.push_str(",\"body\":");
             write_block(s, body);
             write_pos(s, *line, *col);
