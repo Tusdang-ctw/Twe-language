@@ -271,6 +271,24 @@ note.
       `examples/hello_glb.twe` + a 536-byte fixture
       `examples/assets/triangle.glb` round-trip the loader. See
       `docs/changes/2026-04-29-v0.2-session-1-glb-import.md`.
+- [x] **Session 2a — resumable `if` / `while`** (2026-04-29). First
+      of three sessions on the function-body `wait` track.
+      Replaces `Instance::entry_resume_index: Option<usize>` with
+      `entry_resume_path: Vec<PathEntry>` so `wait` works inside
+      `if` / `elif` / `else` / `while` blocks at any nesting
+      depth within a state's `on_entry`. `Branch::IfElif(idx)`
+      preserves the chosen elif arm across suspend / resume.
+      `for` bodies + function calls remain v0.2 session 2b
+      territory. See
+      `docs/changes/2026-04-29-v0.2-session-2a-resumable-blocks.md`.
+- [ ] **Session 2b — function-body `wait`** (planned). Push a
+      `Frame` on each function call so the fiber is a stack of
+      bodies-with-resume-paths. Add `for`-body resumption
+      alongside (iteration index goes on the path entry).
+- [ ] **Session 2c — bytecode VM parity** (planned). The VM's
+      current `OpCode::Wait` saves a single `(chunk, IP)` on
+      `BcInstance`; rebuild as a `Vec<BcFrame>` so the same
+      surface programs work on `--vm bytecode`.
 
 ## Carried into v0.2
 
@@ -291,10 +309,11 @@ closeout notes (`docs/changes/2026-04-29-phase-5-closeout.md`,
 
 Phase 5 carry-overs:
 
-- **`wait` in non-state-entry contexts** — function-body `wait`
-  (heap-allocated call frames or CPS rewrite), `wait` inside
-  `dialogue` (per-dialogue scheduler), fiber-backed `every` rewrite.
-  *Planned: v0.2 session 2.*
+- **`wait` in non-state-entry contexts** — sessions 2a (resumable
+  `if` / `while` blocks) **shipped**; 2b (function bodies, `for`
+  bodies) and 2c (bytecode VM parity) planned. `wait` inside
+  `dialogue` (per-dialogue scheduler) and fiber-backed `every`
+  rewrite remain on the v0.2 backlog beyond the 2a/2b/2c track.
 - **Dialogue UI** — interactive choice selection (input modality
   conversation), bytecode VM dialogue support, per-dialogue
   scheduler for `wait` inside dialogue, `scene.npc("...")` lookup.

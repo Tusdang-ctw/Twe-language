@@ -1,0 +1,36 @@
+# v0.2 session 2a: `wait` inside `if` and `while` blocks of a
+# state's on_entry body. The runner uses a resume-path stack
+# instead of a single statement index so it can navigate back
+# into the right sub-block.
+#
+# Two iterations of the inner while, each waiting 0.2s. With
+# dt=0.2 over 4 frames:
+#   frame 1: enter `loop` → "outer" → if true → "inner-pre" →
+#            wait 0.2s. Suspended at depth 2.
+#   frame 2: wait elapses → "inner-post" → loop → "inner-pre" →
+#            wait 0.2s. Suspended again at depth 2.
+#   frame 3: wait elapses → "inner-post" → loop cond false →
+#            "outer-after" → -> done → enter `done` → "done".
+#
+# Three "inner-pre" / "inner-post" pairs would need a 3-iter
+# loop; the test below uses two iterations to keep the trace
+# compact while exercising both the inner-resume and the
+# loop-cond-false-after-resume paths.
+
+scene Demo:
+    initial: loop
+
+    state loop:
+        print("outer")
+        if true:
+            var i = 0
+            while i < 2:
+                print("inner-pre")
+                wait 0.2s
+                print("inner-post")
+                i = i + 1
+        print("outer-after")
+        -> done
+
+    state done:
+        print("done")

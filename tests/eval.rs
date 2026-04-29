@@ -872,19 +872,139 @@ pause()
 }
 
 #[test]
-fn wait_inside_if_in_state_body_is_a_runtime_error() {
-    // Even at the top of a state body, `wait` must be a *direct*
-    // statement — wrapping it in an `if` makes it part of a
-    // sub-block run via `run_block`, which surfaces the same
-    // error. The constraint is documented; this test pins it.
+fn wait_inside_if_then_branch_resumes() {
+    // v0.2 session 2a: `wait` now works inside `if` / `elif` /
+    // `else` / `while` blocks at the top level of a state's
+    // on_entry body. Two frames with dt=0.1: frame 1 hits the
+    // wait inside the if-then; frame 2's tick elapses the wait
+    // and resumes from the next stmt in the then-body.
     let src = r#"
 scene Demo:
     initial: a
     state a:
         if true:
+            print("before")
             wait 0.1s
+            print("after")
+        print("done")
 "#;
-    let err = run_program_frames_str(src, 1, 0.5).expect_err("should fail");
+    let out = run_program_frames_str(src, 2, 0.1).expect("should run");
+    assert_eq!(out, "before\nafter\ndone\n");
+}
+
+#[test]
+fn wait_inside_if_else_resumes_in_else_branch() {
+    // The runner must remember which branch was taken at
+    // suspension time so resume re-enters the same body
+    // (without re-evaluating the condition / its side effects).
+    let src = r#"
+scene Demo:
+    initial: a
+    state a:
+        if false:
+            print("then-side")
+        else:
+            print("else-before")
+            wait 0.1s
+            print("else-after")
+        print("done")
+"#;
+    let out = run_program_frames_str(src, 2, 0.1).expect("should run");
+    assert_eq!(out, "else-before\nelse-after\ndone\n");
+}
+
+#[test]
+fn wait_inside_elif_arm_resumes_same_arm() {
+    // Pin the elif-arm preservation: arm index is recorded on
+    // suspension so resume picks the same arm without
+    // re-evaluating elif conditions.
+    let src = r#"
+scene Demo:
+    initial: a
+    state a:
+        if false:
+            print("first")
+        elif true:
+            print("elif-before")
+            wait 0.1s
+            print("elif-after")
+        else:
+            print("else")
+        print("done")
+"#;
+    let out = run_program_frames_str(src, 2, 0.1).expect("should run");
+    assert_eq!(out, "elif-before\nelif-after\ndone\n");
+}
+
+#[test]
+fn wait_inside_while_loop_resumes_each_iteration() {
+    // 3 iterations × 0.1s wait each = 0.3s of wait. With
+    // dt=0.1 we need 4 frames: frame 1 hits the first wait,
+    // frame 2 resumes + prints + hits 2nd wait, etc. (the
+    // resumed iteration eagerly re-enters the body when the
+    // wait elapses inside the same frame, then loops on cond).
+    let src = r#"
+scene Demo:
+    initial: a
+    state a:
+        var i = 0
+        while i < 3:
+            print("step")
+            wait 0.1s
+            i = i + 1
+        print("done")
+"#;
+    let out = run_program_frames_str(src, 4, 0.1).expect("should run");
+    assert_eq!(out, "step\nstep\nstep\ndone\n");
+}
+
+#[test]
+fn wait_nested_blocks_program_runs() {
+    // Real .twe program checked into tests/programs to keep an
+    // on-disk reference for the nested-wait machinery. Same
+    // shape as the inline wait_inside_while_inside_if test
+    // but committed so future readers see the expected trace.
+    let out = run_program_frames("tests/programs/wait_nested_blocks.twe", 4, 0.2)
+        .expect("program should run");
+    assert_eq!(
+        out,
+        "outer\ninner-pre\ninner-post\ninner-pre\ninner-post\nouter-after\ndone\n"
+    );
+}
+
+#[test]
+fn wait_inside_while_inside_if_two_levels_deep() {
+    // Nesting: wait suspended at depth 2 (top → if-then →
+    // while-body). Each level pushes its own PathEntry so
+    // resume navigates back through both descents.
+    let src = r#"
+scene Demo:
+    initial: a
+    state a:
+        if true:
+            var i = 0
+            while i < 2:
+                print("inner")
+                wait 0.1s
+                i = i + 1
+        print("done")
+"#;
+    let out = run_program_frames_str(src, 3, 0.1).expect("should run");
+    assert_eq!(out, "inner\ninner\ndone\n");
+}
+
+#[test]
+fn wait_outside_state_body_still_errors_in_function() {
+    // Function bodies remain v0.2 session 2b territory. The
+    // existing error path stays in place via run_block until
+    // the frame stack lands.
+    let src = r#"
+function pause():
+    wait 0.5s
+
+pause()
+"#;
+    let err = run_program_str(src).expect_err("should fail");
     assert!(
         err.contains("`wait` is only supported"),
         "expected the wait-context error, got: {err}"

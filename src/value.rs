@@ -108,12 +108,23 @@ pub struct Instance {
     /// Set by `despawn self`; the runtime drops this instance from
     /// `Env::active_entities` at the end of the frame.
     pub despawned: bool,
-    /// Phase 5 fibers: when `Some(idx)`, the on-entry sequence of
-    /// the current state is paused on a `wait` and should resume
-    /// from statement `idx` once `entry_wait_remaining` reaches
-    /// zero. `None` means the entry sequence ran to completion (or
-    /// the state has no entry body / hasn't been entered).
-    pub entry_resume_index: Option<usize>,
+    /// Suspended-fiber resume path for the current state's
+    /// `on_entry` body. Empty = not suspended (entry ran to
+    /// completion, or the state has no entry body / hasn't been
+    /// entered). Non-empty = the entry body hit a `wait` somewhere
+    /// inside its statements (possibly nested in `if` / `while`)
+    /// and the runner needs `entry_resume_path` to navigate back
+    /// to the suspension point on resume.
+    ///
+    /// Path semantics: `path[0]` describes the top-level body,
+    /// `path[k+1]` describes the sub-body reached by descending
+    /// through `path[k].branch` from `path[k].stmt_index`. The
+    /// last entry always has `branch == None` and its `stmt_index`
+    /// is the next statement to execute when the wait elapses.
+    /// v0.2 session 2a (replaces the flat-integer
+    /// `entry_resume_index` from Phase 5 task 2; same semantics
+    /// when the path has length 1, plus support for nesting).
+    pub entry_resume_path: Vec<PathEntry>,
     /// Seconds left on the active `wait`. Decremented by `dt` each
     /// frame the instance ticks.
     pub entry_wait_remaining: f64,
@@ -122,6 +133,33 @@ pub struct Instance {
     /// each predicate so the runtime can detect false → true
     /// transitions (edge-triggered firing). Reset on state entry.
     pub predicate_last_values: Vec<bool>,
+}
+
+/// One step on a fiber's resume path. Each step describes one
+/// nesting depth of the suspended on-entry body. v0.2 session 2a.
+///
+/// All steps except the last have `branch == Some(...)` indicating
+/// which sub-body of `body[stmt_index]` was descended into. The
+/// last step has `branch == None` and `stmt_index` is the index
+/// of the next statement to execute in the body at that depth.
+#[derive(Debug, Clone)]
+pub struct PathEntry {
+    pub stmt_index: usize,
+    pub branch: Option<Branch>,
+}
+
+/// Which sub-body of a structured statement was descended into.
+/// `IfElif(idx)` records which arm of an `if`'s elif chain matched
+/// at suspension time so resume picks the same arm without
+/// re-evaluating its condition (preserves side-effect order). v0.2
+/// session 2a covers `if` / `elif` / `else` and `while` bodies;
+/// `for` bodies and function calls land in session 2b.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Branch {
+    IfThen,
+    IfElif(usize),
+    IfElse,
+    While,
 }
 
 #[derive(Debug, Default)]

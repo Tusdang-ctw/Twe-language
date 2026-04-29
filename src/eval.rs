@@ -7,8 +7,8 @@ use crate::ast::{
 };
 use crate::stdlib;
 use crate::value::{
-    ClassDef, Env, EveryClockDef, FunctionDef, Instance, MethodDef, Object, OnUpdateHandler,
-    RuntimeError, StateDef, Value,
+    Branch, ClassDef, Env, EveryClockDef, FunctionDef, Instance, MethodDef, Object,
+    OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value,
 };
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
@@ -476,15 +476,19 @@ fn tick_scene(
         return Ok(());
     }
     let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
-    // Phase 5 fibers: if the on-entry sequence is suspended on a
-    // `wait`, count down by `dt` and either keep waiting (skip the
-    // rest of this state's tick — the state is "asleep") or
-    // resume the sequence from the stored index.
-    let resume_info: Option<(usize, f64)> = {
+    // Phase 5 fibers / v0.2 session 2a: if the on-entry sequence
+    // is suspended on a `wait`, count down by `dt` and either keep
+    // waiting (skip the rest of this state's tick — the state is
+    // "asleep") or resume the sequence from the stored path.
+    let resume_info: Option<(Vec<PathEntry>, f64)> = {
         let inst = scene.borrow();
-        inst.entry_resume_index.map(|idx| (idx, inst.entry_wait_remaining))
+        if inst.entry_resume_path.is_empty() {
+            None
+        } else {
+            Some((inst.entry_resume_path.clone(), inst.entry_wait_remaining))
+        }
     };
-    if let Some((resume_idx, remaining)) = resume_info {
+    if let Some((resume_path, remaining)) = resume_info {
         let new_remaining = remaining - dt;
         if new_remaining > 0.0 {
             scene.borrow_mut().entry_wait_remaining = new_remaining;
@@ -501,17 +505,17 @@ fn tick_scene(
                 .map(|s| s.on_entry.clone())
                 .unwrap_or_default()
         };
-        run_state_entry(env, scene, &on_entry, resume_idx)?;
+        run_state_entry(env, scene, &on_entry, &resume_path)?;
         if let Some(target) = env.transitioning.take() {
             enter_state(env, scene, &target)?;
             env.self_value = prev_self;
             return Ok(());
         }
         // Resuming may have hit another `wait` — if so, the
-        // instance now has a fresh `entry_resume_index`. Bail out
+        // instance now has a fresh `entry_resume_path`. Bail out
         // of the rest of this tick (clocks + on_update stay
         // paused while the entry is suspended).
-        if scene.borrow().entry_resume_index.is_some() {
+        if !scene.borrow().entry_resume_path.is_empty() {
             env.self_value = prev_self;
             return Ok(());
         }
@@ -697,14 +701,15 @@ fn enter_state(
     // state was paused.
     {
         let mut inst = scene.borrow_mut();
-        inst.entry_resume_index = None;
+        inst.entry_resume_path.clear();
         inst.entry_wait_remaining = 0.0;
     }
-    // Run the on-entry body resumably. If the body hits a `wait`,
-    // run_state_entry stores the resume index + remaining seconds
+    // Run the on-entry body resumably. If the body hits a `wait`
+    // (anywhere — direct, inside `if`, inside `while`),
+    // run_state_entry stores the resume path + remaining seconds
     // on the instance and returns normally — `tick_scene` picks up
     // the work next frame after the wait elapses.
-    run_state_entry(env, scene, &state.on_entry, 0)?;
+    run_state_entry(env, scene, &state.on_entry, &[])?;
     // A transition during on_entry is followed immediately.
     if let Some(next) = env.transitioning.take() {
         env.self_value = prev_self;
@@ -714,47 +719,348 @@ fn enter_state(
     Ok(())
 }
 
-/// Walk a state's on-entry statements from `start_at`, stopping
-/// early on `wait` (suspending) or any other control-flow signal
-/// (return / break / continue / transition). When a `Stmt::Wait`
-/// is hit, evaluate its duration to seconds, write the next
-/// statement index + remaining seconds to the instance, and
-/// return; the tick loop resumes the body once the timer elapses.
+/// What the resumable runner reports back at each level. Mirrors
+/// the env-flag based control-flow signalling used elsewhere in
+/// `eval`, but separated out as an explicit return value because
+/// `Suspended` has no env-flag analogue (the env is otherwise
+/// clean when a fiber suspends). v0.2 session 2a.
+#[derive(Debug, Clone, Copy)]
+enum FiberOutcome {
+    /// Body finished normally.
+    Completed,
+    /// A `wait` fired somewhere in this body or its sub-blocks.
+    /// The runner has built `out_path` bottom-up; the caller
+    /// stores it on the instance for resume next frame.
+    Suspended,
+    /// `return <value>`. Propagated up the recursion via env.returning.
+    Returning,
+    /// `break`. Outer `while` consumes; caller propagates otherwise.
+    Breaking,
+    /// `continue`. Outer `while` consumes; caller propagates otherwise.
+    Continuing,
+    /// `-> <state>`. Caller (tick_scene / enter_state) handles the
+    /// transition. Propagated via env.transitioning.
+    Transitioning,
+}
+
+/// Drive a state's on-entry body, resumably. v0.2 session 2a.
 ///
-/// `wait` is only meaningful at this top level — it's intercepted
-/// here directly rather than dispatched through `eval_stmt`. The
-/// `Stmt::Wait` arm of `eval_stmt` errors, which catches `wait`
-/// inside conditional / loop / function bodies (any path that goes
-/// through `run_block`).
+/// Replaces the Phase 5 task 2 single-frame runner: the resume
+/// state is now a path through nested blocks rather than a flat
+/// statement index. `wait` works as a direct child of the entry
+/// body (the original Phase 5 case) AND as a child of `if` /
+/// `elif` / `else` / `while` blocks at any nesting depth within
+/// the entry. `for` bodies and function calls remain v0.2 session
+/// 2b territory (the `for` case needs iterator-state preservation;
+/// function calls need a frame stack).
+///
+/// `incoming_path` is the resume path stored on the instance; an
+/// empty slice means "start from the top of `stmts`."
 fn run_state_entry(
     env: &mut Env,
     scene: &Rc<RefCell<Instance>>,
     stmts: &[Stmt],
-    start_at: usize,
+    incoming_path: &[PathEntry],
 ) -> Result<(), RuntimeError> {
-    for (i, stmt) in stmts.iter().enumerate().skip(start_at) {
-        if let Stmt::Wait { duration, line, col } = stmt {
-            let v = eval_expr(env, duration)?;
-            let secs = quantity_to_seconds(&v, *line, *col)?;
-            let mut inst = scene.borrow_mut();
-            inst.entry_resume_index = Some(i + 1);
-            inst.entry_wait_remaining = secs;
-            return Ok(());
-        }
-        eval_stmt(env, stmt)?;
-        if env.returning.is_some()
-            || env.breaking
-            || env.continuing
-            || env.transitioning.is_some()
-        {
-            return Ok(());
+    let mut out_path: Vec<PathEntry> = Vec::new();
+    let outcome = run_block_resumable(env, scene, stmts, incoming_path, &mut out_path)?;
+    let mut inst = scene.borrow_mut();
+    if matches!(outcome, FiberOutcome::Suspended) {
+        // out_path is built innermost-first as the recursion
+        // unwinds; flip to outermost-first for storage so the
+        // resume side reads in natural top-down order.
+        out_path.reverse();
+        inst.entry_resume_path = out_path;
+    } else {
+        inst.entry_resume_path.clear();
+        inst.entry_wait_remaining = 0.0;
+    }
+    Ok(())
+}
+
+/// Walk a body of statements, honouring an incoming resume path on
+/// the first iteration and falling back to normal sequential
+/// execution thereafter. On `wait` / sub-block suspension, builds
+/// `out_path` from innermost to outermost (caller reverses once).
+///
+/// The runner only special-cases `Stmt::Wait` and the structured
+/// statements that can host a nested `wait`: `Stmt::If` and
+/// `Stmt::While`. Everything else is dispatched through `eval_stmt`
+/// which handles `wait` inside its body via the existing error
+/// path (function calls, `for` bodies, `every` clocks, etc.).
+fn run_block_resumable(
+    env: &mut Env,
+    scene: &Rc<RefCell<Instance>>,
+    body: &[Stmt],
+    incoming: &[PathEntry],
+    out_path: &mut Vec<PathEntry>,
+) -> Result<FiberOutcome, RuntimeError> {
+    let (start_idx, descent_branch) = match incoming.first() {
+        Some(p) => (p.stmt_index, p.branch),
+        None => (0, None),
+    };
+    let inner_incoming: &[PathEntry] = if incoming.is_empty() {
+        &[]
+    } else {
+        &incoming[1..]
+    };
+
+    // The first iteration may need to drill into a sub-block
+    // guided by `descent_branch`. Subsequent iterations are fresh
+    // executions starting at stmt index `idx`.
+    let mut idx = start_idx;
+    let mut first_iter = true;
+    while idx < body.len() {
+        let stmt = &body[idx];
+        let drilling = first_iter && descent_branch.is_some();
+        first_iter = false;
+
+        match stmt {
+            Stmt::Wait { duration, line, col } => {
+                if drilling {
+                    return Err(RuntimeError {
+                        line: *line,
+                        col: *col,
+                        message:
+                            "internal: cannot drill into a `wait` statement (corrupted resume path)"
+                                .to_string(),
+                        help: None,
+                    });
+                }
+                let v = eval_expr(env, duration)?;
+                let secs = quantity_to_seconds(&v, *line, *col)?;
+                scene.borrow_mut().entry_wait_remaining = secs;
+                // Push the deepest entry: at this depth, the next
+                // stmt to execute on resume is the one after the
+                // wait. Caller(s) prepend their own entries.
+                out_path.push(PathEntry {
+                    stmt_index: idx + 1,
+                    branch: None,
+                });
+                return Ok(FiberOutcome::Suspended);
+            }
+            Stmt::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                // Pick the branch: either resume the previously
+                // chosen one (drilling) or evaluate fresh.
+                let (target_body, branch) = if drilling {
+                    let b = descent_branch.expect("drilling implies descent_branch is set");
+                    let target: &[Stmt] = match b {
+                        Branch::IfThen => then_body.as_slice(),
+                        Branch::IfElif(arm) => elifs
+                            .get(arm)
+                            .map(|(_, body)| body.as_slice())
+                            .unwrap_or(&[]),
+                        Branch::IfElse => else_body
+                            .as_ref()
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]),
+                        Branch::While => {
+                            return Err(RuntimeError {
+                                line: 0,
+                                col: 0,
+                                message: "internal: corrupted resume path (while branch on if)"
+                                    .to_string(),
+                                help: None,
+                            });
+                        }
+                    };
+                    (target, b)
+                } else {
+                    let v = eval_expr(env, cond)?;
+                    if is_truthy(&v) {
+                        (then_body.as_slice(), Branch::IfThen)
+                    } else {
+                        let mut chosen: Option<(&[Stmt], Branch)> = None;
+                        for (arm_idx, (elif_cond, elif_body)) in elifs.iter().enumerate() {
+                            let v = eval_expr(env, elif_cond)?;
+                            if is_truthy(&v) {
+                                chosen = Some((elif_body.as_slice(), Branch::IfElif(arm_idx)));
+                                break;
+                            }
+                        }
+                        match chosen {
+                            Some(c) => c,
+                            None => match else_body.as_ref() {
+                                Some(eb) => (eb.as_slice(), Branch::IfElse),
+                                None => {
+                                    // No branch matched — skip this stmt entirely.
+                                    idx += 1;
+                                    continue;
+                                }
+                            },
+                        }
+                    }
+                };
+
+                let inner = if drilling { inner_incoming } else { &[] };
+                let inner_outcome =
+                    run_block_resumable(env, scene, target_body, inner, out_path)?;
+                match inner_outcome {
+                    FiberOutcome::Suspended => {
+                        out_path.push(PathEntry {
+                            stmt_index: idx,
+                            branch: Some(branch),
+                        });
+                        return Ok(FiberOutcome::Suspended);
+                    }
+                    FiberOutcome::Returning
+                    | FiberOutcome::Breaking
+                    | FiberOutcome::Continuing
+                    | FiberOutcome::Transitioning => {
+                        return Ok(inner_outcome);
+                    }
+                    FiberOutcome::Completed => {
+                        idx += 1;
+                    }
+                }
+            }
+            Stmt::While {
+                cond,
+                body: while_body,
+                ..
+            } => {
+                env.loop_depth += 1;
+                let result = run_while_resumable(
+                    env,
+                    scene,
+                    cond,
+                    while_body,
+                    drilling,
+                    inner_incoming,
+                    out_path,
+                );
+                env.loop_depth -= 1;
+                let outcome = result?;
+                match outcome {
+                    FiberOutcome::Suspended => {
+                        out_path.push(PathEntry {
+                            stmt_index: idx,
+                            branch: Some(Branch::While),
+                        });
+                        return Ok(FiberOutcome::Suspended);
+                    }
+                    FiberOutcome::Returning | FiberOutcome::Transitioning => {
+                        return Ok(outcome);
+                    }
+                    // `break` / `continue` were consumed inside.
+                    // `Completed` just falls through to next stmt.
+                    _ => {
+                        idx += 1;
+                    }
+                }
+            }
+            _ => {
+                if drilling {
+                    return Err(RuntimeError {
+                        line: 0,
+                        col: 0,
+                        message: format!(
+                            "internal: corrupted resume path (drilling into {})",
+                            stmt_kind_name(stmt)
+                        ),
+                        help: None,
+                    });
+                }
+                // Other statements — let `eval_stmt` handle them.
+                // Any `wait` reachable from here goes through
+                // `run_block`, which still surfaces the original
+                // "wait only supported at..." error. Function
+                // calls, `for` bodies, etc., are session 2b.
+                eval_stmt(env, stmt)?;
+                if env.returning.is_some() {
+                    return Ok(FiberOutcome::Returning);
+                }
+                if env.breaking {
+                    return Ok(FiberOutcome::Breaking);
+                }
+                if env.continuing {
+                    return Ok(FiberOutcome::Continuing);
+                }
+                if env.transitioning.is_some() {
+                    return Ok(FiberOutcome::Transitioning);
+                }
+                idx += 1;
+            }
         }
     }
-    // Body completed normally — clear any stale resume state.
-    let mut inst = scene.borrow_mut();
-    inst.entry_resume_index = None;
-    inst.entry_wait_remaining = 0.0;
-    Ok(())
+    Ok(FiberOutcome::Completed)
+}
+
+/// Run a `while` loop resumably. On the first iteration, may
+/// resume mid-body (when `drilling` is true and `inner_incoming`
+/// is the path into the body). After completing the body —
+/// whether on first iteration or resumed — re-evaluates `cond`
+/// and loops normally. v0.2 session 2a.
+fn run_while_resumable(
+    env: &mut Env,
+    scene: &Rc<RefCell<Instance>>,
+    cond: &Expr,
+    body: &[Stmt],
+    mut drilling: bool,
+    inner_incoming: &[PathEntry],
+    out_path: &mut Vec<PathEntry>,
+) -> Result<FiberOutcome, RuntimeError> {
+    loop {
+        if !drilling {
+            let v = eval_expr(env, cond)?;
+            if !is_truthy(&v) {
+                return Ok(FiberOutcome::Completed);
+            }
+        }
+        let inner: &[PathEntry] = if drilling { inner_incoming } else { &[] };
+        drilling = false; // only the very first iteration drills.
+        let outcome = run_block_resumable(env, scene, body, inner, out_path)?;
+        match outcome {
+            FiberOutcome::Suspended => return Ok(FiberOutcome::Suspended),
+            FiberOutcome::Returning | FiberOutcome::Transitioning => return Ok(outcome),
+            FiberOutcome::Breaking => {
+                env.breaking = false;
+                return Ok(FiberOutcome::Completed);
+            }
+            FiberOutcome::Continuing => {
+                env.continuing = false;
+                // fall through to re-eval cond
+            }
+            FiberOutcome::Completed => {
+                // fall through to re-eval cond
+            }
+        }
+    }
+}
+
+/// Name a `Stmt` for diagnostic messages. Only used by the
+/// "corrupted resume path" internal error so the user sees
+/// *which* kind of stmt the runner tried to drill into. Limited
+/// to the variants the resumable runner can encounter.
+fn stmt_kind_name(stmt: &Stmt) -> &'static str {
+    match stmt {
+        Stmt::Let { .. } => "let",
+        Stmt::Assign { .. } => "assign",
+        Stmt::If { .. } => "if",
+        Stmt::OnUpdate { .. } => "on update",
+        Stmt::OnRender { .. } => "on render",
+        Stmt::Decl { .. } => "decl",
+        Stmt::FunctionDecl { .. } => "function",
+        Stmt::Return { .. } => "return",
+        Stmt::While { .. } => "while",
+        Stmt::For { .. } => "for",
+        Stmt::Break { .. } => "break",
+        Stmt::Continue { .. } => "continue",
+        Stmt::Transition { .. } => "transition",
+        Stmt::Spawn { .. } => "spawn",
+        Stmt::Despawn { .. } => "despawn",
+        Stmt::Wait { .. } => "wait",
+        Stmt::DialogueDecl { .. } => "dialogue",
+        Stmt::Say { .. } => "say",
+        Stmt::Choice { .. } => "choice",
+        Stmt::Expr(_) => "expression",
+    }
 }
 
 /// Resolve a bare name. Scope chain: the active `self` instance's fields
@@ -1956,7 +2262,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
         despawned: false,
-        entry_resume_index: None,
+        entry_resume_path: Vec::new(),
         entry_wait_remaining: 0.0,
         predicate_last_values: Vec::new(),
     })))
