@@ -29,10 +29,10 @@
 //!
 //! These are 4d / 4e / 4f territory.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use crate::ast::{BinOp, Expr, Program, Stmt, UnOp};
+use crate::ast::{BinOp, DeclMember, Expr, Program, Stmt, UnOp};
 use crate::types::{apply_subst, unify, Substitution, Type, TypeVarGen};
 
 /// Result of inference over a program — top-level names bound to
@@ -73,6 +73,19 @@ struct Inferer {
     /// Stack of name -> type maps. Pushed on function-body entry,
     /// popped on exit. Lookup walks innermost-first.
     scopes: Vec<HashMap<String, Type>>,
+    /// Per-class field shapes. Populated as `walk_stmt` sees
+    /// each `Stmt::Decl` (entity / item / scene / particles /
+    /// modifier / inventory) — we infer the type of every field
+    /// default and stash it here. `expr_type` then resolves
+    /// `instance.field` via Instance(class_name) lookup. Class
+    /// methods aren't in this table; they're keyed under the
+    /// same class but tracked separately by future strict-mode
+    /// passes.
+    class_shapes: HashMap<String, BTreeMap<String, Type>>,
+    /// When walking a method body, this is the enclosing class
+    /// name so `self` and bare-name field references resolve
+    /// correctly. None outside of methods.
+    current_class: Option<String>,
 }
 
 impl Inferer {
@@ -81,6 +94,8 @@ impl Inferer {
             var_gen: TypeVarGen::new(),
             subst: Substitution::new(),
             scopes: vec![HashMap::new()],
+            class_shapes: HashMap::new(),
+            current_class: None,
         }
     }
 
@@ -114,8 +129,9 @@ impl Inferer {
                 self.bind(name.clone(), func_t);
                 self.walk_function_body(params, body, &param_vars, &ret_var);
             }
-            Stmt::Decl { name, .. } => {
+            Stmt::Decl { name, members, .. } => {
                 self.bind(name.clone(), Type::Class(Rc::new(name.clone())));
+                self.walk_class_members(name, members);
             }
             Stmt::Assign { value, .. } => {
                 // Reassignment doesn't introduce a new binding;
@@ -185,6 +201,86 @@ impl Inferer {
             | Stmt::Spawn { .. }
             | Stmt::Despawn { .. } => {}
         }
+    }
+
+    /// Walk a class declaration's members, populating the
+    /// `class_shapes` entry for `class_name` with each field's
+    /// inferred type and each method's signature. Then walk
+    /// each method body so its signature gets refined by
+    /// constraints from `return` / operators / call sites.
+    /// Inside method bodies, `self` resolves to `Instance(class_name)`
+    /// and bare-name references to declared fields resolve via
+    /// the class shape.
+    fn walk_class_members(&mut self, class_name: &str, members: &[DeclMember]) {
+        let mut shape: BTreeMap<String, Type> = BTreeMap::new();
+
+        // Pass 1: infer field types from their default-value
+        // expressions.
+        for m in members {
+            if let DeclMember::Field { name, value, .. } = m {
+                let t = self.expr_type(value);
+                shape.insert(name.clone(), self.resolve(&t));
+            }
+        }
+
+        // Pass 2: register placeholder method signatures with
+        // fresh vars. Methods need to live in the shape too so
+        // call sites like `instance.method()` can resolve via
+        // the same Field-on-Instance lookup field access uses.
+        // Stored as Type::Function — call dispatch flows through.
+        let mut method_meta: Vec<(String, Vec<Type>, Type)> = Vec::new();
+        for m in members {
+            if let DeclMember::Method { name, params, .. } = m {
+                let pv: Vec<Type> = params.iter().map(|_| self.fresh_var()).collect();
+                let rv = self.fresh_var();
+                shape.insert(name.clone(), Type::func(pv.clone(), rv.clone()));
+                method_meta.push((name.clone(), pv, rv));
+            }
+        }
+
+        // Insert the shape BEFORE walking method bodies so
+        // self.field / self.other_method() lookups inside a
+        // method body see the registered shape.
+        self.class_shapes.insert(class_name.to_string(), shape);
+
+        // Pass 3: walk each method body. The shape's method
+        // signatures get further refined here through return
+        // constraints and operator-driven param pinning.
+        for (m_idx, m) in members.iter().enumerate() {
+            if let DeclMember::Method { params, body, .. } = m {
+                let (_, pv, rv) = &method_meta[method_count_up_to(members, m_idx)];
+                self.push_scope();
+                let prev_class = self.current_class.take();
+                self.current_class = Some(class_name.to_string());
+                for (n, t) in params.iter().zip(pv.iter()) {
+                    self.bind(n.clone(), t.clone());
+                }
+                // Bare-name reads of class fields / methods
+                // inside the method body resolve via the scope
+                // chain. Mirrors the bytecode VM's self-field
+                // rewrite (compiler.rs).
+                if let Some(shape) = self.class_shapes.get(class_name).cloned() {
+                    for (fname, fty) in shape {
+                        if !self.lookup_in_top_scope(&fname) {
+                            self.bind(fname, fty);
+                        }
+                    }
+                }
+                self.walk_function_block(body, rv);
+                self.current_class = prev_class;
+                self.pop_scope();
+            }
+        }
+    }
+
+    /// True when `name` is bound in the innermost scope — used
+    /// during class method setup to avoid shadowing a parameter
+    /// with the field of the same name.
+    fn lookup_in_top_scope(&self, name: &str) -> bool {
+        self.scopes
+            .last()
+            .map(|s| s.contains_key(name))
+            .unwrap_or(false)
     }
 
     /// Walk a function body in a fresh scope. Params are bound
@@ -283,7 +379,10 @@ impl Inferer {
             Expr::Percent { .. } => Type::Percent,
             Expr::Quantity { unit, .. } => Type::Quantity(Rc::new(unit.clone())),
             Expr::Ident { name, .. } => self.lookup(name).unwrap_or(Type::Unknown),
-            Expr::SelfRef { .. } => Type::Unknown,
+            Expr::SelfRef { .. } => match &self.current_class {
+                Some(c) => Type::Instance(Rc::new(c.clone())),
+                None => Type::Unknown,
+            },
             Expr::Tuple { elems, .. } => {
                 Type::Tuple(elems.iter().map(|e| self.expr_type(e)).collect())
             }
@@ -316,11 +415,17 @@ impl Inferer {
             }
             Expr::Field { object, name, .. } => {
                 let obj_t = self.expr_type(object);
-                match (self.resolve(&obj_t), name.as_str()) {
+                let resolved = self.resolve(&obj_t);
+                match (&resolved, name.as_str()) {
                     (Type::Tuple(elems), "x") if !elems.is_empty() => elems[0].clone(),
                     (Type::Tuple(elems), "y") if elems.len() >= 2 => elems[1].clone(),
                     (Type::Tuple(elems), "z") if elems.len() >= 3 => elems[2].clone(),
                     (Type::List(_), "length") => Type::Int,
+                    (Type::Instance(class_name), field) => self
+                        .class_shapes
+                        .get(class_name.as_str())
+                        .and_then(|shape| shape.get(field).cloned())
+                        .unwrap_or(Type::Unknown),
                     _ => Type::Unknown,
                 }
             }
@@ -510,6 +615,17 @@ impl Inferer {
 
 fn is_scalar_type(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Float)
+}
+
+/// Helper: count how many `DeclMember::Method` entries appear
+/// in `members[..upto]`. Used by `walk_class_members` to map a
+/// member-position index into the parallel method-meta vector
+/// (which only contains entries for methods).
+fn method_count_up_to(members: &[DeclMember], upto: usize) -> usize {
+    members[..upto]
+        .iter()
+        .filter(|m| matches!(m, DeclMember::Method { .. }))
+        .count()
 }
 
 #[cfg(test)]
@@ -722,5 +838,90 @@ mod tests {
     #[test]
     fn comparisons_return_bool() {
         assert_eq!(type_of("x", "let x = 1 < 2"), Type::Bool);
+    }
+
+    // --- 4d: instance field access via class shapes ---
+
+    #[test]
+    fn instance_field_access_resolves_to_field_type() {
+        let bs = types_of(
+            "item Counter:\n    value: 0\n\nlet c = Counter()\nlet n = c.value\n",
+        );
+        assert_eq!(bs.get("c").map(|t| t.to_string()).as_deref(), Some("Counter"));
+        assert_eq!(bs.get("n"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn instance_field_with_string_default_resolves_to_string() {
+        let bs = types_of(
+            "item NPC:\n    name: \"Bob\"\n\nlet npc = NPC()\nlet who = npc.name\n",
+        );
+        assert_eq!(bs.get("who"), Some(&Type::Str));
+    }
+
+    #[test]
+    fn instance_unknown_field_falls_back_to_unknown() {
+        let bs = types_of(
+            "item Counter:\n    value: 0\n\nlet c = Counter()\nlet x = c.glubjorm\n",
+        );
+        // Per non-strict ("no false positives"): unknown field
+        // is allowed at parse time, returns Unknown.
+        assert_eq!(bs.get("x"), Some(&Type::Unknown));
+    }
+
+    #[test]
+    fn entity_with_var_field_carries_inferred_type() {
+        let bs = types_of(
+            "entity Mob:\n    var hp = 100\n\nlet m = Mob()\nlet h = m.hp\n",
+        );
+        assert_eq!(bs.get("h"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn self_inside_method_resolves_to_instance_type() {
+        // The method `hp_value` references self.value; the
+        // returned type should be int because self : Counter
+        // and Counter.value : int.
+        let bs = types_of(
+            "item Counter:\n    value: 0\n\n    hp_value():\n        return self.value\n\nlet c = Counter()\nlet h = c.hp_value()\n",
+        );
+        assert_eq!(bs.get("h"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn bare_name_in_method_resolves_to_field() {
+        // Inside a method body, `value` (with no `self.`) should
+        // resolve to the class's field — the same scope rule the
+        // bytecode VM uses (compiler.rs's bare-name self-field
+        // rewrite). Method should be inferred as returning int.
+        let bs = types_of(
+            "item Counter:\n    value: 0\n\n    raw():\n        return value\n\nlet c = Counter()\nlet n = c.raw()\n",
+        );
+        assert_eq!(bs.get("n"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn multiple_classes_get_separate_shapes() {
+        let bs = types_of(
+            "item A:\n    x: 1\n\nitem B:\n    y: \"hi\"\n\nlet a = A()\nlet b = B()\nlet ax = a.x\nlet by = b.y\n",
+        );
+        assert_eq!(bs.get("ax"), Some(&Type::Int));
+        assert_eq!(bs.get("by"), Some(&Type::Str));
+    }
+
+    #[test]
+    fn scene_field_shape_works_too() {
+        let bs = types_of(
+            "scene S:\n    var n = 0\n    initial: a\n    state a:\n",
+        );
+        // We can't easily access scene fields from outside a
+        // scene declaration without an explicit reference, but
+        // we can at least confirm the class binds and the shape
+        // is recorded. Test indirectly: a method-style access
+        // through Instance(S) — there's no constructor for
+        // scenes (they auto-instantiate at runtime), so we
+        // can't test access syntactically. This test just
+        // confirms the type for S binds without error.
+        assert_eq!(bs.get("S").map(|t| t.to_string()).as_deref(), Some("<class S>"));
     }
 }
