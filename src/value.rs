@@ -108,23 +108,20 @@ pub struct Instance {
     /// Set by `despawn self`; the runtime drops this instance from
     /// `Env::active_entities` at the end of the frame.
     pub despawned: bool,
-    /// Suspended-fiber resume path for the current state's
-    /// `on_entry` body. Empty = not suspended (entry ran to
-    /// completion, or the state has no entry body / hasn't been
-    /// entered). Non-empty = the entry body hit a `wait` somewhere
-    /// inside its statements (possibly nested in `if` / `while`)
-    /// and the runner needs `entry_resume_path` to navigate back
-    /// to the suspension point on resume.
+    /// Suspended-fiber call stack. Empty = not suspended (entry
+    /// ran to completion, or the state has no entry body / hasn't
+    /// been entered). Non-empty = a `wait` fired somewhere in the
+    /// state's `on_entry` body (possibly inside nested `if` /
+    /// `while` blocks, or inside a function called from there).
     ///
-    /// Path semantics: `path[0]` describes the top-level body,
-    /// `path[k+1]` describes the sub-body reached by descending
-    /// through `path[k].branch` from `path[k].stmt_index`. The
-    /// last entry always has `branch == None` and its `stmt_index`
-    /// is the next statement to execute when the wait elapses.
-    /// v0.2 session 2a (replaces the flat-integer
-    /// `entry_resume_index` from Phase 5 task 2; same semantics
-    /// when the path has length 1, plus support for nesting).
-    pub entry_resume_path: Vec<PathEntry>,
+    /// Bottom frame (`fiber_frames[0]`) is always
+    /// `FrameKind::StateEntry`. Frames above are function calls
+    /// whose body suspended. Each frame carries its own
+    /// `resume_path`. On resume, the runner pops frames top-down:
+    /// the innermost completes first, then its parent, until the
+    /// state-entry's path runs to completion. v0.2 sessions 2a
+    /// (path) + 2b (frame stack).
+    pub fiber_frames: Vec<Frame>,
     /// Seconds left on the active `wait`. Decremented by `dt` each
     /// frame the instance ticks.
     pub entry_wait_remaining: f64,
@@ -136,7 +133,8 @@ pub struct Instance {
 }
 
 /// One step on a fiber's resume path. Each step describes one
-/// nesting depth of the suspended on-entry body. v0.2 session 2a.
+/// nesting depth of the suspended body the frame is rooted in.
+/// v0.2 session 2a.
 ///
 /// All steps except the last have `branch == Some(...)` indicating
 /// which sub-body of `body[stmt_index]` was descended into. The
@@ -153,13 +151,55 @@ pub struct PathEntry {
 /// at suspension time so resume picks the same arm without
 /// re-evaluating its condition (preserves side-effect order). v0.2
 /// session 2a covers `if` / `elif` / `else` and `while` bodies;
-/// `for` bodies and function calls land in session 2b.
+/// `for` bodies still surface the original wait-context error
+/// (deferred to a follow-on session — needs iterator-state
+/// preservation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Branch {
     IfThen,
     IfElif(usize),
     IfElse,
     While,
+}
+
+/// One frame on a suspended fiber's call stack. v0.2 session 2b.
+///
+/// The bottom frame is always `FrameKind::StateEntry` — the
+/// state's `on_entry` body. Frames above it are function calls
+/// whose body suspended on a `wait` (or whose body called another
+/// function that suspended). Each frame carries its own
+/// `resume_path` describing where in its own body to resume.
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub kind: FrameKind,
+    pub resume_path: Vec<PathEntry>,
+}
+
+/// What body the frame is rooted in. `StateEntry` is fetched at
+/// resume from the instance's current state (so hot-reloads
+/// recompute the body). `Function` holds an `Rc<FunctionDef>` so
+/// the body stays resolvable even if the function gets
+/// redefined / removed after the suspension. The function
+/// variant also carries the bookkeeping needed to restore env
+/// state when the frame eventually completes:
+///
+/// - `saved_returning`: the value of `env.returning` at the time
+///   of the call (almost always `None`). Restored on completion
+///   so a parent function's return channel isn't corrupted.
+/// - `saved_params`: the previous bindings the function's
+///   parameter names shadowed. Restored on completion.
+///
+/// v0.2 session 2b targets function-position `Stmt::Expr` calls
+/// only; method dispatch and call-as-expression (`let x = f()`)
+/// are follow-ons.
+#[derive(Debug, Clone)]
+pub enum FrameKind {
+    StateEntry,
+    Function {
+        def: Rc<crate::value::FunctionDef>,
+        saved_returning: Option<Value>,
+        saved_params: Vec<(String, Option<Value>)>,
+    },
 }
 
 #[derive(Debug, Default)]

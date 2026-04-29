@@ -994,10 +994,129 @@ scene Demo:
 }
 
 #[test]
-fn wait_outside_state_body_still_errors_in_function() {
-    // Function bodies remain v0.2 session 2b territory. The
-    // existing error path stays in place via run_block until
-    // the frame stack lands.
+fn wait_in_function_program_runs() {
+    // Real .twe program checked into tests/programs as a
+    // committed reference for the function-body wait machinery.
+    let out = run_program_frames("tests/programs/wait_in_function.twe", 3, 0.1)
+        .expect("program should run");
+    assert_eq!(
+        out,
+        "entry\nfirst\nfirst\nsecond\nsecond\nafter-call\ndone\n"
+    );
+}
+
+#[test]
+fn wait_inside_function_called_from_state_entry_resumes() {
+    // v0.2 session 2b: a function called as `Stmt::Expr` from a
+    // state's on_entry can `wait`. The fiber stack holds the
+    // function frame on top of the state-entry frame; on resume
+    // the function body completes, then the state-entry's
+    // post-call statements run.
+    let src = r#"
+function pause_then_log():
+    print("pre-wait")
+    wait 0.1s
+    print("post-wait")
+
+scene Demo:
+    initial: a
+    state a:
+        print("entry")
+        pause_then_log()
+        print("after-call")
+"#;
+    let out = run_program_frames_str(src, 2, 0.1).expect("should run");
+    assert_eq!(out, "entry\npre-wait\npost-wait\nafter-call\n");
+}
+
+#[test]
+fn wait_inside_function_inside_if_resumes() {
+    // The function call sits inside an if-then branch of the
+    // state entry. Two frames on the fiber stack: state entry
+    // (path through the if) + function body (path past the wait).
+    let src = r#"
+function nap(label: string):
+    print(label)
+    wait 0.1s
+    print(label)
+
+scene Demo:
+    initial: a
+    state a:
+        if true:
+            print("inside-if")
+            nap("napping")
+        print("done")
+"#;
+    let out = run_program_frames_str(src, 2, 0.1).expect("should run");
+    assert_eq!(
+        out,
+        "inside-if\nnapping\nnapping\ndone\n"
+    );
+}
+
+#[test]
+fn two_sequential_waiting_calls_run_in_order() {
+    // Two function calls back-to-back, each with a wait.
+    // Frame 1: enter, first call's pre-wait. Suspended.
+    // Frame 2: first call's post-wait, second call's pre-wait.
+    //          Suspended.
+    // Frame 3: second call's post-wait, "done".
+    let src = r#"
+function step(label: string):
+    print(label)
+    wait 0.1s
+    print(label)
+
+scene Demo:
+    initial: a
+    state a:
+        step("first")
+        step("second")
+        print("done")
+"#;
+    let out = run_program_frames_str(src, 3, 0.1).expect("should run");
+    assert_eq!(
+        out,
+        "first\nfirst\nsecond\nsecond\ndone\n"
+    );
+}
+
+#[test]
+fn function_calls_function_with_wait() {
+    // Two function frames on top of the state-entry frame at
+    // suspension time. Resume drains them outermost-first
+    // (innermost — `inner` — finishes, then `outer` finishes,
+    // then the state-entry continues).
+    let src = r#"
+function inner():
+    print("inner-pre")
+    wait 0.1s
+    print("inner-post")
+
+function outer():
+    print("outer-pre")
+    inner()
+    print("outer-post")
+
+scene Demo:
+    initial: a
+    state a:
+        outer()
+        print("done")
+"#;
+    let out = run_program_frames_str(src, 2, 0.1).expect("should run");
+    assert_eq!(
+        out,
+        "outer-pre\ninner-pre\ninner-post\nouter-post\ndone\n"
+    );
+}
+
+#[test]
+fn wait_in_function_called_from_outside_state_still_errors() {
+    // Calling a wait-bearing function from top-level (not
+    // inside a state on_entry) still errors — there's no fiber
+    // context to suspend into. Same error as before.
     let src = r#"
 function pause():
     wait 0.5s

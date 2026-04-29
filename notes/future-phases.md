@@ -281,10 +281,18 @@ note.
       `for` bodies + function calls remain v0.2 session 2b
       territory. See
       `docs/changes/2026-04-29-v0.2-session-2a-resumable-blocks.md`.
-- [ ] **Session 2b — function-body `wait`** (planned). Push a
-      `Frame` on each function call so the fiber is a stack of
-      bodies-with-resume-paths. Add `for`-body resumption
-      alongside (iteration index goes on the path entry).
+- [x] **Session 2b — function-body `wait`** (2026-04-29). Reifies
+      the call stack as `Instance::fiber_frames: Vec<Frame>` so
+      `wait` works inside a function called from a state's
+      `on_entry` (and inside a function called from another
+      function called from there, etc.). Frame ordering is
+      bottom-to-top (state-entry at index 0; innermost call at
+      `len-1`); push-before-run keeps the order correct
+      regardless of when the wait fires. Restricted to
+      bare-name `Stmt::Expr` calls of `Value::Function`
+      callees; method-body wait, `for`-body wait, and
+      call-as-expression (`let x = f()`) remain follow-ons.
+      See `docs/changes/2026-04-29-v0.2-session-2b-function-body-wait.md`.
 - [ ] **Session 2c — bytecode VM parity** (planned). The VM's
       current `OpCode::Wait` saves a single `(chunk, IP)` on
       `BcInstance`; rebuild as a `Vec<BcFrame>` so the same
@@ -310,10 +318,13 @@ closeout notes (`docs/changes/2026-04-29-phase-5-closeout.md`,
 Phase 5 carry-overs:
 
 - **`wait` in non-state-entry contexts** — sessions 2a (resumable
-  `if` / `while` blocks) **shipped**; 2b (function bodies, `for`
-  bodies) and 2c (bytecode VM parity) planned. `wait` inside
-  `dialogue` (per-dialogue scheduler) and fiber-backed `every`
-  rewrite remain on the v0.2 backlog beyond the 2a/2b/2c track.
+  `if` / `while` blocks) and 2b (function-body `wait` for
+  bare-name `Stmt::Expr` calls) **shipped**; 2c (bytecode VM
+  parity) planned. Method-body `wait`, call-as-expression
+  (`let x = f()`), and `for`-body `wait` remain follow-ons.
+  `wait` inside `dialogue` (per-dialogue scheduler) and
+  fiber-backed `every` rewrite stay on the v0.2 backlog beyond
+  the 2a/2b/2c track.
 - **Dialogue UI** — interactive choice selection (input modality
   conversation), bytecode VM dialogue support, per-dialogue
   scheduler for `wait` inside dialogue, `scene.npc("...")` lookup.

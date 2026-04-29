@@ -1,0 +1,31 @@
+# v0.2 session 2b: `wait` inside a function body called from a
+# state's on_entry. The fiber stack holds the function frame on
+# top of the state-entry frame; on resume the function body
+# completes, then the state-entry's post-call statements run.
+#
+# Frame timing with dt=0.1, three frames:
+#   frame 1: enter `chain` → "entry" → call delay("first") →
+#            "first" → wait 0.1s. Suspended (2 frames on stack).
+#   frame 2: wait elapses → "first" (post-wait) → function
+#            returns → call delay("second") → "second" → wait
+#            0.1s. Suspended again.
+#   frame 3: wait elapses → "second" (post-wait) → function
+#            returns → "after-call" → -> done → "done".
+
+function delay(label: string):
+    print(label)
+    wait 0.1s
+    print(label)
+
+scene Demo:
+    initial: chain
+
+    state chain:
+        print("entry")
+        delay("first")
+        delay("second")
+        print("after-call")
+        -> done
+
+    state done:
+        print("done")

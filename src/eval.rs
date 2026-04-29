@@ -7,8 +7,8 @@ use crate::ast::{
 };
 use crate::stdlib;
 use crate::value::{
-    Branch, ClassDef, Env, EveryClockDef, FunctionDef, Instance, MethodDef, Object,
-    OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value,
+    Branch, ClassDef, Env, EveryClockDef, Frame, FrameKind, FunctionDef, Instance, MethodDef,
+    Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value,
 };
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
@@ -476,46 +476,33 @@ fn tick_scene(
         return Ok(());
     }
     let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
-    // Phase 5 fibers / v0.2 session 2a: if the on-entry sequence
-    // is suspended on a `wait`, count down by `dt` and either keep
-    // waiting (skip the rest of this state's tick — the state is
-    // "asleep") or resume the sequence from the stored path.
-    let resume_info: Option<(Vec<PathEntry>, f64)> = {
-        let inst = scene.borrow();
-        if inst.entry_resume_path.is_empty() {
-            None
-        } else {
-            Some((inst.entry_resume_path.clone(), inst.entry_wait_remaining))
-        }
-    };
-    if let Some((resume_path, remaining)) = resume_info {
+    // Phase 5 fibers / v0.2 sessions 2a + 2b: if the state's
+    // fiber is suspended on a `wait`, count down by `dt` and
+    // either keep waiting (skip the rest of this state's
+    // tick — the state is "asleep") or resume the topmost frame.
+    let suspended = !scene.borrow().fiber_frames.is_empty();
+    if suspended {
+        let remaining = scene.borrow().entry_wait_remaining;
         let new_remaining = remaining - dt;
         if new_remaining > 0.0 {
             scene.borrow_mut().entry_wait_remaining = new_remaining;
             env.self_value = prev_self;
             return Ok(());
         }
-        // Wait elapsed — resume the on-entry body. Pull the
-        // statement list out under a single borrow.
-        let on_entry: Vec<Stmt> = {
-            let inst = scene.borrow();
-            inst.current_state
-                .as_ref()
-                .and_then(|n| inst.class.states.get(n))
-                .map(|s| s.on_entry.clone())
-                .unwrap_or_default()
-        };
-        run_state_entry(env, scene, &on_entry, &resume_path)?;
+        // Wait elapsed — resume the fiber. `resume_fiber` walks
+        // frames from innermost (top of stack) back down to the
+        // state-entry, completing or re-suspending as it goes.
+        resume_fiber(env, scene)?;
         if let Some(target) = env.transitioning.take() {
             enter_state(env, scene, &target)?;
             env.self_value = prev_self;
             return Ok(());
         }
         // Resuming may have hit another `wait` — if so, the
-        // instance now has a fresh `entry_resume_path`. Bail out
+        // instance still has frames on the fiber stack. Bail out
         // of the rest of this tick (clocks + on_update stay
         // paused while the entry is suspended).
-        if !scene.borrow().entry_resume_path.is_empty() {
+        if !scene.borrow().fiber_frames.is_empty() {
             env.self_value = prev_self;
             return Ok(());
         }
@@ -701,15 +688,15 @@ fn enter_state(
     // state was paused.
     {
         let mut inst = scene.borrow_mut();
-        inst.entry_resume_path.clear();
+        inst.fiber_frames.clear();
         inst.entry_wait_remaining = 0.0;
     }
-    // Run the on-entry body resumably. If the body hits a `wait`
-    // (anywhere — direct, inside `if`, inside `while`),
-    // run_state_entry stores the resume path + remaining seconds
-    // on the instance and returns normally — `tick_scene` picks up
-    // the work next frame after the wait elapses.
-    run_state_entry(env, scene, &state.on_entry, &[])?;
+    // Run the on-entry body resumably. If the body (or any
+    // function called from it) hits a `wait`, `run_state_entry`
+    // pushes the relevant frame(s) onto `fiber_frames` and
+    // returns normally — `tick_scene` picks up the work next
+    // frame after the wait elapses.
+    run_state_entry(env, scene, &state.on_entry)?;
     // A transition during on_entry is followed immediately.
     if let Some(next) = env.transitioning.take() {
         env.self_value = prev_self;
@@ -750,32 +737,136 @@ enum FiberOutcome {
 /// statement index. `wait` works as a direct child of the entry
 /// body (the original Phase 5 case) AND as a child of `if` /
 /// `elif` / `else` / `while` blocks at any nesting depth within
-/// the entry. `for` bodies and function calls remain v0.2 session
-/// 2b territory (the `for` case needs iterator-state preservation;
-/// function calls need a frame stack).
+/// the entry. `for` bodies still surface the wait-context error
+/// (deferred to a follow-on session). v0.2 session 2b adds
+/// function-body `wait` via the fiber stack (`Instance::fiber_frames`).
 ///
-/// `incoming_path` is the resume path stored on the instance; an
-/// empty slice means "start from the top of `stmts`."
+/// Frame ordering: `fiber_frames[0]` is the bottom of the call
+/// stack (state-entry); `fiber_frames[len-1]` is the innermost
+/// frame (the deepest function call that's currently suspended).
+/// `Vec::push` / `Vec::pop` thus naturally manage the top.
 fn run_state_entry(
     env: &mut Env,
     scene: &Rc<RefCell<Instance>>,
     stmts: &[Stmt],
-    incoming_path: &[PathEntry],
 ) -> Result<(), RuntimeError> {
+    // Push our state-entry frame upfront with an empty path.
+    // Function frames pushed during the body's run land ABOVE
+    // us. On suspend we update our frame's path in-place; on
+    // complete we pop it. This keeps `fiber_frames` ordered
+    // bottom-to-top no matter when in the call tree the wait
+    // fires.
+    scene.borrow_mut().fiber_frames.push(Frame {
+        kind: FrameKind::StateEntry,
+        resume_path: Vec::new(),
+    });
+    let our_idx = scene.borrow().fiber_frames.len() - 1;
     let mut out_path: Vec<PathEntry> = Vec::new();
-    let outcome = run_block_resumable(env, scene, stmts, incoming_path, &mut out_path)?;
+    let outcome = run_block_resumable(env, scene, stmts, &[], &mut out_path)?;
     let mut inst = scene.borrow_mut();
     if matches!(outcome, FiberOutcome::Suspended) {
-        // out_path is built innermost-first as the recursion
-        // unwinds; flip to outermost-first for storage so the
-        // resume side reads in natural top-down order.
         out_path.reverse();
-        inst.entry_resume_path = out_path;
+        inst.fiber_frames[our_idx].resume_path = out_path;
     } else {
-        inst.entry_resume_path.clear();
-        inst.entry_wait_remaining = 0.0;
+        // Body finished. Inner frames should already be drained
+        // (every push from a function call was paired with a
+        // Suspended bubble-up — non-suspended completions don't
+        // leave frames behind). Sanity-pop our frame at our_idx;
+        // anything past it is a programmer error.
+        debug_assert_eq!(inst.fiber_frames.len(), our_idx + 1);
+        inst.fiber_frames.pop();
+        if inst.fiber_frames.is_empty() {
+            inst.entry_wait_remaining = 0.0;
+        }
     }
     Ok(())
+}
+
+/// Resume a suspended fiber. Drives the topmost frame first; when
+/// it completes, drains down to the parent. Frames stay on
+/// `fiber_frames` while running so that any new function calls
+/// inside the body land ABOVE the current frame in the natural
+/// stack order. v0.2 session 2b.
+fn resume_fiber(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<(), RuntimeError> {
+    loop {
+        let top_idx = match scene.borrow().fiber_frames.len().checked_sub(1) {
+            Some(i) => i,
+            None => return Ok(()),
+        };
+        // Snapshot what we need to drive the body. Frame stays
+        // in place at `top_idx` while running.
+        let (body, resume_path, is_function) = {
+            let inst = scene.borrow();
+            let f = &inst.fiber_frames[top_idx];
+            let body = match &f.kind {
+                FrameKind::StateEntry => inst
+                    .current_state
+                    .as_ref()
+                    .and_then(|n| inst.class.states.get(n))
+                    .map(|s| s.on_entry.clone())
+                    .unwrap_or_default(),
+                FrameKind::Function { def, .. } => def.body.clone(),
+            };
+            let is_function = matches!(f.kind, FrameKind::Function { .. });
+            (body, f.resume_path.clone(), is_function)
+        };
+
+        if is_function {
+            env.call_depth += 1;
+        }
+        let mut out_path: Vec<PathEntry> = Vec::new();
+        let result = run_block_resumable(env, scene, &body, &resume_path, &mut out_path);
+        if is_function {
+            env.call_depth -= 1;
+        }
+        let outcome = result?;
+
+        if matches!(outcome, FiberOutcome::Suspended) {
+            // Re-suspended. Inner frames may have been pushed
+            // above us during the run; our frame is still at
+            // `top_idx`. Update its resume_path in place.
+            out_path.reverse();
+            scene.borrow_mut().fiber_frames[top_idx].resume_path = out_path;
+            return Ok(());
+        }
+
+        // Body finished. Pop our frame; any inner frames pushed
+        // during the run completed (no Suspended bubbled), so
+        // our frame is at the top.
+        let frame = {
+            let mut inst = scene.borrow_mut();
+            debug_assert_eq!(inst.fiber_frames.len(), top_idx + 1);
+            inst.fiber_frames.pop().expect("frame was at top_idx")
+        };
+        // Restore saved env state for function frames whose body
+        // is now done.
+        if let FrameKind::Function {
+            saved_returning,
+            saved_params,
+            ..
+        } = frame.kind
+        {
+            // Discard the function's return value (Stmt::Expr
+            // position; v0.2 session 2b doesn't pipe values
+            // back into call-as-expression sites).
+            let _ = env.returning.take();
+            env.returning = saved_returning;
+            for (name, prev) in saved_params {
+                match prev {
+                    Some(v) => env.set(name, v),
+                    None => env.remove(&name),
+                }
+            }
+        }
+        match outcome {
+            FiberOutcome::Returning => continue,
+            FiberOutcome::Transitioning | FiberOutcome::Breaking | FiberOutcome::Continuing => {
+                return Ok(());
+            }
+            FiberOutcome::Completed => continue,
+            FiberOutcome::Suspended => unreachable!("handled above"),
+        }
+    }
 }
 
 /// Walk a body of statements, honouring an incoming resume path on
@@ -955,6 +1046,46 @@ fn run_block_resumable(
                     }
                 }
             }
+            Stmt::Expr(expr) if is_top_level_user_call(env, expr) => {
+                if drilling {
+                    return Err(RuntimeError {
+                        line: 0,
+                        col: 0,
+                        message: "internal: corrupted resume path (drilling into expression statement)"
+                            .to_string(),
+                        help: None,
+                    });
+                }
+                // v0.2 session 2b: top-level function-call
+                // statements are run resumably so a `wait`
+                // reached from the function's body can suspend
+                // the entire fiber stack rather than error.
+                // Built-in calls / methods / call-as-expression
+                // still go through `eval_stmt` (call_function's
+                // run_block path).
+                let outcome = run_user_call_resumable(env, scene, expr, out_path)?;
+                match outcome {
+                    FiberOutcome::Suspended => {
+                        // Suspension: record OUR position
+                        // (post-call) so the parent runner
+                        // knows to skip this stmt on resume.
+                        out_path.push(PathEntry {
+                            stmt_index: idx + 1,
+                            branch: None,
+                        });
+                        return Ok(FiberOutcome::Suspended);
+                    }
+                    FiberOutcome::Returning
+                    | FiberOutcome::Breaking
+                    | FiberOutcome::Continuing
+                    | FiberOutcome::Transitioning => {
+                        return Ok(outcome);
+                    }
+                    FiberOutcome::Completed => {
+                        idx += 1;
+                    }
+                }
+            }
             _ => {
                 if drilling {
                     return Err(RuntimeError {
@@ -971,7 +1102,8 @@ fn run_block_resumable(
                 // Any `wait` reachable from here goes through
                 // `run_block`, which still surfaces the original
                 // "wait only supported at..." error. Function
-                // calls, `for` bodies, etc., are session 2b.
+                // calls inside expressions (`let x = f()`),
+                // `for` bodies, methods, etc., are follow-ons.
                 eval_stmt(env, stmt)?;
                 if env.returning.is_some() {
                     return Ok(FiberOutcome::Returning);
@@ -1031,6 +1163,186 @@ fn run_while_resumable(
                 // fall through to re-eval cond
             }
         }
+    }
+}
+
+/// Decide whether a `Stmt::Expr(expr)` is a call site that the
+/// resumable runner should drive. Currently restricted to
+/// bare-name calls whose target resolves to a user-defined
+/// `Value::Function`. Methods (resolved via `find_method` on
+/// `self`'s class, or via `Expr::Field` callees), builtins, and
+/// calls through any other callee shape fall through to the
+/// existing `eval_stmt` path. v0.2 session 2b.
+fn is_top_level_user_call(env: &Env, expr: &Expr) -> bool {
+    let Expr::Call { callee, .. } = expr else {
+        return false;
+    };
+    let Expr::Ident { name, .. } = callee.as_ref() else {
+        return false;
+    };
+    // Self-method takes precedence — those don't suspend in
+    // session 2b (method-body wait deferred to a follow-on).
+    if let Some(Value::Instance(rc)) = &env.self_value {
+        let class = rc.borrow().class.clone();
+        if find_method(&class, name).is_some() {
+            return false;
+        }
+    }
+    matches!(env.get(name), Some(Value::Function(_)))
+}
+
+/// Run a `Stmt::Expr(Call)` whose callee is a user function,
+/// resumably. Mirrors `call_function`'s param-binding logic but
+/// drives the body through `run_block_resumable`. On suspension,
+/// pushes a `FrameKind::Function` onto the fiber stack with the
+/// saved env state needed to restore on completion. v0.2 session
+/// 2b.
+fn run_user_call_resumable(
+    env: &mut Env,
+    scene: &Rc<RefCell<Instance>>,
+    expr: &Expr,
+    out_path: &mut Vec<PathEntry>,
+) -> Result<FiberOutcome, RuntimeError> {
+    let _ = out_path; // suspend-path handling is at the parent level
+    let (name, args, kwargs, line, col) = match expr {
+        Expr::Call {
+            callee,
+            args,
+            kwargs,
+            line,
+            col,
+        } => {
+            let n = match callee.as_ref() {
+                Expr::Ident { name, .. } => name.clone(),
+                _ => unreachable!("guarded by is_top_level_user_call"),
+            };
+            (n, args.as_slice(), kwargs.as_slice(), *line, *col)
+        }
+        _ => unreachable!("guarded by is_top_level_user_call"),
+    };
+    let def: Rc<FunctionDef> = match env.get(&name) {
+        Some(Value::Function(d)) => d.clone(),
+        _ => unreachable!("guarded by is_top_level_user_call"),
+    };
+
+    // Argument evaluation runs in the caller's scope before any
+    // params are shadowed.
+    let arg_vals = eval_args(env, args)?;
+    let kwarg_vals = eval_kwargs(env, kwargs)?;
+
+    // Mirror call_function's parameter-binding: positionals only
+    // when no kwargs, otherwise reorder via bind_kwargs.
+    let bound = if kwarg_vals.is_empty() {
+        if arg_vals.len() != def.params.len() {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "function '{}' expected {} arguments, got {}",
+                    def.name,
+                    def.params.len(),
+                    arg_vals.len()
+                ),
+                help: None,
+            });
+        }
+        arg_vals
+    } else {
+        let param_refs: Vec<&str> = def.params.iter().map(|s| s.as_str()).collect();
+        bind_kwargs(&param_refs, &def.name, arg_vals, kwarg_vals, line, col)?
+    };
+
+    let saved_returning = env.returning.take();
+    let saved_params: Vec<(String, Option<Value>)> = def
+        .params
+        .iter()
+        .map(|p| (p.clone(), env.get(p).cloned()))
+        .collect();
+    for (param, arg) in def.params.iter().zip(bound.iter()) {
+        env.set(param.clone(), arg.clone());
+    }
+
+    // Push the function frame upfront. Saved env state lives on
+    // the frame so it can be restored on completion (whether
+    // immediate or deferred via a wait + resume cycle). Function
+    // frames pushed by deeper-still calls land ABOVE us, keeping
+    // the natural call-stack order.
+    scene.borrow_mut().fiber_frames.push(Frame {
+        kind: FrameKind::Function {
+            def: def.clone(),
+            saved_returning,
+            saved_params,
+        },
+        resume_path: Vec::new(),
+    });
+    let our_idx = scene.borrow().fiber_frames.len() - 1;
+
+    env.call_depth += 1;
+    let mut inner_out: Vec<PathEntry> = Vec::new();
+    let result = run_block_resumable(env, scene, &def.body, &[], &mut inner_out);
+    env.call_depth -= 1;
+    let outcome = match result {
+        Ok(o) => o,
+        Err(e) => {
+            // Pop our frame on error and restore env state from
+            // it so the caller sees a sane scope chain.
+            let frame = scene.borrow_mut().fiber_frames.remove(our_idx);
+            if let FrameKind::Function {
+                saved_returning,
+                saved_params,
+                ..
+            } = frame.kind
+            {
+                env.returning = saved_returning;
+                for (n, prev) in saved_params {
+                    match prev {
+                        Some(v) => env.set(n, v),
+                        None => env.remove(&n),
+                    }
+                }
+            }
+            return Err(e);
+        }
+    };
+
+    if matches!(outcome, FiberOutcome::Suspended) {
+        // Update our frame's resume_path in place. Inner frames
+        // pushed by deeper calls (if any) sit above us at higher
+        // indices and stay there.
+        inner_out.reverse();
+        scene.borrow_mut().fiber_frames[our_idx].resume_path = inner_out;
+        return Ok(FiberOutcome::Suspended);
+    }
+
+    // Body finished. Pop our frame; restore env state from its
+    // saved fields.
+    let frame = {
+        let mut inst = scene.borrow_mut();
+        debug_assert_eq!(inst.fiber_frames.len(), our_idx + 1);
+        inst.fiber_frames.pop().expect("frame at our_idx")
+    };
+    let _ = env.returning.take(); // discard return value (Stmt::Expr position)
+    if let FrameKind::Function {
+        saved_returning,
+        saved_params,
+        ..
+    } = frame.kind
+    {
+        env.returning = saved_returning;
+        for (n, prev) in saved_params {
+            match prev {
+                Some(v) => env.set(n, v),
+                None => env.remove(&n),
+            }
+        }
+    }
+
+    match outcome {
+        // A `return` inside the function body is observed at
+        // *function-body level* — for the parent runner the
+        // function call simply completed.
+        FiberOutcome::Returning => Ok(FiberOutcome::Completed),
+        other => Ok(other),
     }
 }
 
@@ -2262,7 +2574,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
         despawned: false,
-        entry_resume_path: Vec::new(),
+        fiber_frames: Vec::new(),
         entry_wait_remaining: 0.0,
         predicate_last_values: Vec::new(),
     })))
