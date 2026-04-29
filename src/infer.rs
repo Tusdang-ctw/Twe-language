@@ -266,7 +266,9 @@ impl Inferer {
                         }
                     }
                 }
-                self.walk_function_block(body, rv);
+                let mut returns: Vec<Type> = Vec::new();
+                self.walk_function_block(body, &mut returns);
+                self.finalise_return_type(rv, returns);
                 self.current_class = prev_class;
                 self.pop_scope();
             }
@@ -284,9 +286,10 @@ impl Inferer {
     }
 
     /// Walk a function body in a fresh scope. Params are bound
-    /// to their fresh vars; `return` statements unify against
-    /// `ret_var`. Local lets inside the body get their own
-    /// scope-chain entries.
+    /// to their fresh vars; `return` statements collect into
+    /// `returns` so the post-walk pass can union them and unify
+    /// the result against `ret_var`. Local lets inside the body
+    /// get their own scope-chain entries.
     fn walk_function_body(
         &mut self,
         params: &[String],
@@ -298,24 +301,43 @@ impl Inferer {
         for (name, ty) in params.iter().zip(param_vars.iter()) {
             self.bind(name.clone(), ty.clone());
         }
-        self.walk_function_block(body, ret_var);
+        let mut returns: Vec<Type> = Vec::new();
+        self.walk_function_block(body, &mut returns);
+        self.finalise_return_type(ret_var, returns);
         self.pop_scope();
     }
 
+    /// Union the collected return types and unify the result
+    /// against `ret_var`. A function with multiple distinct
+    /// return types yields a Union; one or more `return nil`
+    /// statements alongside concrete returns yields Optional.
+    /// Zero return statements leaves `ret_var` unconstrained
+    /// (caller-side may pin it via a call site, otherwise it
+    /// prints as `?N` per non-strict).
+    fn finalise_return_type(&mut self, ret_var: &Type, returns: Vec<Type>) {
+        if returns.is_empty() {
+            return;
+        }
+        let resolved: Vec<Type> = returns.iter().map(|t| self.resolve(t)).collect();
+        let combined = Type::union(resolved);
+        let _ = unify(ret_var, &combined, &mut self.subst);
+    }
+
     /// Walk a block-of-statements that's part of a function body,
-    /// threading `ret_var` so `return X` can unify X's type
-    /// against it. Recurses into nested if/while/for so deeper
-    /// returns also reach the outer signature.
-    fn walk_function_block(&mut self, stmts: &[Stmt], ret_var: &Type) {
+    /// collecting every `return X` value's type into `returns`
+    /// (later unioned by `finalise_return_type` for multi-return
+    /// functions). Recurses into nested if/while/for so deeper
+    /// returns also bubble up to the outer signature.
+    fn walk_function_block(&mut self, stmts: &[Stmt], returns: &mut Vec<Type>) {
         for stmt in stmts {
             match stmt {
                 Stmt::Return { value, .. } => match value {
                     Some(v) => {
                         let t = self.expr_type(v);
-                        let _ = unify(&t, ret_var, &mut self.subst);
+                        returns.push(t);
                     }
                     None => {
-                        let _ = unify(&Type::Nil, ret_var, &mut self.subst);
+                        returns.push(Type::Nil);
                     }
                 },
                 Stmt::Let { name, value, .. } => {
@@ -327,18 +349,18 @@ impl Inferer {
                 }
                 Stmt::If { cond, then_body, elifs, else_body, .. } => {
                     let _ = self.expr_type(cond);
-                    self.walk_function_block(then_body, ret_var);
+                    self.walk_function_block(then_body, returns);
                     for (c, body) in elifs {
                         let _ = self.expr_type(c);
-                        self.walk_function_block(body, ret_var);
+                        self.walk_function_block(body, returns);
                     }
                     if let Some(eb) = else_body {
-                        self.walk_function_block(eb, ret_var);
+                        self.walk_function_block(eb, returns);
                     }
                 }
                 Stmt::While { cond, body, .. } => {
                     let _ = self.expr_type(cond);
-                    self.walk_function_block(body, ret_var);
+                    self.walk_function_block(body, returns);
                 }
                 Stmt::For { var, iter, body, .. } => {
                     let iter_t = self.expr_type(iter);
@@ -349,7 +371,7 @@ impl Inferer {
                     };
                     self.push_scope();
                     self.bind(var.clone(), elem_t);
-                    self.walk_function_block(body, ret_var);
+                    self.walk_function_block(body, returns);
                     self.pop_scope();
                 }
                 Stmt::Expr(e) => {
@@ -480,6 +502,11 @@ impl Inferer {
     fn binop_type(&mut self, op: BinOp, l: &Type, r: &Type) -> Type {
         match op {
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
+                // Unify operand types so a known concrete on one
+                // side pins a fresh var on the other (e.g. `n < 0`
+                // pins n : int). Failure is silently absorbed per
+                // non-strict's no-false-positives stance.
+                let _ = unify(l, r, &mut self.subst);
                 Type::Bool
             }
             BinOp::In | BinOp::NotIn => Type::Bool,
@@ -763,16 +790,19 @@ mod tests {
     fn for_over_list_binds_loop_var_to_element_type() {
         // The loop var only appears inside the body; the binding
         // doesn't escape the for. We test indirectly: a function
-        // that iterates a list and returns the loop var.
+        // that iterates a list and returns the loop var, then a
+        // sentinel int. With 4e's multi-return unions, the
+        // function returns `int | ?M` (where ?M is xs's element
+        // type that we couldn't pin from inside the loop). The
+        // important thing is the return type *includes* int; we
+        // don't assert the precise union shape because the var
+        // numbering depends on allocation order.
         let bs = types_of(
             "function head(xs):\n    for x in xs:\n        return x\n    return 0\n",
         );
-        // We can't fully infer xs's element type without a usage
-        // hint inside the body, so the function may print as
-        // `function(?N) -> int` — the return type is pinned
-        // because of `return 0`.
         let t = bs.get("head").expect("head binding");
-        assert!(t.to_string().contains("-> int"), "got: {t}");
+        let s = t.to_string();
+        assert!(s.contains("int"), "got: {s}");
     }
 
     #[test]
@@ -907,6 +937,55 @@ mod tests {
         );
         assert_eq!(bs.get("ax"), Some(&Type::Int));
         assert_eq!(bs.get("by"), Some(&Type::Str));
+    }
+
+    // --- 4e: Optional + Union from multi-return functions ---
+
+    #[test]
+    fn function_with_return_value_or_nil_yields_optional() {
+        // Bare `return` (no value) is how Twe writes the nil
+        // case. Combined with `return n` (int), the return
+        // type is int?.
+        let bs = types_of(
+            "function maybe(n):\n    if n > 0:\n        return n\n    return\n",
+        );
+        let t = bs.get("maybe").expect("maybe binding");
+        let s = t.to_string();
+        assert!(s.contains("-> int?"), "got: {s}");
+    }
+
+    #[test]
+    fn function_returning_distinct_types_yields_union() {
+        // Two return statements with different concrete types
+        // (int vs str) → return type is `int | string`.
+        let bs = types_of(
+            "function pick(flag):\n    if flag:\n        return 1\n    return \"hi\"\n",
+        );
+        let t = bs.get("pick").expect("pick binding");
+        let s = t.to_string();
+        assert!(s.contains("int | string") || s.contains("string | int"), "got: {s}");
+    }
+
+    #[test]
+    fn function_with_all_same_return_type_stays_singleton() {
+        // Two `return X` of the same type → just X, not X | X.
+        let bs = types_of(
+            "function abs_(n):\n    if n < 0:\n        return -n\n    return n\n",
+        );
+        let t = bs.get("abs_").expect("abs binding");
+        assert_eq!(t.to_string(), "function(int) -> int");
+    }
+
+    #[test]
+    fn bare_return_with_no_value_yields_nil_branch() {
+        // `return` with no value contributes a Nil to the union.
+        // Combined with `return X`, the result is X?.
+        let bs = types_of(
+            "function maybe2(n):\n    if n < 0:\n        return\n    return n + 1\n",
+        );
+        let t = bs.get("maybe2").expect("maybe2 binding");
+        let s = t.to_string();
+        assert!(s.contains("-> int?"), "got: {s}");
     }
 
     #[test]

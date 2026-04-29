@@ -99,6 +99,10 @@ pub fn apply_subst(subst: &Substitution, t: &Type) -> Type {
             params: params.iter().map(|p| apply_subst(subst, p)).collect(),
             ret: Rc::new(apply_subst(subst, ret)),
         },
+        Type::Optional(inner) => Type::Optional(Rc::new(apply_subst(subst, inner))),
+        Type::Union(parts) => {
+            Type::Union(parts.iter().map(|p| apply_subst(subst, p)).collect())
+        }
         // Scalar / nominal types have nothing to substitute.
         _ => t.clone(),
     }
@@ -192,6 +196,51 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution) -> Result<(), UnifyEr
             Ok(())
         }
         (Type::List(a), Type::List(b)) => unify(a, b, subst),
+        // Optional unifies with its inner (Some case) or with
+        // Nil (None case); two Optionals unify on their inners.
+        (Type::Optional(a), Type::Optional(b)) => unify(a, b, subst),
+        (Type::Optional(inner), Type::Nil) | (Type::Nil, Type::Optional(inner)) => {
+            // Nil is one valid inhabitant of T?; succeed without
+            // constraining the inner.
+            let _ = inner;
+            Ok(())
+        }
+        (Type::Optional(inner), other) | (other, Type::Optional(inner)) => {
+            // Unifying T? with a concrete T pins the Some case.
+            unify(inner, other, subst)
+        }
+        // Two Unions unify if they have the same variants (in
+        // any order). Anything else with a Union: succeed if the
+        // other unifies with at least one variant. We don't
+        // permanently extend the substitution from the trial
+        // (would need backtracking), so we just check the first
+        // working variant — a heuristic that's right when
+        // unions are small and disjoint.
+        (Type::Union(a), Type::Union(b)) => {
+            if a.len() != b.len() {
+                return Err(mismatch(&Type::Union(a.clone()), &Type::Union(b.clone())));
+            }
+            // Simplest correct check: pairwise positional unify.
+            // Real union unification requires permutation matching
+            // (research-grade); strict mode v0.2 will tighten this.
+            for (x, y) in a.iter().zip(b.iter()) {
+                unify(x, y, subst)?;
+            }
+            Ok(())
+        }
+        (Type::Union(parts), other) | (other, Type::Union(parts)) => {
+            // Trial each variant; first one that unifies wins.
+            // We snapshot the substitution so a failed trial
+            // doesn't pollute the solver state.
+            for variant in parts {
+                let mut trial = subst.clone();
+                if unify(variant, other, &mut trial).is_ok() {
+                    *subst = trial;
+                    return Ok(());
+                }
+            }
+            Err(mismatch(&Type::Union(parts.clone()), other))
+        }
         (
             Type::Function { params: ap, ret: ar },
             Type::Function { params: bp, ret: br },
@@ -226,6 +275,8 @@ fn occurs_in(id: TypeVarId, t: &Type) -> bool {
         Type::Function { params, ret } => {
             params.iter().any(|p| occurs_in(id, p)) || occurs_in(id, ret)
         }
+        Type::Optional(inner) => occurs_in(id, inner),
+        Type::Union(parts) => parts.iter().any(|p| occurs_in(id, p)),
         _ => false,
     }
 }
@@ -294,6 +345,16 @@ pub enum Type {
     /// Allocated by `TypeVarGen::fresh`. Resolved through a
     /// `Substitution` via `apply_subst`.
     Var(TypeVarId),
+    /// `T?` — shorthand for `T | nil`. Surfaces from inference
+    /// when a function body can return both `nil` and a
+    /// concrete value, or when the user writes the `?` suffix
+    /// in a type annotation (Phase 4f+ parser work).
+    Optional(Rc<Type>),
+    /// `T | U | ...` — open sum. Surfaces from inference when
+    /// a function body returns multiple distinct types. Stored
+    /// in source order; equality is order-sensitive (canonical
+    /// form is the responsibility of the constructor).
+    Union(Vec<Type>),
 }
 
 impl Type {
@@ -305,6 +366,66 @@ impl Type {
     /// Convenience constructor for a list type.
     pub fn list(elem: Type) -> Type {
         Type::List(Rc::new(elem))
+    }
+
+    /// Convenience constructor for an optional type. Idempotent
+    /// over `Optional` (`T??` collapses to `T?`) and absorbing
+    /// into `Nil` (`Optional<Nil>` becomes `Nil`).
+    pub fn optional(inner: Type) -> Type {
+        match inner {
+            Type::Optional(_) => inner,
+            Type::Nil => Type::Nil,
+            other => Type::Optional(Rc::new(other)),
+        }
+    }
+
+    /// Build a union from a list of variants. Deduplicates,
+    /// flattens nested unions, normalises `T | nil` to `T?`.
+    /// Returns the singleton type when only one variant remains.
+    pub fn union(parts: impl IntoIterator<Item = Type>) -> Type {
+        // Step 1: flatten nested Unions and collect uniques in
+        // first-seen order. Equality is structural via PartialEq.
+        let mut flat: Vec<Type> = Vec::new();
+        let mut has_nil = false;
+        for t in parts {
+            match t {
+                Type::Union(inner) => {
+                    for x in inner {
+                        if matches!(x, Type::Nil) {
+                            has_nil = true;
+                            continue;
+                        }
+                        if !flat.iter().any(|y| y == &x) {
+                            flat.push(x);
+                        }
+                    }
+                }
+                Type::Nil => {
+                    has_nil = true;
+                }
+                Type::Optional(inner) => {
+                    has_nil = true;
+                    let val = (*inner).clone();
+                    if !flat.iter().any(|y| y == &val) {
+                        flat.push(val);
+                    }
+                }
+                t => {
+                    if !flat.iter().any(|y| y == &t) {
+                        flat.push(t);
+                    }
+                }
+            }
+        }
+        // Step 2: collapse to canonical form.
+        match (flat.len(), has_nil) {
+            (0, true) => Type::Nil,
+            (0, false) => Type::Unknown,
+            (1, true) => Type::optional(flat.into_iter().next().unwrap()),
+            (1, false) => flat.into_iter().next().unwrap(),
+            (_, false) => Type::Union(flat),
+            (_, true) => Type::optional(Type::Union(flat)),
+        }
     }
 
     /// Whether this type is `Unknown`. Hot path; avoid the
@@ -354,6 +475,22 @@ impl Type {
             }
             (Type::Instance(a), Type::Instance(b)) => a == b,
             (Type::Class(a), Type::Class(b)) => a == b,
+            // Optional: T? compatible with T (Some) and Nil (None);
+            // two Optionals compatible if their inners are.
+            (Type::Optional(a), Type::Optional(b)) => a.is_compatible_with(b),
+            (Type::Optional(inner), other) | (other, Type::Optional(inner)) => {
+                matches!(other, Type::Nil) || inner.is_compatible_with(other)
+            }
+            // Union: a value is compatible with a union if it
+            // matches any variant. Two unions compatible if every
+            // variant of one is compatible with some variant of
+            // the other.
+            (Type::Union(a), Type::Union(b)) => a.iter().all(|x| {
+                b.iter().any(|y| x.is_compatible_with(y))
+            }) && b.iter().all(|y| a.iter().any(|x| y.is_compatible_with(x))),
+            (Type::Union(parts), other) | (other, Type::Union(parts)) => {
+                parts.iter().any(|p| p.is_compatible_with(other))
+            }
             _ => false,
         }
     }
@@ -402,6 +539,33 @@ impl fmt::Display for Type {
             Type::Class(name) => write!(f, "<class {name}>"),
             Type::Unknown => write!(f, "?"),
             Type::Var(id) => write!(f, "?{}", id.0),
+            Type::Optional(inner) => match inner.as_ref() {
+                // Don't double-print `??` for `Optional<Optional<T>>` —
+                // emit `T??` so the source intent is clear.
+                Type::Optional(_) => write!(f, "{inner}?"),
+                // `(int | str)?` needs the parens to bind the `?`
+                // tightly; bare `int | str?` would parse as
+                // `int | (str?)` in a future strict-mode parser.
+                Type::Union(_) => write!(f, "({inner})?"),
+                _ => write!(f, "{inner}?"),
+            },
+            Type::Union(parts) => {
+                if parts.is_empty() {
+                    return write!(f, "?");
+                }
+                for (i, p) in parts.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    // Wrap nested Unions in parens so the
+                    // grouping reads correctly.
+                    match p {
+                        Type::Union(_) => write!(f, "({p})")?,
+                        _ => write!(f, "{p}")?,
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -692,5 +856,108 @@ mod tests {
         s.insert(a, Type::Int);
         unify(&Type::Var(a), &Type::Int, &mut s).unwrap();
         assert!(unify(&Type::Var(a), &Type::Str, &mut s).is_err());
+    }
+
+    // --- 4e: Optional + Union ---
+
+    #[test]
+    fn optional_displays_with_question_suffix() {
+        assert_eq!(Type::optional(Type::Int).to_string(), "int?");
+        assert_eq!(Type::optional(Type::Str).to_string(), "string?");
+    }
+
+    #[test]
+    fn optional_collapses_double_wrapping() {
+        // T?? collapses to T?.
+        let inner = Type::optional(Type::Int);
+        let outer = Type::optional(inner);
+        assert_eq!(outer.to_string(), "int?");
+    }
+
+    #[test]
+    fn optional_of_nil_is_just_nil() {
+        // T? where T = nil reduces to nil — there's only one
+        // inhabitant.
+        assert_eq!(Type::optional(Type::Nil), Type::Nil);
+    }
+
+    #[test]
+    fn union_displays_with_pipe() {
+        let u = Type::union(vec![Type::Int, Type::Str]);
+        assert_eq!(u.to_string(), "int | string");
+    }
+
+    #[test]
+    fn union_dedupes() {
+        let u = Type::union(vec![Type::Int, Type::Int, Type::Str]);
+        assert_eq!(u.to_string(), "int | string");
+    }
+
+    #[test]
+    fn union_with_nil_becomes_optional() {
+        // T | nil canonicalises to T?.
+        let u = Type::union(vec![Type::Int, Type::Nil]);
+        assert_eq!(u.to_string(), "int?");
+    }
+
+    #[test]
+    fn singleton_union_is_just_the_singleton() {
+        let u = Type::union(vec![Type::Int]);
+        assert_eq!(u, Type::Int);
+    }
+
+    #[test]
+    fn empty_union_is_unknown() {
+        let u = Type::union(Vec::<Type>::new());
+        assert_eq!(u, Type::Unknown);
+    }
+
+    #[test]
+    fn union_flattens_nested_unions() {
+        let inner = Type::Union(vec![Type::Int, Type::Bool]);
+        let u = Type::union(vec![inner, Type::Str]);
+        assert_eq!(u.to_string(), "int | bool | string");
+    }
+
+    #[test]
+    fn optional_compatible_with_nil_and_inner() {
+        let opt = Type::optional(Type::Int);
+        assert!(opt.is_compatible_with(&Type::Nil));
+        assert!(opt.is_compatible_with(&Type::Int));
+        assert!(!opt.is_compatible_with(&Type::Str));
+        // Reflexive both directions.
+        assert!(Type::Nil.is_compatible_with(&opt));
+        assert!(Type::Int.is_compatible_with(&opt));
+    }
+
+    #[test]
+    fn union_compatible_with_any_variant() {
+        let u = Type::union(vec![Type::Int, Type::Str]);
+        assert!(u.is_compatible_with(&Type::Int));
+        assert!(u.is_compatible_with(&Type::Str));
+        assert!(!u.is_compatible_with(&Type::Bool));
+    }
+
+    #[test]
+    fn unify_optional_with_nil_succeeds() {
+        let mut s = Substitution::new();
+        let opt = Type::optional(Type::Int);
+        unify(&opt, &Type::Nil, &mut s).unwrap();
+    }
+
+    #[test]
+    fn unify_optional_with_inner_succeeds() {
+        let mut s = Substitution::new();
+        let opt = Type::optional(Type::Int);
+        unify(&opt, &Type::Int, &mut s).unwrap();
+    }
+
+    #[test]
+    fn unify_union_picks_first_matching_variant() {
+        let mut s = Substitution::new();
+        let u = Type::union(vec![Type::Int, Type::Str]);
+        unify(&u, &Type::Int, &mut s).unwrap();
+        unify(&u, &Type::Str, &mut s).unwrap();
+        assert!(unify(&u, &Type::Bool, &mut s).is_err());
     }
 }
