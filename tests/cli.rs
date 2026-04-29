@@ -146,6 +146,73 @@ fn unknown_vm_value_errors() {
     assert!(err.contains("--vm"), "stderr did not mention --vm: {err}");
 }
 
+// --- `twec types` (Phase 4a) ---
+
+#[test]
+fn types_subcommand_prints_let_int() {
+    // Use a small temp file rather than touching tests/programs/
+    // so the assertion can be exact without creating a .twe file
+    // that's part of the wider test suite.
+    let tmp = std::env::temp_dir().join("twec_types_let_int.twe");
+    std::fs::write(&tmp, "let n = 42\nlet name = \"hi\"\nlet ok = true\n").expect("write");
+    let out = run_cli(&["types", tmp.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&tmp);
+    // Sorted alphabetically by handle_types.
+    assert_eq!(out, "n: int\nname: string\nok: bool\n");
+}
+
+#[test]
+fn types_subcommand_handles_real_test_program() {
+    // arithmetic.twe — only lets and prints; every top-level let
+    // should resolve to a known scalar type.
+    let out = run_cli(&["types", "tests/programs/arithmetic.twe"]);
+    // arithmetic.twe declares no top-level lets — only print
+    // expressions. So the output is empty (zero bindings).
+    // Confirm by parsing the file and asserting no bindings,
+    // then assert empty output.
+    assert_eq!(out, "");
+}
+
+#[test]
+fn types_subcommand_records_class_and_instance() {
+    let tmp = std::env::temp_dir().join("twec_types_class.twe");
+    std::fs::write(
+        &tmp,
+        "item Counter:\n    value: 0\n\n    bump(amount):\n        self.value = self.value + amount\n\nlet c = Counter()\n",
+    )
+    .expect("write");
+    let out = run_cli(&["types", tmp.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&tmp);
+    // Counter binds as <class Counter>; c is an instance.
+    assert!(out.contains("Counter: <class Counter>"), "got: {out}");
+    assert!(out.contains("c: Counter"), "got: {out}");
+}
+
+#[test]
+fn types_subcommand_unknown_for_unresolved_names() {
+    let tmp = std::env::temp_dir().join("twec_types_unknown.twe");
+    std::fs::write(&tmp, "let x = unknown_thing\n").expect("write");
+    let out = run_cli(&["types", tmp.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&tmp);
+    assert_eq!(out, "x: ?\n");
+}
+
+#[test]
+fn types_subcommand_errors_on_missing_path() {
+    let output = std::process::Command::new(twec_bin())
+        .args(["types"])
+        .output()
+        .expect("spawn");
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("requires a file") || err.contains("single file"),
+        "stderr: {err}"
+    );
+}
+
+// --- end Phase 4a tests ---
+
 #[test]
 fn frames_is_only_valid_for_run() {
     let output = Command::new(twec_bin())

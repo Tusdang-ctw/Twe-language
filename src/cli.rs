@@ -6,7 +6,7 @@ const USAGE: &str =
     "usage: twec [run [--vm tree|bytecode] [--frames N] <file> | \
      play [--vm tree|bytecode] <file> | \
      fmt [--in-place|--check] <file> | \
-     lsp | parse <file> | version]";
+     types <file> | lsp | parse <file> | version]";
 
 /// Which interpreter the CLI dispatches to. The tree-walker is the
 /// default for backwards compatibility — it's been the production
@@ -41,6 +41,7 @@ pub fn run() {
         "play" => process::exit(handle_play(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
         "lsp" => process::exit(handle_lsp(&args[2..])),
+        "types" => process::exit(handle_types(&args[2..])),
         "parse" => process::exit(handle_parse(&args[2..])),
         "version" | "--version" | "-V" => print_version(),
         cmd => {
@@ -174,6 +175,52 @@ fn handle_lsp(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// `twec types <file>` — print the inferred type of every
+/// top-level binding in the file. Phase 4a literal-driven
+/// inference: scalars, tuples, lists, ranges, comparisons,
+/// arithmetic with int/float promotion, function arity,
+/// class declarations. Names whose RHS we can't prove anything
+/// about print as `?` (the lattice bottom — non-strict's
+/// "no false positives" stance).
+fn handle_types(args: &[String]) -> i32 {
+    if args.len() != 1 {
+        eprintln!("error: `twec types` takes a single file path");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    let path = &args[0];
+    let src = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not read '{path}': {e}");
+            return 2;
+        }
+    };
+    let tokens = match crate::lexer::lex(&src) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+    let program = match crate::parser::parse(&tokens) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+    let bindings = crate::infer::infer_program(&program);
+    // Sort by name for deterministic output (handy for snapshot
+    // testing + diffing across runs).
+    let mut entries: Vec<(&String, &crate::types::Type)> = bindings.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, ty) in entries {
+        println!("{name}: {ty}");
+    }
+    0
 }
 
 fn handle_parse(args: &[String]) -> i32 {
