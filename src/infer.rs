@@ -546,6 +546,30 @@ impl Inferer {
     fn infer_arith(&mut self, op: BinOp, l: &Type, r: &Type) -> Type {
         let lr = self.resolve(l);
         let rr = self.resolve(r);
+        // Dimensional unit checking. Per docs/02-type-system.md
+        // "5m + 3s" is a type error — the units don't match, so
+        // the operation has no defined result. Per non-strict
+        // semantics we emit Unknown silently rather than raising;
+        // strict mode (v0.2) will surface this as an error.
+        // Same-unit + / - preserves the unit. * / / by a number
+        // is scaling and keeps the unit. Quantity / Quantity of
+        // the same unit produces a unitless float (the units
+        // cancel). Mixed units in * or / produce a combined unit
+        // string (e.g. `m/s`).
+        if let (Type::Quantity(u1), Type::Quantity(u2)) = (&lr, &rr) {
+            return self.infer_quantity_arith(op, u1, u2);
+        }
+        // Quantity scaled by a number on either side.
+        if let Type::Quantity(unit) = &lr {
+            if matches!(op, BinOp::Mul | BinOp::Div) && is_scalar_type(&rr) {
+                return Type::Quantity(unit.clone());
+            }
+        }
+        if let Type::Quantity(unit) = &rr {
+            if matches!(op, BinOp::Mul) && is_scalar_type(&lr) {
+                return Type::Quantity(unit.clone());
+            }
+        }
         if let (Type::Tuple(a), Type::Tuple(b)) = (&lr, &rr) {
             if matches!(op, BinOp::Add | BinOp::Sub) && a.len() == b.len() {
                 let elems: Vec<Type> = a
@@ -642,6 +666,52 @@ impl Inferer {
 
 fn is_scalar_type(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Float)
+}
+
+impl Inferer {
+    /// Dimensional arithmetic between two `Type::Quantity`.
+    ///
+    /// Rules:
+    /// - Add / Sub: units must match (same unit string). On
+    ///   mismatch, return Unknown (non-strict's no-false-
+    ///   positive escape; strict mode will surface as error).
+    /// - Mul: combine units as `a*b` (kg*m, etc.). Same unit
+    ///   squared writes as `unit^2`.
+    /// - Div: same unit cancels to a unitless `Float`.
+    ///   Different units write as `a/b` (m/s).
+    ///
+    /// The combined unit string is purely textual — Phase 4f
+    /// doesn't yet parse compound units back into structured
+    /// dimensions. Strict mode + a future dimension solver would
+    /// canonicalise (`kg*m*s` vs `m*kg*s`).
+    fn infer_quantity_arith(&self, op: BinOp, u1: &Rc<String>, u2: &Rc<String>) -> Type {
+        match op {
+            BinOp::Add | BinOp::Sub => {
+                if u1 == u2 {
+                    Type::Quantity(u1.clone())
+                } else {
+                    Type::Unknown
+                }
+            }
+            BinOp::Mul => {
+                let combined = if u1 == u2 {
+                    format!("{u1}^2")
+                } else {
+                    format!("{u1}*{u2}")
+                };
+                Type::Quantity(Rc::new(combined))
+            }
+            BinOp::Div => {
+                if u1 == u2 {
+                    // Same unit cancels — `5m / 3m` is unitless.
+                    Type::Float
+                } else {
+                    Type::Quantity(Rc::new(format!("{u1}/{u2}")))
+                }
+            }
+            _ => Type::Unknown,
+        }
+    }
 }
 
 /// Helper: count how many `DeclMember::Method` entries appear
@@ -986,6 +1056,60 @@ mod tests {
         let t = bs.get("maybe2").expect("maybe2 binding");
         let s = t.to_string();
         assert!(s.contains("-> int?"), "got: {s}");
+    }
+
+    // --- 4f: dimensional unit arithmetic ---
+
+    #[test]
+    fn same_unit_addition_preserves_unit() {
+        // 100ms + 50ms : quantity<ms>
+        let bs = types_of("let a = 100ms\nlet b = 50ms\nlet c = a + b\n");
+        assert_eq!(bs.get("c").map(|t| t.to_string()).as_deref(), Some("quantity<ms>"));
+    }
+
+    #[test]
+    fn mismatched_units_falls_back_to_unknown() {
+        // 5m + 3s — units don't match; per non-strict, the
+        // operation produces Unknown rather than raising. Strict
+        // mode (v0.2) will surface this as an error.
+        let bs = types_of("let dist = 5m\nlet time = 3s\nlet broken = dist + time\n");
+        assert_eq!(bs.get("broken"), Some(&Type::Unknown));
+    }
+
+    #[test]
+    fn quantity_times_scalar_keeps_unit() {
+        // 100ms * 2 -> quantity<ms>; 3 * 100ms -> quantity<ms>
+        let bs = types_of("let dt = 100ms\nlet doubled = dt * 2\nlet tripled = 3 * dt\n");
+        assert_eq!(bs.get("doubled").map(|t| t.to_string()).as_deref(), Some("quantity<ms>"));
+        assert_eq!(bs.get("tripled").map(|t| t.to_string()).as_deref(), Some("quantity<ms>"));
+    }
+
+    #[test]
+    fn quantity_div_quantity_same_unit_cancels_to_float() {
+        // 100ms / 50ms is unitless.
+        let bs = types_of("let a = 100ms\nlet b = 50ms\nlet ratio = a / b\n");
+        assert_eq!(bs.get("ratio"), Some(&Type::Float));
+    }
+
+    #[test]
+    fn quantity_div_quantity_different_units_combines() {
+        // 5m / 3s -> quantity<m/s> (velocity, by convention)
+        let bs = types_of("let dist = 5m\nlet time = 3s\nlet speed = dist / time\n");
+        assert_eq!(bs.get("speed").map(|t| t.to_string()).as_deref(), Some("quantity<m/s>"));
+    }
+
+    #[test]
+    fn quantity_mul_quantity_combines_units() {
+        // 5kg * 9m -> quantity<kg*m>
+        let bs = types_of("let m = 5kg\nlet d = 9m\nlet work = m * d\n");
+        assert_eq!(bs.get("work").map(|t| t.to_string()).as_deref(), Some("quantity<kg*m>"));
+    }
+
+    #[test]
+    fn quantity_squared_uses_caret_notation() {
+        // Same unit on both sides of mul -> unit^2.
+        let bs = types_of("let s = 10m\nlet area = s * s\n");
+        assert_eq!(bs.get("area").map(|t| t.to_string()).as_deref(), Some("quantity<m^2>"));
     }
 
     #[test]
