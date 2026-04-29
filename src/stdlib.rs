@@ -1041,6 +1041,20 @@ fn install_3d(env: &mut Env) {
         },
     );
 
+    // `mesh(path: string, at: vec3, color: (r, g, b, a), size: float)`
+    // — load a glTF 2.0 binary (`.glb`) and queue an instanced draw.
+    // Path is resolved relative to the working directory. The first
+    // primitive of the first mesh is used; multi-primitive scenes
+    // and node transforms are a follow-on. v0.2 session 1.
+    env.set(
+        "mesh".to_string(),
+        Value::Builtin {
+            name: "mesh",
+            params: &["path", "at", "color", "size"],
+            func: mesh_impl,
+        },
+    );
+
     // `camera` ambient — eye / target / up are mutable Tuple fields
     // the script writes via `camera.eye = vec3(...)`. The `play3d`
     // render loop reads them each frame to build the view matrix.
@@ -1113,6 +1127,36 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let size = number(&args[2], "sphere.size")? as f32;
     env.render_queue3d.push(crate::value::DrawCall3d {
         primitive: crate::value::Primitive::Sphere,
+        at,
+        color,
+        size,
+    });
+    Ok(Value::Nil)
+}
+
+fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "mesh")?;
+    arity(args, 4, "mesh")?;
+    let path = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "mesh.path expects a string, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `mesh(\"models/box.glb\", at: ...)`".to_string()),
+            });
+        }
+    };
+    let at = xyz_of(&args[1], "mesh.at")?;
+    let color = rgba_of(&args[2], "mesh.color")?;
+    let size = number(&args[3], "mesh.size")? as f32;
+    let id = env.intern_mesh_path(&path);
+    env.render_queue3d.push(crate::value::DrawCall3d {
+        primitive: crate::value::Primitive::Mesh(id),
         at,
         color,
         size,

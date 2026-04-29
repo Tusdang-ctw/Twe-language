@@ -28,9 +28,10 @@
 //! `on render():` and drains the cube queue), GPU submit, present.
 //!
 //! v0.2 task-5 follow-ons (per `docs/changes/2026-04-29-phase-5-closeout.md`):
-//! `.glb` / `.obj` mesh import, generic primitives (`sphere`, `plane`,
-//! `mesh`), bytecode VM 3D path, mouse input, proper lighting (point /
-//! area / shadows), `mat4` / `quat` stdlib types.
+//! `.glb` / `.obj` mesh import (session 1, this module's `mesh()` plus
+//! `load_glb`), generic primitives (`sphere`, `plane`, `mesh`), bytecode
+//! VM 3D path, mouse input, proper lighting (point / area / shadows),
+//! `mat4` / `quat` stdlib types.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -467,6 +468,27 @@ struct RenderState {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
+    /// `Env::mesh_paths` interned id (the `u32` payload of
+    /// `Primitive::Mesh`). Populated on first sight of a new id in
+    /// `env.render_queue3d`. v0.2 session 1.
+    mesh_cache: HashMap<u32, GpuMesh>,
+    /// Ids whose load already failed once. Skip the file I/O and
+    /// the stderr noise on every subsequent frame; the user can
+    /// fix the path and hot-reload to retry.
+    mesh_load_failures: HashSet<u32>,
+}
+
+/// Per-mesh GPU buffers loaded from a `.glb` file. v0.2 session 1.
+/// Stored in `RenderState::mesh_cache` keyed by the
+/// `Env::mesh_paths` interned id.
+struct GpuMesh {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    /// `.glb` accessors can use u8 / u16 / u32; we widen everything
+    /// to u32 on load so the pipeline only needs one branch.
+    index_format: wgpu::IndexFormat,
 }
 
 impl ApplicationHandler for App {
@@ -563,6 +585,14 @@ impl ApplicationHandler for App {
                     if let Ok(new_env) = initialize(&self.path) {
                         eprintln!("[twec] hot reload: {}", self.path);
                         crate::stdlib::clear_asset_caches();
+                        // The new env's `mesh_paths` indices are
+                        // independent of the old env's, so cached
+                        // GpuMesh entries by id are stale. Drop
+                        // them and let the next frame re-load by
+                        // path; on-disk `.glb` edits also pick up
+                        // because of this.
+                        state.mesh_cache.clear();
+                        state.mesh_load_failures.clear();
                         self.env = new_env;
                     }
                     // A failed re-init keeps the current env so the
@@ -806,6 +836,8 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         camera_buffer,
         camera_bind_group,
         depth_view,
+        mesh_cache: HashMap::new(),
+        mesh_load_failures: HashSet::new(),
     })
 }
 
@@ -825,6 +857,109 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+// ---------- glTF 2.0 mesh loader ----------
+//
+// v0.2 session 1. Pulls position + normal + indices out of the first
+// primitive of the first mesh in a `.glb`. Returns CPU-side data the
+// caller uploads to GPU. Multi-primitive scenes, node transforms,
+// materials, and textures are all follow-ons — design notes in
+// `notes/future-phases.md` "Carried into v0.2".
+
+/// Decode a `.glb` (or `.gltf`) at `path`. Returns interleaved
+/// `Vertex` array + u32 index list. Errors are stringified at the
+/// boundary because the upstream `gltf::Error` carries lifetimes
+/// we don't want to leak.
+fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>), String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    parse_glb_bytes(&bytes)
+}
+
+/// Inner loader exposed for tests — drives the gltf crate against
+/// an in-memory byte slice instead of a path so we can exercise
+/// the decode path without shipping binary fixtures.
+fn parse_glb_bytes(bytes: &[u8]) -> Result<(Vec<Vertex>, Vec<u32>), String> {
+    let (doc, buffers, _images) =
+        gltf::import_slice(bytes).map_err(|e| e.to_string())?;
+    let mesh = doc
+        .meshes()
+        .next()
+        .ok_or_else(|| "glb has no meshes".to_string())?;
+    let primitive = mesh
+        .primitives()
+        .next()
+        .ok_or_else(|| "first mesh has no primitives".to_string())?;
+    let reader = primitive.reader(|b| Some(&buffers[b.index()]));
+
+    let positions: Vec<[f32; 3]> = reader
+        .read_positions()
+        .ok_or_else(|| "primitive has no POSITION accessor".to_string())?
+        .collect();
+    if positions.is_empty() {
+        return Err("primitive has zero vertices".to_string());
+    }
+
+    // Normals are optional in glTF. When absent, we fall back to a
+    // constant up-vector — the mesh will shade flat-bright but at
+    // least it draws. Computing flat normals from indices is a
+    // follow-on; users who want shading should export with normals.
+    let normals: Vec<[f32; 3]> = match reader.read_normals() {
+        Some(iter) => {
+            let v: Vec<[f32; 3]> = iter.collect();
+            if v.len() == positions.len() {
+                v
+            } else {
+                vec![[0.0, 1.0, 0.0]; positions.len()]
+            }
+        }
+        None => vec![[0.0, 1.0, 0.0]; positions.len()],
+    };
+
+    let vertices: Vec<Vertex> = positions
+        .iter()
+        .zip(normals.iter())
+        .map(|(p, n)| Vertex {
+            position: *p,
+            normal: *n,
+        })
+        .collect();
+
+    // Indices are optional too — non-indexed primitives implicitly
+    // index 0..N. `into_u32()` widens whatever the file used (u8 /
+    // u16 / u32) so we only need one GPU index format.
+    let indices: Vec<u32> = match reader.read_indices() {
+        Some(idx) => idx.into_u32().collect(),
+        None => (0..vertices.len() as u32).collect(),
+    };
+
+    Ok((vertices, indices))
+}
+
+/// Load `.glb` at `path`, upload CPU-side data to GPU, return a
+/// `GpuMesh` ready for rendering. Logs the failure path to stderr
+/// on any error so the user sees what went wrong.
+fn load_and_upload_mesh(
+    device: &wgpu::Device,
+    path: &str,
+) -> Result<GpuMesh, String> {
+    let (vertices, indices) = load_glb(path)?;
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("twec-play3d mesh vertices"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("twec-play3d mesh indices"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    Ok(GpuMesh {
+        vertex_buffer,
+        index_buffer,
+        index_count: indices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint32,
+    })
 }
 
 // ---------- Per-frame render ----------
@@ -885,6 +1020,42 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     let queue: Vec<DrawCall3d> = env.render_queue3d.drain(..).collect();
     let mut instances: Vec<Instance> = Vec::with_capacity(queue.len().min(MAX_INSTANCES as usize));
     let cap = MAX_INSTANCES as usize;
+
+    // 4a. Lazy-load any `.glb` paths referenced this frame but not
+    //     yet on the GPU. v0.2 session 1.
+    let mut needed_mesh_ids: Vec<u32> = Vec::new();
+    for d in &queue {
+        if let Primitive::Mesh(id) = d.primitive {
+            if !state.mesh_cache.contains_key(&id)
+                && !state.mesh_load_failures.contains(&id)
+                && !needed_mesh_ids.contains(&id)
+            {
+                needed_mesh_ids.push(id);
+            }
+        }
+    }
+    for id in needed_mesh_ids {
+        let path = match env.mesh_path(id) {
+            Some(p) => p.to_string(),
+            None => {
+                // Stale id — env was hot-reloaded between
+                // `mesh()` and the render. Treat as a load failure
+                // so we don't keep retrying.
+                state.mesh_load_failures.insert(id);
+                continue;
+            }
+        };
+        match load_and_upload_mesh(&state.device, &path) {
+            Ok(gpu_mesh) => {
+                state.mesh_cache.insert(id, gpu_mesh);
+            }
+            Err(e) => {
+                eprintln!("error: mesh load `{path}`: {e}");
+                state.mesh_load_failures.insert(id);
+            }
+        }
+    }
+
     let cubes: Vec<&DrawCall3d> = queue
         .iter()
         .filter(|d| d.primitive == Primitive::Cube)
@@ -893,6 +1064,25 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         .iter()
         .filter(|d| d.primitive == Primitive::Sphere)
         .collect();
+    // Group mesh draws by id. Each unique id becomes its own
+    // instanced draw call; preserves draw order across distinct
+    // meshes (within an id, instance order = queue order).
+    let mut mesh_groups: Vec<(u32, Vec<&DrawCall3d>)> = Vec::new();
+    for d in &queue {
+        if let Primitive::Mesh(id) = d.primitive {
+            // Only schedule draws for meshes that loaded
+            // successfully. Skipped failures keep their on-screen
+            // absence; the stderr noise already explained why.
+            if !state.mesh_cache.contains_key(&id) {
+                continue;
+            }
+            match mesh_groups.iter_mut().find(|(gid, _)| *gid == id) {
+                Some((_, list)) => list.push(d),
+                None => mesh_groups.push((id, vec![d])),
+            }
+        }
+    }
+
     let push_group = |group: &[&DrawCall3d], out: &mut Vec<Instance>| -> (u32, u32) {
         let start = out.len() as u32;
         for d in group {
@@ -910,6 +1100,10 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     };
     let cube_range = push_group(&cubes, &mut instances);
     let sphere_range = push_group(&spheres, &mut instances);
+    let mesh_ranges: Vec<(u32, (u32, u32))> = mesh_groups
+        .iter()
+        .map(|(id, list)| (*id, push_group(list, &mut instances)))
+        .collect();
     if !instances.is_empty() {
         state
             .queue
@@ -986,6 +1180,28 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                     0..state.sphere_index_count,
                     0,
                     sphere_range.0..sphere_range.1,
+                );
+            }
+            // One instanced draw per loaded `.glb` mesh. The shared
+            // instance buffer's range was assigned in step 4. v0.2
+            // session 1.
+            for (id, range) in &mesh_ranges {
+                if range.1 <= range.0 {
+                    continue;
+                }
+                let gpu_mesh = match state.mesh_cache.get(id) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+                rpass.set_index_buffer(
+                    gpu_mesh.index_buffer.slice(..),
+                    gpu_mesh.index_format,
+                );
+                rpass.draw_indexed(
+                    0..gpu_mesh.index_count,
+                    0,
+                    range.0..range.1,
                 );
             }
         }
@@ -1178,5 +1394,114 @@ mod tests {
         // Don't divide by zero — return as-is rather than NaN.
         let v = normalize([0.0, 0.0, 0.0]);
         assert_eq!(v, [0.0, 0.0, 0.0]);
+    }
+
+    // ---------- v0.2 session 1: .glb loader ----------
+
+    /// Build a minimal valid .glb in memory: one mesh, one
+    /// primitive, three vertices forming a triangle, three u32
+    /// indices, no normals (loader fills with up-vector). Used to
+    /// exercise `parse_glb_bytes` without shipping binary fixtures.
+    fn make_minimal_glb() -> Vec<u8> {
+        let positions: [f32; 9] = [
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+        ];
+        let indices: [u32; 3] = [0, 1, 2];
+        let pos_bytes = bytemuck::cast_slice::<f32, u8>(&positions).to_vec();
+        let idx_bytes = bytemuck::cast_slice::<u32, u8>(&indices).to_vec();
+        let bin: Vec<u8> = [pos_bytes.as_slice(), idx_bytes.as_slice()].concat();
+
+        // POSITION accessors require `min`/`max` per the glTF spec
+        // (used by culling / bounds checks). For our triangle:
+        // min = [0, 0, 0], max = [1, 1, 0].
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]}},{{"bufferView":1,"componentType":5125,"count":3,"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":12}}],"buffers":[{{"byteLength":{}}}]}}"#,
+            bin.len()
+        );
+        let mut json_bytes = json.into_bytes();
+        // glTF chunk data must be 4-byte aligned. JSON pads with
+        // spaces (0x20), BIN pads with null bytes (0x00).
+        while json_bytes.len() % 4 != 0 {
+            json_bytes.push(b' ');
+        }
+        let mut bin_bytes = bin;
+        while bin_bytes.len() % 4 != 0 {
+            bin_bytes.push(0);
+        }
+
+        let total_len: u32 = 12 + 8 + json_bytes.len() as u32 + 8 + bin_bytes.len() as u32;
+        let mut out: Vec<u8> = Vec::with_capacity(total_len as usize);
+        // 12-byte header.
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&total_len.to_le_bytes());
+        // Chunk 0: JSON.
+        out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"JSON");
+        out.extend_from_slice(&json_bytes);
+        // Chunk 1: BIN. Type tag is "BIN\0".
+        out.extend_from_slice(&(bin_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&[0x42, 0x49, 0x4E, 0x00]);
+        out.extend_from_slice(&bin_bytes);
+        out
+    }
+
+    #[test]
+    fn parse_glb_extracts_positions_and_indices() {
+        let bytes = make_minimal_glb();
+        let (vertices, indices) = parse_glb_bytes(&bytes).expect("decode");
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(indices, vec![0, 1, 2]);
+        assert_eq!(vertices[0].position, [0.0, 0.0, 0.0]);
+        assert_eq!(vertices[1].position, [1.0, 0.0, 0.0]);
+        assert_eq!(vertices[2].position, [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn parse_glb_fills_missing_normals_with_up() {
+        // The fixture omits NORMAL — loader fills with [0, 1, 0]
+        // so the mesh still shades against the directional light.
+        let bytes = make_minimal_glb();
+        let (vertices, _) = parse_glb_bytes(&bytes).expect("decode");
+        assert_eq!(vertices[0].normal, [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn parse_glb_rejects_garbage() {
+        // Random bytes — gltf::import_slice should refuse the magic.
+        assert!(parse_glb_bytes(b"not a glb").is_err());
+    }
+
+    #[test]
+    fn load_glb_missing_file_errors() {
+        // Path that should never exist on a sane test machine.
+        let result = load_glb(".twec_no_such_glb_at_test_time.glb");
+        assert!(result.is_err());
+    }
+
+    /// One-shot fixture generator: writes the minimal triangle
+    /// `.glb` to `examples/assets/triangle.glb`. Marked `#[ignore]`
+    /// so it only runs when explicitly requested:
+    ///
+    ///   cargo test --release write_triangle_glb_fixture -- --ignored
+    ///
+    /// Re-run after changing `make_minimal_glb` to refresh the
+    /// committed file. The committed binary is what
+    /// `examples/hello_glb.twe` loads at run time.
+    #[test]
+    #[ignore]
+    fn write_triangle_glb_fixture() {
+        let path = std::path::Path::new("examples/assets/triangle.glb");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create dir");
+        }
+        let bytes = make_minimal_glb();
+        std::fs::write(path, &bytes).expect("write fixture");
+        // Round-trip check: the file we just wrote must decode.
+        let (vertices, indices) = load_glb(path.to_str().unwrap()).expect("decode");
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(indices.len(), 3);
     }
 }

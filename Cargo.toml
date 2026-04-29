@@ -24,6 +24,12 @@ pollster = "0.3"
 # `#[derive(Pod, Zeroable)]`. Required as soon as the GPU sees
 # anything other than a clear color.
 bytemuck = { version = "1", features = ["derive"] }
+# v0.2 session 1: glTF 2.0 mesh import. Pure-Rust, no native deps.
+# Default features pull the `image` crate (texture decoding) which
+# we don't need yet — disabled. `import` gives us `gltf::import` for
+# .glb loading; `utils` exposes the `Reader` API used to extract
+# POSITION / NORMAL / index accessors.
+gltf = { version = "1", default-features = false, features = ["import", "utils"] }
 
 [dev-dependencies]
 insta = "1.41"

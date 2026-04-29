@@ -252,6 +252,26 @@ Bare `load(path)` is canonical (matches Example 1, the spec). `02-type-system.md
 (the original Example 1 ideal where setting `hero.pos` is enough) remains
 deferred to Phase 3+.
 
+## v0.2 — in progress
+
+Items are shipping incrementally on the v0.2 work track in
+parallel with Phase 7 (release prep). Each session lands a
+runnable artifact and gets a `docs/changes/<date>-v0.2-session-N-*.md`
+note.
+
+- [x] **Session 1 — `.glb` mesh import** (2026-04-29). `gltf = "1"`
+      (default-features off) for pure-Rust glTF 2.0 binary
+      decode. `Primitive::Mesh(u32)` carries an `Env`-interned
+      path id; `play3d::RenderState` lazy-loads + caches each
+      `GpuMesh` on first sight, fails gracefully on bad paths.
+      `mesh(path: string, at: vec3, color: rgba, size: float)`
+      builtin queues a draw the same way `cube` / `sphere` do.
+      First-primitive-of-first-mesh is taken; multi-primitive
+      scenes + node transforms + materials are follow-ons.
+      `examples/hello_glb.twe` + a 536-byte fixture
+      `examples/assets/triangle.glb` round-trip the loader. See
+      `docs/changes/2026-04-29-v0.2-session-1-glb-import.md`.
+
 ## Carried into v0.2
 
 Phase 5 closed at v0.1-minimum-viable; Phase 6 closed with
@@ -274,15 +294,17 @@ Phase 5 carry-overs:
 - **`wait` in non-state-entry contexts** — function-body `wait`
   (heap-allocated call frames or CPS rewrite), `wait` inside
   `dialogue` (per-dialogue scheduler), fiber-backed `every` rewrite.
+  *Planned: v0.2 session 2.*
 - **Dialogue UI** — interactive choice selection (input modality
   conversation), bytecode VM dialogue support, per-dialogue
   scheduler for `wait` inside dialogue, `scene.npc("...")` lookup.
-- **3D mesh import** — `.glb` / `.obj` loading. Needs a
-  crate-choice conversation. Cubes are the only primitive in v0.1.
+- **3D mesh import** — ~~`.glb` loading~~ shipped 2026-04-29 (v0.2
+  session 1). `.obj` and multi-primitive scenes / node transforms
+  / materials remain as follow-ons.
 - **Generic 3D primitives** — ~~`sphere()`~~ (shipped 2026-04-29 in
-  Phase 6 session 7), `plane()`, `mesh()`. `mesh()` waits for the
-  `.glb` decision; `plane()` is two triangles, trivially the same
-  pattern as `sphere`.
+  Phase 6 session 7), ~~`mesh()`~~ (shipped 2026-04-29 in v0.2
+  session 1), `plane()`. `plane()` is two triangles, trivially the
+  same pattern as `sphere`.
 - **Bytecode VM 3D path** — `on render():` codegen + per-frame
   invocation. Mirrors how dialogue / state-machine work landed.
 - **`mat4` / `quat` types in stdlib** — land when `entity.transform`

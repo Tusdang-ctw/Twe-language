@@ -260,6 +260,11 @@ pub struct Env {
     /// `play3d` render loop drains and consumes after the body
     /// finishes. Cleared at the start of each frame.
     pub render_queue3d: Vec<DrawCall3d>,
+    /// Path-interning registry for `Primitive::Mesh(id)`. Indices
+    /// are stable across frames (and across hot-reloads, as long as
+    /// the new env intern-orders match — typically yes since
+    /// `mesh()` calls run in source order). v0.2 session 1.
+    pub mesh_paths: Vec<String>,
     rng_state: u64,
 }
 
@@ -277,10 +282,16 @@ pub struct DrawCall3d {
 /// The mesh shape behind a `DrawCall3d`. Each variant has its own
 /// vertex/index buffer in `play3d`; a frame's queue is partitioned
 /// per-primitive and each subset becomes one instanced draw call.
+///
+/// `Mesh(id)` carries an interned-path id assigned by
+/// `Env::intern_mesh_path`. The render side keeps a parallel
+/// `HashMap<u32, GpuMesh>` cache; first sight of an id triggers a
+/// lazy `.glb` load + GPU upload. v0.2 session 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Primitive {
     Cube,
     Sphere,
+    Mesh(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -307,10 +318,32 @@ impl Env {
             loop_depth: 0,
             call_depth: 0,
             render_queue3d: Vec::new(),
+            mesh_paths: Vec::new(),
             // xorshift64* seeded from a fixed constant for deterministic
             // tests. CLI can override via `twec run --seed N`.
             rng_state: 0x9E37_79B9_7F4A_7C15,
         }
+    }
+
+    /// Find-or-insert `path` in the mesh-path registry. Returns the
+    /// interned id, used as the payload of `Primitive::Mesh`. Linear
+    /// scan is fine — a Twe scene rarely uses more than a handful of
+    /// distinct meshes, and this only runs in `mesh()` calls inside
+    /// `on render():`.
+    pub fn intern_mesh_path(&mut self, path: &str) -> u32 {
+        if let Some(idx) = self.mesh_paths.iter().position(|p| p == path) {
+            return idx as u32;
+        }
+        let idx = self.mesh_paths.len() as u32;
+        self.mesh_paths.push(path.to_string());
+        idx
+    }
+
+    /// Reverse lookup for the render side. Returns `None` for an id
+    /// that was never interned in this env (only happens after a
+    /// hot-reload that drops a `mesh()` call).
+    pub fn mesh_path(&self, id: u32) -> Option<&str> {
+        self.mesh_paths.get(id as usize).map(String::as_str)
     }
 
     /// xorshift64* PRNG. Deterministic given a fixed seed.
@@ -489,5 +522,35 @@ mod did_you_mean_tests {
         // "function" vs "funciton" — two char swaps from each other.
         let candidates = vec!["function".to_string()];
         assert_eq!(did_you_mean("funciton", &candidates), Some("function"));
+    }
+}
+
+#[cfg(test)]
+mod mesh_registry_tests {
+    use super::*;
+
+    #[test]
+    fn intern_mesh_path_is_stable() {
+        let mut env = Env::new();
+        let id_a = env.intern_mesh_path("a.glb");
+        let id_b = env.intern_mesh_path("b.glb");
+        assert_ne!(id_a, id_b);
+        // Re-interning returns the same id.
+        assert_eq!(env.intern_mesh_path("a.glb"), id_a);
+        assert_eq!(env.intern_mesh_path("b.glb"), id_b);
+    }
+
+    #[test]
+    fn mesh_path_round_trip() {
+        let mut env = Env::new();
+        let id = env.intern_mesh_path("models/box.glb");
+        assert_eq!(env.mesh_path(id), Some("models/box.glb"));
+    }
+
+    #[test]
+    fn mesh_path_out_of_range_returns_none() {
+        let env = Env::new();
+        assert_eq!(env.mesh_path(0), None);
+        assert_eq!(env.mesh_path(99), None);
     }
 }
