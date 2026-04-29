@@ -158,6 +158,18 @@ struct Frame {
     /// these fields.
     name: String,
     arity: u8,
+    /// v0.2 session 2c: `wait` is permitted (emits `OpCode::Wait`)
+    /// when this frame's body is a state's `on_entry` — including
+    /// `wait` reached recursively through nested `if` / `elif` /
+    /// `else` / `while` blocks. Set by `compile_on_entry`; false
+    /// for every other compiler frame (functions, methods, every
+    /// clocks, on_update, predicate hooks, scripts).
+    ///
+    /// Function-body `wait` on the VM remains deferred — it
+    /// requires a multi-frame save (`Vec<BcFiberFrame>` on
+    /// `BcInstance`) which is its own engineering pass. Tracked
+    /// in `notes/future-phases.md`.
+    allows_wait: bool,
 }
 
 impl Frame {
@@ -187,6 +199,7 @@ impl Frame {
             class_fields,
             name: name.into(),
             arity,
+            allows_wait: false,
         }
     }
 }
@@ -381,23 +394,37 @@ impl Compiler {
                 self.emit_expr(target)?;
                 self.frame_mut().chunk.write_op(OpCode::Despawn, *line);
             }
-            Stmt::Wait { line, col, .. } => {
-                // `wait` is intercepted by `compile_on_entry` at
-                // the top level of a state's on-entry body and
-                // emitted as `OP_WAIT`. Reaching this arm means
-                // the wait is in a sub-block (function body,
-                // `if`/`for`/`while` branch, every-clock, on
-                // update — anywhere that goes through `emit_stmt`
-                // recursively). Match the tree-walker's runtime
-                // error message so users see the same constraint
-                // either way.
-                return Err(CompileError {
-                    line: *line,
-                    col: *col,
-                    message:
-                        "`wait` is only supported as a direct statement of a state body in v0.1; fiber-aware contexts (functions, every, dialogue) ship in later Phase 5 sessions"
-                            .to_string(),
-                });
+            Stmt::Wait { duration, line, col } => {
+                // v0.2 session 2c: `wait` emits `OP_WAIT` whenever
+                // the enclosing frame allows it (`allows_wait`).
+                // `compile_on_entry` is the only thing that sets
+                // the flag, so `wait` only emits inside a state's
+                // on_entry body — including nested `if` / `elif`
+                // / `else` / `while` blocks (which stay in the
+                // same VM frame and are transparently resumable).
+                //
+                // Function bodies, every-clock bodies, on_update,
+                // and `for` bodies don't set the flag — function
+                // and for need a multi-frame save the VM doesn't
+                // yet do; every / on_update are fire-and-forget
+                // by design.
+                if !self.frame().allows_wait {
+                    return Err(CompileError {
+                        line: *line,
+                        col: *col,
+                        message:
+                            "`wait` is only supported inside a state's on_entry body (or its nested `if` / `while` blocks) on the bytecode VM; function-body wait is tree-walker-only for now (`--vm tree`)"
+                                .to_string(),
+                    });
+                }
+                if let Some(secs) = const_eval_seconds(duration) {
+                    let idx = self.frame_mut().chunk.add_constant(Value::Float(secs));
+                    self.frame_mut().chunk.write_op(OpCode::Constant, *line);
+                    self.frame_mut().chunk.write_byte(idx, *line);
+                } else {
+                    self.emit_expr(duration)?;
+                }
+                self.frame_mut().chunk.write_op(OpCode::Wait, *line);
             }
             Stmt::DialogueDecl { line, col, .. }
             | Stmt::Say { line, col, .. }
@@ -1524,14 +1551,19 @@ impl Compiler {
     }
 
     /// Compile a state's on_entry body as a method-shape
-    /// BcFunction. Same as `compile_state_body` except top-level
-    /// `Stmt::Wait` is recognised and emitted as `OP_WAIT` (the
-    /// runtime suspends the chunk and resumes from the next IP
-    /// once the wait elapses). Wait inside a sub-block falls
-    /// through to `emit_stmt` and surfaces the same compile-time
-    /// error as `wait` outside on_entry — pinning the
-    /// "direct statement only" constraint that mirrors the
-    /// tree-walker's `run_state_entry`.
+    /// BcFunction. `wait` is permitted as a direct statement, and
+    /// — v0.2 session 2c — also inside nested `if` / `elif` /
+    /// `else` / `while` blocks. The frame's `allows_wait` flag
+    /// gates `emit_stmt`'s `Stmt::Wait` arm, which emits
+    /// `OP_WAIT` rather than erroring. The VM's existing
+    /// single-frame save / resume handles within-frame
+    /// suspensions transparently — nested control flow stays in
+    /// the same VM frame, so no runtime change is needed.
+    ///
+    /// Function-body wait remains deferred on the VM: a function
+    /// call would push a NEW frame, and the current `OP_WAIT`
+    /// only saves one frame's `(chunk, IP)`. Multi-frame save
+    /// (`Vec<BcFiberFrame>` on `BcInstance`) is its own session.
     fn compile_on_entry(
         &mut self,
         name: &str,
@@ -1540,36 +1572,16 @@ impl Compiler {
         line: u32,
         _col: u32,
     ) -> Result<BcFunction, CompileError> {
-        self.frames.push(Frame::with_method(
+        let mut frame = Frame::with_method(
             FrameKind::Function,
             name,
             0,
             true,
             Some(class_fields),
-        ));
+        );
+        frame.allows_wait = true;
+        self.frames.push(frame);
         for stmt in body {
-            if let Stmt::Wait { duration, line: stmt_line, .. } = stmt {
-                // Const-fold a literal duration to seconds and emit
-                // it as a Float constant — mirrors `every`'s
-                // compile-time fold and side-steps the bytecode
-                // VM's not-yet-supported `Expr::Quantity` path.
-                // Non-literal expressions (`wait time.dt`,
-                // `wait my_secs`) fall through to `emit_expr`,
-                // which works for Int/Float/local-load shapes the
-                // VM already handles.
-                if let Some(secs) = const_eval_seconds(duration) {
-                    let idx = self
-                        .frame_mut()
-                        .chunk
-                        .add_constant(Value::Float(secs));
-                    self.frame_mut().chunk.write_op(OpCode::Constant, *stmt_line);
-                    self.frame_mut().chunk.write_byte(idx, *stmt_line);
-                } else {
-                    self.emit_expr(duration)?;
-                }
-                self.frame_mut().chunk.write_op(OpCode::Wait, *stmt_line);
-                continue;
-            }
             self.emit_stmt(stmt)?;
         }
         let last_line = body.last().map(stmt_line).unwrap_or(line);

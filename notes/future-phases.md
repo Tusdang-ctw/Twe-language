@@ -293,10 +293,18 @@ note.
       callees; method-body wait, `for`-body wait, and
       call-as-expression (`let x = f()`) remain follow-ons.
       See `docs/changes/2026-04-29-v0.2-session-2b-function-body-wait.md`.
-- [ ] **Session 2c — bytecode VM parity** (planned). The VM's
-      current `OpCode::Wait` saves a single `(chunk, IP)` on
-      `BcInstance`; rebuild as a `Vec<BcFrame>` so the same
-      surface programs work on `--vm bytecode`.
+- [x] **Session 2c — VM nested-block wait parity** (2026-04-30).
+      Brings the bytecode VM to 2a-equivalence: `wait` works
+      inside `if` / `elif` / `else` / `while` blocks at the top
+      of state on_entry. `Frame::allows_wait` flag in the
+      compiler gates `OP_WAIT` emission; `OpCode::Wait` saves
+      the value-stack slice (`entry_resume_locals`) so locals
+      declared inside the body survive the suspension.
+      Function-body wait on the VM remains deferred — it needs
+      a multi-frame fiber save (`Vec<BcFiberFrame>` on
+      `BcInstance`) capturing the entire call stack + each
+      frame's stack slice. See
+      `docs/changes/2026-04-30-v0.2-session-2c-vm-wait-parity.md`.
 
 ## Carried into v0.2
 
@@ -318,13 +326,15 @@ closeout notes (`docs/changes/2026-04-29-phase-5-closeout.md`,
 Phase 5 carry-overs:
 
 - **`wait` in non-state-entry contexts** — sessions 2a (resumable
-  `if` / `while` blocks) and 2b (function-body `wait` for
-  bare-name `Stmt::Expr` calls) **shipped**; 2c (bytecode VM
-  parity) planned. Method-body `wait`, call-as-expression
-  (`let x = f()`), and `for`-body `wait` remain follow-ons.
-  `wait` inside `dialogue` (per-dialogue scheduler) and
-  fiber-backed `every` rewrite stay on the v0.2 backlog beyond
-  the 2a/2b/2c track.
+  `if` / `while` blocks), 2b (function-body `wait` for bare-name
+  `Stmt::Expr` calls on the tree-walker), and 2c (VM
+  nested-block parity for 2a) **shipped**. Method-body `wait`,
+  call-as-expression (`let x = f()`), `for`-body `wait`, and
+  function-body `wait` on the bytecode VM remain follow-ons —
+  the VM piece needs a multi-frame fiber save (entire call
+  stack + per-frame value-stack slices). `wait` inside
+  `dialogue` (per-dialogue scheduler) and fiber-backed `every`
+  rewrite stay on the v0.2 backlog beyond the 2a/2b/2c track.
 - **Dialogue UI** — interactive choice selection (input modality
   conversation), bytecode VM dialogue support, per-dialogue
   scheduler for `wait` inside dialogue, `scene.npc("...")` lookup.

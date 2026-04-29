@@ -342,13 +342,15 @@ impl VM {
                     reload!();
                 }
                 OpCode::Wait => {
-                    // Phase 5 fibers. Pop the duration value, convert
-                    // to seconds, save the resume IP + chunk + the
-                    // remaining wait time on the active scene's
-                    // BcInstance, and collapse the current frame the
-                    // same way `Return` does (with synthetic Nil).
-                    // `tick_scene` resumes the chunk from the saved
-                    // IP once `entry_wait_remaining` reaches zero.
+                    // Phase 5 fibers + v0.2 session 2c. Pop the
+                    // duration value, save the resume IP + chunk
+                    // + value-stack slice + remaining wait time
+                    // on the active scene's BcInstance, then
+                    // collapse the current frame as `Return`
+                    // does (with synthetic Nil). `tick_scene`
+                    // resumes the chunk from the saved IP — and
+                    // restores the saved locals — once
+                    // `entry_wait_remaining` reaches zero.
                     sync_ip!();
                     let dur = self.pop()?;
                     let secs = wait_duration_to_seconds(&dur, line)?;
@@ -361,6 +363,19 @@ impl VM {
                         ),
                     })?;
                     let frame = self.frames.pop().expect("frame to suspend on wait");
+                    // Save locals: slot 0 is the receiver
+                    // (re-pushed on resume from `scene.clone()`),
+                    // so slots `slot_base + 1` upward are the
+                    // user-visible locals. Without this the
+                    // wait would lose anything declared in the
+                    // body (`var i = 0` before a `while` — see
+                    // `vm_wait_inside_while_in_state_body_resumes`).
+                    let locals_start = frame.slot_base + 1;
+                    let saved_locals: Vec<Value> = if locals_start <= self.stack.len() {
+                        self.stack[locals_start..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     {
                         let mut inst = scene.borrow_mut();
                         inst.entry_resume_function = Some(Rc::clone(&frame.function));
@@ -368,6 +383,7 @@ impl VM {
                         // at exactly that point next frame.
                         inst.entry_resume_ip = Some(ip);
                         inst.entry_wait_remaining = secs;
+                        inst.entry_resume_locals = saved_locals;
                     }
                     self.stack.truncate(frame.slot_base);
                     if self.frames.len() < target_depth {
@@ -1349,6 +1365,7 @@ impl VM {
             inst.entry_resume_function = None;
             inst.entry_resume_ip = None;
             inst.entry_wait_remaining = 0.0;
+            inst.entry_resume_locals.clear();
             // Phase 5 task 4: reset predicate edge state. Initial
             // value is `false` so a predicate already true on the
             // first tick fires immediately (matches the
@@ -1381,7 +1398,7 @@ impl VM {
         &mut self,
         scene: &Rc<RefCell<BcInstance>>,
     ) -> Result<(), RuntimeError> {
-        let (function, resume_ip) = {
+        let (function, resume_ip, locals) = {
             let mut inst = scene.borrow_mut();
             let func = inst.entry_resume_function.take().ok_or_else(|| RuntimeError {
                 line: 0,
@@ -1391,10 +1408,18 @@ impl VM {
             })?;
             let ip = inst.entry_resume_ip.take().unwrap_or(0);
             inst.entry_wait_remaining = 0.0;
-            (func, ip)
+            let locals = std::mem::take(&mut inst.entry_resume_locals);
+            (func, ip, locals)
         };
         let recv_idx = self.stack.len();
         self.stack.push(Value::BcInstance(scene.clone()));
+        // v0.2 session 2c: restore the saved local-stack slice so
+        // values declared before the suspension (`var i = 0`,
+        // function args, etc.) read correctly when the resumed
+        // chunk hits `OP_GET_LOCAL`.
+        for v in locals {
+            self.stack.push(v);
+        }
         let target_depth = self.frames.len();
         if self.frames.len() >= FRAMES_MAX {
             return Err(RuntimeError {
@@ -2101,6 +2126,7 @@ fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
         entry_resume_function: None,
         entry_resume_ip: None,
         entry_wait_remaining: 0.0,
+        entry_resume_locals: Vec::new(),
         predicate_last_values: Vec::new(),
     })))
 }
@@ -3110,9 +3136,10 @@ mod tests {
 
     #[test]
     fn vm_wait_outside_state_body_is_a_compile_error() {
-        // `wait` inside a function body is rejected by the
-        // bytecode compiler — the runtime suspension mechanism
-        // only handles state on_entry.
+        // `wait` inside a function body is still rejected by the
+        // bytecode compiler — function-body wait on the VM
+        // requires a multi-frame fiber save (deferred). The
+        // tree-walker (session 2b) supports this case.
         let src = "function pause():\n    wait 0.5s\n\npause()\n";
         let err = compile_err(src);
         assert!(
@@ -3168,24 +3195,67 @@ mod tests {
     }
 
     #[test]
-    fn vm_wait_inside_if_in_state_body_is_a_compile_error() {
-        // Same constraint as the tree-walker: `wait` must be a
-        // direct statement of state on_entry. Wrapping it in an
-        // `if` makes it a sub-block, which `compile_on_entry`
-        // delegates to `emit_stmt`, surfacing the error.
+    fn vm_wait_inside_if_in_state_body_resumes() {
+        // v0.2 session 2c: `wait` is now permitted inside nested
+        // `if` / `while` blocks at the top of state on_entry. The
+        // VM's existing single-frame OP_WAIT save handles
+        // within-frame suspensions transparently — nested control
+        // flow stays in the same VM frame.
         let src = concat!(
             "scene Demo:\n",
             "    initial: a\n",
             "    state a:\n",
             "        if true:\n",
+            "            print(\"before\")\n",
             "            wait 0.1s\n",
+            "            print(\"after\")\n",
+            "        print(\"done\")\n",
         );
-        let err = compile_err(src);
-        assert!(
-            err.contains("`wait` is only supported")
-                || err.contains("wait is only supported"),
-            "expected wait-context error, got: {err}"
+        let out = run_program_frames(src, 2, 0.1).expect("ok");
+        assert_eq!(out, "before\nafter\ndone\n");
+    }
+
+    #[test]
+    fn vm_wait_inside_while_in_state_body_resumes() {
+        // Three iterations of the inner while, each waiting 0.1s.
+        // Each iteration suspends the same VM frame and resumes
+        // from the next IP — the loop's back-edge re-evaluates
+        // the condition naturally.
+        let src = concat!(
+            "scene Demo:\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        var i = 0\n",
+            "        while i < 3:\n",
+            "            print(\"step\")\n",
+            "            wait 0.1s\n",
+            "            i = i + 1\n",
+            "        print(\"done\")\n",
         );
+        let out = run_program_frames(src, 4, 0.1).expect("ok");
+        assert_eq!(out, "step\nstep\nstep\ndone\n");
+    }
+
+    #[test]
+    fn vm_wait_inside_elif_resumes_same_arm() {
+        // Pin elif-arm preservation on the VM. The bytecode
+        // compiler emits separate jumps per arm; on resume the
+        // saved IP lands inside the chosen arm, not back at the
+        // elif chain's head.
+        let src = concat!(
+            "scene Demo:\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        if false:\n",
+            "            print(\"first\")\n",
+            "        elif true:\n",
+            "            print(\"elif-before\")\n",
+            "            wait 0.1s\n",
+            "            print(\"elif-after\")\n",
+            "        print(\"done\")\n",
+        );
+        let out = run_program_frames(src, 2, 0.1).expect("ok");
+        assert_eq!(out, "elif-before\nelif-after\ndone\n");
     }
 
     #[test]

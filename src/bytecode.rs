@@ -419,6 +419,15 @@ pub struct BcInstance {
     pub entry_resume_function: Option<Rc<BcFunction>>,
     pub entry_resume_ip: Option<usize>,
     pub entry_wait_remaining: f64,
+    /// v0.2 session 2c: saved value-stack slice for the
+    /// suspended frame, covering slots `slot_base + 1` through
+    /// the top (slot 0 is the receiver, re-pushed by resume).
+    /// Without this, locals declared inside the on_entry body
+    /// (e.g. `var i = 0` before a `while i < 3:` that contains
+    /// `wait`) are lost across the suspension. The single-frame
+    /// wait machinery from Phase 5 only worked when the frame
+    /// had no live locals at suspension time.
+    pub entry_resume_locals: Vec<Value>,
     /// Phase 5 task 4: parallel-indexed to the active state's
     /// `on_predicates`. Records the last evaluated truthiness so the
     /// VM can detect false → true transitions for edge-triggered
