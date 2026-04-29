@@ -1,0 +1,55 @@
+{
+  "name": "twe-language",
+  "displayName": "Twe Language",
+  "description": "Syntax + LSP support for the Twe game scripting language",
+  "version": "0.1.0-pre",
+  "publisher": "twe-lang",
+  "private": true,
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:twe"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "twe",
+        "aliases": ["Twe", "twe"],
+        "extensions": [".twe"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "twe",
+        "scopeName": "source.twe",
+        "path": "./syntaxes/twe.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Twe",
+      "properties": {
+        "twe.serverPath": {
+          "type": "string",
+          "default": "twec",
+          "description": "Path to the `twec` binary. Defaults to looking it up on PATH; set to an absolute path if you've built locally."
+        },
+        "twe.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces communication between VS Code and the Twe LSP server."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0"
+  }
+}

@@ -6,7 +6,7 @@ const USAGE: &str =
     "usage: twec [run [--vm tree|bytecode] [--frames N] <file> | \
      play [--vm tree|bytecode] <file> | \
      fmt [--in-place|--check] <file> | \
-     parse <file> | version]";
+     lsp | parse <file> | version]";
 
 /// Which interpreter the CLI dispatches to. The tree-walker is the
 /// default for backwards compatibility — it's been the production
@@ -40,6 +40,7 @@ pub fn run() {
         "run" => process::exit(handle_run(&args[2..])),
         "play" => process::exit(handle_play(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
+        "lsp" => process::exit(handle_lsp(&args[2..])),
         "parse" => process::exit(handle_parse(&args[2..])),
         "version" | "--version" | "-V" => print_version(),
         cmd => {
@@ -152,6 +153,26 @@ fn handle_fmt(args: &[String]) -> i32 {
     } else {
         print!("{formatted}");
         0
+    }
+}
+
+/// `twec lsp` — speak Language Server Protocol over stdio.
+/// Editor extensions launch the binary with this subcommand and
+/// pipe LSP messages on stdin / read responses on stdout.
+fn handle_lsp(args: &[String]) -> i32 {
+    if !args.is_empty() {
+        eprintln!("error: `twec lsp` takes no arguments");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    match crate::lsp::run(stdin.lock(), stdout.lock()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("twec lsp: {e}");
+            1
+        }
     }
 }
 
