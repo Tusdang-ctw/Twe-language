@@ -16,8 +16,219 @@
 //! tagged unions, structural records, and dimensional units
 //! arrive in 4b through 4f.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+
+/// Unique identifier for a fresh type variable. Allocated by
+/// `TypeVarGen` so collisions are impossible across an inference
+/// session. Wraps a u32 to keep the value cheap to clone — a
+/// substitution map keyed on this is the hot path during unify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TypeVarId(pub u32);
+
+/// Allocator for fresh type variables. One per inference session.
+/// IDs start at 0 and increment monotonically.
+#[derive(Debug, Default)]
+pub struct TypeVarGen {
+    next: u32,
+}
+
+impl TypeVarGen {
+    pub fn new() -> Self {
+        Self { next: 0 }
+    }
+
+    /// Allocate a fresh type variable.
+    pub fn fresh(&mut self) -> TypeVarId {
+        let id = self.next;
+        self.next += 1;
+        TypeVarId(id)
+    }
+}
+
+/// A substitution: a map from type-variable IDs to the types
+/// they've been resolved to. The unification algorithm extends
+/// this incrementally; `apply_subst` walks a type and replaces
+/// any `Var(id)` with its current binding (recursively, until
+/// a non-var is hit).
+#[derive(Debug, Default, Clone)]
+pub struct Substitution {
+    map: HashMap<TypeVarId, Type>,
+}
+
+impl Substitution {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn lookup(&self, id: TypeVarId) -> Option<&Type> {
+        self.map.get(&id)
+    }
+
+    pub fn insert(&mut self, id: TypeVarId, t: Type) {
+        self.map.insert(id, t);
+    }
+
+    /// True when no constraints have been recorded — useful for
+    /// tests + sanity checks.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
+/// Walk `t` and replace every `Var(id)` for which the
+/// substitution has a binding. Resolves transitive chains
+/// (`Var(α) -> Var(β) -> Int` becomes `Int`). Returns a new
+/// owned type — does not mutate input.
+pub fn apply_subst(subst: &Substitution, t: &Type) -> Type {
+    match t {
+        Type::Var(id) => match subst.lookup(*id) {
+            Some(resolved) => apply_subst(subst, resolved),
+            None => Type::Var(*id),
+        },
+        Type::Tuple(elems) => {
+            Type::Tuple(elems.iter().map(|e| apply_subst(subst, e)).collect())
+        }
+        Type::List(elem) => Type::List(Rc::new(apply_subst(subst, elem))),
+        Type::Function { params, ret } => Type::Function {
+            params: params.iter().map(|p| apply_subst(subst, p)).collect(),
+            ret: Rc::new(apply_subst(subst, ret)),
+        },
+        // Scalar / nominal types have nothing to substitute.
+        _ => t.clone(),
+    }
+}
+
+/// Unification error — when two types can't be made equal under
+/// any substitution. Carried in `Result` so the caller can decide
+/// whether to surface (strict mode) or absorb (non-strict mode).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnifyError {
+    /// `a` and `b` aren't equal and aren't unifiable. Both sides
+    /// already have their substitutions applied when the error is
+    /// constructed, so the message reflects what the caller saw.
+    Mismatch { a: String, b: String },
+    /// Occurs check: trying to unify `α = T(α)` would create an
+    /// infinite type. HM rejects this; without the check, `unify`
+    /// would loop forever in `apply_subst`.
+    OccursCheck { var: TypeVarId, ty: String },
+}
+
+impl fmt::Display for UnifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UnifyError::Mismatch { a, b } => write!(f, "type mismatch: {a} vs {b}"),
+            UnifyError::OccursCheck { var, ty } => {
+                write!(f, "infinite type: {var:?} occurs in {ty}")
+            }
+        }
+    }
+}
+
+/// Unify two types under `subst`, extending `subst` so the two
+/// become equal. Per Robinson's algorithm:
+///
+/// - Two equal scalars: succeed (no extension).
+/// - `Var(α)` vs `T`: bind `α := T` after occurs check.
+/// - Two `Var`s: bind one to the other.
+/// - Compound types (`Tuple`, `List`, `Function`): recurse into
+///   structurally matching positions; arity mismatch is a
+///   `Mismatch` error.
+/// - `Unknown` unifies with anything (the non-strict escape
+///   hatch — see is_compatible_with's comment).
+/// - Anything else: `Mismatch`.
+///
+/// On error, `subst` may have been partially extended; HM
+/// implementations vary on whether this matters. For Twe's
+/// non-strict mode the caller treats errors as "give up and
+/// stay Unknown," so partial extension is harmless.
+pub fn unify(a: &Type, b: &Type, subst: &mut Substitution) -> Result<(), UnifyError> {
+    // Walk through any existing substitutions first so we're
+    // comparing the most-resolved forms.
+    let a = apply_subst(subst, a);
+    let b = apply_subst(subst, b);
+    match (&a, &b) {
+        // Unknown is the non-strict bottom — never the source of
+        // an error message.
+        (Type::Unknown, _) | (_, Type::Unknown) => Ok(()),
+        // Variable cases.
+        (Type::Var(id1), Type::Var(id2)) if id1 == id2 => Ok(()),
+        (Type::Var(id), other) | (other, Type::Var(id)) => {
+            if occurs_in(*id, other) {
+                Err(UnifyError::OccursCheck {
+                    var: *id,
+                    ty: other.to_string(),
+                })
+            } else {
+                subst.insert(*id, other.clone());
+                Ok(())
+            }
+        }
+        // Equal scalars / nominals.
+        (Type::Int, Type::Int)
+        | (Type::Float, Type::Float)
+        | (Type::Bool, Type::Bool)
+        | (Type::Str, Type::Str)
+        | (Type::Nil, Type::Nil)
+        | (Type::Percent, Type::Percent)
+        | (Type::Range, Type::Range) => Ok(()),
+        (Type::Quantity(u1), Type::Quantity(u2)) if u1 == u2 => Ok(()),
+        (Type::Instance(a), Type::Instance(b)) | (Type::Class(a), Type::Class(b)) if a == b => {
+            Ok(())
+        }
+        // Compound types: recurse.
+        (Type::Tuple(a), Type::Tuple(b)) => {
+            if a.len() != b.len() {
+                return Err(mismatch(&Type::Tuple(a.clone()), &Type::Tuple(b.clone())));
+            }
+            for (x, y) in a.iter().zip(b.iter()) {
+                unify(x, y, subst)?;
+            }
+            Ok(())
+        }
+        (Type::List(a), Type::List(b)) => unify(a, b, subst),
+        (
+            Type::Function { params: ap, ret: ar },
+            Type::Function { params: bp, ret: br },
+        ) => {
+            if ap.len() != bp.len() {
+                return Err(mismatch(&a, &b));
+            }
+            for (x, y) in ap.iter().zip(bp.iter()) {
+                unify(x, y, subst)?;
+            }
+            unify(ar, br, subst)
+        }
+        _ => Err(mismatch(&a, &b)),
+    }
+}
+
+fn mismatch(a: &Type, b: &Type) -> UnifyError {
+    UnifyError::Mismatch {
+        a: a.to_string(),
+        b: b.to_string(),
+    }
+}
+
+/// Occurs check: does `id` appear anywhere inside `t`? Used
+/// before binding `α := T` so we never construct an infinite
+/// type like `α = list of α`.
+fn occurs_in(id: TypeVarId, t: &Type) -> bool {
+    match t {
+        Type::Var(other) => *other == id,
+        Type::Tuple(elems) => elems.iter().any(|e| occurs_in(id, e)),
+        Type::List(elem) => occurs_in(id, elem),
+        Type::Function { params, ret } => {
+            params.iter().any(|p| occurs_in(id, p)) || occurs_in(id, ret)
+        }
+        _ => false,
+    }
+}
 
 /// One Twe type. `Unknown` is the lattice bottom — it means
 /// "we couldn't prove anything, defer to runtime." Per non-strict
@@ -79,6 +290,10 @@ pub enum Type {
     /// silently absorbs any operation — never the source of an
     /// error message.
     Unknown,
+    /// Type variable — a placeholder filled in by unification.
+    /// Allocated by `TypeVarGen::fresh`. Resolved through a
+    /// `Substitution` via `apply_subst`.
+    Var(TypeVarId),
 }
 
 impl Type {
@@ -186,6 +401,7 @@ impl fmt::Display for Type {
             Type::Instance(name) => write!(f, "{name}"),
             Type::Class(name) => write!(f, "<class {name}>"),
             Type::Unknown => write!(f, "?"),
+            Type::Var(id) => write!(f, "?{}", id.0),
         }
     }
 }
@@ -296,5 +512,185 @@ mod tests {
         let s = Type::Quantity(Rc::new("s".into()));
         assert!(ms.is_compatible_with(&Type::Quantity(Rc::new("ms".into()))));
         assert!(!ms.is_compatible_with(&s));
+    }
+
+    // --- 4b: type variables + unification ---
+
+    #[test]
+    fn fresh_vars_have_unique_ids() {
+        let mut g = TypeVarGen::new();
+        let a = g.fresh();
+        let b = g.fresh();
+        let c = g.fresh();
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn var_displays_with_question_prefix() {
+        let id = TypeVarId(7);
+        assert_eq!(Type::Var(id).to_string(), "?7");
+    }
+
+    #[test]
+    fn apply_subst_resolves_a_var() {
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        s.insert(a, Type::Int);
+        assert_eq!(apply_subst(&s, &Type::Var(a)), Type::Int);
+    }
+
+    #[test]
+    fn apply_subst_resolves_chains() {
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        let b = TypeVarId(1);
+        s.insert(a, Type::Var(b));
+        s.insert(b, Type::Str);
+        assert_eq!(apply_subst(&s, &Type::Var(a)), Type::Str);
+    }
+
+    #[test]
+    fn apply_subst_walks_into_compounds() {
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        s.insert(a, Type::Int);
+        let t = Type::list(Type::Var(a));
+        assert_eq!(apply_subst(&s, &t), Type::list(Type::Int));
+        let t = Type::Tuple(vec![Type::Var(a), Type::Bool]);
+        assert_eq!(apply_subst(&s, &t), Type::Tuple(vec![Type::Int, Type::Bool]));
+    }
+
+    #[test]
+    fn unify_equal_scalars_does_nothing() {
+        let mut s = Substitution::new();
+        unify(&Type::Int, &Type::Int, &mut s).unwrap();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn unify_var_with_concrete_binds_it() {
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        unify(&Type::Var(a), &Type::Int, &mut s).unwrap();
+        assert_eq!(apply_subst(&s, &Type::Var(a)), Type::Int);
+        // And the reverse direction works the same way.
+        let mut s = Substitution::new();
+        unify(&Type::Float, &Type::Var(a), &mut s).unwrap();
+        assert_eq!(apply_subst(&s, &Type::Var(a)), Type::Float);
+    }
+
+    #[test]
+    fn unify_two_vars_links_them() {
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        let b = TypeVarId(1);
+        unify(&Type::Var(a), &Type::Var(b), &mut s).unwrap();
+        // After unification, both should resolve to whatever
+        // either later binds to.
+        unify(&Type::Var(b), &Type::Bool, &mut s).unwrap();
+        assert_eq!(apply_subst(&s, &Type::Var(a)), Type::Bool);
+        assert_eq!(apply_subst(&s, &Type::Var(b)), Type::Bool);
+    }
+
+    #[test]
+    fn unify_fails_on_concrete_mismatch() {
+        let mut s = Substitution::new();
+        let err = unify(&Type::Int, &Type::Str, &mut s).expect_err("should fail");
+        match err {
+            UnifyError::Mismatch { a, b } => {
+                assert_eq!(a, "int");
+                assert_eq!(b, "string");
+            }
+            _ => panic!("wrong error variant: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn unify_recurses_into_tuples() {
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        let b = TypeVarId(1);
+        let t1 = Type::Tuple(vec![Type::Var(a), Type::Var(b)]);
+        let t2 = Type::Tuple(vec![Type::Int, Type::Str]);
+        unify(&t1, &t2, &mut s).unwrap();
+        assert_eq!(apply_subst(&s, &Type::Var(a)), Type::Int);
+        assert_eq!(apply_subst(&s, &Type::Var(b)), Type::Str);
+    }
+
+    #[test]
+    fn unify_tuple_arity_mismatch_errors() {
+        let mut s = Substitution::new();
+        let t1 = Type::Tuple(vec![Type::Int, Type::Int]);
+        let t2 = Type::Tuple(vec![Type::Int]);
+        assert!(unify(&t1, &t2, &mut s).is_err());
+    }
+
+    #[test]
+    fn unify_lists_recurse() {
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        unify(&Type::list(Type::Var(a)), &Type::list(Type::Float), &mut s).unwrap();
+        assert_eq!(apply_subst(&s, &Type::Var(a)), Type::Float);
+    }
+
+    #[test]
+    fn unify_function_signatures() {
+        let mut s = Substitution::new();
+        let p = TypeVarId(0);
+        let r = TypeVarId(1);
+        let f1 = Type::func(vec![Type::Var(p)], Type::Var(r));
+        let f2 = Type::func(vec![Type::Int], Type::Bool);
+        unify(&f1, &f2, &mut s).unwrap();
+        assert_eq!(apply_subst(&s, &Type::Var(p)), Type::Int);
+        assert_eq!(apply_subst(&s, &Type::Var(r)), Type::Bool);
+    }
+
+    #[test]
+    fn unify_function_arity_mismatch_errors() {
+        let mut s = Substitution::new();
+        let f1 = Type::func(vec![Type::Int, Type::Int], Type::Int);
+        let f2 = Type::func(vec![Type::Int], Type::Int);
+        assert!(unify(&f1, &f2, &mut s).is_err());
+    }
+
+    #[test]
+    fn unify_unknown_with_anything_succeeds() {
+        // Non-strict's escape hatch: Unknown unifies with
+        // anything (in either direction), no constraint added.
+        let mut s = Substitution::new();
+        unify(&Type::Unknown, &Type::Int, &mut s).unwrap();
+        assert!(s.is_empty());
+        unify(&Type::list(Type::Str), &Type::Unknown, &mut s).unwrap();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn occurs_check_rejects_infinite_types() {
+        // α = list of α — would create an infinite type.
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        let err = unify(
+            &Type::Var(a),
+            &Type::list(Type::Var(a)),
+            &mut s,
+        )
+        .expect_err("should fail");
+        match err {
+            UnifyError::OccursCheck { var, .. } => assert_eq!(var, a),
+            _ => panic!("wrong variant: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn unify_resolves_through_existing_bindings() {
+        // α := Int already; unify α with Int again → ok (idempotent).
+        // unify α with Str → mismatch (Int vs Str).
+        let mut s = Substitution::new();
+        let a = TypeVarId(0);
+        s.insert(a, Type::Int);
+        unify(&Type::Var(a), &Type::Int, &mut s).unwrap();
+        assert!(unify(&Type::Var(a), &Type::Str, &mut s).is_err());
     }
 }
