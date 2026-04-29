@@ -170,7 +170,25 @@ impl Server {
             Some("textDocument/hover") => {
                 let result = self
                     .resolve_position(msg)
-                    .map(|(_, sym)| symbol_to_hover(&sym))
+                    .map(|(uri, sym)| {
+                        // Run type inference on the current
+                        // document and look up `sym.name` in the
+                        // top-level bindings. Inference is a
+                        // single-pass best-effort; it returns
+                        // Type::Unknown when it can't prove
+                        // anything (per non-strict's no-false-
+                        // positives guarantee).
+                        let inferred = self
+                            .documents
+                            .get(&uri)
+                            .and_then(|text| {
+                                let tokens = lexer::lex(text).ok()?;
+                                let program = parser::parse(&tokens).ok()?;
+                                let bindings = crate::infer::infer_program(&program);
+                                bindings.get(&sym.name).cloned()
+                            });
+                        symbol_to_hover(&sym, inferred.as_ref())
+                    })
                     .unwrap_or(Value::Null);
                 self.send_response(output, id, result)?;
                 Ok(true)
@@ -574,10 +592,26 @@ fn is_id_continue_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Build an LSP `Hover` for a `Symbol`. The contents are markdown:
-/// a fenced code block summarising the declaration kind + name.
-fn symbol_to_hover(sym: &Symbol) -> Value {
-    let body = format!("```twe\n{} {}\n```", sym.kind.label(), sym.name);
+/// Build an LSP `Hover` for a `Symbol` with its inferred type
+/// (when known). Markdown content rendered as a fenced `twe`
+/// code block. When inference produced a useful type
+/// (anything but `Type::Unknown`), it's appended as `: type`
+/// so the user sees a complete declaration line.
+fn symbol_to_hover(sym: &Symbol, inferred: Option<&crate::types::Type>) -> Value {
+    let body = match inferred {
+        Some(t) if !t.is_unknown() => match sym.kind {
+            // Functions display the signature inline rather than
+            // `function name: function(...)`.
+            crate::lsp::SymbolKind::Function => {
+                format!("```twe\nfunction {} : {}\n```", sym.name, t)
+            }
+            crate::lsp::SymbolKind::Method => {
+                format!("```twe\nmethod {} : {}\n```", sym.name, t)
+            }
+            _ => format!("```twe\n{} {} : {}\n```", sym.kind.label(), sym.name, t),
+        },
+        _ => format!("```twe\n{} {}\n```", sym.kind.label(), sym.name),
+    };
     obj([(
         "contents",
         obj([
@@ -943,6 +977,67 @@ mod tests {
         assert_eq!(contents.get("kind").and_then(|v| v.as_str()), Some("markdown"));
         let body = contents.get("value").and_then(|v| v.as_str()).expect("value");
         assert!(body.contains("function greet"), "got: {body}");
+    }
+
+    // --- 4g: hover shows inferred type ---
+
+    #[test]
+    fn hover_includes_inferred_let_type() {
+        // `let n = 42` — hover on `n` (or any reference to it)
+        // should show its inferred type (`int`).
+        let text = "let n = 42\nprint(n)\n";
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":1,"character":6}}}"#;
+        let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
+        let hover_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("hover reply");
+        let v = json::parse(hover_reply).expect("parse");
+        let body = v
+            .get("result").unwrap()
+            .get("contents").unwrap()
+            .get("value").and_then(|s| s.as_str())
+            .expect("value");
+        // The body is markdown; it should contain the type.
+        assert!(body.contains("int"), "got: {body}");
+        assert!(body.contains("n"), "got: {body}");
+    }
+
+    #[test]
+    fn hover_includes_function_signature() {
+        // `function add(a, b): return a + b` — hover on `add`
+        // should show `function(int, int) -> int` from inference.
+        let text = "function add(a, b):\n    return a + b\n\nlet r = add(1, 2)\n";
+        // Cursor on the call-site `add` at line 3, col 8.
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":3,"character":9}}}"#;
+        let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
+        let hover_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("hover reply");
+        let v = json::parse(hover_reply).expect("parse");
+        let body = v
+            .get("result").unwrap()
+            .get("contents").unwrap()
+            .get("value").and_then(|s| s.as_str())
+            .expect("value");
+        assert!(body.contains("function(int, int) -> int"), "got: {body}");
+    }
+
+    #[test]
+    fn hover_falls_back_when_type_unknown() {
+        // A name with an unresolvable type should still produce
+        // a hover (just without the `: type` suffix). Use an
+        // ident referencing a non-existent name so inference
+        // returns Unknown.
+        let text = "let mystery = unresolved_thing\nprint(mystery)\n";
+        let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":1,"character":7}}}"#;
+        let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
+        let hover_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("hover reply");
+        let v = json::parse(hover_reply).expect("parse");
+        let body = v
+            .get("result").unwrap()
+            .get("contents").unwrap()
+            .get("value").and_then(|s| s.as_str())
+            .expect("value");
+        assert!(body.contains("mystery"), "got: {body}");
+        // Unknown shouldn't render as `: ?` — when the type is
+        // useless, we drop the type clause entirely.
+        assert!(!body.contains(": ?"), "got: {body}");
     }
 
     #[test]
