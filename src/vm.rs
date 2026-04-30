@@ -130,6 +130,14 @@ pub struct VM {
     /// Top-level `on update(dt):` handler. Fires once per
     /// `tick(dt)` before the scene tick.
     on_update: Option<Rc<BcFunction>>,
+    /// v0.2 session 7: when dispatch is currently inside (or
+    /// descended from) a state.on_entry call, this is the index
+    /// in `self.frames` of the state-entry frame. None
+    /// otherwise. `OP_WAIT` uses it to know how much of the call
+    /// stack to capture for the multi-frame fiber save; the
+    /// runtime gate ("wait outside state on_entry is an error")
+    /// also keys off this.
+    state_entry_frame_depth: Option<usize>,
     /// Captured `print` output, mirroring `Env::out` from the tree
     /// walker so test harnesses can compare them.
     pub out: String,
@@ -174,6 +182,7 @@ impl VM {
             active_entities: Vec::new(),
             transitioning: None,
             on_update: None,
+            state_entry_frame_depth: None,
             out: String::new(),
         }
     }
@@ -342,15 +351,13 @@ impl VM {
                     reload!();
                 }
                 OpCode::Wait => {
-                    // Phase 5 fibers + v0.2 session 2c. Pop the
-                    // duration value, save the resume IP + chunk
-                    // + value-stack slice + remaining wait time
-                    // on the active scene's BcInstance, then
-                    // collapse the current frame as `Return`
-                    // does (with synthetic Nil). `tick_scene`
-                    // resumes the chunk from the saved IP — and
-                    // restores the saved locals — once
-                    // `entry_wait_remaining` reaches zero.
+                    // Phase 5 fibers + v0.2 sessions 2c + 7. Pop
+                    // the duration value, save the *entire* frame
+                    // chain from the state-entry frame down to
+                    // the current top, plus the value-stack slice
+                    // covering all those frames' locals. Then
+                    // collapse all those frames back to before the
+                    // state-entry call, returning Nil.
                     sync_ip!();
                     let dur = self.pop()?;
                     let secs = wait_duration_to_seconds(&dur, line)?;
@@ -362,30 +369,53 @@ impl VM {
                             "`wait` only fires from inside a state's on_entry body, which executes under an active scene".to_string(),
                         ),
                     })?;
-                    let frame = self.frames.pop().expect("frame to suspend on wait");
-                    // Save locals: slot 0 is the receiver
-                    // (re-pushed on resume from `scene.clone()`),
-                    // so slots `slot_base + 1` upward are the
-                    // user-visible locals. Without this the
-                    // wait would lose anything declared in the
-                    // body (`var i = 0` before a `while` — see
-                    // `vm_wait_inside_while_in_state_body_resumes`).
-                    let locals_start = frame.slot_base + 1;
-                    let saved_locals: Vec<Value> = if locals_start <= self.stack.len() {
-                        self.stack[locals_start..].to_vec()
-                    } else {
-                        Vec::new()
-                    };
+                    let entry_depth = self
+                        .state_entry_frame_depth
+                        .ok_or_else(|| RuntimeError {
+                            line,
+                            col: 0,
+                            message:
+                                "`wait` is only valid in a state's on_entry body or a function called from there"
+                                    .to_string(),
+                            help: Some(
+                                "wait fires from a fiber rooted in `state <name>:`'s on_entry; calls from on_update / every / top-level can't suspend"
+                                    .to_string(),
+                            ),
+                        })?;
+
+                    // sync_ip wrote the current frame's `ip` back
+                    // into self.frames[len-1]. That ip is one byte
+                    // past OP_WAIT — exactly where resume should
+                    // continue. The remaining frames already carry
+                    // their own ip values from the OP_CALL that
+                    // pushed them.
+                    let bottom_slot_base = self.frames[entry_depth].slot_base;
+                    let mut saved_frames: Vec<crate::bytecode::BcFiberFrame> =
+                        Vec::with_capacity(self.frames.len() - entry_depth);
+                    for f in self.frames.iter().skip(entry_depth) {
+                        saved_frames.push(crate::bytecode::BcFiberFrame {
+                            function: Rc::clone(&f.function),
+                            ip: f.ip,
+                            slot_base_offset: f.slot_base - bottom_slot_base,
+                        });
+                    }
+                    let saved_stack: Vec<Value> =
+                        self.stack[bottom_slot_base..].to_vec();
+
                     {
                         let mut inst = scene.borrow_mut();
-                        inst.entry_resume_function = Some(Rc::clone(&frame.function));
-                        // `ip` was advanced past the OP_WAIT byte; resume
-                        // at exactly that point next frame.
-                        inst.entry_resume_ip = Some(ip);
+                        inst.fiber_frames = saved_frames;
+                        inst.fiber_stack = saved_stack;
                         inst.entry_wait_remaining = secs;
-                        inst.entry_resume_locals = saved_locals;
                     }
-                    self.stack.truncate(frame.slot_base);
+
+                    // Collapse: drop the frames + stack region the
+                    // fiber owned, then leave a synthetic Nil for
+                    // the caller of the state-entry's invoke (which
+                    // expects a return value).
+                    self.frames.truncate(entry_depth);
+                    self.stack.truncate(bottom_slot_base);
+                    self.state_entry_frame_depth = None;
                     if self.frames.len() < target_depth {
                         self.push(Value::Nil);
                         return Ok(Value::Nil);
@@ -1185,14 +1215,13 @@ impl VM {
         scene: &Rc<RefCell<BcInstance>>,
         dt: f64,
     ) -> Result<(), RuntimeError> {
-        // Phase 5 fibers: if on_entry is suspended, count down by
-        // dt. Either keep waiting (skip the rest of this state's
-        // tick — the state is "asleep") or resume the saved chunk
-        // from the saved IP. Mirrors `eval::tick_scene`'s leading
-        // resume-or-skip block.
+        // Phase 5 fibers + v0.2 sessions 2c + 7: if the fiber
+        // is suspended, count down by dt and either keep waiting
+        // or resume the entire saved frame stack. Mirrors
+        // `eval::tick_scene`'s leading resume-or-skip block.
         let resume_pending = {
             let inst = scene.borrow();
-            inst.entry_resume_ip.is_some()
+            !inst.fiber_frames.is_empty()
         };
         if resume_pending {
             let new_remaining = scene.borrow().entry_wait_remaining - dt;
@@ -1205,10 +1234,10 @@ impl VM {
                 return self.enter_state(scene, &target);
             }
             // Resuming may have hit another `wait` — the
-            // BcInstance now carries fresh resume state. Bail
+            // BcInstance now carries fresh fiber_frames. Bail
             // out of the rest of this tick (clocks + on_update
             // stay paused while suspended).
-            if scene.borrow().entry_resume_ip.is_some() {
+            if !scene.borrow().fiber_frames.is_empty() {
                 return Ok(());
             }
         }
@@ -1359,13 +1388,13 @@ impl VM {
             inst.current_state = Some(state.name.clone());
             inst.every_timers = vec![0.0; state.every_clocks.len()];
             inst.every_intervals_secs = state.every_clocks.iter().map(|(s, _)| *s).collect();
-            // Phase 5 fibers: clear any stale resume state from the
-            // previous state. Entering a state always restarts its
-            // on_entry from the top.
-            inst.entry_resume_function = None;
-            inst.entry_resume_ip = None;
+            // Phase 5 fibers + v0.2 sessions 2c + 7: clear any
+            // stale resume state from the previous state.
+            // Entering a state always restarts its on_entry from
+            // the top.
+            inst.fiber_frames.clear();
+            inst.fiber_stack.clear();
             inst.entry_wait_remaining = 0.0;
-            inst.entry_resume_locals.clear();
             // Phase 5 task 4: reset predicate edge state. Initial
             // value is `false` so a predicate already true on the
             // first tick fires immediately (matches the
@@ -1373,70 +1402,95 @@ impl VM {
             inst.predicate_last_values = vec![false; state.on_predicates.len()];
         }
         // Run on_entry. A transition inside the body cascades. A
-        // `wait` inside the body emits OP_WAIT, which collapses the
-        // call frame after writing resume state to the BcInstance —
-        // `invoke_method_value` returns Nil and we fall through.
-        self.invoke_method_value(
+        // `wait` inside the body emits OP_WAIT, which collapses
+        // every frame from the on_entry frame down — see
+        // `OpCode::Wait` for the multi-frame save. `invoke_method_value`
+        // returns Nil and we fall through.
+        //
+        // v0.2 session 7: track the on_entry frame's depth so
+        // OP_WAIT knows how much of the call stack to capture.
+        // The bottom of the fiber is `self.frames.len()` *before*
+        // the invoke pushes the on_entry frame.
+        let prev_entry_depth = self.state_entry_frame_depth.replace(self.frames.len());
+        let result = self.invoke_method_value(
             state.on_entry.clone(),
             Value::BcInstance(scene.clone()),
             &[],
-        )?;
+        );
+        // Restore the previous tracker. Whether the invoke
+        // returned, errored, or suspended (and OP_WAIT cleared
+        // it to None), the caller's slot is what should be live
+        // afterward.
+        self.state_entry_frame_depth = prev_entry_depth;
+        result?;
         if let Some(next) = self.transitioning.take() {
             return self.enter_state(scene, &next);
         }
         Ok(())
     }
 
-    /// Resume a state's on_entry from where an `OP_WAIT` suspended
-    /// it. Pushes a fresh frame for the saved chunk, sets its IP to
-    /// the saved value (one byte past the OP_WAIT), and dispatches
-    /// until the chunk returns or hits another wait. `slot_base` is
-    /// the receiver slot — `self` (the BcInstance) is pushed at
-    /// that position so `OP_GET_LOCAL 0` resolves correctly during
-    /// the resumed body.
+    /// Resume a fiber from where `OP_WAIT` suspended it. Replays
+    /// the entire saved frame stack (state-entry + any function
+    /// calls suspended above it) and the saved value-stack slice,
+    /// then dispatches until the fiber returns to top or hits
+    /// another wait. v0.2 session 7 (was single-frame in 2c).
     fn resume_state_entry(
         &mut self,
         scene: &Rc<RefCell<BcInstance>>,
     ) -> Result<(), RuntimeError> {
-        let (function, resume_ip, locals) = {
+        let (saved_frames, saved_stack) = {
             let mut inst = scene.borrow_mut();
-            let func = inst.entry_resume_function.take().ok_or_else(|| RuntimeError {
-                line: 0,
-                col: 0,
-                message: "vm: resume_state_entry called without a saved chunk".to_string(),
-                help: None,
-            })?;
-            let ip = inst.entry_resume_ip.take().unwrap_or(0);
+            if inst.fiber_frames.is_empty() {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: "vm: resume_state_entry called without a saved fiber"
+                        .to_string(),
+                    help: None,
+                });
+            }
+            let frames = std::mem::take(&mut inst.fiber_frames);
+            let stack = std::mem::take(&mut inst.fiber_stack);
             inst.entry_wait_remaining = 0.0;
-            let locals = std::mem::take(&mut inst.entry_resume_locals);
-            (func, ip, locals)
+            (frames, stack)
         };
-        let recv_idx = self.stack.len();
-        self.stack.push(Value::BcInstance(scene.clone()));
-        // v0.2 session 2c: restore the saved local-stack slice so
-        // values declared before the suspension (`var i = 0`,
-        // function args, etc.) read correctly when the resumed
-        // chunk hits `OP_GET_LOCAL`.
-        for v in locals {
-            self.stack.push(v);
-        }
-        let target_depth = self.frames.len();
-        if self.frames.len() >= FRAMES_MAX {
+
+        // Re-push the saved value-stack slice. The slice's
+        // bottom is the on_entry frame's slot_base; everything
+        // above is locals + temporaries across all suspended
+        // frames.
+        let new_bottom = self.stack.len();
+        self.stack.extend(saved_stack);
+
+        // Re-push each saved frame, recovering the absolute
+        // slot_base by adding `slot_base_offset` to the new
+        // bottom.
+        if self.frames.len() + saved_frames.len() > FRAMES_MAX {
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: "stack overflow".to_string(),
                 help: Some(format!(
-                    "call stack exceeded {FRAMES_MAX} frames during state-entry resume"
+                    "call stack exceeded {FRAMES_MAX} frames during fiber resume"
                 )),
             });
         }
-        self.frames.push(CallFrame {
-            function,
-            ip: resume_ip,
-            slot_base: recv_idx,
-        });
-        let _result = self.dispatch(target_depth + 1)?;
+        let target_depth = self.frames.len();
+        for f in saved_frames {
+            self.frames.push(CallFrame {
+                function: f.function,
+                ip: f.ip,
+                slot_base: new_bottom + f.slot_base_offset,
+            });
+        }
+
+        // Track the bottom-of-fiber depth so a deeper OP_WAIT can
+        // suspend correctly. The on_entry frame is at
+        // `target_depth` in self.frames after we pushed.
+        let prev_entry_depth = self.state_entry_frame_depth.replace(target_depth);
+        let result = self.dispatch(target_depth + 1);
+        self.state_entry_frame_depth = prev_entry_depth;
+        let _ = result?;
         // dispatch() left the result on top; pop it so the stack stays clean.
         self.stack.pop();
         Ok(())
@@ -2123,10 +2177,9 @@ fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
         despawned: false,
-        entry_resume_function: None,
-        entry_resume_ip: None,
+        fiber_frames: Vec::new(),
+        fiber_stack: Vec::new(),
         entry_wait_remaining: 0.0,
-        entry_resume_locals: Vec::new(),
         predicate_last_values: Vec::new(),
     })))
 }
@@ -3048,6 +3101,20 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// Run + return the runtime-error message. Panics if the
+    /// program runs to completion (the test wanted an error).
+    /// v0.2 session 7.
+    fn run_err(src: &str) -> String {
+        let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
+        let program = parser::parse(&tokens).expect("parse");
+        let chunk = crate::compiler::compile_program(&program).expect("compile");
+        let mut vm = VM::new();
+        match vm.run(&chunk) {
+            Ok(_) => panic!("expected a runtime error, got success"),
+            Err(e) => e.message,
+        }
+    }
+
     // --- Session 12: scenes + states + play loop ---
 
     /// Helper for tick-driven scene tests. Runs the top-level
@@ -3135,17 +3202,120 @@ mod tests {
     }
 
     #[test]
-    fn vm_wait_outside_state_body_is_a_compile_error() {
-        // `wait` inside a function body is still rejected by the
-        // bytecode compiler — function-body wait on the VM
-        // requires a multi-frame fiber save (deferred). The
-        // tree-walker (session 2b) supports this case.
+    fn vm_wait_outside_state_body_is_a_runtime_error() {
+        // v0.2 session 7: `wait` outside a state on_entry call
+        // chain is now a *runtime* error rather than a
+        // compile-time one. The compiler drops `allows_wait`
+        // because the multi-frame fiber save on `BcInstance`
+        // can support function-body wait — provided that
+        // function chain is rooted in a state's on_entry
+        // (`state_entry_frame_depth.is_some()` at OP_WAIT).
+        //
+        // Calling `pause()` from top-level (no scene) hits the
+        // OP_WAIT runtime check and surfaces the error there.
         let src = "function pause():\n    wait 0.5s\n\npause()\n";
-        let err = compile_err(src);
+        let err = run_err(src);
         assert!(
-            err.contains("`wait` is only supported")
-                || err.contains("wait is only supported"),
-            "expected wait-context error, got: {err}"
+            err.contains("active scene")
+                || err.contains("state's on_entry"),
+            "expected wait-context runtime error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn vm_wait_inside_function_called_from_state_entry_resumes() {
+        // v0.2 session 7: a function called from state on_entry
+        // can wait. The fiber stack on `BcInstance` saves both
+        // frames; resume replays them in order.
+        let src = concat!(
+            "function pause_then_log():\n",
+            "    print(\"pre-wait\")\n",
+            "    wait 0.1s\n",
+            "    print(\"post-wait\")\n",
+            "\n",
+            "scene Demo:\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        print(\"entry\")\n",
+            "        pause_then_log()\n",
+            "        print(\"after-call\")\n",
+        );
+        let out = run_program_frames(src, 2, 0.1).expect("ok");
+        assert_eq!(out, "entry\npre-wait\npost-wait\nafter-call\n");
+    }
+
+    #[test]
+    fn vm_wait_inside_function_inside_if_resumes() {
+        // Two-level nesting: function call sits inside an
+        // if-then. Two saved frames (state-entry + function),
+        // each with its own ip/slot_base.
+        let src = concat!(
+            "function nap(label):\n",
+            "    print(label)\n",
+            "    wait 0.1s\n",
+            "    print(label)\n",
+            "\n",
+            "scene Demo:\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        if true:\n",
+            "            print(\"inside-if\")\n",
+            "            nap(\"napping\")\n",
+            "        print(\"done\")\n",
+        );
+        let out = run_program_frames(src, 2, 0.1).expect("ok");
+        assert_eq!(
+            out,
+            "inside-if\nnapping\nnapping\ndone\n"
+        );
+    }
+
+    #[test]
+    fn vm_two_sequential_waiting_calls_run_in_order() {
+        let src = concat!(
+            "function step(label):\n",
+            "    print(label)\n",
+            "    wait 0.1s\n",
+            "    print(label)\n",
+            "\n",
+            "scene Demo:\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        step(\"first\")\n",
+            "        step(\"second\")\n",
+            "        print(\"done\")\n",
+        );
+        let out = run_program_frames(src, 3, 0.1).expect("ok");
+        assert_eq!(out, "first\nfirst\nsecond\nsecond\ndone\n");
+    }
+
+    #[test]
+    fn vm_function_calls_function_with_wait() {
+        // Three-frame fiber at suspension time. Resume drains
+        // outermost frame's continuation last (state-entry
+        // post-`outer()` runs only after the whole chain
+        // completes).
+        let src = concat!(
+            "function inner():\n",
+            "    print(\"inner-pre\")\n",
+            "    wait 0.1s\n",
+            "    print(\"inner-post\")\n",
+            "\n",
+            "function outer():\n",
+            "    print(\"outer-pre\")\n",
+            "    inner()\n",
+            "    print(\"outer-post\")\n",
+            "\n",
+            "scene Demo:\n",
+            "    initial: a\n",
+            "    state a:\n",
+            "        outer()\n",
+            "        print(\"done\")\n",
+        );
+        let out = run_program_frames(src, 2, 0.1).expect("ok");
+        assert_eq!(
+            out,
+            "outer-pre\ninner-pre\ninner-post\nouter-post\ndone\n"
         );
     }
 

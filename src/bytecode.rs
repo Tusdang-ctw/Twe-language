@@ -411,28 +411,46 @@ pub struct BcInstance {
     /// Set by `despawn self`; the runtime drops this instance from
     /// `VM::active_entities` at the end of the frame.
     pub despawned: bool,
-    /// Phase 5 fibers: when on_entry hits an `OP_WAIT`, the VM
-    /// records the active chunk + the resume IP here. Subsequent
-    /// `tick_scene` calls decrement `entry_wait_remaining` and
-    /// re-invoke the chunk from the saved IP when zero. `None` =
-    /// not suspended.
-    pub entry_resume_function: Option<Rc<BcFunction>>,
-    pub entry_resume_ip: Option<usize>,
+    /// v0.2 session 7: suspended-fiber call stack. Empty = not
+    /// suspended. Replaces the single `entry_resume_function` /
+    /// `entry_resume_ip` pair from Phase 5.
+    ///
+    /// `fiber_frames[0]` is always the state-entry call (so the
+    /// fiber stack is rooted in a `state.on_entry` body); deeper
+    /// entries are function calls suspended above it. On resume,
+    /// each frame's `slot_base_offset` is added to the new
+    /// bottom-of-fiber stack offset to recover the absolute
+    /// `slot_base`. v0.2 session 7.
+    pub fiber_frames: Vec<crate::bytecode::BcFiberFrame>,
+    /// Saved value-stack slice from the bottom-of-fiber's
+    /// slot_base to top at suspension. Re-pushed onto
+    /// `VM::stack` at resume so every frame's locals + temporaries
+    /// are intact. v0.2 session 7 (replaces the
+    /// single-frame `entry_resume_locals`; it now covers
+    /// every frame on the suspended fiber).
+    pub fiber_stack: Vec<Value>,
     pub entry_wait_remaining: f64,
-    /// v0.2 session 2c: saved value-stack slice for the
-    /// suspended frame, covering slots `slot_base + 1` through
-    /// the top (slot 0 is the receiver, re-pushed by resume).
-    /// Without this, locals declared inside the on_entry body
-    /// (e.g. `var i = 0` before a `while i < 3:` that contains
-    /// `wait`) are lost across the suspension. The single-frame
-    /// wait machinery from Phase 5 only worked when the frame
-    /// had no live locals at suspension time.
-    pub entry_resume_locals: Vec<Value>,
     /// Phase 5 task 4: parallel-indexed to the active state's
     /// `on_predicates`. Records the last evaluated truthiness so the
     /// VM can detect false → true transitions for edge-triggered
     /// firing. Reset on state entry.
     pub predicate_last_values: Vec<bool>,
+}
+
+/// One frame on a suspended bytecode-VM fiber. Mirrors the
+/// shape of `VM::CallFrame` but with a relative slot_base so
+/// the saved frames can be replayed at any later stack offset.
+/// v0.2 session 7.
+#[derive(Debug, Clone)]
+pub struct BcFiberFrame {
+    pub function: Rc<BcFunction>,
+    pub ip: usize,
+    /// Offset from the bottom-of-fiber slot_base. The
+    /// bottom-most frame always has `slot_base_offset = 0`;
+    /// deeper frames record where they sit relative to that
+    /// bottom (so resume can re-derive absolute slot_bases by
+    /// adding the new bottom).
+    pub slot_base_offset: usize,
 }
 
 /// Format a Chunk as a human-readable instruction listing. Mirrors

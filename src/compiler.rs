@@ -158,18 +158,6 @@ struct Frame {
     /// these fields.
     name: String,
     arity: u8,
-    /// v0.2 session 2c: `wait` is permitted (emits `OpCode::Wait`)
-    /// when this frame's body is a state's `on_entry` — including
-    /// `wait` reached recursively through nested `if` / `elif` /
-    /// `else` / `while` blocks. Set by `compile_on_entry`; false
-    /// for every other compiler frame (functions, methods, every
-    /// clocks, on_update, predicate hooks, scripts).
-    ///
-    /// Function-body `wait` on the VM remains deferred — it
-    /// requires a multi-frame save (`Vec<BcFiberFrame>` on
-    /// `BcInstance`) which is its own engineering pass. Tracked
-    /// in `notes/future-phases.md`.
-    allows_wait: bool,
 }
 
 impl Frame {
@@ -199,7 +187,6 @@ impl Frame {
             class_fields,
             name: name.into(),
             arity,
-            allows_wait: false,
         }
     }
 }
@@ -394,29 +381,17 @@ impl Compiler {
                 self.emit_expr(target)?;
                 self.frame_mut().chunk.write_op(OpCode::Despawn, *line);
             }
-            Stmt::Wait { duration, line, col } => {
-                // v0.2 session 2c: `wait` emits `OP_WAIT` whenever
-                // the enclosing frame allows it (`allows_wait`).
-                // `compile_on_entry` is the only thing that sets
-                // the flag, so `wait` only emits inside a state's
-                // on_entry body — including nested `if` / `elif`
-                // / `else` / `while` blocks (which stay in the
-                // same VM frame and are transparently resumable).
-                //
-                // Function bodies, every-clock bodies, on_update,
-                // and `for` bodies don't set the flag — function
-                // and for need a multi-frame save the VM doesn't
-                // yet do; every / on_update are fire-and-forget
-                // by design.
-                if !self.frame().allows_wait {
-                    return Err(CompileError {
-                        line: *line,
-                        col: *col,
-                        message:
-                            "`wait` is only supported inside a state's on_entry body (or its nested `if` / `while` blocks) on the bytecode VM; function-body wait is tree-walker-only for now (`--vm tree`)"
-                                .to_string(),
-                    });
-                }
+            Stmt::Wait { duration, line, .. } => {
+                // v0.2 session 7: always emit `OP_WAIT`, regardless
+                // of which compiler frame we're in. The runtime
+                // gates wait against `state_entry_frame_depth` —
+                // if a function with `wait` is called from outside
+                // a state on_entry context (top-level, on_update,
+                // every clock, etc.), the runtime errors with a
+                // clear message. This unlocks function-body
+                // `wait` matching the tree-walker (session 2b)
+                // and removes the brittle compile-time
+                // `allows_wait` flag.
                 if let Some(secs) = const_eval_seconds(duration) {
                     let idx = self.frame_mut().chunk.add_constant(Value::Float(secs));
                     self.frame_mut().chunk.write_op(OpCode::Constant, *line);
@@ -1551,44 +1526,22 @@ impl Compiler {
     }
 
     /// Compile a state's on_entry body as a method-shape
-    /// BcFunction. `wait` is permitted as a direct statement, and
-    /// — v0.2 session 2c — also inside nested `if` / `elif` /
-    /// `else` / `while` blocks. The frame's `allows_wait` flag
-    /// gates `emit_stmt`'s `Stmt::Wait` arm, which emits
-    /// `OP_WAIT` rather than erroring. The VM's existing
-    /// single-frame save / resume handles within-frame
-    /// suspensions transparently — nested control flow stays in
-    /// the same VM frame, so no runtime change is needed.
-    ///
-    /// Function-body wait remains deferred on the VM: a function
-    /// call would push a NEW frame, and the current `OP_WAIT`
-    /// only saves one frame's `(chunk, IP)`. Multi-frame save
-    /// (`Vec<BcFiberFrame>` on `BcInstance`) is its own session.
+    /// BcFunction. Identical structure to `compile_state_body`;
+    /// the `wait`-allowance gate that used to live here moved to
+    /// the runtime in v0.2 session 7 (the VM checks
+    /// `state_entry_frame_depth` at OP_WAIT). This function
+    /// stays separate to make the call-site intent obvious and
+    /// to leave a hook for future on_entry-specific work
+    /// (e.g. `on enter:` / `on exit:` hooks).
     fn compile_on_entry(
         &mut self,
         name: &str,
         body: &[Stmt],
         class_fields: Rc<HashSet<String>>,
         line: u32,
-        _col: u32,
+        col: u32,
     ) -> Result<BcFunction, CompileError> {
-        let mut frame = Frame::with_method(
-            FrameKind::Function,
-            name,
-            0,
-            true,
-            Some(class_fields),
-        );
-        frame.allows_wait = true;
-        self.frames.push(frame);
-        for stmt in body {
-            self.emit_stmt(stmt)?;
-        }
-        let last_line = body.last().map(stmt_line).unwrap_or(line);
-        self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
-        self.frame_mut().chunk.write_op(OpCode::Return, last_line);
-        let frame = self.frames.pop().expect("on_entry frame we just pushed");
-        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+        self.compile_state_body(name, body, class_fields, line, col)
     }
 
     /// Compile a state-scoped body (on_entry, every-clock body,

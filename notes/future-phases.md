@@ -348,6 +348,20 @@ note.
       parser pass. `examples/tilemap_demo.twe` demonstrates the
       slide-along-walls collision pattern via `tilemap_solid_at`.
       See `docs/changes/2026-04-30-v0.2-session-6-tilemap.md`.
+- [x] **Session 7 — VM function-body `wait`** (2026-04-30).
+      Reifies the bytecode VM's call stack on `OP_WAIT`:
+      `BcInstance` gains `fiber_frames: Vec<BcFiberFrame>` +
+      `fiber_stack: Vec<Value>` (replaces single-frame
+      `entry_resume_*`). VM tracks `state_entry_frame_depth`
+      so OP_WAIT knows how many frames to capture; resume
+      replays them in order. Compiler drops the
+      `Frame::allows_wait` flag — runtime gate at
+      `state_entry_frame_depth` replaces compile-time
+      rejection. VM now matches the tree-walker's
+      function-body wait surface (session 2b). Method-body
+      wait, call-as-expression wait, and `for`-body wait
+      remain follow-ons on both backends.
+      See `docs/changes/2026-04-30-v0.2-session-7-vm-function-body-wait.md`.
 
 ## Triage backlog
 
