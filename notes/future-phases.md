@@ -362,6 +362,17 @@ note.
       wait, call-as-expression wait, and `for`-body wait
       remain follow-ons on both backends.
       See `docs/changes/2026-04-30-v0.2-session-7-vm-function-body-wait.md`.
+- [~] **Phase 8.5 — NaN tagging + tracing GC** (2026-04-30,
+      design only). 9-session migration sequenced in
+      `docs/08-nan-tagging.md`. Pulled out of Phase 8's
+      close-out because the implementation is a 4–8 week
+      multi-session push (746 `Value::` sites across the
+      codebase, including 3000-line eval.rs and 3766-line vm.rs).
+      Phase 8 is otherwise substantively complete; Phase 8.5
+      is its own active phase to start in a fresh dedicated
+      session. Exit criterion (per `docs/05-roadmap.md`):
+      ≥3× speedup on `cargo bench` vs. pre-tag VM, plus
+      collected-cycle test (`obj.field = obj`).
 
 ## Triage backlog
 

@@ -1,0 +1,302 @@
+# Doc 08 — NaN-Tagged Values + Tracing GC
+
+> Design doc for the runtime-representation overhaul scheduled in v0.2 (Phase 8) and currently the last open Phase-8 line item. Authoring this design before the implementation phase so each migration session has a concrete byte layout + sequencing plan to work against.
+>
+> **Status:** design complete; implementation is its own multi-session push, planned as Phase 8.5 (numbered separately to make the size honest).
+
+---
+
+## Why now
+
+Per `CLAUDE.md` line 52, NaN-tagged 64-bit values have been a "locked decision" since the earliest design phases. They've been deferred since Phase 3's closeout (see `docs/changes/2026-04-29-phase-3-and-4-closeout.md`). The v0.2-v1.0 roadmap (`docs/05-roadmap.md` Phase 8) pulled them forward from the original v0.5 slot because *every* phase that ships first has to be re-validated after — value-representation churn pays back over every later phase.
+
+The Phase 8 plan-agent review (during the v1.0 roadmap session) flagged this explicitly: "NaN tagging is currently the single most-deferred Phase-3 item per `notes/future-phases.md` lines 362–369; it's already overdue."
+
+The honest constraint: it's been deferred this long because it's *expensive* to do correctly. 746 `Value::` pattern-match / construction sites across the codebase, two big files (`src/eval.rs` 3000 lines, `src/vm.rs` 3766 lines), and every code path touches the Value type. The migration is staged here.
+
+---
+
+## What "NaN tagging" means
+
+Per *Crafting Interpreters* Chapter 30 — the canonical reference, already cited in `CLAUDE.md` §"Always-available references":
+
+A 64-bit IEEE 754 double has a sign bit, an 11-bit exponent, and a 52-bit mantissa. NaN is encoded as "all 11 exponent bits set + at least one mantissa bit set." Any specific NaN bit pattern works as a tag — the FPU can't distinguish them, and we don't normally see NaNs in game scripts.
+
+That gives us 51+ free bits inside any "this is a NaN" pattern. Tag the high mantissa bits to encode value type; use the rest for payload (small ints) or pointers (since modern CPUs only use 48 bits of address space).
+
+Twe's locked representation choice is one 64-bit slot per Value. Heap-allocated values (strings, lists, objects, etc.) live behind tagged pointers; immediate values (Nil, Bool, Int, Float) live inline.
+
+---
+
+## Twe's value tag layout
+
+```
+high  ........  low
+SXXX XXXX XXXX QTTT  PPPP PPPP PPPP PPPP  PPPP PPPP PPPP PPPP  PPPP PPPP PPPP PPPP
+
+S      = sign bit (also used by some tags)
+XXXXXXXXXXX = 11-bit exponent (all 1s for NaN)
+Q      = QNaN bit (always 1 for our tagged NaNs; quiet-NaN flag)
+TTT    = 3-bit type tag (8 type slots)
+PPPP... = 48-bit payload
+```
+
+Type tag values (3 bits):
+
+| Tag | Type     | Payload                         |
+|-----|----------|---------------------------------|
+| 000 | Nil      | unused                          |
+| 001 | Bool     | low bit of payload = false/true |
+| 010 | Int      | i48 (sign-extended on read)     |
+| 011 | Percent  | f48 fixed-point (24.24)         |
+| 100 | StrPtr   | ptr to `Rc<String>`             |
+| 101 | ObjPtr   | ptr to a heap-allocated record (List, Tuple, Object, Instance, BcInstance, Quantity, Range, Function, BcFunction, Class, BcClass, Builtin) |
+| 110 | reserved | (future: smallfloat32?)         |
+| 111 | reserved | (future: builtin-id immediate?) |
+
+Float values (any non-NaN f64) are stored as-is and recognized by their finite or normal-NaN bit pattern. The fast path: `is_double = (bits & QNAN_MASK) != QNAN_MASK || (tag bits == 0)`.
+
+For ObjPtr, the heap object's first word is a *type header* carrying the actual variant (List vs Tuple vs Object vs ...) plus GC mark bits. This pushes the type-tag work from the value-stack into the heap, but lets the value-slot tag stay 3 bits.
+
+### Smallint cutoff
+
+i48 covers the range `[-2^47, 2^47 − 1]` — about ±140 trillion. Wider than any game-sensible integer. *But* the Twe surface promises `i64` ints. Two options:
+
+1. **Box overflowing ints** behind ObjPtr → `Rc<i64>`. Slow path for big numbers; transparent.
+2. **Promote to f64** when an arithmetic op would overflow i48. Loses exactness past 2^53.
+
+**Recommendation: box.** Game code rarely uses ints past 2^47; the boxed slow path almost never fires. Documents `int` as i48-fast / i64-correct in `docs/02-type-system.md`.
+
+### Quantity, Range, Tuple, List, Object, Instance, etc.
+
+All ObjPtr-tagged. Each heap object is `Rc<HeapObject>` where:
+
+```rust
+struct HeapObject {
+    header: HeapHeader,
+    body: HeapBody,
+}
+
+enum HeapBody {
+    String(String),
+    List(RefCell<Vec<TaggedValue>>),
+    Tuple(Vec<TaggedValue>),
+    Object(RefCell<HashMap<String, TaggedValue>>, &'static str),
+    Instance(RefCell<Instance>),
+    BcInstance(RefCell<BcInstance>),
+    Quantity { value: f64, unit: Rc<String> },
+    Range { start: i64, end: i64, exclusive: bool },
+    Function(Rc<FunctionDef>),
+    BcFunction(Rc<BcFunction>),
+    Class(Rc<ClassDef>),
+    BcClass(Rc<BcClassDef>),
+    Builtin { name: &'static str, params: &'static [&'static str], func: BuiltinFn },
+}
+
+struct HeapHeader {
+    mark: AtomicU8,    // GC mark bit + 7-bit reserved
+    body_kind: u8,     // discriminator for HeapBody (debug + cache-warm)
+}
+```
+
+The `enum HeapBody` is a discriminated tag duplicating `body_kind`, kept aligned so debugging tools can verify either field independently. Production builds compile out the duplicate.
+
+---
+
+## API shape
+
+```rust
+pub struct TaggedValue(u64);
+
+impl TaggedValue {
+    pub const NIL: Self = Self(/* ... */);
+    pub const TRUE: Self = Self(/* ... */);
+    pub const FALSE: Self = Self(/* ... */);
+
+    // Constructors
+    pub fn from_int(i: i64) -> Self;
+    pub fn from_float(f: f64) -> Self;
+    pub fn from_str(s: Rc<String>) -> Self;
+    pub fn from_obj(o: Rc<HeapObject>) -> Self;
+    pub fn from_bool(b: bool) -> Self;
+
+    // Type predicates
+    pub fn is_nil(&self) -> bool;
+    pub fn is_bool(&self) -> bool;
+    pub fn is_int(&self) -> bool;
+    pub fn is_float(&self) -> bool;
+    pub fn is_number(&self) -> bool;  // int OR float
+    pub fn is_str(&self) -> bool;
+    pub fn is_obj(&self) -> bool;
+
+    // Extractors (panic if wrong type — callers test first)
+    pub fn as_int(&self) -> i64;
+    pub fn as_float(&self) -> f64;
+    pub fn as_bool(&self) -> bool;
+    pub fn as_str(&self) -> Rc<String>;
+    pub fn as_obj(&self) -> Rc<HeapObject>;
+
+    // Compatibility shim during migration
+    pub fn to_legacy(&self) -> crate::value::Value;
+    pub fn from_legacy(v: &crate::value::Value) -> Self;
+}
+```
+
+The `to_legacy` / `from_legacy` shim is the migration's load-bearing piece: it lets sites convert at the boundary while the interior keeps using the old `Value` enum. As migration progresses, conversions shrink to the actual interpreter boundaries; the shim eventually deletes.
+
+---
+
+## Tracing GC
+
+### Why a real GC at all?
+
+Twe currently uses `Rc<RefCell<...>>` everywhere. This is correct for the values we have (no cycles in well-formed Twe programs — instances reference classes but classes don't reference instances). But:
+
+1. **Refcount overhead** — every `clone()` is an atomic increment. The bytecode VM does this constantly; profiling Wren and Lua showed refcounting was a big part of dispatch cost.
+2. **Cycles are theoretically possible** — `instance.field = instance` builds one. Today this leaks; a tracing GC collects.
+3. **Pause budgets** — Roblox's Luau ships with an incremental tracing GC explicitly because per-frame Rc churn was unacceptable for game pacing.
+
+### Algorithm: incremental tri-color mark + sweep
+
+Per *Crafting Interpreters* §26 (the bytecode-VM GC chapter):
+
+- **White**: not-yet-marked. Sweep collects.
+- **Grey**: marked but not yet scanned for further references.
+- **Black**: marked + scanned.
+
+Steps per cycle:
+1. **Roots** — grey out: VM stack, globals, active scene, fiber frames + fiber stack on every BcInstance, env bindings on the tree-walker.
+2. **Process grey** — pop a grey object, mark black, mark each child grey.
+3. **Sweep** — walk every heap object, free whites, reset blacks → white for next cycle.
+
+**Incrementality**: split (1)+(2) across multiple frames using a fixed work-budget per call to `gc_step`. Steps (1) and (2) interleave with mutation, requiring a write barrier:
+
+```rust
+fn write_field(slot: &mut TaggedValue, new_value: TaggedValue) {
+    if is_black(slot) && is_white(new_value) {
+        gc_grey(new_value);  // protect against premature sweep
+    }
+    *slot = new_value;
+}
+```
+
+For v0.2 first cut: stop-the-world mark-sweep. Incremental version is a v0.3 optimization. The stop-the-world version is simple enough to ship alongside NaN tagging without doubling the migration cost.
+
+### Heap allocator
+
+Replace `Rc::new(...)` with a custom heap-managed `gc::alloc(...)` that:
+1. Bumps a free-list pointer.
+2. Threads the new allocation onto a "all heap objects" linked list (for sweep).
+3. Triggers `gc_full()` when allocation crosses a threshold.
+
+Existing `Rc<HeapObject>` semantics stay during migration (the shim still uses Rc); the swap to GC-allocated happens once every site is on TaggedValue.
+
+---
+
+## Migration sequencing
+
+This is the load-bearing part of the doc. NaN tagging + GC isn't one session; it's a phase. Each session ships a runnable artifact (per `CLAUDE.md` working contract).
+
+### Phase 8.5 — NaN tagging + tracing GC
+
+**Status:** planned. Each numbered session below maps to one commit + closeout note.
+
+#### Session 8a — TaggedValue module
+
+- New `src/tagged_value.rs` with `TaggedValue(u64)`, encode/decode, predicates, extractors.
+- Round-trip unit tests for every type.
+- `to_legacy` / `from_legacy` shim against the existing `Value` enum.
+- Module is unused by any existing code path. Standalone correctness.
+- *Ships a runnable artifact* via `cargo test`.
+
+#### Session 8b — Heap object header
+
+- `src/heap.rs` with `HeapObject { header, body }` + `HeapBody` enum.
+- `HeapObject::new(body)` constructor returns `Rc<HeapObject>` (Rc-managed during migration; will become GC-managed in 8e).
+- TaggedValue::from_obj / .as_obj wired against this.
+- Tests for round-trip Tuple, List, Object, Quantity through the heap path.
+
+#### Session 8c — VM migration
+
+- `src/vm.rs`: rewrite the value stack, the dispatch loop's pattern matches, and the OP_* handlers to use TaggedValue.
+- `BcInstance` stays on legacy Value internally for now (its fields are user-visible); `to_legacy` / `from_legacy` at the field-access boundary.
+- Every existing VM test must still pass.
+
+#### Session 8d — Tree-walker migration
+
+- `src/eval.rs`: same rewrite as VM. `Env::bindings` becomes `HashMap<String, TaggedValue>`.
+- `Instance::fields` migrates.
+- Every existing tree-walker test must still pass.
+
+#### Session 8e — Stdlib + save migration
+
+- `src/stdlib.rs` + `src/save.rs`: every `Value::` in builtins becomes `TaggedValue::*`.
+- This is the biggest churn (200+ sites in stdlib alone).
+
+#### Session 8f — Delete legacy Value
+
+- `src/value.rs`: remove `enum Value`. `Value` becomes a type alias for `TaggedValue` (or fully renamed).
+- Delete the `to_legacy` / `from_legacy` shim.
+- Strict-mode inferer uses TaggedValue type names in diagnostics.
+- 100% migration verified by zero `Value::` patterns outside `tagged_value.rs`.
+
+#### Session 8g — GC heap allocator
+
+- `src/heap.rs` gains `Heap { all_objects: *mut HeapObject, threshold: usize }`.
+- `Heap::alloc(body) -> *mut HeapObject` replaces `Rc::new`.
+- Linked-list of all heap objects for sweep walk.
+- Stop-the-world mark + sweep `Heap::collect(roots: &[TaggedValue])`.
+- Triggered from VM/eval at safepoints (between bytecode instructions in VM; between statements in eval).
+
+#### Session 8h — Roots wiring
+
+- VM: stack, globals, active_scene, every active_entity, every BcInstance's fiber_frames + fiber_stack.
+- Eval: env bindings, active_scene, active_entities, env.self_value, env.returning, every Instance's fiber_frames.
+- Each is a "scan this" callback registered with the GC.
+- Tests: cycle-detection (`obj.field = obj`) collects after one full GC cycle.
+
+#### Session 8i — Bench + tune
+
+- `cargo bench` survival-clone benchmark against pre-migration baseline.
+- Hard exit criterion from `docs/05-roadmap.md` Phase 8: 3× speedup vs. pre-tag VM. Tune until met.
+
+### Total estimated size
+
+- Sessions 8a / 8b: M each (couple hours of new-module work + tests).
+- Sessions 8c / 8d / 8e: L each (mechanical migration; tedious; high regression risk).
+- Sessions 8f / 8g / 8h / 8i: M / L / M / M.
+
+Realistic calendar time: **4–8 weeks of focused part-time work**, not "one session." `docs/05-roadmap.md` reflects this with the Phase 8 size marker XL.
+
+---
+
+## What's deferred from this design
+
+- **Generational GC** — young/old-generation split. Most game allocation is short-lived (per-frame temporaries); a generational collector would reduce GC pause time. But it doubles implementation complexity. Defer to v1.x.
+- **Concurrent GC** — collector running on a background thread. Twe's runtime is single-threaded by design (`CLAUDE.md` "What is locked"); concurrent GC would force concurrency into the VM. Off the v1.0 critical path.
+- **Compacting GC** — moves objects to defragment the heap. Pointer-tagging makes compacting hard (every pointer needs forwarding). Stop-the-world mark+sweep doesn't compact. Acceptable for v1.0.
+- **Smallfloat32 immediate** — could put a 32-bit float in a NaN-tagged value's payload. Saves heap allocation for f32-precision floats. Not worth the predicate overhead.
+- **String interning** — repeated string literals share one allocation. Tied to GC; ride a v1.x optimization phase.
+
+---
+
+## Risks
+
+1. **Regression from any of 8c–8e** is silent. A botched conversion that compiles+runs but produces subtly wrong results is the worst-case bug class. Mitigation: tight per-session test discipline; every session must keep 467+ tests passing and add at least one new test exercising the migrated path.
+
+2. **Performance regression before GC lands** (sessions 8c–8f). Removing Rc clone-counting but not yet having a real GC means temporarily leaking heap objects. Acceptable during a 4-8 week migration; flag if `cargo test` peak-memory grows beyond ~3× pre-migration.
+
+3. **Incremental marking complexity** if we change v0.2's stop-the-world plan to incremental mid-flight. Stay stop-the-world for v0.2; revisit v1.x.
+
+4. **Closure / fiber root scanning** is non-trivial — every `Vec<Frame>` (eval) and `Vec<BcFiberFrame>` (VM) on every Instance is a root path the collector must walk. Pin in session 8h with explicit tests.
+
+---
+
+## References
+
+- *Crafting Interpreters* Chapter 30 — NaN-tagged value layout (canonical).
+- *Crafting Interpreters* Chapter 26 — bytecode-VM GC.
+- Wren VM source `wren_value.h` — production NaN-tagging in a similar-shaped scripting language.
+- Luau's GC paper (`docs/04-reading-list.md`) — incremental tri-color mark + sweep at scale.
+- `docs/05-roadmap.md` Phase 8 — exit criteria reference (3× speedup vs pre-tag VM).
+- `notes/future-phases.md` "Triage backlog" — historical NaN-tagging deferrals.

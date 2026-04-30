@@ -275,7 +275,21 @@ Use case #1 from `README.md` ("2D systematic / RPG hybrid") drives prioritizatio
 
 ## Phase 8 — v0.2 — Foundations for shipping
 
-**Status:** in flight. Sessions 1 (`.glb` mesh import), 2a (resumable `if` / `while` blocks), 2b (function-body `wait` on tree-walker), and 2c (VM nested-block parity) shipped 2026-04-29 / 04-30. See `docs/changes/2026-04-29-v0.2-session-1-glb-import.md` and the 2a/2b/2c closeout notes.
+**Status:** substantively complete. Seven feature sessions shipped 2026-04-29 / 04-30:
+
+| # | Surface | Session note |
+|---|---------|--------------|
+| 1 | `.glb` mesh import | `docs/changes/2026-04-29-v0.2-session-1-glb-import.md` |
+| 2a | Resumable `if` / `while` blocks | `docs/changes/2026-04-29-v0.2-session-2a-resumable-blocks.md` |
+| 2b | Function-body `wait` on tree-walker | `docs/changes/2026-04-29-v0.2-session-2b-function-body-wait.md` |
+| 2c | VM nested-block wait parity | `docs/changes/2026-04-30-v0.2-session-2c-vm-wait-parity.md` |
+| 3 | Mouse input (both backends) | `docs/changes/2026-04-30-v0.2-session-3-mouse-input.md` |
+| 4 | Save / load bottom layer | `docs/changes/2026-04-30-v0.2-session-4-save-load-bottom.md` |
+| 5 | Audio v2 (volume + music + stop) | `docs/changes/2026-04-30-v0.2-session-5-audio-v2.md` |
+| 6 | Tilemap (stdlib-builtin form) | `docs/changes/2026-04-30-v0.2-session-6-tilemap.md` |
+| 7 | VM function-body `wait` (multi-frame fiber) | `docs/changes/2026-04-30-v0.2-session-7-vm-function-body-wait.md` |
+
+**Phase 8.5 — NaN tagging + tracing GC** breaks out as its own sub-phase per `docs/08-nan-tagging.md`. It's the last open Phase 8 line item but XL on its own (4–8 weeks of focused work, 9 sub-sessions 8a–8i). Sequenced separately because attempting it inside a single Phase 8 close-out would either skip GC entirely or break the migration.
 
 **Theme:** close the load-bearing gaps that block any real game from running at all. v0.2 is *not* about polish — it's about the absence of features that make a Survivors-class game impossible.
 
@@ -286,13 +300,46 @@ Use case #1 from `README.md` ("2D systematic / RPG hybrid") drives prioritizatio
 - Mouse input: `mouse.x`, `mouse.y`, `mouse_press.<button>`, `mouse_held.<button>`.
 - Function-body `wait` on the bytecode VM — multi-frame `Vec<BcFiberFrame>` save (the deferred half of session 2c; tree-walker already has it via session 2b).
 - Audio v2: `sound.play(handle, volume:, pitch:)`, `music.play(handle, loop:)`, mixer channels, fade-in / fade-out.
-- **NaN-tagged 64-bit values** (the `Crafting Interpreters` Ch. 30 representation) **+ incremental tracing GC**. Pulled forward from the original "Phase 11 — Performance" slot — value-representation churn pays back over every later phase, and it's been deferred since Phase 3.
+- **NaN-tagged 64-bit values + incremental tracing GC** — *deferred to Phase 8.5* per `docs/08-nan-tagging.md`. Sub-phase because the migration is genuinely 9 sessions of careful work; rolling it into Phase 8's close-out would either skip GC or break the migration.
+
+**Exit criteria** (Phase 8 proper):
+
+- Example 7 (save/load, layer 1) and Example 9 (tilemap, stdlib form) run on both backends. **Met** as of session 6 (tilemap) / session 4 (save).
+- Function-body `wait` works on both backends. **Met** as of session 7.
+- Mouse + audio v2 surfaces shipped. **Met** as of sessions 3 + 5.
+
+Phase 8.5 inherits the runtime perf criteria:
+
+- `cargo bench` shows ≥3× tree-walker speedup over the bytecode VM with NaN tagging vs. the pre-tag VM.
+- A 1k-entity 60fps stress test produces no visible GC pauses.
+
+---
+
+## Phase 8.5 — NaN tagging + tracing GC
+
+**Status:** designed (`docs/08-nan-tagging.md`); implementation is the next active engineering phase.
+
+**Theme:** rebuild the runtime value representation so the bytecode VM's hot loop isn't dominated by Rc-refcount churn, and so closing cycles (`obj.field = obj`) doesn't leak.
+
+**Components** (each its own session per `docs/08-nan-tagging.md` "Migration sequencing"):
+
+- 8a — `TaggedValue` module + encode/decode + round-trip tests.
+- 8b — `HeapObject` header + body discriminator.
+- 8c — VM migration: stack + dispatch + OP_* handlers.
+- 8d — Tree-walker migration: env + Instance fields.
+- 8e — Stdlib + save migration.
+- 8f — Delete legacy `Value` enum.
+- 8g — Heap allocator + stop-the-world mark + sweep.
+- 8h — Roots wiring (VM + eval + fiber frames).
+- 8i — Bench against pre-migration baseline; tune.
 
 **Exit criteria:**
 
-- Example 7 (save/load) and Example 9 (tilemap) run on both backends.
-- `cargo bench` shows ≥3× tree-walker speedup over the bytecode VM with NaN tagging vs. the pre-tag VM.
-- A 1k-entity 60fps stress test produces no visible GC pauses.
+- All 475+ existing tests pass against the new value layer.
+- A `tests/programs/cycle_collector.twe` program builds an `obj.field = obj` cycle and confirms it's collected after a `gc.full()` call.
+- `cargo bench` reports ≥3× speedup on the existing benchmarks vs. pre-tag VM.
+
+**Realistic calendar size:** 4–8 weeks of focused part-time work. Counted as "L" in the size table below and explicitly multi-session in `docs/08-nan-tagging.md`.
 
 ---
 
@@ -480,7 +527,8 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 5 — 3D + dialogue | (pre-v0.1) | L (closed at v0.1-min-viable) |
 | 6 — Tooling + docs | (pre-v0.1) | M (closed) |
 | 7 — Release engineering | v0.1 | M (active) |
-| 8 — Foundations for shipping | v0.2 | L (in flight) |
+| 8 — Foundations for shipping | v0.2 | L (substantively complete; 7 sessions shipped) |
+| 8.5 — NaN tagging + tracing GC | v0.2 (perf) | L (designed; 9-session migration ahead) |
 | 9 — Visuals + assets-for-UI | v0.3 | L |
 | 10 — UI + game-shell | v0.4 | M (parallel with 9) |
 | 11 — Production hardening | v0.5 | M |
