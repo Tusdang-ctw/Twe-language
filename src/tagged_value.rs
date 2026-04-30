@@ -76,25 +76,96 @@ const TAG_OBJ: u64 = 6 << TAG_SHIFT;
 /// for free.
 pub struct TaggedValue(u64);
 
-/// Heap-allocated body for any value too big to fit inline. The
-/// session 8a cut covers `String` only — full enum populates in
-/// session 8b alongside the rest of the migration.
+/// Heap-allocated body for any value too big to fit inline.
 ///
-/// **Session 8b adds:** `List(RefCell<Vec<TaggedValue>>)`,
-/// `Tuple(Vec<TaggedValue>)`,
-/// `Object(RefCell<HashMap<String, TaggedValue>>, &'static str)`,
-/// `Quantity { value: f64, unit: Rc<String> }`,
-/// `Range { start: i64, end: i64, exclusive: bool }`,
-/// `Function(Rc<crate::value::FunctionDef>)`, etc.
+/// Session 8a covered `String` only; session 8b expands to the
+/// commonly-used heap variants. **Function / BcFunction / Class /
+/// BcClass / Instance / BcInstance / Builtin defer to session
+/// 8c+** — those are tightly coupled to eval/vm and migrate
+/// alongside their callers (adding them now without migration
+/// would mean dead code).
+///
+/// `Vec`/`RefCell`/`Rc` collections currently hold legacy
+/// `crate::value::Value` rather than `TaggedValue`. Sessions
+/// 8c–8e change to `TaggedValue` interiors as their consumers
+/// migrate; for now this lets `from_legacy` / `to_legacy` shim
+/// without re-walking the entire collection on every conversion.
 #[derive(Debug)]
 pub enum HeapBody {
     String(String),
+    /// `i64` outside the i48 fast-path range. v0.2 Phase 8.5
+    /// session 8b — replaces session 8a's silent truncation.
+    BoxedInt(i64),
+    /// Twe-specific percent literal (`50%` → 0.5 stored). Tag
+    /// space is full at 6 of 8 (Float NaN / Nil / Bool ×2 / Int
+    /// / Str / Obj); promoting Percent to heap is the
+    /// least-cost route. Most game code uses Percent rarely.
+    Percent(f64),
+    /// Twe-specific dimensional quantity (`5kg`, `0.1s`).
+    Quantity {
+        value: f64,
+        unit: Rc<String>,
+    },
+    /// Numeric range literal (`0..10`, `0..=10`).
+    Range {
+        start: i64,
+        end: i64,
+        exclusive: bool,
+    },
+    /// Immutable tuple. Sessions 8c–8e migrate the inner
+    /// `Vec<crate::value::Value>` to `Vec<TaggedValue>`.
+    Tuple(Rc<Vec<crate::value::Value>>),
+    /// Mutable list. Same migration path as Tuple.
+    List(Rc<RefCell<Vec<crate::value::Value>>>),
+    /// Generic object — Twe stdlib's `key`, `mouse`, sprite/sound
+    /// handles, save-loaded data, etc. all use this.
+    Object(Rc<RefCell<crate::value::Object>>),
+    /// Class / Instance / BcClass / BcInstance / Function /
+    /// BcFunction / Builtin variants land in session 8c+
+    /// alongside their callers' migration. Holding them here
+    /// today without callers reading them would be dead code.
+    Reserved8c,
 }
 
-/// One heap object. The `body` field carries the actual data;
-/// session 8b adds a `header: HeapHeader` field with mark bits +
-/// body-kind discriminator. `RefCell` keeps mutation interior so
-/// `Rc<HeapObject>` is sufficient for now.
+/// Discriminator for `HeapBody` variants. Used by
+/// `TaggedValue::is_obj_body_kind` so callers can check "is this
+/// a List?" / "is this a Quantity?" without paying for a
+/// `with_obj_body` closure. v0.2 Phase 8.5 session 8b — also
+/// the seed of the `body_kind: u8` field that the GC's
+/// `HeapHeader` will carry in session 8g for per-body-type
+/// tracing dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeapBodyKind {
+    String,
+    BoxedInt,
+    Percent,
+    Quantity,
+    Range,
+    Tuple,
+    List,
+    Object,
+}
+
+impl HeapBodyKind {
+    pub fn of(body: &HeapBody) -> Self {
+        match body {
+            HeapBody::String(_) => Self::String,
+            HeapBody::BoxedInt(_) => Self::BoxedInt,
+            HeapBody::Percent(_) => Self::Percent,
+            HeapBody::Quantity { .. } => Self::Quantity,
+            HeapBody::Range { .. } => Self::Range,
+            HeapBody::Tuple(_) => Self::Tuple,
+            HeapBody::List(_) => Self::List,
+            HeapBody::Object(_) => Self::Object,
+            HeapBody::Reserved8c => panic!("HeapBody::Reserved8c is a placeholder; populate in session 8c"),
+        }
+    }
+}
+
+/// One heap object. `body` is the actual data; session 8g adds a
+/// `header: HeapHeader` field with mark bits + body-kind cache.
+/// `RefCell` keeps mutation interior so `Rc<HeapObject>` is
+/// sufficient for now (real GC allocator lands in 8g).
 #[derive(Debug)]
 pub struct HeapObject {
     pub body: RefCell<HeapBody>,
@@ -120,23 +191,19 @@ impl TaggedValue {
         }
     }
 
-    /// Encode an `i64`. Values outside `i48` are sign-clamped
-    /// at the boundary; reads always sign-extend the 48-bit
-    /// payload. v0.2 Phase 8.5 first cut: i48 fast path,
-    /// boxed-i64 fallback (deferred to a follow-on session — for
-    /// now, large ints lose precision).
-    ///
-    /// **TODO (session 8b+):** when the boxed-i64 path lands,
-    /// values outside i48 promote to a heap-allocated `i64`
-    /// behind `TAG_OBJ`. Until then this is lossy at the
-    /// extreme; assert in tests catches drift if a caller
-    /// accidentally relies on full i64 range.
+    /// Encode an `i64`. Values inside the i48 range take the
+    /// fast immediate path; values outside box to a
+    /// `HeapBody::BoxedInt`. v0.2 Phase 8.5 session 8b
+    /// (replaces 8a's silent truncation).
     pub fn from_int(n: i64) -> Self {
-        // Sign-extend i48 → i64 round-trip. We keep the low 48
-        // bits as the payload; sign extension on read recovers
-        // negative values correctly within i48 range.
-        let payload = (n as u64) & PAYLOAD_MASK;
-        Self(QNAN | TAG_INT | payload)
+        const I48_MAX: i64 = (1 << 47) - 1;
+        const I48_MIN: i64 = -(1 << 47);
+        if (I48_MIN..=I48_MAX).contains(&n) {
+            let payload = (n as u64) & PAYLOAD_MASK;
+            Self(QNAN | TAG_INT | payload)
+        } else {
+            Self::from_heap(HeapBody::BoxedInt(n))
+        }
     }
 
     /// Encode an `f64`. Canonicalizes NaN to a single bit pattern
@@ -172,6 +239,40 @@ impl TaggedValue {
     /// return that doesn't fit our infallible encoding.
     pub fn from_borrowed_str(s: &str) -> Self {
         Self::from_string(s.to_string())
+    }
+
+    /// Internal: heap-allocate any non-string `HeapBody` and
+    /// tag the pointer with `TAG_OBJ`. v0.2 Phase 8.5 session 8b.
+    fn from_heap(body: HeapBody) -> Self {
+        let rc = Rc::new(HeapObject {
+            body: RefCell::new(body),
+        });
+        let raw = Rc::into_raw(rc) as usize as u64;
+        Self(QNAN | TAG_OBJ | (raw & PAYLOAD_MASK))
+    }
+
+    pub fn from_percent(p: f64) -> Self {
+        Self::from_heap(HeapBody::Percent(p))
+    }
+
+    pub fn from_quantity(value: f64, unit: Rc<String>) -> Self {
+        Self::from_heap(HeapBody::Quantity { value, unit })
+    }
+
+    pub fn from_range(start: i64, end: i64, exclusive: bool) -> Self {
+        Self::from_heap(HeapBody::Range { start, end, exclusive })
+    }
+
+    pub fn from_tuple(elems: Rc<Vec<crate::value::Value>>) -> Self {
+        Self::from_heap(HeapBody::Tuple(elems))
+    }
+
+    pub fn from_list(elems: Rc<RefCell<Vec<crate::value::Value>>>) -> Self {
+        Self::from_heap(HeapBody::List(elems))
+    }
+
+    pub fn from_object(obj: Rc<RefCell<crate::value::Object>>) -> Self {
+        Self::from_heap(HeapBody::Object(obj))
     }
 }
 
@@ -227,17 +328,40 @@ impl TaggedValue {
         (self.0 & TAG_MASK) == TAG_TRUE
     }
 
+    /// Read an int-typed value, whether immediate (i48) or
+    /// boxed (i64). Callers should pre-test with
+    /// `is_int_or_boxed_int()` to know it's safe.
     pub fn as_int(&self) -> i64 {
-        debug_assert!(self.is_int(), "as_int on non-int");
-        // Sign-extend the 48-bit payload to i64.
-        let payload = self.0 & PAYLOAD_MASK;
-        // If the high payload bit (bit 47) is set, sign-extend
-        // by setting bits 63..48 to all 1s.
-        if payload & (1 << 47) != 0 {
-            (payload | !PAYLOAD_MASK) as i64
-        } else {
-            payload as i64
+        if self.is_int() {
+            // Sign-extend the 48-bit payload to i64.
+            let payload = self.0 & PAYLOAD_MASK;
+            return if payload & (1 << 47) != 0 {
+                (payload | !PAYLOAD_MASK) as i64
+            } else {
+                payload as i64
+            };
         }
+        if self.is_obj() {
+            return self.with_obj_body(|b| match b {
+                HeapBody::BoxedInt(n) => *n,
+                other => panic!("as_int on non-int heap body: {other:?}"),
+            });
+        }
+        panic!("as_int on non-int value")
+    }
+
+    /// True for either the i48 immediate path or the
+    /// `HeapBody::BoxedInt` variant. Callers that want "is this
+    /// an integer regardless of representation" should use this
+    /// rather than `is_int` (which is only the fast path).
+    pub fn is_int_or_boxed_int(&self) -> bool {
+        if self.is_int() {
+            return true;
+        }
+        if self.is_obj() {
+            return self.is_obj_body_kind(HeapBodyKind::BoxedInt);
+        }
+        false
     }
 
     pub fn as_float(&self) -> f64 {
@@ -248,12 +372,33 @@ impl TaggedValue {
     /// Returns a clone of the inner string. The `Rc<HeapObject>`
     /// stays in place; this is one allocation for the returned
     /// `String`. Callers that just need a `&str` should use
-    /// `with_str` (TODO session 8b+).
+    /// `with_str` (TODO session 8c+).
     pub fn as_string(&self) -> String {
         debug_assert!(self.is_str(), "as_string on non-string");
         self.with_heap_object(|obj| match &*obj.body.borrow() {
             HeapBody::String(s) => s.clone(),
+            other => panic!("as_string expected HeapBody::String, got {other:?}"),
         })
+    }
+
+    /// Inspect the heap body of an obj-tagged value. The closure
+    /// receives `&HeapBody`; matching out specific variants lets
+    /// callers extract `BoxedInt`, `Tuple`, etc. v0.2 Phase 8.5
+    /// session 8b.
+    pub fn with_obj_body<R>(&self, f: impl FnOnce(&HeapBody) -> R) -> R {
+        debug_assert!(self.is_obj(), "with_obj_body on non-obj");
+        self.with_heap_object(|obj| f(&obj.body.borrow()))
+    }
+
+    /// True when the obj-tagged value's body matches the given
+    /// `HeapBody` discriminant (variant, ignoring payload). v0.2
+    /// Phase 8.5 session 8b — convenience predicate so callers
+    /// don't have to write `with_obj_body(|b| matches!(b, ...))`.
+    pub fn is_obj_body_kind(&self, kind: HeapBodyKind) -> bool {
+        if !self.is_obj() {
+            return false;
+        }
+        self.with_obj_body(|b| HeapBodyKind::of(b) == kind)
     }
 
     /// Borrow the heap object behind a pointer-tagged value.
@@ -525,6 +670,141 @@ mod tests {
         assert!(!TaggedValue::NIL.is_number());
         assert!(!TaggedValue::from_bool(true).is_number());
         assert!(!TaggedValue::from_borrowed_str("x").is_number());
+    }
+
+    // --- v0.2 Phase 8.5 session 8b: heap-variant round-trips ---
+
+    #[test]
+    fn boxed_int_round_trip_above_i48() {
+        let big = (1_i64 << 47) + 5; // outside i48 fast path
+        let v = TaggedValue::from_int(big);
+        assert!(!v.is_int(), "above-i48 must take the boxed path");
+        assert!(v.is_int_or_boxed_int());
+        assert_eq!(v.as_int(), big);
+    }
+
+    #[test]
+    fn boxed_int_round_trip_below_i48() {
+        let small = -(1_i64 << 47) - 5;
+        let v = TaggedValue::from_int(small);
+        assert!(!v.is_int());
+        assert!(v.is_int_or_boxed_int());
+        assert_eq!(v.as_int(), small);
+    }
+
+    #[test]
+    fn percent_round_trip() {
+        let v = TaggedValue::from_percent(0.25);
+        assert!(v.is_obj());
+        assert!(v.is_obj_body_kind(HeapBodyKind::Percent));
+        v.with_obj_body(|b| match b {
+            HeapBody::Percent(p) => assert_eq!(*p, 0.25),
+            other => panic!("expected Percent, got {other:?}"),
+        });
+    }
+
+    #[test]
+    fn quantity_round_trip() {
+        let v = TaggedValue::from_quantity(5.0, Rc::new("kg".to_string()));
+        assert!(v.is_obj_body_kind(HeapBodyKind::Quantity));
+        v.with_obj_body(|b| match b {
+            HeapBody::Quantity { value, unit } => {
+                assert_eq!(*value, 5.0);
+                assert_eq!(&**unit, "kg");
+            }
+            other => panic!("expected Quantity, got {other:?}"),
+        });
+    }
+
+    #[test]
+    fn range_round_trip() {
+        let v = TaggedValue::from_range(0, 10, true);
+        assert!(v.is_obj_body_kind(HeapBodyKind::Range));
+        v.with_obj_body(|b| match b {
+            HeapBody::Range { start, end, exclusive } => {
+                assert_eq!(*start, 0);
+                assert_eq!(*end, 10);
+                assert!(*exclusive);
+            }
+            other => panic!("expected Range, got {other:?}"),
+        });
+    }
+
+    #[test]
+    fn tuple_round_trip_holds_legacy_values() {
+        use crate::value::Value;
+        let elems = Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let v = TaggedValue::from_tuple(elems);
+        assert!(v.is_obj_body_kind(HeapBodyKind::Tuple));
+        v.with_obj_body(|b| match b {
+            HeapBody::Tuple(rc) => {
+                assert_eq!(rc.len(), 3);
+                assert!(matches!(rc[0], Value::Int(1)));
+            }
+            other => panic!("expected Tuple, got {other:?}"),
+        });
+    }
+
+    #[test]
+    fn list_round_trip_holds_mutable_legacy_values() {
+        use crate::value::Value;
+        let inner = Rc::new(RefCell::new(vec![Value::Int(7), Value::Int(8)]));
+        let v = TaggedValue::from_list(inner.clone());
+        assert!(v.is_obj_body_kind(HeapBodyKind::List));
+        // Mutate through the original Rc; the TaggedValue should
+        // see the update because List shares the inner Rc.
+        inner.borrow_mut().push(Value::Int(9));
+        v.with_obj_body(|b| match b {
+            HeapBody::List(rc) => assert_eq!(rc.borrow().len(), 3),
+            other => panic!("expected List, got {other:?}"),
+        });
+    }
+
+    #[test]
+    fn object_round_trip_carries_kind_string() {
+        use std::collections::HashMap;
+        let mut fields = HashMap::new();
+        fields.insert("hp".to_string(), crate::value::Value::Int(100));
+        let obj = Rc::new(RefCell::new(crate::value::Object {
+            fields,
+            kind: "test",
+        }));
+        let v = TaggedValue::from_object(obj);
+        assert!(v.is_obj_body_kind(HeapBodyKind::Object));
+        v.with_obj_body(|b| match b {
+            HeapBody::Object(rc) => {
+                let o = rc.borrow();
+                assert_eq!(o.kind, "test");
+                assert!(matches!(o.fields.get("hp"), Some(crate::value::Value::Int(100))));
+            }
+            other => panic!("expected Object, got {other:?}"),
+        });
+    }
+
+    #[test]
+    fn heap_body_kind_classifies_each_variant() {
+        // Sanity: HeapBodyKind::of returns the matching kind
+        // for every populated HeapBody variant.
+        assert_eq!(
+            HeapBodyKind::of(&HeapBody::String(String::new())),
+            HeapBodyKind::String
+        );
+        assert_eq!(
+            HeapBodyKind::of(&HeapBody::BoxedInt(0)),
+            HeapBodyKind::BoxedInt
+        );
+        assert_eq!(
+            HeapBodyKind::of(&HeapBody::Percent(0.0)),
+            HeapBodyKind::Percent
+        );
+        assert_eq!(
+            HeapBodyKind::of(&HeapBody::Range {
+                start: 0,
+                end: 0,
+                exclusive: false
+            }),
+            HeapBodyKind::Range
+        );
     }
 
     #[test]

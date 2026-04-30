@@ -362,17 +362,29 @@ note.
       wait, call-as-expression wait, and `for`-body wait
       remain follow-ons on both backends.
       See `docs/changes/2026-04-30-v0.2-session-7-vm-function-body-wait.md`.
-- [~] **Phase 8.5 — NaN tagging + tracing GC** (2026-04-30,
-      design only). 9-session migration sequenced in
-      `docs/08-nan-tagging.md`. Pulled out of Phase 8's
-      close-out because the implementation is a 4–8 week
-      multi-session push (746 `Value::` sites across the
-      codebase, including 3000-line eval.rs and 3766-line vm.rs).
-      Phase 8 is otherwise substantively complete; Phase 8.5
-      is its own active phase to start in a fresh dedicated
-      session. Exit criterion (per `docs/05-roadmap.md`):
-      ≥3× speedup on `cargo bench` vs. pre-tag VM, plus
-      collected-cycle test (`obj.field = obj`).
+- [~] **Phase 8.5 — NaN tagging + tracing GC** (in progress).
+      9-session migration sequenced in `docs/08-nan-tagging.md`.
+      Sessions 8a + 8b shipped 2026-04-30:
+      - **8a — TaggedValue module** (`24b4621`):
+        standalone `src/tagged_value.rs` with bit layout +
+        encode/decode + manual Clone/Drop refcount management
+        for pointer-tagged variants. 13 round-trip unit tests.
+        Cargo.toml `unsafe_code` lint eased
+        `forbid` → `deny` so `#![allow(unsafe_code)]` can
+        scope to this one module.
+      - **8b — HeapBody expansion**:
+        BoxedInt + Percent + Quantity + Range + Tuple + List +
+        Object variants. `HeapBodyKind` discriminator for the
+        GC's mark-phase dispatch. Smallint overflow now boxes
+        (i48 fast path + i64 fallback). 9 new tests.
+      Sessions 8c–8i remain: VM migration (8c), tree-walker
+      migration (8d), stdlib + save migration (8e), legacy
+      Value deletion (8f), GC heap allocator (8g), roots
+      wiring (8h), bench + tune (8i). Each is a substantial
+      session; each ships a runnable artifact + closeout
+      note. Exit criterion: ≥3× speedup on `cargo bench` vs.
+      pre-tag VM, plus collected-cycle test
+      (`obj.field = obj`).
 
 ## Triage backlog
 
