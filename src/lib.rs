@@ -14,6 +14,7 @@ pub mod play3d;
 pub mod printer;
 pub mod save;
 pub mod stdlib;
+pub mod tagged_value;
 pub mod types;
 pub mod value;
 pub mod vm;

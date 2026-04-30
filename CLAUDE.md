@@ -59,7 +59,8 @@ These decisions are settled. Do not reopen them without an explicit user request
 - **Implementation language: Rust.** With a clean C ABI for embedding.
 - **Parser: hand-written recursive descent.** No parser generator. No PEG. No ANTLR.
 - **VM strategy: tree-walker for v0.1, bytecode VM for v0.3+.** Don't skip the tree-walker.
-- **Value representation: NaN-tagged 64-bit values** (in the bytecode VM). Follow *Crafting Interpreters* Chapter 30. **Lands in v0.2 (Phase 8)** per `docs/05-roadmap.md` — pulled forward from the original v0.5 slot because it's a value-representation change that pays back over every later phase.
+- **Value representation: NaN-tagged 64-bit values** (in the bytecode VM). Follow *Crafting Interpreters* Chapter 30. **Lands in Phase 8.5** per `docs/08-nan-tagging.md` — its own multi-session sub-phase pulled out of Phase 8's close-out because the migration is genuinely 9 sessions of careful work. Session 8a (2026-04-30) shipped the standalone `TaggedValue` module + round-trip tests; sessions 8b–8i wire it through the rest of the codebase.
+- **Unsafe scoping: `unsafe_code = "deny"` (NOT `"forbid"`) at the crate level**, with `#![allow(unsafe_code)]` scoped to `src/tagged_value.rs` only. Eased from `forbid` in Phase 8.5 session 8a because NaN-tagged pointer encoding requires `Rc::into_raw` / `Rc::from_raw` that Rust's safety model can't express in safe code. Every other module stays under the project-wide deny — adding `#![allow(unsafe_code)]` anywhere else needs an explicit roadmap entry.
 - **Concurrency: Wren-style cooperative fibers.** Single-threaded VM. No `async`/`await` distinction visible to the user.
 - **Indentation-based syntax**, no semicolons, no braces. Python/GDScript family.
 - **Six core declarative blocks for v0.1:** `entity`, `state`, `visual`, `particles`, `scene`, `dialogue`. Other forms (`item`, `inventory`, `ai`, `tilemap`, `save`) are stdlib patterns until they earn promotion.
