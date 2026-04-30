@@ -181,10 +181,75 @@ fn install_sound(env: &mut Env) {
             func: sound_play,
         },
     );
+    // v0.2 session 5: audio v2. Twe's calling convention requires
+    // every kwarg to be supplied (no defaults yet), so configurable
+    // plays get their own fixed-arity builtins rather than overloads
+    // on `sound.play`. Pitch is omitted — macroquad's quad-snd
+    // backend doesn't support it.
+    sound.insert(
+        "play_at".to_string(),
+        Value::Builtin {
+            name: "sound.play_at",
+            params: &["handle", "volume"],
+            func: sound_play_at,
+        },
+    );
+    sound.insert(
+        "stop".to_string(),
+        Value::Builtin {
+            name: "sound.stop",
+            params: &["handle"],
+            func: sound_stop,
+        },
+    );
+    sound.insert(
+        "set_volume".to_string(),
+        Value::Builtin {
+            name: "sound.set_volume",
+            params: &["handle", "volume"],
+            func: sound_set_volume,
+        },
+    );
     env.set(
         "sound".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
             fields: sound,
+            kind: "module",
+        }))),
+    );
+
+    // `music` namespace: same underlying handles, but the play
+    // primitives default to `looped = true`. Useful for BGM
+    // tracks that should restart at end-of-file.
+    let mut music = HashMap::new();
+    music.insert(
+        "play".to_string(),
+        Value::Builtin {
+            name: "music.play",
+            params: &["handle"],
+            func: music_play,
+        },
+    );
+    music.insert(
+        "play_at".to_string(),
+        Value::Builtin {
+            name: "music.play_at",
+            params: &["handle", "volume"],
+            func: music_play_at,
+        },
+    );
+    music.insert(
+        "stop".to_string(),
+        Value::Builtin {
+            name: "music.stop",
+            params: &["handle"],
+            func: sound_stop, // identical underlying op
+        },
+    );
+    env.set(
+        "music".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: music,
             kind: "module",
         }))),
     );
@@ -227,7 +292,73 @@ fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn sound_play(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.play")?;
-    let path = match &args[0] {
+    let path = sound_handle_path(&args[0], "sound.play")?;
+    play_sound_path(&path, "sound.play", 1.0, false)?;
+    Ok(Value::Nil)
+}
+
+/// `sound.play_at(handle, volume)` — one-shot at the given volume.
+/// v0.2 session 5.
+fn sound_play_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "sound.play_at")?;
+    let path = sound_handle_path(&args[0], "sound.play_at")?;
+    let volume = number(&args[1], "sound.play_at.volume")? as f32;
+    play_sound_path(&path, "sound.play_at", volume.clamp(0.0, 1.0), false)?;
+    Ok(Value::Nil)
+}
+
+/// `sound.stop(handle)` — stop all playing instances of this
+/// sound. Used as the underlying op for `music.stop` too.
+/// v0.2 session 5.
+fn sound_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "sound.stop")?;
+    let path = sound_handle_path(&args[0], "sound.stop")?;
+    SOUND_CACHE.with(|cache| {
+        if let Some(snd) = cache.borrow().get(&path) {
+            macroquad::audio::stop_sound(snd);
+        }
+    });
+    Ok(Value::Nil)
+}
+
+/// `sound.set_volume(handle, volume)` — adjust volume of any
+/// currently-playing instances. v0.2 session 5.
+fn sound_set_volume(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "sound.set_volume")?;
+    let path = sound_handle_path(&args[0], "sound.set_volume")?;
+    let volume = number(&args[1], "sound.set_volume.volume")? as f32;
+    SOUND_CACHE.with(|cache| {
+        if let Some(snd) = cache.borrow().get(&path) {
+            macroquad::audio::set_sound_volume(snd, volume.clamp(0.0, 1.0));
+        }
+    });
+    Ok(Value::Nil)
+}
+
+/// `music.play(handle)` — looped play at default volume. Same
+/// codepath as `sound.play` but with `looped = true`.
+/// v0.2 session 5.
+fn music_play(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "music.play")?;
+    let path = sound_handle_path(&args[0], "music.play")?;
+    play_sound_path(&path, "music.play", 1.0, true)?;
+    Ok(Value::Nil)
+}
+
+/// `music.play_at(handle, volume)` — looped play at the given
+/// volume. v0.2 session 5.
+fn music_play_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "music.play_at")?;
+    let path = sound_handle_path(&args[0], "music.play_at")?;
+    let volume = number(&args[1], "music.play_at.volume")? as f32;
+    play_sound_path(&path, "music.play_at", volume.clamp(0.0, 1.0), true)?;
+    Ok(Value::Nil)
+}
+
+/// Pull the on-disk path out of a sound handle, validating
+/// `kind` and the `path` field. Shared by every audio builtin.
+fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
+    match v {
         Value::Object(rc) => {
             let o = rc.borrow();
             if o.kind != "sound" {
@@ -235,58 +366,68 @@ fn sound_play(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                     line: 0,
                     col: 0,
                     message: format!(
-                        "sound.play expects a sound handle from `sound.load(...)`, got {}",
+                        "{callee} expects a sound handle from `sound.load(...)`, got {}",
                         o.kind
                     ),
                     help: None,
                 });
             }
             match o.fields.get("path") {
-                Some(Value::Str(s)) => s.as_ref().clone(),
-                _ => {
-                    return Err(RuntimeError {
-                        line: 0,
-                        col: 0,
-                        message: "sound handle is missing a `path` field".to_string(),
-                        help: None,
-                    });
-                }
+                Some(Value::Str(s)) => Ok(s.as_ref().clone()),
+                _ => Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: "sound handle is missing a `path` field".to_string(),
+                    help: None,
+                }),
             }
         }
-        other => {
-            return Err(RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!(
-                    "sound.play expects a sound handle from `sound.load(...)`, got {}",
-                    other.type_name()
-                ),
-                help: None,
-            });
-        }
-    };
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{callee} expects a sound handle from `sound.load(...)`, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    }
+}
+
+/// Decode-then-play helper. Caches decoded `Sound` values per
+/// path; subsequent plays of the same file skip the decode.
+/// v0.2 session 5 generalizes the old `sound_play` body.
+fn play_sound_path(
+    path: &str,
+    callee: &str,
+    volume: f32,
+    looped: bool,
+) -> Result<(), RuntimeError> {
     SOUND_CACHE.with(|cache| -> Result<(), RuntimeError> {
         let mut c = cache.borrow_mut();
-        if !c.contains_key(&path) {
-            let bytes = std::fs::read(&path).map_err(|e| RuntimeError {
+        if !c.contains_key(path) {
+            let bytes = std::fs::read(path).map_err(|e| RuntimeError {
                 line: 0,
                 col: 0,
-                message: format!("sound.play: cannot read '{path}': {e}"),
+                message: format!("{callee}: cannot read '{path}': {e}"),
                 help: None,
             })?;
             let snd = block_on(macroquad::audio::load_sound_from_bytes(&bytes))
                 .map_err(|e| RuntimeError {
                     line: 0,
                     col: 0,
-                    message: format!("sound.play: failed to decode '{path}': {e}"),
+                    message: format!("{callee}: failed to decode '{path}': {e}"),
                     help: Some("supported formats: WAV, Ogg Vorbis".to_string()),
                 })?;
-            c.insert(path.clone(), snd);
+            c.insert(path.to_string(), snd);
         }
-        macroquad::audio::play_sound_once(&c[&path]);
+        let snd = &c[path];
+        macroquad::audio::play_sound(
+            snd,
+            macroquad::audio::PlaySoundParams { looped, volume },
+        );
         Ok(())
-    })?;
-    Ok(Value::Nil)
+    })
 }
 
 fn install_time(env: &mut Env) {

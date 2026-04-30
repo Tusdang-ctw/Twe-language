@@ -327,6 +327,16 @@ note.
       versioned binary + CRC format ride session 5+ per
       `docs/07-save-system.md`. See
       `docs/changes/2026-04-30-v0.2-session-4-save-load-bottom.md`.
+- [x] **Session 5 — audio v2** (2026-04-30). `sound.*` gains
+      `play_at(handle, volume)`, `stop(handle)`,
+      `set_volume(handle, volume)`. New `music.*` namespace
+      with `play` / `play_at` / `stop` (same underlying handles,
+      `looped: true`). `SOUND_CACHE` shared across builtins.
+      Pitch + mixer channels + streaming + crossfade deferred —
+      quad-snd backend doesn't support them. Semantic surface
+      is forward-compatible if a richer backend lands later.
+      `examples/audio_demo.twe` exercises the new surface.
+      See `docs/changes/2026-04-30-v0.2-session-5-audio-v2.md`.
 
 ## Triage backlog
 

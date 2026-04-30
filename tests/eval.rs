@@ -544,6 +544,54 @@ fn load_from_missing_file_errors_at_runtime() {
     assert!(err.contains("cannot read"), "got: {err}");
 }
 
+// --- v0.2 session 5: audio v2 ---
+
+#[test]
+fn stdlib_installs_audio_v2_surface() {
+    use twec::value::Value;
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+
+    // sound module: load + play (v0.1) + play_at + stop +
+    // set_volume (v0.2 session 5).
+    let Some(Value::Object(rc)) = env.get("sound") else {
+        panic!("sound object missing after stdlib::install");
+    };
+    let s = rc.borrow();
+    for name in ["load", "play", "play_at", "stop", "set_volume"] {
+        assert!(
+            matches!(s.fields.get(name), Some(Value::Builtin { .. })),
+            "sound.{name} missing or not a builtin"
+        );
+    }
+
+    // music module: play, play_at, stop. New in v0.2 session 5.
+    let Some(Value::Object(rc)) = env.get("music") else {
+        panic!("music object missing after stdlib::install");
+    };
+    let m = rc.borrow();
+    for name in ["play", "play_at", "stop"] {
+        assert!(
+            matches!(m.fields.get(name), Some(Value::Builtin { .. })),
+            "music.{name} missing or not a builtin"
+        );
+    }
+}
+
+#[test]
+fn audio_builtins_reject_non_sound_handles() {
+    // Each new audio builtin should error clearly when given
+    // something that isn't a sound handle. Pin it for sound.stop
+    // (the only builtin reachable without actually decoding the
+    // file — others fail later at filesystem read).
+    let src = r#"sound.stop("not a handle")"#;
+    let err = run_program_str(src).expect_err("string isn't a handle");
+    assert!(
+        err.contains("sound.stop") && err.contains("sound handle"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn save_to_refuses_a_function_value() {
     let src = r#"

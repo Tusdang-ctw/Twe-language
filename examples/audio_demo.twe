@@ -1,0 +1,54 @@
+# v0.2 session 5 — audio v2 demo.
+#
+# Press R to play a one-shot at the current volume; press M to
+# start the looped music track; press S to stop it. Mouse wheel
+# adjusts volume in real time on the music track.
+#
+# Run with `twec play examples/audio_demo.twe`.
+#
+# What this exercises:
+#   - `sound.load(path)` — decode + cache.
+#   - `sound.play(handle)` — one-shot at default volume.
+#   - `sound.play_at(handle, volume)` — one-shot with explicit
+#     volume.
+#   - `music.play(handle)` — looped play.
+#   - `music.stop(handle)` — stop looped instance.
+#   - `sound.set_volume(handle, v)` — adjust volume of any
+#     currently-playing instances of `handle` in flight.
+#
+# The `silence.wav` asset shipped in `examples/assets/` is —
+# unsurprisingly — silent, but it exercises the full audio
+# pipeline. Drop your own WAV / Ogg next to it and change the
+# load path to hear the difference.
+
+let track = sound.load("examples/assets/silence.wav")
+var volume = 0.5
+var music_playing = false
+
+on update(dt):
+    # Wheel adjusts volume continuously, clamped 0..1.
+    volume = volume + mouse.wheel * 0.05
+    if volume < 0.0:
+        volume = 0.0
+    if volume > 1.0:
+        volume = 1.0
+    sound.set_volume(track, volume)
+
+    if key_press.r:
+        sound.play_at(track, volume)
+    if key_press.m:
+        if music_playing:
+            music.stop(track)
+            music_playing = false
+        else:
+            music.play(track)
+            music_playing = true
+    if key_press.s:
+        sound.stop(track)
+        music_playing = false
+
+on render():
+    rect(at: (10, 10), size: (200, 30), color: (0.1, 0.1, 0.1, 1.0))
+    rect(at: (10, 10), size: (200 * volume, 30), color: (0.4, 0.8, 0.4, 1.0))
+    text("R: play / M: music / S: stop", at: (10, 60), size: 18, color: color.white)
+    text("wheel = volume", at: (10, 84), size: 18, color: color.white)
