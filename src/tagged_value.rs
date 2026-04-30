@@ -120,11 +120,26 @@ pub enum HeapBody {
     /// Generic object — Twe stdlib's `key`, `mouse`, sprite/sound
     /// handles, save-loaded data, etc. all use this.
     Object(Rc<RefCell<crate::value::Object>>),
-    /// Class / Instance / BcClass / BcInstance / Function /
-    /// BcFunction / Builtin variants land in session 8c+
-    /// alongside their callers' migration. Holding them here
-    /// today without callers reading them would be dead code.
-    Reserved8c,
+    /// Tree-walker user-defined class.
+    Class(Rc<crate::value::ClassDef>),
+    /// Tree-walker user-defined function.
+    Function(Rc<crate::value::FunctionDef>),
+    /// Tree-walker class instance. Mutable per `Rc<RefCell<_>>`.
+    Instance(Rc<RefCell<crate::value::Instance>>),
+    /// Bytecode-VM compiled function.
+    BcFunction(Rc<crate::bytecode::BcFunction>),
+    /// Bytecode-VM class definition.
+    BcClass(Rc<crate::bytecode::BcClassDef>),
+    /// Bytecode-VM instance.
+    BcInstance(Rc<RefCell<crate::bytecode::BcInstance>>),
+    /// Builtin function. The `func` pointer is `Copy`; we store
+    /// the legacy `BuiltinFn` signature unchanged so stdlib
+    /// dispatchers don't rebind during the migration.
+    Builtin {
+        name: &'static str,
+        params: &'static [&'static str],
+        func: crate::value::BuiltinFn,
+    },
 }
 
 /// Discriminator for `HeapBody` variants. Used by
@@ -144,6 +159,13 @@ pub enum HeapBodyKind {
     Tuple,
     List,
     Object,
+    Class,
+    Function,
+    Instance,
+    BcFunction,
+    BcClass,
+    BcInstance,
+    Builtin,
 }
 
 impl HeapBodyKind {
@@ -157,7 +179,13 @@ impl HeapBodyKind {
             HeapBody::Tuple(_) => Self::Tuple,
             HeapBody::List(_) => Self::List,
             HeapBody::Object(_) => Self::Object,
-            HeapBody::Reserved8c => panic!("HeapBody::Reserved8c is a placeholder; populate in session 8c"),
+            HeapBody::Class(_) => Self::Class,
+            HeapBody::Function(_) => Self::Function,
+            HeapBody::Instance(_) => Self::Instance,
+            HeapBody::BcFunction(_) => Self::BcFunction,
+            HeapBody::BcClass(_) => Self::BcClass,
+            HeapBody::BcInstance(_) => Self::BcInstance,
+            HeapBody::Builtin { .. } => Self::Builtin,
         }
     }
 }
@@ -273,6 +301,38 @@ impl TaggedValue {
 
     pub fn from_object(obj: Rc<RefCell<crate::value::Object>>) -> Self {
         Self::from_heap(HeapBody::Object(obj))
+    }
+
+    pub fn from_class(c: Rc<crate::value::ClassDef>) -> Self {
+        Self::from_heap(HeapBody::Class(c))
+    }
+
+    pub fn from_function(f: Rc<crate::value::FunctionDef>) -> Self {
+        Self::from_heap(HeapBody::Function(f))
+    }
+
+    pub fn from_instance(i: Rc<RefCell<crate::value::Instance>>) -> Self {
+        Self::from_heap(HeapBody::Instance(i))
+    }
+
+    pub fn from_bc_function(f: Rc<crate::bytecode::BcFunction>) -> Self {
+        Self::from_heap(HeapBody::BcFunction(f))
+    }
+
+    pub fn from_bc_class(c: Rc<crate::bytecode::BcClassDef>) -> Self {
+        Self::from_heap(HeapBody::BcClass(c))
+    }
+
+    pub fn from_bc_instance(i: Rc<RefCell<crate::bytecode::BcInstance>>) -> Self {
+        Self::from_heap(HeapBody::BcInstance(i))
+    }
+
+    pub fn from_builtin(
+        name: &'static str,
+        params: &'static [&'static str],
+        func: crate::value::BuiltinFn,
+    ) -> Self {
+        Self::from_heap(HeapBody::Builtin { name, params, func })
     }
 }
 
@@ -484,12 +544,10 @@ impl std::fmt::Debug for TaggedValue {
 // (8c–8e), conversions migrate inward; in 8f the shim deletes.
 
 impl TaggedValue {
-    /// Convert from the legacy `crate::value::Value` enum. Only
-    /// the variants this module covers (Nil / Bool / Int / Float
-    /// / Str) round-trip cleanly in session 8a; everything else
-    /// is mapped to a placeholder tagged-Object pointing at a
-    /// `HeapBody::String` carrying the type name. Session 8b
-    /// expands `HeapBody` to cover the full Value surface.
+    /// Convert from the legacy `crate::value::Value` enum. Every
+    /// variant round-trips: primitives stay immediate, heap
+    /// variants share their existing `Rc` (no deep copy). v0.2
+    /// Phase 8.5 session 8c — full coverage.
     pub fn from_legacy(v: &crate::value::Value) -> Self {
         use crate::value::Value;
         match v {
@@ -497,37 +555,76 @@ impl TaggedValue {
             Value::Bool(b) => Self::from_bool(*b),
             Value::Int(n) => Self::from_int(*n),
             Value::Float(f) => Self::from_float(*f),
+            Value::Percent(p) => Self::from_percent(*p),
+            Value::Quantity { value, unit } => Self::from_quantity(*value, unit.clone()),
+            Value::Range { start, end, exclusive } => {
+                Self::from_range(*start, *end, *exclusive)
+            }
             Value::Str(rc) => Self::from_string((**rc).clone()),
-            // Placeholder for not-yet-supported variants.
-            // Session 8b expands HeapBody and routes these
-            // through their actual heap representations.
-            other => Self::from_string(format!("<unsupported-in-8a: {}>", other.type_name())),
+            Value::Tuple(rc) => Self::from_tuple(rc.clone()),
+            Value::List(rc) => Self::from_list(rc.clone()),
+            Value::Object(rc) => Self::from_object(rc.clone()),
+            Value::Class(rc) => Self::from_class(rc.clone()),
+            Value::Instance(rc) => Self::from_instance(rc.clone()),
+            Value::Function(rc) => Self::from_function(rc.clone()),
+            Value::BcFunction(rc) => Self::from_bc_function(rc.clone()),
+            Value::BcClass(rc) => Self::from_bc_class(rc.clone()),
+            Value::BcInstance(rc) => Self::from_bc_instance(rc.clone()),
+            Value::Builtin { name, params, func } => Self::from_builtin(name, params, *func),
         }
     }
 
     /// Convert back to the legacy `crate::value::Value` enum.
-    /// Lossy in the same direction — placeholder strings round-
-    /// trip back as plain `Value::Str`. Session 8b adds the
-    /// real conversions.
+    /// Heap variants share the same `Rc` they hold internally
+    /// — no copy. v0.2 Phase 8.5 session 8c — full coverage.
     pub fn to_legacy(&self) -> crate::value::Value {
         use crate::value::Value;
         if self.is_nil() {
-            Value::Nil
-        } else if self.is_bool() {
-            Value::Bool(self.as_bool())
-        } else if self.is_int() {
-            Value::Int(self.as_int())
-        } else if self.is_float() {
-            Value::Float(self.as_float())
-        } else if self.is_str() {
-            Value::Str(Rc::new(self.as_string()))
-        } else {
-            // Placeholder: real Object/Tuple/etc. conversions
-            // land in session 8b. For now, fall back to Nil so
-            // tests that exercise the shim get a deterministic
-            // output rather than a panic.
-            Value::Nil
+            return Value::Nil;
         }
+        if self.is_bool() {
+            return Value::Bool(self.as_bool());
+        }
+        if self.is_int() {
+            return Value::Int(self.as_int());
+        }
+        if self.is_float() {
+            return Value::Float(self.as_float());
+        }
+        if self.is_str() {
+            return Value::Str(Rc::new(self.as_string()));
+        }
+        if self.is_obj() {
+            return self.with_obj_body(|b| match b {
+                HeapBody::String(_) => unreachable!("strings live behind TAG_STR"),
+                HeapBody::BoxedInt(n) => Value::Int(*n),
+                HeapBody::Percent(p) => Value::Percent(*p),
+                HeapBody::Quantity { value, unit } => Value::Quantity {
+                    value: *value,
+                    unit: unit.clone(),
+                },
+                HeapBody::Range { start, end, exclusive } => Value::Range {
+                    start: *start,
+                    end: *end,
+                    exclusive: *exclusive,
+                },
+                HeapBody::Tuple(rc) => Value::Tuple(rc.clone()),
+                HeapBody::List(rc) => Value::List(rc.clone()),
+                HeapBody::Object(rc) => Value::Object(rc.clone()),
+                HeapBody::Class(rc) => Value::Class(rc.clone()),
+                HeapBody::Function(rc) => Value::Function(rc.clone()),
+                HeapBody::Instance(rc) => Value::Instance(rc.clone()),
+                HeapBody::BcFunction(rc) => Value::BcFunction(rc.clone()),
+                HeapBody::BcClass(rc) => Value::BcClass(rc.clone()),
+                HeapBody::BcInstance(rc) => Value::BcInstance(rc.clone()),
+                HeapBody::Builtin { name, params, func } => Value::Builtin {
+                    name,
+                    params,
+                    func: *func,
+                },
+            });
+        }
+        Value::Nil
     }
 }
 
@@ -823,6 +920,57 @@ mod tests {
             let back = tagged.to_legacy();
             // Compare via Debug-string since Value isn't Eq.
             assert_eq!(format!("{legacy:?}"), format!("{back:?}"));
+        }
+    }
+
+    // --- v0.2 Phase 8.5 session 8c: heap-variant shim round-trips ---
+    //
+    // The VM migration relies on every Value variant making the
+    // round-trip Value → TaggedValue → Value unchanged. These
+    // tests pin that contract.
+
+    #[test]
+    fn legacy_shim_round_trips_heap_variants() {
+        use crate::value::Value;
+        // Tuple
+        let t = Value::Tuple(Rc::new(vec![Value::Int(1), Value::Int(2)]));
+        match TaggedValue::from_legacy(&t).to_legacy() {
+            Value::Tuple(rc) => assert_eq!(rc.len(), 2),
+            other => panic!("tuple shim broke: {other:?}"),
+        }
+        // List (mutability preserved through shared Rc).
+        let inner = Rc::new(RefCell::new(vec![Value::Int(7)]));
+        let l = Value::List(inner.clone());
+        let back = TaggedValue::from_legacy(&l).to_legacy();
+        if let Value::List(rc) = back {
+            rc.borrow_mut().push(Value::Int(8));
+        } else {
+            panic!("list shim lost type");
+        }
+        assert_eq!(inner.borrow().len(), 2, "shim must share Rc, not deep-copy");
+        // Quantity
+        let q = Value::Quantity {
+            value: 5.0,
+            unit: Rc::new("kg".to_string()),
+        };
+        match TaggedValue::from_legacy(&q).to_legacy() {
+            Value::Quantity { value, unit } => {
+                assert_eq!(value, 5.0);
+                assert_eq!(&*unit, "kg");
+            }
+            other => panic!("quantity shim broke: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_shim_round_trips_bc_function() {
+        use crate::bytecode::{BcFunction, Chunk};
+        use crate::value::Value;
+        let f = Rc::new(BcFunction::new("test_fn", 0, Chunk::new()));
+        let v = Value::BcFunction(f.clone());
+        match TaggedValue::from_legacy(&v).to_legacy() {
+            Value::BcFunction(rc) => assert!(Rc::ptr_eq(&rc, &f), "shim must preserve Rc identity"),
+            other => panic!("BcFunction shim broke: {other:?}"),
         }
     }
 }

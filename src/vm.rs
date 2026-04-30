@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::bytecode::{BcClassDef, BcFunction, BcInstance, Chunk, OpCode};
+use crate::tagged_value::TaggedValue;
 use crate::value::{Env, RuntimeError, Value};
 
 /// Cap on how many times a single `every <duration>:` clock can
@@ -105,9 +106,17 @@ struct CallFrame {
 /// statements within a single `run` but does not survive a fresh
 /// `VM::new()`.
 pub struct VM {
-    stack: Vec<Value>,
+    /// v0.2 Phase 8.5 session 8c: value stack on `TaggedValue`.
+    /// Pattern-matching opcodes still operate on legacy `Value`
+    /// — the helpers `push` / `pop` / `pop_n` / `peek_*`
+    /// shim at the boundary. Inner heap pattern matches migrate
+    /// to `TaggedValue` predicates in 8f when `Value` deletes.
+    stack: Vec<TaggedValue>,
     frames: Vec<CallFrame>,
-    globals: HashMap<String, Value>,
+    /// v0.2 Phase 8.5 session 8c: globals also on `TaggedValue`.
+    /// Mirrors stack — get/set converts via `to_legacy` /
+    /// `from_legacy` at the boundary.
+    globals: HashMap<String, TaggedValue>,
     /// Held tree-walker env, used as a `&mut Env` slot for builtin
     /// dispatch. Pure builtins (math etc.) ignore it. The VM's own
     /// active_scene/active_entities live below — Env's are unused.
@@ -160,17 +169,17 @@ impl VM {
         crate::stdlib::install(&mut env);
         let mut globals = HashMap::with_capacity(env.iter_bindings().count());
         for (name, value) in env.iter_bindings() {
-            globals.insert(name.clone(), value.clone());
+            globals.insert(name.clone(), TaggedValue::from_legacy(value));
         }
         // Replace the stdlib `entities` Object (which routes through
         // tree-walker builtins) with a VM-tagged one so OP_INVOKE
         // can dispatch to our own active_entities.
         globals.insert(
             "entities".to_string(),
-            Value::Object(Rc::new(RefCell::new(crate::value::Object {
+            TaggedValue::from_legacy(&Value::Object(Rc::new(RefCell::new(crate::value::Object {
                 fields: HashMap::new(),
                 kind: "entities",
-            }))),
+            })))),
         );
         Self {
             stack: Vec::with_capacity(256),
@@ -197,7 +206,7 @@ impl VM {
         // script function itself (unused by the body but reserved by
         // the compiler so local indices line up).
         let script = Rc::new(BcFunction::new("<script>", 0, chunk.clone()));
-        self.stack.push(Value::BcFunction(script.clone()));
+        self.push(Value::BcFunction(script.clone()));
         self.frames.push(CallFrame {
             function: script,
             ip: 0,
@@ -281,7 +290,7 @@ impl VM {
                 // Defensive — the compiler always emits OP_RETURN, so
                 // this is a fallthrough only on a malformed chunk.
                 sync_ip!();
-                return Ok(self.stack.pop().unwrap_or(Value::Nil));
+                return Ok(self.stack.pop().map(|t| t.to_legacy()).unwrap_or(Value::Nil));
             }
             let line = current_func.chunk.lines[ip];
             let op = OpCode::from_u8(current_func.chunk.code[ip]);
@@ -399,8 +408,10 @@ impl VM {
                             slot_base_offset: f.slot_base - bottom_slot_base,
                         });
                     }
-                    let saved_stack: Vec<Value> =
-                        self.stack[bottom_slot_base..].to_vec();
+                    let saved_stack: Vec<Value> = self.stack[bottom_slot_base..]
+                        .iter()
+                        .map(|t| t.clone().to_legacy())
+                        .collect();
 
                     {
                         let mut inst = scene.borrow_mut();
@@ -429,7 +440,7 @@ impl VM {
                 OpCode::GetLocal => {
                     let slot = read_byte!() as usize;
                     let abs = self.frames.last().unwrap().slot_base + slot;
-                    let v = self.stack.get(abs).cloned().ok_or_else(|| RuntimeError {
+                    let v = self.slot_get(abs).ok_or_else(|| RuntimeError {
                         line,
                         col: 0,
                         message: format!(
@@ -457,8 +468,11 @@ impl VM {
                             help: None,
                         });
                     }
-                    let v = self.stack.last().cloned().unwrap();
-                    self.stack[abs] = v;
+                    // SetLocal: peek top, copy into slot. Both sides are
+                    // TaggedValue — clone the slot directly without
+                    // round-tripping through legacy.
+                    let top = self.stack.last().cloned().unwrap();
+                    self.stack[abs] = top;
                 }
                 OpCode::JumpIfFalse => {
                     let offset = read_u16!();
@@ -469,32 +483,28 @@ impl VM {
                 }
                 OpCode::JumpIfFalsePeek => {
                     let offset = read_u16!();
-                    let truthy = self
-                        .stack
-                        .last()
-                        .map(is_truthy)
-                        .ok_or_else(|| RuntimeError {
+                    let truthy = self.peek_top().as_ref().map(is_truthy).ok_or_else(|| {
+                        RuntimeError {
                             line,
                             col: 0,
                             message: "vm: stack underflow on JumpIfFalsePeek".to_string(),
                             help: None,
-                        })?;
+                        }
+                    })?;
                     if !truthy {
                         ip += offset as usize;
                     }
                 }
                 OpCode::JumpIfTruePeek => {
                     let offset = read_u16!();
-                    let truthy = self
-                        .stack
-                        .last()
-                        .map(is_truthy)
-                        .ok_or_else(|| RuntimeError {
+                    let truthy = self.peek_top().as_ref().map(is_truthy).ok_or_else(|| {
+                        RuntimeError {
                             line,
                             col: 0,
                             message: "vm: stack underflow on JumpIfTruePeek".to_string(),
                             help: None,
-                        })?;
+                        }
+                    })?;
                     if truthy {
                         ip += offset as usize;
                     }
@@ -515,13 +525,20 @@ impl VM {
                 OpCode::DefineGlobal => {
                     let idx = read_byte!() as usize;
                     let name = read_string_const!(idx, line)?;
-                    let value = self.pop()?;
-                    self.globals.insert((*name).clone(), value);
+                    // Pop directly as TaggedValue to avoid the
+                    // legacy round-trip; globals are TaggedValue.
+                    let tagged = self.stack.pop().ok_or_else(|| RuntimeError {
+                        line,
+                        col: 0,
+                        message: "vm: stack underflow on DefineGlobal".to_string(),
+                        help: None,
+                    })?;
+                    self.globals.insert((*name).clone(), tagged);
                 }
                 OpCode::GetGlobal => {
                     let idx = read_byte!() as usize;
                     let name = read_string_const!(idx, line)?;
-                    let value = self.globals.get(name.as_str()).cloned().ok_or_else(|| {
+                    let tagged = self.globals.get(name.as_str()).cloned().ok_or_else(|| {
                         RuntimeError {
                             line,
                             col: 0,
@@ -531,7 +548,7 @@ impl VM {
                             )),
                         }
                     })?;
-                    self.push(value);
+                    self.stack.push(tagged);
                 }
                 OpCode::SetGlobal => {
                     let idx = read_byte!() as usize;
@@ -546,17 +563,13 @@ impl VM {
                             )),
                         });
                     }
-                    let v = self
-                        .stack
-                        .last()
-                        .cloned()
-                        .ok_or_else(|| RuntimeError {
-                            line,
-                            col: 0,
-                            message: "vm: stack underflow on SetGlobal".to_string(),
-                            help: None,
-                        })?;
-                    self.globals.insert((*name).clone(), v);
+                    let tagged = self.stack.last().cloned().ok_or_else(|| RuntimeError {
+                        line,
+                        col: 0,
+                        message: "vm: stack underflow on SetGlobal".to_string(),
+                        help: None,
+                    })?;
+                    self.globals.insert((*name).clone(), tagged);
                 }
                 OpCode::Call => {
                     let arg_count = read_byte!() as usize;
@@ -790,7 +803,8 @@ impl VM {
                     let exit_offset = read_u16!();
                     let abs_iter = self.frames.last().unwrap().slot_base + base_slot;
                     let abs_counter = abs_iter + 1;
-                    let counter = match self.stack.get(abs_counter) {
+                    let counter_val = self.slot_get(abs_counter);
+                    let counter = match counter_val.as_ref() {
                         Some(Value::Int(n)) => *n,
                         other => {
                             return Err(RuntimeError {
@@ -798,13 +812,13 @@ impl VM {
                                 col: 0,
                                 message: format!(
                                     "vm: for-loop counter not an int (got {})",
-                                    other.map(Value::type_name).unwrap_or("missing")
+                                    other.map(|v| v.type_name()).unwrap_or("missing")
                                 ),
                                 help: Some("compiler bug".to_string()),
                             });
                         }
                     };
-                    let iter_value = self.stack[abs_iter].clone();
+                    let iter_value = self.slot_get(abs_iter).unwrap_or(Value::Nil);
                     let next = match &iter_value {
                         Value::Range { start, end, exclusive } => {
                             let limit = if *exclusive { *end } else { *end + 1 };
@@ -845,7 +859,7 @@ impl VM {
                     };
                     match next {
                         Some(elem) => {
-                            self.stack[abs_counter] = Value::Int(counter + 1);
+                            self.slot_set(abs_counter, Value::Int(counter + 1));
                             self.push(elem);
                         }
                         None => {
@@ -876,7 +890,7 @@ impl VM {
                 ),
                 help: None,
             })?;
-        let callee = self.stack[callee_idx].clone();
+        let callee = self.stack[callee_idx].clone().to_legacy();
         match callee {
             Value::BcFunction(func) => self.push_call_frame(func, callee_idx, arg_count, line),
             Value::BcClass(class) => {
@@ -898,7 +912,11 @@ impl VM {
                 Ok(())
             }
             Value::Builtin { name, params, func } => {
-                let args: Vec<Value> = self.stack.drain(callee_idx + 1..).collect();
+                let args: Vec<Value> = self
+                    .stack
+                    .drain(callee_idx + 1..)
+                    .map(|t| t.to_legacy())
+                    .collect();
                 if !params.is_empty() && args.len() != params.len() {
                     return Err(RuntimeError {
                         line,
@@ -1029,7 +1047,8 @@ impl VM {
         &mut self,
         scene: &Rc<RefCell<BcInstance>>,
     ) -> Result<(), RuntimeError> {
-        let pressed: Vec<String> = match self.globals.get("key_press") {
+        let key_press_legacy = self.globals.get("key_press").map(|t| t.clone().to_legacy());
+        let pressed: Vec<String> = match key_press_legacy {
             Some(Value::Object(rc)) => rc
                 .borrow()
                 .fields
@@ -1460,7 +1479,8 @@ impl VM {
         // above is locals + temporaries across all suspended
         // frames.
         let new_bottom = self.stack.len();
-        self.stack.extend(saved_stack);
+        self.stack
+            .extend(saved_stack.into_iter().map(|v| TaggedValue::from_legacy(&v)));
 
         // Re-push each saved frame, recovering the absolute
         // slot_base by adding `slot_base_offset` to the new
@@ -1570,7 +1590,7 @@ impl VM {
     /// to push input state into the `key` / `key_press` / `screen`
     /// Objects each frame.
     pub fn get_global(&self, name: &str) -> Option<Value> {
-        self.globals.get(name).cloned()
+        self.globals.get(name).map(|t| t.clone().to_legacy())
     }
 
     /// Drain `vm.out` (captured `print` output). Returns the captured
@@ -1583,7 +1603,7 @@ impl VM {
     /// Update `time.dt` on the global `time` Object so scene/entity
     /// code can read it as an ambient. Mirrors `eval::update_time_ambient`.
     fn update_time_dt(&mut self, dt: f64) {
-        if let Some(Value::Object(rc)) = self.globals.get("time") {
+        if let Some(Value::Object(rc)) = self.globals.get("time").map(|t| t.clone().to_legacy()) {
             rc.borrow_mut()
                 .fields
                 .insert("dt".to_string(), Value::Float(dt));
@@ -1603,9 +1623,9 @@ impl VM {
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let recv_idx = self.stack.len();
-        self.stack.push(recv);
+        self.push(recv);
         for arg in args {
-            self.stack.push(arg.clone());
+            self.push(arg.clone());
         }
         let target_depth = self.frames.len();
         self.push_call_frame(function, recv_idx, args.len(), 0)?;
@@ -1655,17 +1675,32 @@ impl VM {
     }
 
 
+    /// Push a legacy `Value` onto the value stack. v0.2 Phase 8.5
+    /// session 8c: shims through `TaggedValue::from_legacy`. Inner
+    /// pattern matches still receive `Value`; the boundary is here.
     fn push(&mut self, v: Value) {
+        self.stack.push(TaggedValue::from_legacy(&v));
+    }
+
+    /// Same as `push` but takes a `TaggedValue` directly. Used by
+    /// hot paths that already hold a tagged slot (e.g.
+    /// fiber-resume `extend`) so we avoid a redundant
+    /// to_legacy → from_legacy round-trip.
+    #[allow(dead_code)]
+    fn push_tagged(&mut self, v: TaggedValue) {
         self.stack.push(v);
     }
 
     fn pop(&mut self) -> Result<Value, RuntimeError> {
-        self.stack.pop().ok_or_else(|| RuntimeError {
-            line: 0,
-            col: 0,
-            message: "vm: stack underflow".to_string(),
-            help: Some("compiler bug — every consumer should push before pop".to_string()),
-        })
+        self.stack
+            .pop()
+            .map(|t| t.to_legacy())
+            .ok_or_else(|| RuntimeError {
+                line: 0,
+                col: 0,
+                message: "vm: stack underflow".to_string(),
+                help: Some("compiler bug — every consumer should push before pop".to_string()),
+            })
     }
 
     /// Pop the top `n` values, returning them in source order (the
@@ -1685,7 +1720,26 @@ impl VM {
             });
         }
         let at = self.stack.len() - n;
-        Ok(self.stack.drain(at..).collect())
+        Ok(self.stack.drain(at..).map(|t| t.to_legacy()).collect())
+    }
+
+    /// Read a slot at absolute index, returning the legacy `Value`.
+    /// v0.2 Phase 8.5 session 8c: replaces inline
+    /// `self.stack.get(abs).cloned()` patterns.
+    fn slot_get(&self, abs: usize) -> Option<Value> {
+        self.stack.get(abs).map(|t| t.clone().to_legacy())
+    }
+
+    /// Write a legacy `Value` into a slot at absolute index.
+    fn slot_set(&mut self, abs: usize, v: Value) {
+        self.stack[abs] = TaggedValue::from_legacy(&v);
+    }
+
+    /// Peek the top of stack without popping. Returns the legacy
+    /// `Value` for compatibility with the dispatch loop's
+    /// pattern-match handlers.
+    fn peek_top(&self) -> Option<Value> {
+        self.stack.last().map(|t| t.clone().to_legacy())
     }
 
     /// OP_INVOKE handler. The receiver is on the stack at `top -
@@ -1715,7 +1769,7 @@ impl VM {
         // BcInstance dispatch keeps the receiver on the stack as the
         // method's slot 0 (`self`) and continues from the new frame —
         // it doesn't drop into the simple "compute one value" pattern.
-        let recv_clone = self.stack[recv_idx].clone();
+        let recv_clone = self.stack[recv_idx].clone().to_legacy();
         if let Value::BcInstance(inst_rc) = &recv_clone {
             let method = inst_rc
                 .borrow()
@@ -1741,7 +1795,11 @@ impl VM {
         // for the bytecode VM we route to BcInstance values here.
         if let Value::Object(rc) = &recv_clone {
             if rc.borrow().kind == "entities" {
-                let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
+                let args: Vec<Value> = self
+                    .stack
+                    .drain(recv_idx + 1..)
+                    .map(|t| t.to_legacy())
+                    .collect();
                 self.stack.pop(); // drop receiver
                 let result = self.entities_intrinsic(name, &args, line)?;
                 self.push(result);
@@ -1759,7 +1817,11 @@ impl VM {
                     help: None,
                 }
             })?;
-            let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
+            let args: Vec<Value> = self
+                .stack
+                .drain(recv_idx + 1..)
+                .map(|t| t.to_legacy())
+                .collect();
             self.stack.pop(); // drop the receiver
             let result = match field {
                 Value::Builtin { name: bname, params, func } => {
@@ -1793,8 +1855,12 @@ impl VM {
             return Ok(());
         }
         // Built-in receivers: list / range methods (session 10).
-        let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
-        let recv = self.stack.pop().expect("receiver");
+        let args: Vec<Value> = self
+            .stack
+            .drain(recv_idx + 1..)
+            .map(|t| t.to_legacy())
+            .collect();
+        let recv = self.stack.pop().expect("receiver").to_legacy();
         let result = match &recv {
             Value::List(rc) => list_method(rc, name, &args, line)?,
             Value::Range { start, end, exclusive } => {
@@ -3552,7 +3618,7 @@ mod tests {
             // Simulate a key being held down each frame; the tree-
             // walker's matching test does the same single-set then
             // ticks repeatedly.
-            if let Some(Value::Object(rc)) = vm.globals.get("key_press") {
+            if let Some(Value::Object(rc)) = vm.get_global("key_press") {
                 rc.borrow_mut()
                     .fields
                     .insert(key.to_string(), Value::Bool(true));

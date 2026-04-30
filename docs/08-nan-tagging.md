@@ -216,11 +216,12 @@ This is the load-bearing part of the doc. NaN tagging + GC isn't one session; it
 - TaggedValue::from_obj / .as_obj wired against this.
 - Tests for round-trip Tuple, List, Object, Quantity through the heap path.
 
-#### Session 8c — VM migration
+#### Session 8c — VM migration ✅ shipped 2026-04-30
 
-- `src/vm.rs`: rewrite the value stack, the dispatch loop's pattern matches, and the OP_* handlers to use TaggedValue.
-- `BcInstance` stays on legacy Value internally for now (its fields are user-visible); `to_legacy` / `from_legacy` at the field-access boundary.
-- Every existing VM test must still pass.
+- `src/vm.rs`: value stack changed from `Vec<Value>` to `Vec<TaggedValue>`; globals migrated to `HashMap<String, TaggedValue>`. The dispatch loop's existing pattern-match handlers stay on `Value` for now and shim through `to_legacy()` at the read points (`slot_get`, `peek_top`) / `from_legacy()` at the write points (`push`). The deeper rewrite of every match arm to `TaggedValue` predicates folds into session 8f when the legacy `Value` enum deletes — keeping 8c mechanical kept the regression surface minimal.
+- `BcInstance` and `BcInstance::fiber_stack` stay on legacy `Value` internally; conversion at the field-access boundary (the OP_WAIT save and `resume_state_entry` restore both translate per-element).
+- The `from_legacy` / `to_legacy` shim now covers every `Value` variant — the 8a/8b shim only covered primitives + the heap variants 8b added; 8c expanded `HeapBody` with `Class` / `Function` / `Instance` / `BcFunction` / `BcClass` / `BcInstance` / `Builtin` so non-primitive Values round-trip through the heap path.
+- 497 → 499 tests pass: shim round-trip tests added for heap variants and BcFunction (per the design's "every session adds at least one new test exercising the migrated path" rule).
 
 #### Session 8d — Tree-walker migration
 
