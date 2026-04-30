@@ -30,8 +30,6 @@ use std::rc::Rc;
 use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, StateMember, UnOp};
 use crate::bytecode::{BcClassDef, BcFunction, BcStateDef, Chunk, OpCode};
 use crate::value::Value;
-use crate::value::LegacyValue;
-use crate::value::ToLegacyShim;
 
 /// What the compiler refuses to compile in the current session's
 /// scope, with a source position.

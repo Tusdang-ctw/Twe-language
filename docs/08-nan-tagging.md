@@ -240,25 +240,24 @@ This is the load-bearing part of the doc. NaN tagging + GC isn't one session; it
 - Stdlib's interior pattern matches still operate on legacy `Value` (the rule "every `Value::` in builtins becomes `TaggedValue::*`" lands at 8f when the legacy enum deletes — keeping 8e mechanical kept the regression surface in line with 8c–8d).
 - All 499 tests still pass; clippy clean.
 
-#### Session 8f — Delete legacy Value (✅ structural half shipped 2026-04-30, predicate cleanup deferred)
+#### Session 8f — Delete legacy Value (✅ shipped 2026-05-01)
 
-What 8f shipped this session:
+What 8f shipped:
 
-- `src/value.rs`: `pub enum Value { … }` renamed to `pub enum LegacyValue { … }`; `pub type Value = TaggedValue;` added so every existing `Value`-typed signature, struct field, and constructor site automatically aligns with the NaN-tagged representation.
-- All struct-field storage flipped to `TaggedValue` (= `Value` alias): `ClassDef::field_defaults`, `BcClassDef::field_defaults`, `Env::self_value`, `Env::returning`, `Env::bindings`, `Object::fields`, `Instance::fields`, `BcInstance::fields`, `BcInstance::fiber_stack`, `FrameKind::Function::saved_returning` / `saved_params`. Same for the `BuiltinFn` signature: `fn(&mut Env, &[TaggedValue]) -> Result<TaggedValue, _>`.
-- `HeapBody::Tuple` / `HeapBody::List` interiors migrated to `Vec<TaggedValue>`. `LegacyValue::Tuple` / `List` now wrap the same Rc, so `from_legacy` / `to_legacy` share the heap rather than deep-copying — preserves mutation semantics through the shim.
-- All 992 `Value::Foo(...)` constructor / pattern sites in the 12 source files + `tests/eval.rs` were rewritten by a mechanical migration pass: constructors became `Value::from_*(...)`, `Value::NIL` / `TRUE` / `FALSE` constants, etc. New helper API on `TaggedValue` covers this (`from_tuple` / `as_tuple`, `is_object` / `as_object`, `is_truthy`, `display`, `type_name`, `equals`, etc., plus per-heap-variant predicate + extractor pairs for every `HeapBodyKind`).
-- 499 tests still pass. `cargo build --release` clean. `cargo clippy --lib --tests` shows only the four pre-existing `approx_constant` warnings on `3.14`-as-test-float in `save.rs` / `tagged_value.rs`.
+- `src/value.rs`: `pub enum Value { … }` deleted entirely. `pub type Value = TaggedValue;` is now the only definition of `Value` in the crate. Every signature, struct field, and constructor site uses `Value` and gets the NaN-tagged representation transparently.
+- All storage migrated to `TaggedValue` (= `Value` alias): `ClassDef::field_defaults`, `BcClassDef::field_defaults`, `Env::self_value` / `returning` / `bindings`, `Object::fields`, `Instance::fields`, `BcInstance::fields`, `BcInstance::fiber_stack`, `FrameKind::Function::saved_returning` / `saved_params`. `BuiltinFn` signature: `fn(&mut Env, &[TaggedValue]) -> Result<TaggedValue, _>`.
+- `HeapBody::Tuple` / `HeapBody::List` interiors are `Vec<TaggedValue>`. No deep copies anywhere.
+- All 992 `Value::Foo(...)` constructor sites rewrote to `Value::from_*(...)` / `Value::NIL` / `TRUE` / `FALSE` constants. All ~370 match-arm shim sites converted from `match X.to_legacy() { LegacyValue::Foo(x) => ... }` to predicate dispatch using `TaggedValue`'s new helper API: `is_truthy`, `display`, `type_name`, `equals`, plus per-`HeapBodyKind` predicate (`is_int_or_boxed_int`, `is_str`, `is_tuple`, `is_object`, …) + extractor (`as_int`, `as_string`, `as_tuple`, `as_object`, …) pairs.
+- The temporary migration shim — `enum LegacyValue`, `TaggedValue::to_legacy` / `from_legacy`, the `ToLegacyShim` trait, and the three round-trip tests in `tagged_value.rs` that pinned the shim's contract — all deleted.
+- The 8f exit criterion holds: zero `Value::Foo(_)` enum-variant patterns or constructors anywhere outside `tagged_value.rs` (which owns the helper-API definitions). All references to `LegacyValue` / `to_legacy` / `from_legacy` in source files are stale doc-comment mentions; the symbols themselves are gone.
+- 496 tests pass (down 3 from 499 because the three deleted shim round-trip tests in `tagged_value.rs` had nothing left to test). Build clean. clippy clean (only pre-existing `approx_constant` warnings on `3.14` test floats — unchanged from pre-8f baseline).
 
-What 8f deferred (call it 8f-followup or 8f.5):
+**8f shipped in two commits** for blast-radius reasons:
+1. `phase-8.5: 8f structural half — Value=TaggedValue alias, mass migration` (2026-04-30): the mechanical constructor + storage migration. Match arms still routed through the `to_legacy()` shim.
+2. `phase-8.5: 8f predicate-dispatch pass — bulk-convert match shim sites` (2026-04-30): converted every match shim to predicate dispatch.
+3. `phase-8.5: 8f cleanup — delete LegacyValue + shim + ToLegacyShim` (2026-05-01): deleted the now-unused enum + shim + trait.
 
-- ~373 match-arm dispatch sites still spell out `match X.to_legacy() { LegacyValue::Foo(x) => ... }` rather than predicate-dispatching directly on `TaggedValue` (`if X.is_foo() { let x = X.as_foo(); ... }`). The shim in `src/value.rs` (`pub trait ToLegacyShim` for `Option<TaggedValue>` / tuples + `LegacyValue::display` / `type_name`) keeps these compiling.
-- Therefore `enum LegacyValue`, `TaggedValue::to_legacy` / `from_legacy`, and the `ToLegacyShim` trait still ship. The "100% verified by zero `Value::` patterns outside `tagged_value.rs`" exit criterion is **not** met yet — the alias makes the production representation NaN-tagged, but the legacy enum is still load-bearing for match dispatch.
-- Strict-mode inferer diagnostics still mention legacy variant names when they appear; updating to TaggedValue terminology rides the same predicate-conversion pass.
-
-**Why split:** the structural-half is the unblocking work for 8g (GC allocator) and 8h (roots wiring) — both need every storage location to be `TaggedValue` and the heap interior to be `Vec<TaggedValue>`, both of which now hold. The match-arm cleanup is independent volume that can land on its own track without gating GC.
-
-**Scope reality (preserved from original plan):** 917 `Value::` pattern-match sites across the codebase as of post-8e. Constructor + storage migration ate ~550 of those mechanically; the remaining ~370 live behind the `to_legacy()` shim and are the predicate-dispatch follow-up. Each site is still mechanical (`match v.to_legacy() { LegacyValue::Int(n) => ... }` → `if v.is_int_or_boxed_int() { let n = v.as_int(); ... }`); the volume is what makes it its own session.
+This unblocks 8g–8i: every storage location is `TaggedValue`, every heap interior is `Vec<TaggedValue>`, and the value layer has only one representation.
 
 #### Session 8g — GC heap allocator
 

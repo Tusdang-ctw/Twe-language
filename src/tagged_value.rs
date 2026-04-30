@@ -838,93 +838,6 @@ impl std::fmt::Debug for TaggedValue {
     }
 }
 
-// ---------- legacy-Value shim ----------
-//
-// Migration glue per `docs/08-nan-tagging.md` "API shape". Lets
-// callers convert at the boundary while interiors stay on the
-// legacy `crate::value::Value` enum. As migration progresses
-// (8c–8e), conversions migrate inward; in 8f the shim deletes.
-
-impl TaggedValue {
-    /// Convert from `LegacyValue`. Migration-only shim during 8f;
-    /// deletes once every match site uses predicate dispatch.
-    pub fn from_legacy(v: &crate::value::LegacyValue) -> Self {
-        use crate::value::LegacyValue as L;
-        match v {
-            L::Nil => Self::NIL,
-            L::Bool(b) => Self::from_bool(*b),
-            L::Int(n) => Self::from_int(*n),
-            L::Float(f) => Self::from_float(*f),
-            L::Percent(p) => Self::from_percent(*p),
-            L::Quantity { value, unit } => Self::from_quantity(*value, unit.clone()),
-            L::Range { start, end, exclusive } => Self::from_range(*start, *end, *exclusive),
-            L::Str(rc) => Self::from_string((**rc).clone()),
-            L::Tuple(rc) => Self::from_tuple(rc.clone()),
-            L::List(rc) => Self::from_list(rc.clone()),
-            L::Object(rc) => Self::from_object(rc.clone()),
-            L::Class(rc) => Self::from_class(rc.clone()),
-            L::Instance(rc) => Self::from_instance(rc.clone()),
-            L::Function(rc) => Self::from_function(rc.clone()),
-            L::BcFunction(rc) => Self::from_bc_function(rc.clone()),
-            L::BcClass(rc) => Self::from_bc_class(rc.clone()),
-            L::BcInstance(rc) => Self::from_bc_instance(rc.clone()),
-            L::Builtin { name, params, func } => Self::from_builtin(name, params, *func),
-        }
-    }
-
-    /// Convert back to `LegacyValue`. Same migration-only role as
-    /// `from_legacy`. Heap variants share the same `Rc` (no copy).
-    pub fn to_legacy(&self) -> crate::value::LegacyValue {
-        use crate::value::LegacyValue as L;
-        if self.is_nil() {
-            return L::Nil;
-        }
-        if self.is_bool() {
-            return L::Bool(self.as_bool());
-        }
-        if self.is_int() {
-            return L::Int(self.as_int());
-        }
-        if self.is_float() {
-            return L::Float(self.as_float());
-        }
-        if self.is_str() {
-            return L::Str(Rc::new(self.as_string()));
-        }
-        if self.is_obj() {
-            return self.with_obj_body(|b| match b {
-                HeapBody::String(_) => unreachable!("strings live behind TAG_STR"),
-                HeapBody::BoxedInt(n) => L::Int(*n),
-                HeapBody::Percent(p) => L::Percent(*p),
-                HeapBody::Quantity { value, unit } => L::Quantity {
-                    value: *value,
-                    unit: unit.clone(),
-                },
-                HeapBody::Range { start, end, exclusive } => L::Range {
-                    start: *start,
-                    end: *end,
-                    exclusive: *exclusive,
-                },
-                HeapBody::Tuple(rc) => L::Tuple(rc.clone()),
-                HeapBody::List(rc) => L::List(rc.clone()),
-                HeapBody::Object(rc) => L::Object(rc.clone()),
-                HeapBody::Class(rc) => L::Class(rc.clone()),
-                HeapBody::Function(rc) => L::Function(rc.clone()),
-                HeapBody::Instance(rc) => L::Instance(rc.clone()),
-                HeapBody::BcFunction(rc) => L::BcFunction(rc.clone()),
-                HeapBody::BcClass(rc) => L::BcClass(rc.clone()),
-                HeapBody::BcInstance(rc) => L::BcInstance(rc.clone()),
-                HeapBody::Builtin { name, params, func } => L::Builtin {
-                    name,
-                    params,
-                    func: *func,
-                },
-            });
-        }
-        L::Nil
-    }
-}
-
 // ---------- tests ----------
 
 #[cfg(test)]
@@ -946,8 +859,8 @@ mod tests {
         let f = TaggedValue::from_bool(false);
         assert!(t.is_bool());
         assert!(f.is_bool());
-        assert_eq!(t.as_bool(), true);
-        assert_eq!(f.as_bool(), false);
+        assert!(t.as_bool());
+        assert!(!f.as_bool());
         // Predicates exclude each other.
         assert!(!t.is_int());
         assert!(!t.is_float());
@@ -1197,56 +1110,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn legacy_shim_round_trips_primitives() {
-        use crate::value::LegacyValue as L;
-        let cases: Vec<L> = vec![
-            L::Nil,
-            L::Bool(true),
-            L::Bool(false),
-            L::Int(123),
-            L::Float(0.5),
-            L::Str(Rc::new("hi".to_string())),
-        ];
-        for legacy in cases {
-            let tagged = TaggedValue::from_legacy(&legacy);
-            let back = tagged.to_legacy();
-            assert_eq!(format!("{legacy:?}"), format!("{back:?}"));
-        }
-    }
-
-    #[test]
-    fn legacy_shim_round_trips_heap_variants() {
-        use crate::value::LegacyValue as L;
-        let t = L::Tuple(Rc::new(vec![TaggedValue::from_int(1), TaggedValue::from_int(2)]));
-        let back = TaggedValue::from_legacy(&t).to_legacy();
-        if let L::Tuple(rc) = back {
-            assert_eq!(rc.len(), 2);
-        } else {
-            panic!("tuple shim broke: {back:?}");
-        }
-        let q = L::Quantity {
-            value: 5.0,
-            unit: Rc::new("kg".to_string()),
-        };
-        match TaggedValue::from_legacy(&q).to_legacy() {
-            L::Quantity { value, unit } => {
-                assert_eq!(value, 5.0);
-                assert_eq!(&*unit, "kg");
-            }
-            other => panic!("quantity shim broke: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn legacy_shim_round_trips_bc_function() {
-        use crate::bytecode::{BcFunction, Chunk};
-        use crate::value::LegacyValue as L;
-        let f = Rc::new(BcFunction::new("test_fn", 0, Chunk::new()));
-        let v = L::BcFunction(f.clone());
-        match TaggedValue::from_legacy(&v).to_legacy() {
-            L::BcFunction(rc) => assert!(Rc::ptr_eq(&rc, &f), "shim must preserve Rc identity"),
-            other => panic!("BcFunction shim broke: {other:?}"),
-        }
-    }
+    // The legacy shim (`from_legacy` / `to_legacy` + the `LegacyValue`
+    // enum) was deleted at the end of 8f. The shim's round-trip tests
+    // are gone with it; the predicate/extractor tests above pin the
+    // production representation.
 }

@@ -20,7 +20,7 @@ use std::time::SystemTime;
 
 use macroquad::prelude::*;
 
-use crate::value::{Env, Object, Value, LegacyValue, ToLegacyShim};
+use crate::value::{Env, Object, Value};
 
 const KEYS: &[(&str, KeyCode)] = &[
     ("right", KeyCode::Right),
@@ -353,7 +353,7 @@ fn update_key_state(env: &mut Env) {
         }
     }
     let kp = env.get("key_press");
-    if kp.as_ref().map_or(false, |t| t.is_object()) {
+    if kp.as_ref().is_some_and(|t| t.is_object()) {
         let rc = kp.unwrap().as_object();
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {

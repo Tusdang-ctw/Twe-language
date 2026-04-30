@@ -7,42 +7,11 @@ use crate::tagged_value::TaggedValue;
 
 /// v0.2 Phase 8.5 session 8f: `Value` is a type alias for
 /// `TaggedValue`. Every signature, struct field, and constructor
-/// site in the codebase that wrote `Value` automatically aligns
-/// with the NaN-tagged representation. The legacy sum-type was
-/// renamed to `LegacyValue` and kept only as a transitional shim
-/// during the call-site migration; it deletes once every match
-/// site has converted to predicate dispatch.
+/// site in the codebase uses `Value` and gets the NaN-tagged
+/// representation automatically. The legacy sum-type and the
+/// `to_legacy` / `from_legacy` shim that bridged the migration
+/// were deleted at the end of 8f.
 pub type Value = TaggedValue;
-
-/// v0.2 Phase 8.5 session 8f: the original sum-type Value, kept
-/// alive only as a temporary shim during the migration. New code
-/// should use `TaggedValue` (= `Value`) directly. Deletes at end
-/// of 8f cleanup.
-#[derive(Clone)]
-pub enum LegacyValue {
-    Nil,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Percent(f64),
-    Quantity { value: f64, unit: Rc<String> },
-    Range { start: i64, end: i64, exclusive: bool },
-    Str(Rc<String>),
-    Tuple(Rc<Vec<TaggedValue>>),
-    List(Rc<RefCell<Vec<TaggedValue>>>),
-    Object(Rc<RefCell<Object>>),
-    Class(Rc<ClassDef>),
-    Instance(Rc<RefCell<Instance>>),
-    Function(Rc<FunctionDef>),
-    BcFunction(Rc<crate::bytecode::BcFunction>),
-    BcClass(Rc<crate::bytecode::BcClassDef>),
-    BcInstance(Rc<RefCell<crate::bytecode::BcInstance>>),
-    Builtin {
-        name: &'static str,
-        params: &'static [&'static str],
-        func: BuiltinFn,
-    },
-}
 
 #[derive(Debug)]
 pub struct FunctionDef {
@@ -254,129 +223,7 @@ pub fn legacy_fields_to_tagged(
     fields
 }
 
-/// v0.2 Phase 8.5 session 8f: extension trait that adds `.to_legacy()`
-/// to `Option<TaggedValue>` and `(TaggedValue, TaggedValue)` so the
-/// migration's match scrutinees compile while interior arm patterns
-/// still spell out `LegacyValue::Foo(...)`. Deletes at end of 8f.
-pub trait ToLegacyShim {
-    type Out;
-    fn to_legacy(&self) -> Self::Out;
-}
-
-impl ToLegacyShim for Option<TaggedValue> {
-    type Out = Option<LegacyValue>;
-    fn to_legacy(&self) -> Option<LegacyValue> {
-        self.as_ref().map(|t| t.to_legacy())
-    }
-}
-
-impl ToLegacyShim for (TaggedValue, TaggedValue) {
-    type Out = (LegacyValue, LegacyValue);
-    fn to_legacy(&self) -> (LegacyValue, LegacyValue) {
-        (self.0.to_legacy(), self.1.to_legacy())
-    }
-}
-
-impl ToLegacyShim for (&TaggedValue, &TaggedValue) {
-    type Out = (LegacyValue, LegacyValue);
-    fn to_legacy(&self) -> (LegacyValue, LegacyValue) {
-        (self.0.to_legacy(), self.1.to_legacy())
-    }
-}
-
-impl ToLegacyShim for Option<&TaggedValue> {
-    type Out = Option<LegacyValue>;
-    fn to_legacy(&self) -> Option<LegacyValue> {
-        self.map(|t| t.to_legacy())
-    }
-}
-
 pub type BuiltinFn = fn(&mut Env, &[TaggedValue]) -> Result<TaggedValue, RuntimeError>;
-
-impl fmt::Debug for LegacyValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LegacyValue::Nil => write!(f, "Nil"),
-            LegacyValue::Bool(b) => write!(f, "Bool({b})"),
-            LegacyValue::Int(n) => write!(f, "Int({n})"),
-            LegacyValue::Float(x) => write!(f, "Float({x:?})"),
-            LegacyValue::Percent(p) => write!(f, "Percent({p})"),
-            LegacyValue::Quantity { value, unit } => write!(f, "Quantity({value} {unit})"),
-            LegacyValue::Range { start, end, exclusive } => {
-                let op = if *exclusive { "..<" } else { ".." };
-                write!(f, "Range({start}{op}{end})")
-            }
-            LegacyValue::Str(s) => write!(f, "Str({s:?})"),
-            LegacyValue::Tuple(t) => write!(f, "Tuple({t:?})"),
-            LegacyValue::List(l) => write!(f, "List({:?})", l.borrow()),
-            LegacyValue::Object(o) => write!(f, "Object({})", o.borrow().kind),
-            LegacyValue::Class(c) => write!(f, "Class({} {})", c.kind, c.name),
-            LegacyValue::Instance(i) => write!(f, "Instance({})", i.borrow().class.name),
-            LegacyValue::Function(func) => write!(f, "Function({})", func.name),
-            LegacyValue::BcFunction(func) => write!(f, "BcFunction({})", func.name),
-            LegacyValue::BcClass(c) => write!(f, "BcClass({} {})", c.kind, c.name),
-            LegacyValue::BcInstance(i) => write!(f, "BcInstance({})", i.borrow().class.name),
-            LegacyValue::Builtin { name, .. } => write!(f, "Builtin({name})"),
-        }
-    }
-}
-
-impl LegacyValue {
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            LegacyValue::Nil => "nil",
-            LegacyValue::Bool(_) => "bool",
-            LegacyValue::Int(_) => "int",
-            LegacyValue::Float(_) => "float",
-            LegacyValue::Percent(_) => "percent",
-            LegacyValue::Quantity { .. } => "quantity",
-            LegacyValue::Range { .. } => "range",
-            LegacyValue::Str(_) => "string",
-            LegacyValue::Tuple(_) => "tuple",
-            LegacyValue::List(_) => "list",
-            LegacyValue::Object(o) => o.borrow().kind,
-            LegacyValue::Class(_) => "class",
-            LegacyValue::Instance(_) => "instance",
-            LegacyValue::Function(_) => "function",
-            LegacyValue::BcFunction(_) => "function",
-            LegacyValue::BcClass(_) => "class",
-            LegacyValue::BcInstance(_) => "instance",
-            LegacyValue::Builtin { .. } => "function",
-        }
-    }
-
-    pub fn display(&self) -> String {
-        match self {
-            LegacyValue::Nil => "nil".to_string(),
-            LegacyValue::Bool(b) => b.to_string(),
-            LegacyValue::Int(n) => n.to_string(),
-            LegacyValue::Float(x) => format!("{x:?}"),
-            LegacyValue::Percent(p) => format!("{p}%"),
-            LegacyValue::Quantity { value, unit } => format!("{value}{unit}"),
-            LegacyValue::Range { start, end, exclusive } => {
-                let op = if *exclusive { "..<" } else { ".." };
-                format!("{start}{op}{end}")
-            }
-            LegacyValue::Str(s) => s.as_ref().clone(),
-            LegacyValue::Tuple(elems) => {
-                let parts: Vec<String> = elems.iter().map(|t| t.display()).collect();
-                format!("({})", parts.join(", "))
-            }
-            LegacyValue::List(rc) => {
-                let parts: Vec<String> = rc.borrow().iter().map(|t| t.display()).collect();
-                format!("[{}]", parts.join(", "))
-            }
-            LegacyValue::Object(o) => format!("<{}>", o.borrow().kind),
-            LegacyValue::Class(c) => format!("<{} {}>", c.kind, c.name),
-            LegacyValue::Instance(i) => format!("<{}>", i.borrow().class.name),
-            LegacyValue::Function(func) => format!("<function {}>", func.name),
-            LegacyValue::BcFunction(func) => format!("<function {}>", func.name),
-            LegacyValue::BcClass(c) => format!("<{} {}>", c.kind, c.name),
-            LegacyValue::BcInstance(i) => format!("<{}>", i.borrow().class.name),
-            LegacyValue::Builtin { name, .. } => format!("<builtin {name}>"),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeError {

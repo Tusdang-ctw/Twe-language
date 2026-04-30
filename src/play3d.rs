@@ -49,7 +49,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::value::{DrawCall3d, Env, Object, Primitive, Value, LegacyValue, ToLegacyShim};
+use crate::value::{DrawCall3d, Env, Object, Primitive, Value};
 use crate::{eval, lexer, parser, stdlib};
 
 /// Twe-side key names ↔ winit physical key codes. Same name set
@@ -717,7 +717,7 @@ fn update_key_state(
         }
     }
     let kp = env.get("key_press");
-    if kp.as_ref().map_or(false, |t| t.is_object()) {
+    if kp.as_ref().is_some_and(|t| t.is_object()) {
         let rc = kp.unwrap().as_object();
         let mut o = rc.borrow_mut();
         for (name, _) in KEYS {
@@ -1564,7 +1564,7 @@ mod tests {
             json_bytes.push(b' ');
         }
         let mut bin_bytes = bin;
-        while bin_bytes.len() % 4 != 0 {
+        while !bin_bytes.len().is_multiple_of(4) {
             bin_bytes.push(0);
         }
 

@@ -8,7 +8,7 @@ use crate::ast::{
 use crate::stdlib;
 use crate::tagged_value::TaggedValue;
 use crate::value::{Branch, ClassDef, Env, EveryClockDef, Frame, FrameKind, FunctionDef, Instance, MethodDef,
-    Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value, LegacyValue, ToLegacyShim};
+    Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value};
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
     run_with_frames(program, 0, 1.0 / 60.0)
@@ -108,8 +108,8 @@ fn seed_particle_emitter(
 ) -> Result<(), RuntimeError> {
     let (count, lifetime, class) = {
         let inst = emitter.borrow();
-        let count = match inst.get_field("count").to_legacy() {
-            Some(LegacyValue::Int(n)) if n >= 0 => n as usize,
+        let count = match inst.get_field("count") {
+            Some(t) if t.is_int_or_boxed_int() && t.as_int() >= 0 => t.as_int() as usize,
             Some(other) => {
                 return Err(RuntimeError {
                     line,
@@ -127,8 +127,7 @@ fn seed_particle_emitter(
 let __opt = inst.get_field("lifetime");
 if let Some(__t) = (__opt).as_ref() {
 if __t.is_float() {
-let f = __t.as_float();
-f
+__t.as_float()
 } else if __t.is_int_or_boxed_int() {
 let n = __t.as_int();
 n as f64
@@ -219,8 +218,7 @@ let __opt = emitter
         .get_field("__particles");
 if let Some(__t) = (__opt).as_ref() {
 if __t.is_list() {
-let rc = __t.as_list();
-rc
+__t.as_list()
 } else {
 return Ok(())
 }
@@ -264,8 +262,7 @@ dt
 let __opt = o.get_field("lifetime");
 if let Some(__t) = (__opt).as_ref() {
 if __t.is_float() {
-let l = __t.as_float();
-l
+__t.as_float()
 } else {
 1.0
 }
@@ -321,8 +318,7 @@ let __opt = emitter
         .get_field("__particles");
 if let Some(__t) = (__opt).as_ref() {
 if __t.is_list() {
-let rc = __t.as_list();
-rc
+__t.as_list()
 } else {
 return Ok(())
 }
@@ -337,11 +333,15 @@ return Ok(())
         if p.is_object() {
             let rc = p.as_object();
             let o = rc.borrow();
-            let (px, py) = match o.get_field("pos").to_legacy() {
-                Some(LegacyValue::Tuple(elems)) if elems.len() >= 2 => (
-                    number_or_zero(&elems[0]),
-                    number_or_zero(&elems[1]),
-                ),
+            let (px, py) = match o.get_field("pos") {
+                Some(t) if t.is_tuple() => {
+                    let elems = t.as_tuple();
+                    if elems.len() >= 2 {
+                        (number_or_zero(&elems[0]), number_or_zero(&elems[1]))
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }
                 _ => (0.0, 0.0),
             };
             let radius = {
@@ -360,17 +360,22 @@ n as f32
 4.0
 }
 };
-            let color = match o.get_field("color").to_legacy() {
-                Some(LegacyValue::Tuple(elems)) if elems.len() >= 3 => {
-                    let r = number_or_zero(&elems[0]) as f32;
-                    let g = number_or_zero(&elems[1]) as f32;
-                    let b = number_or_zero(&elems[2]) as f32;
-                    let a = if elems.len() >= 4 {
-                        number_or_zero(&elems[3]) as f32
+            let color = match o.get_field("color") {
+                Some(t) if t.is_tuple() => {
+                    let elems = t.as_tuple();
+                    if elems.len() >= 3 {
+                        let r = number_or_zero(&elems[0]) as f32;
+                        let g = number_or_zero(&elems[1]) as f32;
+                        let b = number_or_zero(&elems[2]) as f32;
+                        let a = if elems.len() >= 4 {
+                            number_or_zero(&elems[3]) as f32
+                        } else {
+                            1.0
+                        };
+                        macroquad::color::Color::new(r, g, b, a)
                     } else {
-                        1.0
-                    };
-                    macroquad::color::Color::new(r, g, b, a)
+                        macroquad::color::WHITE
+                    }
                 }
                 _ => macroquad::color::WHITE,
             };
@@ -385,8 +390,7 @@ fn number_or_zero(v: &Value) -> f64 {
 let n = v.as_int();
 n as f64
 } else if v.is_float() {
-let f = v.as_float();
-f
+v.as_float()
 } else if v.is_quantity() {
 let (value, _) = v.as_quantity();
 value
@@ -1269,7 +1273,7 @@ fn is_top_level_user_call(env: &Env, expr: &Expr) -> bool {
             return false;
         }
     } }
-    env.get(name).as_ref().map_or(false, |t| t.is_function())
+    env.get(name).as_ref().is_some_and(|t| t.is_function())
 }
 
 /// Run a `Stmt::Expr(Call)` whose callee is a user function,
@@ -1665,8 +1669,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 help: Some(format!("declare it with `entity {class}:` first")),
             })?;
             let class_rc = if class_val.is_class() {
-let c = class_val.as_class();
-c
+class_val.as_class()
 } else {
 let other = class_val.clone();
 return Err(RuntimeError {
@@ -1898,8 +1901,8 @@ let final_value = if matches!(op, AssignOp::Set) {
                     // Special case: `.pos = (x, y)` on a sprite-shaped object
                     // also updates `.x` and `.y`. Mirrors Example 1's
                     // tuple-as-Vector2 behavior.
-                    if name == "pos" {
-                        if final_value.is_tuple() {
+                    if name == "pos"
+                        && final_value.is_tuple() {
                             let elems = &final_value.as_tuple();
                             if elems.len() >= 2 {
                                 let mut o = rc.borrow_mut();
@@ -1907,7 +1910,6 @@ let final_value = if matches!(op, AssignOp::Set) {
                                 o.insert_field("y".to_string(), elems[1].clone());
                             }
                         }
-                    }
                     rc.borrow_mut().insert_field(name.clone(), final_value);
                     if name == "x" || name == "y" {
                         refresh_pos(&rc);
@@ -2056,9 +2058,10 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
         } => {
             let s = eval_expr(env, start)?;
             let e = eval_expr(env, end)?;
-            match (&s, &e).to_legacy() {
-                (LegacyValue::Int(a), LegacyValue::Int(b)) => Ok(Value::from_range(a, b, *exclusive)),
-                _ => Err(RuntimeError {
+            if s.is_int_or_boxed_int() && e.is_int_or_boxed_int() {
+                Ok(Value::from_range(s.as_int(), e.as_int(), *exclusive))
+            } else {
+                Err(RuntimeError {
                     line: *line,
                     col: *col,
                     message: format!(
@@ -2067,7 +2070,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
                         e.type_name()
                     ),
                     help: Some("v0.1 supports only integer ranges; float ranges ship later".to_string()),
-                }),
+                })
             }
         }
         Expr::Field {
@@ -2093,16 +2096,22 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             col,
         } => {
             let v = eval_expr(env, operand)?;
-            match (op, v.to_legacy()) {
-                (UnOp::Neg, LegacyValue::Int(n)) => Ok(Value::from_int(-n)),
-                (UnOp::Neg, LegacyValue::Float(x)) => Ok(Value::from_float(-x)),
-                (UnOp::Neg, _) => Err(RuntimeError {
-                    line: *line,
-                    col: *col,
-                    message: format!("cannot negate value of type {}", v.type_name()),
-                    help: Some("`-` is defined on int and float".to_string()),
-                }),
-                (UnOp::Not, _) => Ok(Value::from_bool(!is_truthy(&v))),
+            match op {
+                UnOp::Neg => {
+                    if v.is_int_or_boxed_int() {
+                        Ok(Value::from_int(-v.as_int()))
+                    } else if v.is_float() {
+                        Ok(Value::from_float(-v.as_float()))
+                    } else {
+                        Err(RuntimeError {
+                            line: *line,
+                            col: *col,
+                            message: format!("cannot negate value of type {}", v.type_name()),
+                            help: Some("`-` is defined on int and float".to_string()),
+                        })
+                    }
+                }
+                UnOp::Not => Ok(Value::from_bool(!is_truthy(&v))),
             }
         }
         Expr::Binary {
@@ -2116,51 +2125,63 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
 }
 
 fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, RuntimeError> {
-    match (obj, idx).to_legacy() {
-        (LegacyValue::List(rc), LegacyValue::Int(i)) => {
-            let v = rc.borrow();
-            let len = v.len() as i64;
-            let actual = if i < 0 { i + len } else { i };
-            if actual < 0 || actual >= len {
-                return Err(RuntimeError {
-                    line,
-                    col,
-                    message: format!("list index {i} out of bounds (length {len})"),
-                    help: Some(
-                        "lists are 0-indexed; negative indices count from the end".to_string(),
-                    ),
-                });
-            }
-            Ok(v[actual as usize].clone())
+    if obj.is_list() {
+        if !idx.is_int_or_boxed_int() {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!("index must be int, got {}", idx.type_name()),
+                help: None,
+            });
         }
-        (LegacyValue::Tuple(elems), LegacyValue::Int(i)) => {
-            let len = elems.len() as i64;
-            let actual = if i < 0 { i + len } else { i };
-            if actual < 0 || actual >= len {
-                return Err(RuntimeError {
-                    line,
-                    col,
-                    message: format!("tuple index {i} out of bounds (length {len})"),
-                    help: Some(format!(
-                        "tuple indices are 0-based, so a length-{len} tuple uses indices 0..{}",
-                        len.saturating_sub(1)
-                    )),
-                });
-            }
-            Ok(elems[actual as usize].clone())
+        let rc = obj.as_list();
+        let i = idx.as_int();
+        let v = rc.borrow();
+        let len = v.len() as i64;
+        let actual = if i < 0 { i + len } else { i };
+        if actual < 0 || actual >= len {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!("list index {i} out of bounds (length {len})"),
+                help: Some(
+                    "lists are 0-indexed; negative indices count from the end".to_string(),
+                ),
+            });
         }
-        (LegacyValue::List(_) | LegacyValue::Tuple(_), other) => Err(RuntimeError {
+        Ok(v[actual as usize].clone())
+    } else if obj.is_tuple() {
+        if !idx.is_int_or_boxed_int() {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!("index must be int, got {}", idx.type_name()),
+                help: None,
+            });
+        }
+        let elems = obj.as_tuple();
+        let i = idx.as_int();
+        let len = elems.len() as i64;
+        let actual = if i < 0 { i + len } else { i };
+        if actual < 0 || actual >= len {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!("tuple index {i} out of bounds (length {len})"),
+                help: Some(format!(
+                    "tuple indices are 0-based, so a length-{len} tuple uses indices 0..{}",
+                    len.saturating_sub(1)
+                )),
+            });
+        }
+        Ok(elems[actual as usize].clone())
+    } else {
+        Err(RuntimeError {
             line,
             col,
-            message: format!("index must be int, got {}", other.type_name()),
-            help: None,
-        }),
-        (other, _) => Err(RuntimeError {
-            line,
-            col,
-            message: format!("cannot index value of type {}", other.type_name()),
+            message: format!("cannot index value of type {}", obj.type_name()),
             help: Some("indexing works on lists and tuples".to_string()),
-        }),
+        })
     }
 }
 
@@ -2998,8 +3019,7 @@ return Err(RuntimeError {
         let inst = {
 let __t = instantiate(class.clone());
 if __t.is_instance() {
-let rc = __t.as_instance();
-rc
+__t.as_instance()
 } else {
 unreachable!("instantiate always returns Instance")
 }
@@ -3103,18 +3123,21 @@ fn apply_arith(
         _ => unreachable!(),
     };
     // String concatenation via `+`.
-    if matches!(op, BinOp::Add) {
-        if let (LegacyValue::Str(a), LegacyValue::Str(b)) = (l, r).to_legacy() {
+    if matches!(op, BinOp::Add)
+        && l.is_str() && r.is_str() {
+            let a = l.as_string();
+            let b = r.as_string();
             let mut s = String::with_capacity(a.len() + b.len());
             s.push_str(a.as_str());
             s.push_str(b.as_str());
             return Ok(Value::from_string(s));
         }
-    }
     // Tuple arithmetic — element-wise add/sub between same-length tuples
     // (Snake's `snake[0] + direction` shape) and tuple * scalar (Snake's
     // `cell * cell_size`).
-    if let (LegacyValue::Tuple(a), LegacyValue::Tuple(b)) = (l, r).to_legacy() {
+    if l.is_tuple() && r.is_tuple() {
+        let a = l.as_tuple();
+        let b = r.as_tuple();
         if matches!(op, BinOp::Add | BinOp::Sub) {
             if a.len() != b.len() {
                 return Err(RuntimeError {
@@ -3156,23 +3179,25 @@ fn apply_arith(
             return Ok(Value::from_tuple(Rc::new(out_elems)));
         }
     }
-    let pair = match (l, r).to_legacy() {
-        (LegacyValue::Int(a), LegacyValue::Int(b)) => NumPair::Ints(a, b),
-        (LegacyValue::Float(a), LegacyValue::Float(b)) => NumPair::Floats(a, b),
-        (LegacyValue::Int(a), LegacyValue::Float(b)) => NumPair::Floats(a as f64, b),
-        (LegacyValue::Float(a), LegacyValue::Int(b)) => NumPair::Floats(a, b as f64),
-        _ => {
-            return Err(RuntimeError {
-                line,
-                col,
-                message: format!(
-                    "operator '{op_str}' is not defined on {} and {}",
-                    l.type_name(),
-                    r.type_name()
-                ),
-                help: None,
-            })
-        }
+    let pair = if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
+        NumPair::Ints(l.as_int(), r.as_int())
+    } else if l.is_float() && r.is_float() {
+        NumPair::Floats(l.as_float(), r.as_float())
+    } else if l.is_int_or_boxed_int() && r.is_float() {
+        NumPair::Floats(l.as_int() as f64, r.as_float())
+    } else if l.is_float() && r.is_int_or_boxed_int() {
+        NumPair::Floats(l.as_float(), r.as_int() as f64)
+    } else {
+        return Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "operator '{op_str}' is not defined on {} and {}",
+                l.type_name(),
+                r.type_name()
+            ),
+            help: None,
+        });
     };
     match (op, pair) {
         (BinOp::Add, NumPair::Ints(a, b)) => Ok(Value::from_int(a + b)),
@@ -3199,7 +3224,7 @@ enum NumPair {
 }
 
 fn is_scalar(v: &Value) -> bool {
-    matches!(v.to_legacy(), LegacyValue::Int(_) | LegacyValue::Float(_))
+    v.is_number()
 }
 
 fn cmp_int(
@@ -3211,12 +3236,16 @@ fn cmp_int(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
-    match (l, r).to_legacy() {
-        (LegacyValue::Int(a), LegacyValue::Int(b)) => Ok(Value::from_bool(int_cmp(a, b))),
-        (LegacyValue::Float(a), LegacyValue::Float(b)) => Ok(Value::from_bool(float_cmp(a, b))),
-        (LegacyValue::Int(a), LegacyValue::Float(b)) => Ok(Value::from_bool(float_cmp(a as f64, b))),
-        (LegacyValue::Float(a), LegacyValue::Int(b)) => Ok(Value::from_bool(float_cmp(a, b as f64))),
-        _ => Err(RuntimeError {
+    if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
+        Ok(Value::from_bool(int_cmp(l.as_int(), r.as_int())))
+    } else if l.is_float() && r.is_float() {
+        Ok(Value::from_bool(float_cmp(l.as_float(), r.as_float())))
+    } else if l.is_int_or_boxed_int() && r.is_float() {
+        Ok(Value::from_bool(float_cmp(l.as_int() as f64, r.as_float())))
+    } else if l.is_float() && r.is_int_or_boxed_int() {
+        Ok(Value::from_bool(float_cmp(l.as_float(), r.as_int() as f64)))
+    } else {
+        Err(RuntimeError {
             line,
             col,
             message: format!(
@@ -3225,33 +3254,12 @@ fn cmp_int(
                 r.type_name()
             ),
             help: None,
-        }),
+        })
     }
 }
 
 fn values_equal(l: &Value, r: &Value) -> bool {
-    match (l, r).to_legacy() {
-        (LegacyValue::Nil, LegacyValue::Nil) => true,
-        (LegacyValue::Bool(a), LegacyValue::Bool(b)) => a == b,
-        (LegacyValue::Int(a), LegacyValue::Int(b)) => a == b,
-        (LegacyValue::Float(a), LegacyValue::Float(b)) => a == b,
-        (LegacyValue::Int(a), LegacyValue::Float(b)) => (a as f64) == b,
-        (LegacyValue::Float(a), LegacyValue::Int(b)) => a == (b as f64),
-        (LegacyValue::Percent(a), LegacyValue::Percent(b)) => a == b,
-        (
-            LegacyValue::Quantity { value: a, unit: u1 },
-            LegacyValue::Quantity { value: b, unit: u2 },
-        ) => a == b && u1 == u2,
-        (
-            LegacyValue::Range { start: s1, end: e1, exclusive: x1 },
-            LegacyValue::Range { start: s2, end: e2, exclusive: x2 },
-        ) => s1 == s2 && e1 == e2 && x1 == x2,
-        (LegacyValue::Str(a), LegacyValue::Str(b)) => a == b,
-        (LegacyValue::Tuple(a), LegacyValue::Tuple(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y))
-        }
-        _ => false,
-    }
+    l.equals(r)
 }
 
 fn is_truthy(v: &Value) -> bool {

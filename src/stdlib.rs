@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::value::{legacy_fields_to_tagged, Env, Object, RuntimeError, Value, LegacyValue, ToLegacyShim};
+use crate::value::{legacy_fields_to_tagged, Env, Object, RuntimeError, Value};
 
 // Texture cache: macroquad's `Texture2D` can only be constructed once
 // the GL context exists, so loading is lazy — the first `sprite(spr, at)`
@@ -911,8 +911,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     let layout = {
 let __t = &args[0];
 if __t.is_str() {
-let s = __t.as_string();
-s
+__t.as_string()
 } else {
 let other = __t.clone();
 return Err(RuntimeError {
@@ -1016,8 +1015,7 @@ return Err(RuntimeError {
         let name: String = {
 let __t = &elems[1];
 if __t.is_str() {
-let s = __t.as_string();
-s
+__t.as_string()
 } else {
 let other = __t.clone();
 return Err(RuntimeError {
@@ -1193,8 +1191,7 @@ return Err(tilemap_internal_error("tile_size"))
 
     let cells_rc = if let Some(__t) = (cells_value).as_ref() {
 if __t.is_list() {
-let rc = __t.as_list();
-rc
+__t.as_list()
 } else {
 return Err(tilemap_internal_error("cells"))
 }
@@ -1203,8 +1200,7 @@ return Err(tilemap_internal_error("cells"))
 };
     let tile_specs_rc = if let Some(__t) = (tiles_value).as_ref() {
 if __t.is_object() {
-let rc = __t.as_object();
-rc
+__t.as_object()
 } else {
 return Err(tilemap_internal_error("tiles"))
 }
@@ -1216,16 +1212,14 @@ return Err(tilemap_internal_error("tiles"))
     let tile_specs = tile_specs_rc.borrow();
     for (row_idx, row_value) in cells.iter().enumerate() {
         let row_rc = if row_value.is_list() {
-let rc = row_value.as_list();
-rc
+row_value.as_list()
 } else {
 continue
 };
         let row = row_rc.borrow();
         for (col_idx, cell) in row.iter().enumerate() {
             let name_string: String = if cell.is_str() {
-let s = cell.as_string();
-s
+cell.as_string()
 } else {
 continue
 };
@@ -1351,8 +1345,7 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 let __opt = map.borrow().get_field("tiles");
 if let Some(__t) = (__opt).as_ref() {
 if __t.is_object() {
-let rc = __t.as_object();
-rc
+__t.as_object()
 } else {
 return Ok(Value::FALSE)
 }
@@ -1452,8 +1445,7 @@ return String::new()
     {
 let __t = &row[col_idx];
 if __t.is_str() {
-let s = __t.as_string();
-s
+__t.as_string()
 } else {
 String::new()
 }

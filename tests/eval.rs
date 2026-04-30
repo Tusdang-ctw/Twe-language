@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 
 use twec::{eval, lexer, parser};
-use twec::value::{LegacyValue, ToLegacyShim};
 
 fn run_program(path: &str) -> Result<String, String> {
     let src = fs::read_to_string(Path::new(path))
@@ -388,9 +387,11 @@ scene S:
 
 fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
     use twec::value::Value;
-    if let Some(LegacyValue::Object(rc)) = env.get("key_press").to_legacy() {
-        rc.borrow_mut()
-            .insert_field(key.to_string(), Value::from_bool(value));
+    if let Some(t) = env.get("key_press") {
+        if t.is_object() {
+            t.as_object().borrow_mut()
+                .insert_field(key.to_string(), Value::from_bool(value));
+        }
     }
 }
 
@@ -398,17 +399,17 @@ fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
 
 #[test]
 fn stdlib_installs_mouse_objects() {
-    use twec::value::Value;
+    
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
 
     // mouse: x, y, pos, wheel
     let rc = match env.get("mouse") { Some(t) if t.is_object() => t.as_object(), _ => panic!("mouse object missing after stdlib::install") };
     let m = rc.borrow();
-    assert!(m.get_field("x").as_ref().map_or(false, |t| t.is_float()));
-    assert!(m.get_field("y").as_ref().map_or(false, |t| t.is_float()));
-    assert!(m.get_field("pos").as_ref().map_or(false, |t| t.is_tuple()));
-    assert!(m.get_field("wheel").as_ref().map_or(false, |t| t.is_float()));
+    assert!(m.get_field("x").as_ref().is_some_and(|t| t.is_float()));
+    assert!(m.get_field("y").as_ref().is_some_and(|t| t.is_float()));
+    assert!(m.get_field("pos").as_ref().is_some_and(|t| t.is_tuple()));
+    assert!(m.get_field("wheel").as_ref().is_some_and(|t| t.is_float()));
 
     // mouse_held / mouse_press: left, middle, right
     for name in ["mouse_held", "mouse_press"] {
@@ -416,7 +417,7 @@ fn stdlib_installs_mouse_objects() {
         let o = rc.borrow();
         for btn in ["left", "middle", "right"] {
             assert!(
-                o.get_field(btn).as_ref().map_or(false, |t| t.is_bool()),
+                o.get_field(btn).as_ref().is_some_and(|t| t.is_bool()),
                 "{name}.{btn} missing or non-bool after install"
             );
         }
@@ -430,7 +431,7 @@ fn mouse_position_drives_on_update_logic() {
     // and react. Here the script accumulates `mouse.x` into a
     // running total via on_update — proves the field is reachable
     // from the frame loop the same way `key.right` is.
-    use twec::value::Value;
+    
     let src = r#"
 var total = 0.0
 on update(dt):
@@ -449,8 +450,8 @@ on update(dt):
     set_mouse_x(&env, 30.0);
     twec::eval::tick_frame(&mut env, 0.016).expect("tick");
 
-    let total = match env.get("total").to_legacy() {
-        Some(LegacyValue::Float(f)) => f,
+    let total = match env.get("total") {
+        Some(t) if t.is_float() => t.as_float(),
         other => panic!("expected total to be Float, got {other:?}"),
     };
     assert_eq!(total, 60.0);
@@ -460,7 +461,7 @@ on update(dt):
 fn mouse_press_left_drives_branching() {
     // Edge-triggered mouse_press.left fires the body once per
     // press. Three frames: press, no-press, press again.
-    use twec::value::Value;
+    
     let src = r#"
 var clicks = 0
 on update(dt):
@@ -480,8 +481,8 @@ on update(dt):
     set_mouse_press(&env, "left", true);
     twec::eval::tick_frame(&mut env, 0.016).expect("tick");
 
-    let clicks = match env.get("clicks").to_legacy() {
-        Some(LegacyValue::Int(n)) => n,
+    let clicks = match env.get("clicks") {
+        Some(t) if t.is_int_or_boxed_int() => t.as_int(),
         other => panic!("expected clicks to be Int, got {other:?}"),
     };
     assert_eq!(clicks, 2);
@@ -489,16 +490,20 @@ on update(dt):
 
 fn set_mouse_x(env: &twec::value::Env, x: f64) {
     use twec::value::Value;
-    if let Some(LegacyValue::Object(rc)) = env.get("mouse").to_legacy() {
-        rc.borrow_mut().insert_field("x", Value::from_float(x));
+    if let Some(t) = env.get("mouse") {
+        if t.is_object() {
+            t.as_object().borrow_mut().insert_field("x", Value::from_float(x));
+        }
     }
 }
 
 fn set_mouse_press(env: &twec::value::Env, button: &str, value: bool) {
     use twec::value::Value;
-    if let Some(LegacyValue::Object(rc)) = env.get("mouse_press").to_legacy() {
-        rc.borrow_mut()
-            .insert_field(button.to_string(), Value::from_bool(value));
+    if let Some(t) = env.get("mouse_press") {
+        if t.is_object() {
+            t.as_object().borrow_mut()
+                .insert_field(button.to_string(), Value::from_bool(value));
+        }
     }
 }
 
@@ -541,7 +546,7 @@ fn load_from_missing_file_errors_at_runtime() {
 
 #[test]
 fn stdlib_installs_audio_v2_surface() {
-    use twec::value::Value;
+    
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
 
@@ -551,7 +556,7 @@ fn stdlib_installs_audio_v2_surface() {
     let s = rc.borrow();
     for name in ["load", "play", "play_at", "stop", "set_volume"] {
         assert!(
-            s.get_field(name).as_ref().map_or(false, |t| t.is_builtin()),
+            s.get_field(name).as_ref().is_some_and(|t| t.is_builtin()),
             "sound.{name} missing or not a builtin"
         );
     }
@@ -561,7 +566,7 @@ fn stdlib_installs_audio_v2_surface() {
     let m = rc.borrow();
     for name in ["play", "play_at", "stop"] {
         assert!(
-            m.get_field(name).as_ref().map_or(false, |t| t.is_builtin()),
+            m.get_field(name).as_ref().is_some_and(|t| t.is_builtin()),
             "music.{name} missing or not a builtin"
         );
     }
@@ -847,7 +852,7 @@ fn particles_emitter_ages_and_despawns() {
 
 #[test]
 fn particles_block_creates_count_particles_with_defaults() {
-    use twec::value::Value;
+    
     let src = r#"
 particles Spark:
     count: 4
@@ -965,7 +970,7 @@ fn entities_of_with_non_class_errors() {
 
 #[test]
 fn spawn_at_sets_pos_field() {
-    use twec::value::Value;
+    
     let src = r#"
 entity Pin:
     var pos = (0, 0)
@@ -1002,7 +1007,7 @@ fn scene_methods_callable_by_bare_name() {
 
 #[test]
 fn snake_advances_right_by_default() {
-    use twec::value::Value;
+    
     let src = std::fs::read_to_string("examples/snake.twe")
         .expect("examples/snake.twe must exist");
     let tokens = twec::lexer::lex(&src).expect("lex");
@@ -1025,10 +1030,11 @@ fn snake_advances_right_by_default() {
         panic!("snake should be a list")
     };
     let (hx, hy) = if head.is_tuple() {
-let elems = head.as_tuple();
-match (&elems[0], &elems[1]).to_legacy() {
-            (LegacyValue::Int(x), LegacyValue::Int(y)) => (x, y),
-            _ => panic!("head should be (Int, Int)"),
+        let elems = head.as_tuple();
+        if elems[0].is_int_or_boxed_int() && elems[1].is_int_or_boxed_int() {
+            (elems[0].as_int(), elems[1].as_int())
+        } else {
+            panic!("head should be (Int, Int)")
         }
 } else {
 panic!("head should be a tuple")
@@ -1040,7 +1046,7 @@ panic!("head should be a tuple")
 
 #[test]
 fn snake_dies_into_a_wall() {
-    use twec::value::Value;
+    
     let src = std::fs::read_to_string("examples/snake.twe")
         .expect("examples/snake.twe must exist");
     let tokens = twec::lexer::lex(&src).expect("lex");

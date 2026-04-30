@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::json;
-use crate::value::{Object, RuntimeError, Value, LegacyValue, ToLegacyShim};
+use crate::value::{Object, RuntimeError, Value};
 
 /// Encode a Twe `Value` into a `json::Value`. Returns an error
 /// describing the offending type if the value contains anything
@@ -319,15 +319,15 @@ mod tests {
 
     #[test]
     fn primitives_round_trip() {
-        match round_trip(Value::from_int(42)).to_legacy() {
-            LegacyValue::Int(42) => {}
-            other => panic!("expected Int(42), got {other:?}"),
+        {
+            let v = round_trip(Value::from_int(42));
+            assert!(v.is_int_or_boxed_int() && v.as_int() == 42, "expected Int(42), got {v:?}");
         }
         {
 let __t = round_trip(Value::from_float(3.14));
 if __t.is_float() && { let f = __t.as_float();
 (f - 3.14).abs() < 1e-9 } {
-let f = __t.as_float();
+let _f = __t.as_float();
 
 } else {
 let other = __t.clone();
@@ -356,7 +356,7 @@ panic!("expected Nil, got {other:?}")
 let __t = round_trip(Value::from_string("hello".to_string()));
 if __t.is_str() && { let s = __t.as_string();
 s == "hello" } {
-let s = __t.as_string();
+let _s = __t.as_string();
 
 } else {
 let other = __t.clone();
@@ -455,8 +455,8 @@ let __t = round_trip(v);
 if __t.is_object() {
 let rc = __t.as_object();
 let o = rc.borrow();
-                assert!(o.get_field("hp").as_ref().map_or(false, |t| t.is_int_or_boxed_int()));
-                assert!(o.get_field("name").as_ref().map_or(false, |t| t.is_str()));
+                assert!(o.get_field("hp").as_ref().is_some_and(|t| t.is_int_or_boxed_int()));
+                assert!(o.get_field("name").as_ref().is_some_and(|t| t.is_str()));
 } else {
 let other = __t.clone();
 panic!("expected Object, got {other:?}")
@@ -512,7 +512,7 @@ panic!("expected Object, got {other:?}")
         if loaded.is_object() {
 let rc = loaded.as_object();
 let o = rc.borrow();
-                assert!(o.get_field("hp").as_ref().map_or(false, |t| t.is_int_or_boxed_int()));
+                assert!(o.get_field("hp").as_ref().is_some_and(|t| t.is_int_or_boxed_int()));
 } else {
 let other = loaded.clone();
 panic!("expected Object, got {other:?}")
