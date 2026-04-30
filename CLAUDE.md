@@ -30,6 +30,16 @@ The three target use cases are documented in `README.md`:
 
 ---
 
+## v1.0 thesis
+
+**v1.0 means a developer can ship a Vampire-Survivors-class commercial 2D game on Twe.** Use case #1 above is the v1.0 success criterion; use cases #2 and #3 contribute features but don't gate the release. Every post-v0.1 prioritization decision is filtered through that thesis: "does this make a Steam-class 2D game possible / easier to ship?"
+
+3D continues in maintenance mode (the existing `play3d` keeps working) but is off the v1.0 critical path. Roblox-class 3D is multi-year and out of scope.
+
+The full v1.0 plan is canonical in `docs/05-roadmap.md` Phases 8–16.
+
+---
+
 ## The Five Principles (strict priority order)
 
 1. **Game concepts are first-class.** `entity`, `state`, `visual`, `dialogue`, `particles`, `scene` are language constructs, not library calls.
@@ -49,7 +59,7 @@ These decisions are settled. Do not reopen them without an explicit user request
 - **Implementation language: Rust.** With a clean C ABI for embedding.
 - **Parser: hand-written recursive descent.** No parser generator. No PEG. No ANTLR.
 - **VM strategy: tree-walker for v0.1, bytecode VM for v0.3+.** Don't skip the tree-walker.
-- **Value representation: NaN-tagged 64-bit values** (in the bytecode VM). Follow *Crafting Interpreters* Chapter 30.
+- **Value representation: NaN-tagged 64-bit values** (in the bytecode VM). Follow *Crafting Interpreters* Chapter 30. **Lands in v0.2 (Phase 8)** per `docs/05-roadmap.md` — pulled forward from the original v0.5 slot because it's a value-representation change that pays back over every later phase.
 - **Concurrency: Wren-style cooperative fibers.** Single-threaded VM. No `async`/`await` distinction visible to the user.
 - **Indentation-based syntax**, no semicolons, no braces. Python/GDScript family.
 - **Six core declarative blocks for v0.1:** `entity`, `state`, `visual`, `particles`, `scene`, `dialogue`. Other forms (`item`, `inventory`, `ai`, `tilemap`, `save`) are stdlib patterns until they earn promotion.
@@ -67,6 +77,10 @@ These are unresolved. When you encounter them, flag explicitly and propose; do n
 - List comprehensions (deferred per Snake's NP3).
 - Keyword pruning — the current 50-keyword list is at the high end.
 - The fate of `then` as a sequencing keyword (only used in Example 10).
+- **Save schema design** — `docs/07-save-system.md` is a Phase 7 prerequisite for the v0.2 `save` block compiler. Versioning, Steam Cloud quotas, atomicity story all open until that doc lands.
+- **Input remapping UX** — keyboard / gamepad rebind UI (Phase 10) needs a design pass. Live-rebind vs. rebind-from-menu? Conflict resolution?
+- **Pause-on-focus-loss semantics** — fibers suspend by default on window blur (Phase 10), but per-state opt-out for always-running tasks (e.g., a level-streamer) needs a syntax. `state foo: persistent` flag? `pause: false` field? Deferred until first need.
+- **Visual block runtime** — documented as a v0.1 headline feature in `docs/01-examples.md` Example 5 and `README.md` Pillar 3, but not implemented. Phase 7 docs honesty fix demotes Pillar 3 to v0.3; Phase 9 ships the `visual` → WGSL compiler.
 - See `docs/06-design-document.md` Appendix B for the canonical open-questions list.
 
 ---
@@ -112,9 +126,16 @@ We are entering **Phase 7** (v0.1 public release) per `docs/05-roadmap.md`. Clos
 
 These are mostly *non-code* sessions — release engineering, writing, packaging. The codebase itself doesn't need new features for v0.1.
 
-Or schedule **v0.2 work in parallel** — `.glb` mesh import, tilemap, save schemas, bytecode VM 3D path, structural subtyping, NaN tagging, function-body `wait`. See `notes/future-phases.md` "Carried into v0.2."
+**Phase 7 has two pre-release additions** to keep v0.1 honest before tagging:
 
-Do not rabbit-hole into v0.2-and-later items. If you find yourself thinking about playground hosting, native code generation, Tier-3 verified mode, NaN tagging, or `.glb` import as part of a Phase 7 session, stop. Note it in `notes/future-phases.md` and return to the release-prep task in flight.
+1. **Demote `visual` and `particles` blocks** in `docs/01-examples.md`, `README.md`, and `docs/06-design-document.md` — they're documented as shipped but the runtimes don't exist (`particles` parses but `eval` no-ops it; `visual` has no parser support at all). Don't ship a v0.1 release that lies about its surface.
+2. **Author `docs/07-save-system.md`** — design doc for save schemas, version migration, Steam Cloud quota model. Required *before* v0.2 implements the `save` compiler. No code, just design.
+
+**v0.2 work also runs in parallel** — Phase 8 in the roadmap. Sessions 1 (`.glb`), 2a / 2b / 2c (resumable wait + frame stack + VM nested-block parity) shipped 2026-04-29 / 04-30. Remaining Phase 8 items: tilemap, save compiler, mouse, audio v2, NaN tagging + GC, function-body wait on the VM. See `docs/05-roadmap.md` Phase 8.
+
+**Post-v0.1 the canonical plan is `docs/05-roadmap.md` Phases 8–16** (v0.2 → v1.0). Theme: "ship a Vampire-Survivors-class commercial 2D game on Twe." 3D is in maintenance mode, off the v1.0 critical path.
+
+Do not rabbit-hole into post-v0.1 items mid-Phase-7. If you find yourself thinking about UI primitives, native code generation, Tier-3 verified mode, or shader compilation while doing Phase 7 release prep, stop. Confirm the item is captured in `docs/05-roadmap.md` (or `notes/future-phases.md` for ad-hoc deferrals) and return to the release task in flight.
 
 **Phase boundaries are now closed with explicit closeout notes** in `docs/changes/`. Pattern: what shipped (against exit criteria), what slipped (explicit deferral decisions with reasons and target re-entry phase), doc edits applied. This is the only mechanism that keeps this brief honest.
 
@@ -138,6 +159,12 @@ Commit messages follow the form: `phase-N: <verb> <what>`, where N is the curren
 - `phase-7: cargo-dist scaffold for cross-platform binaries`
 - `phase-7: contribution guide + license decision`
 - `phase-7: README hero + install instructions`
+- `phase-8: tilemap render + collision`
+- `phase-8: NaN-tagged 64-bit values`
+- `phase-9: visual block → WGSL compilation`
+- `phase-10: button + label + slider primitives`
+
+For v0.2 work that's already shipped on the parallel track this conversation, the prefix `v0.2:` was used (matching the work-track shape of v0.2 sessions 1, 2a, 2b, 2c). New work after Phase 7 closes should use `phase-8:` etc. — same `phase-N:` discipline as Phases 1–6.
 
 Phases 1–6 used their respective `phase-N:` prefix. The closeout-note pattern means each `phase-N:` series ends with a `docs/changes/<date>-phase-N-closeout.md` commit before the next phase opens.
 

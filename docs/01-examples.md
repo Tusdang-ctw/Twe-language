@@ -1,6 +1,6 @@
 # Doc 01 — Ten Example Programs
 
-> The most important document in this repository. Everything else flows from these ten programs.
+> The most important document in this repository. Everything else flows from these ten programs (plus Snake — see `example-11-snake.md`).
 >
 > The grammar must support every example here. Every feature not required by these examples is suspect. When the language design is in doubt, return to these examples and check whether the answer is implied.
 
@@ -10,11 +10,33 @@
 
 Each example has three parts:
 
-1. **The Twe code** as it should look when v0.1 ships.
+1. **The Twe code** as it should look in its target release.
 2. **What it demonstrates** — the gameplay system or design intent.
 3. **Implied decisions** — the syntactic and semantic commitments this example forces.
 
 The implied decisions are the actual point. The code is the vehicle.
+
+---
+
+## Runtime delivery status
+
+Not every example ships in v0.1. Some pressure-test features that require runtime work scheduled in later phases. This table is the canonical "which release runs which example."
+
+| Example | Runtime ships in | Notes |
+|---|---|---|
+| 1 — Hello, sprite | **v0.1** | macroquad-backed; runs today on `twec run`. |
+| 2 — Inventory & modifiers | **v0.1** (logic) | The data model runs; example doesn't drive a window. |
+| 3 — Branching dialogue | **v0.1** (tree-walker only) | Tree-walker has dialogue; bytecode VM lands it in v0.3. Interactive choice (player picks) is v0.3. |
+| 4 — NPC state-machine AI | **v0.1** | States, transitions, `every`, predicate hooks all ship. |
+| 5 — Procedural fire | **v0.3** | `visual` block → WGSL fragment-shader compilation is Phase 9. v0.1 docs claimed this; that was wrong — the Phase 7 honesty pass demoted it. |
+| 6 — Particle burst | **v0.3** | `particles` block parses today but the runtime no-ops. Real runtime is Phase 9. |
+| 7 — Save and load | **v0.2** | `save` block compiler is Phase 8, against the `docs/07-save-system.md` design. |
+| 8 — 3D camera follow | **v0.1** (cubes/spheres/`.glb`) | `play3d` runs the surface today. Polish (mouse, mat4/quat, animation) is 3D-maintenance, off the v1.0 critical path. |
+| 9 — Tilemap with collision | **v0.2** | `tilemap` block runtime is Phase 8. |
+| 10 — Boss fight | **v0.3** | Integration test — depends on Examples 4 (states ✅) + 7 (save, v0.2) + 6 (particles, v0.3). Runs end-to-end at v0.3. |
+| 11 — Snake | **v0.1** | Drove the Phase 6 NPx design pressures; runs today on `twec play`. |
+
+If you're reading this looking for "what can I write today?", the v0.1 column is the answer: Examples 1, 2, 3 (no choices yet), 4, 8 (cubes), and 11. The roadmap to bring the rest online is `docs/05-roadmap.md` Phases 8 and 9.
 
 ---
 

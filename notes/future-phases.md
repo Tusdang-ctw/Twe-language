@@ -306,84 +306,78 @@ note.
       frame's stack slice. See
       `docs/changes/2026-04-30-v0.2-session-2c-vm-wait-parity.md`.
 
-## Carried into v0.2
+## Triage backlog
 
-Phase 5 closed at v0.1-minimum-viable; Phase 6 closed with
-strict-mode and tooling polish substantively shipped. The
-following items are formally re-deferred to v0.2 per the
-closeout notes (`docs/changes/2026-04-29-phase-5-closeout.md`,
-`docs/changes/2026-04-29-phase-6-closeout.md`):
+> **Canonical post-v0.1 plan: `docs/05-roadmap.md` Phases 8–16 (v0.2 → v1.0).** This file is the *triage backlog* — items that don't fit cleanly into a phase yet (sub-feature deferrals, design questions awaiting resolution, debt items, indefinite-defer items). New ad-hoc items go here; phase-defining items go to the roadmap.
 
-- **Structural-record subtyping under strict** — Phase 6 strict
-  mode enforces nominal types; structural subtyping needs a real
-  subtype-check rule. Design conversation before code.
-- **Luau "lax strict" widening rules** — defer until users push
-  back on the current strictness.
-- **Tutorial iteration pass-2** — screenshots, a longer walkthrough
-  (Pong / RPG end-to-end). Driven by user feedback once v0.1 is
-  in real hands.
+### Sub-feature deferrals (ride existing roadmap phases)
 
-Phase 5 carry-overs:
+These are scoped narrower than a roadmap entry. Capture is for memory.
 
-- **`wait` in non-state-entry contexts** — sessions 2a (resumable
-  `if` / `while` blocks), 2b (function-body `wait` for bare-name
-  `Stmt::Expr` calls on the tree-walker), and 2c (VM
-  nested-block parity for 2a) **shipped**. Method-body `wait`,
-  call-as-expression (`let x = f()`), `for`-body `wait`, and
-  function-body `wait` on the bytecode VM remain follow-ons —
-  the VM piece needs a multi-frame fiber save (entire call
-  stack + per-frame value-stack slices). `wait` inside
-  `dialogue` (per-dialogue scheduler) and fiber-backed `every`
-  rewrite stay on the v0.2 backlog beyond the 2a/2b/2c track.
-- **Dialogue UI** — interactive choice selection (input modality
-  conversation), bytecode VM dialogue support, per-dialogue
-  scheduler for `wait` inside dialogue, `scene.npc("...")` lookup.
-- **3D mesh import** — ~~`.glb` loading~~ shipped 2026-04-29 (v0.2
-  session 1). `.obj` and multi-primitive scenes / node transforms
-  / materials remain as follow-ons.
-- **Generic 3D primitives** — ~~`sphere()`~~ (shipped 2026-04-29 in
-  Phase 6 session 7), ~~`mesh()`~~ (shipped 2026-04-29 in v0.2
-  session 1), `plane()`. `plane()` is two triangles, trivially the
-  same pattern as `sphere`.
-- **Bytecode VM 3D path** — `on render():` codegen + per-frame
-  invocation. Mirrors how dialogue / state-machine work landed.
-- **`mat4` / `quat` types in stdlib** — land when `entity.transform`
-  / `camera.rotate(quat)` etc. consume them.
-- **Proper lighting** — point / area lights, shadow mapping,
-  Twe-side `light()` builtin and `lights[]` registry. Current
-  hardcoded directional sun is enough for v0.1.
-- **Mouse input** — winit `MouseInput` / `CursorMoved` → Twe
-  `mouse.*`. Keyboard ships via `key.*`; mouse rides a parallel
-  surface in v0.2.
-- **Tilemap rendering + collision** (task 6) — Example 9.
-  Schedule after `.glb` mesh import.
-- **`save` block compiler** (task 7) — Example 7. Needs
-  `docs/07-save-system.md` design doc first.
-- **Phase 3 runtime debt** — NaN-tagged values, incremental tracing
-  GC. Bytecode VM is correct but not the 5–20× target. v0.2.
-- **Phase 4 ten-example type-check sweep** — partially closed: every
-  on-disk Twe program type-checks. The seven `docs/01-examples.md`
-  programs that use Phase-5 constructs (`dialogue`, `visual`, `save`,
-  3D, tilemap, predicate hooks) reopen as those constructs land.
-- **NaN-tagged 64-bit value representation** (v0.2 / post-v0.1).
-- **Incremental tracing GC** (v0.2; rides the value-layer change).
-- **Strict-mode type checker** (Phase 6 per roadmap).
-- **Verified-mode JSON diagnostics** (Phase 6+).
-- **`visual` block → fragment shader compilation** (Phase 5).
-- **List comprehensions** (Snake NP3 — defer until 5+ wants).
-- **`on enter:` / `on exit:` state hooks** (Snake NP9 — defer until 3+ wants).
+- **Method-body `wait`** — same shape as session 2b's function-body wait but `FrameKind::Method { recv, def }` and self-binding on resume. Lands alongside Phase 8's "function-body `wait` on bytecode VM" item.
+- **Call-as-expression with `wait`** (`let x = f()` where `f` waits) — needs a parent-side "expecting value at path P" annotation so resume can pipe the return value back into the parent expression evaluator. Phase 8.
+- **`for`-body `wait`** — needs iterator-state preservation (`Branch::For { iter_index: usize }` on `PathEntry`). Phase 8.
+- **Per-dialogue scheduler for `wait` inside `dialogue`** — Phase 9 (visuals + dialogue interactive choice).
+- **Bytecode VM dialogue support** — tree-walker has dialogue today; VM doesn't. Lands with Phase 9's particle / visual runtime work, since both touch the same compile-stmt path.
+- **`.obj` mesh loading** — same `Primitive::Mesh` plumbing as `.glb`; different crate (`tobj`). Off the v1.0 critical path.
+- **Multi-primitive `.glb` scenes / node transforms / materials** — 3D maintenance track; not v1.0 critical.
+- **Computed flat normals for `.glb` files without normals** — currently fall back to up-vector; small follow-on.
+- **`plane()` 3D primitive** — two triangles, trivially the same pattern as `sphere`. Ship when wanted.
+- **`mat4` / `quat` stdlib types** — 3D maintenance; needed when `entity.transform` / `camera.rotate(quat)` consume them.
+- **3D lighting (point / area / shadow)** — 3D maintenance.
+- **Bytecode VM 3D `on render():` codegen** — 3D maintenance.
+
+### Open design questions
+
+- **Save schema syntax + versioning** — `docs/07-save-system.md` is the Phase 7 prerequisite for Phase 8's `save` compiler. Migration semantics, Steam Cloud quotas, atomicity story all open until that doc lands.
+- **Pause-on-focus-loss opt-out** — fibers suspend by default on window blur (Phase 10). Per-state opt-out for always-running tasks needs a syntax. `state foo: persistent`? `pause: false` field? Open in `CLAUDE.md` §"What is open".
+- **Input remapping UX** — keyboard / gamepad rebind UI (Phase 10). Live-rebind vs. menu-only? Conflict resolution? Open in `CLAUDE.md` §"What is open".
+- **Unicode in identifiers** — `06-design-document.md §2.1` permits any Unicode scalar; `§2.4`'s EBNF restricts to ASCII. Lexer follows §2.4. Reconcile before any non-ASCII identifier enters the test suite.
+- **Phase 4 ten-example type-check sweep** — partially closed: every on-disk Twe program type-checks. The `docs/01-examples.md` programs using `dialogue` / `visual` / `save` / 3D / `tilemap` / predicate hooks reopen as those constructs land in their respective phases.
+
+### Resolved (kept for history)
+
+- **Loader API** — RESOLVED 2026-04-28. Bare `load(path)` is canonical.
+- **`sprite.load(...)` form in `02-type-system.md`** — RESOLVED with the loader-API decision.
+- **Tutorial iteration pass-2** — superseded by Phase 14's tutorial v2.
+- **Strict-mode type checker** — shipped Phase 6.
+- **`.glb` mesh import + `mesh()` builtin** — shipped v0.2 session 1.
+- **`sphere()` 3D primitive** — shipped Phase 6 session 7.
+- **Function-body `wait` (tree-walker)** — shipped v0.2 session 2b.
+- **VM nested-block `wait`** — shipped v0.2 session 2c.
+
+### Indefinite deferrals (out of v1.0 scope)
+
+Per `docs/05-roadmap.md` "What's intentionally not in the v1.0 plan":
+
+- **Native code generation** (Luau-style).
+- **Multiplayer / determinism**.
+- **User-defined generics** (Principle 2 conflict).
+- **Macros / metaprogramming** (locked in `CLAUDE.md`).
+- **Sandboxing for UGC**.
+- **Workshop / mod APIs**.
+- **Roblox-class 3D** (textures, animation, physics, complex scene graphs).
+
+### Language-shape items (out-of-band, no phase yet)
+
+These would each be their own design pass. Listed for completeness:
+
+- **List comprehensions** (Snake NP3 — defer until 5+ users want them).
+- **`on enter:` / `on exit:` state hooks** (Snake NP9 — defer until 3+ examples want them).
 - **String interpolation `\u{...}` Unicode escapes**.
-- **Compound unit literals** `5 m/s` (open).
-- **`set of T` type literal** `{1, 2, 3}` and `set()` for empty.
-- **`match` expressions** (§3.6).
-- **`map` literals** `{ "k": v }` (§3.5).
-- **List slicing** `[i:j]`.
+- **Compound unit literals** (`5 m/s`).
+- **`set of T` type literal** (`{1, 2, 3}` and `set()` for empty).
+- **`match` expressions** (`docs/06-design-document.md §3.6`).
+- **`map` literals** (`{ "k": v }`, `docs/06-design-document.md §3.5`).
+- **List slicing** (`[i:j]`).
 - **Tuple-typed list elements explicitly annotated** (Snake NP10).
-- **`function` return-type checking** (currently parsed-and-ignored).
+- **`function` return-type runtime checking** (currently parsed-and-strict-checked but not runtime-checked).
 
 ## Tooling debt
 
-- **Pick a license.** `README.md` says "TBD: MIT or Apache-2.0".
+- **Pick a license.** `README.md` says "TBD: MIT or Apache-2.0". Phase 7 release-prep item.
 - **`docs/02-type-system.md` and `docs/05-roadmap.md`** mention
   `sprite.load` while `docs/01-examples.md` Example 1 uses bare `load`.
-  Pick one during Phase 5 stdlib touch-up.
+  Reconcile during Phase 7 docs honesty pass.
+- **README.md "Status" section is stale.** Claims tree-walker / vertical-slice / bytecode VM / tooling / v0.1 are unchecked when they're shipped. Phase 7 README polish.
+- **`docs/01-examples.md` claims `visual` and `particles` ship in v0.1.** They don't (`particles` parses, runtime no-ops; `visual` has no parser support). Phase 7 docs honesty fix demotes both to v0.3 (per `docs/05-roadmap.md` Phase 9).

@@ -20,9 +20,9 @@ The design principles, in order of priority:
 
 Three games Twe must be excellent at:
 
-1. **2D systematic / RPG hybrid** (Vampire Survivors meets Diablo): item systems, modifiers, inventories, progression trees.
-2. **3D RPG** (small-scale Tunic / BotW): scene management, NPC AI, dialogue, quests, save/load.
-3. **Physics + visual showcase** (Noita / shader-driven games): pure-code visuals, particle systems, procedural graphics with no texture assets required.
+1. **2D systematic / RPG hybrid** (Vampire Survivors meets Diablo): item systems, modifiers, inventories, progression trees. **This is the v1.0 success criterion** — see `docs/05-roadmap.md` for the v1.0 thesis.
+2. **3D RPG** (small-scale Tunic / BotW): scene management, NPC AI, dialogue, quests, save/load. v0.1 ships cubes/spheres/`.glb` import; full polish (animation, physics, materials) is post-v1.0.
+3. **Physics + visual showcase** (Noita / shader-driven games): pure-code visuals, particle systems, procedural graphics with no texture assets required. **Coming in v0.3** — the `visual` block → WGSL shader compilation runtime ships in Phase 9 of the roadmap. (v0.1's `visual` keyword is not yet wired to a real compiler; the Phase 7 docs honesty pass demoted this from a v0.1 claim.)
 
 ## Documents
 
@@ -39,13 +39,17 @@ Three games Twe must be excellent at:
 
 - [x] Research phase complete (Lua, Luau, Wren, GDScript, Bevy, fantasy consoles, AI-friendly grammar)
 - [x] Design principles drafted
-- [x] Ten example programs written
-- [ ] Formal grammar in EBNF
-- [ ] Tree-walking interpreter (vertical slice)
-- [ ] Vertical-slice game built in Twe
-- [ ] Bytecode VM
-- [ ] Tooling (LSP, formatter, tree-sitter grammar)
-- [ ] v0.1 release
+- [x] Eleven example programs written (`docs/01-examples.md` + `docs/example-11-snake.md`)
+- [x] Formal grammar in EBNF (`docs/06-design-document.md` §3)
+- [x] Tree-walking interpreter (Phase 1, closed)
+- [x] Vertical-slice game built in Twe (`examples/survive.twe`, Phase 2)
+- [x] Bytecode VM (Phase 3)
+- [x] Tooling: LSP, formatter, tree-sitter grammar, VS Code extension (Phases 3 + 6)
+- [x] Type system v1, non-strict + strict modes (Phases 4 + 6)
+- [x] 3D rendering surface — cubes, spheres, `.glb` meshes, hot reload (Phase 5 + v0.2 session 1)
+- [x] Cooperative fibers (`wait` works in nested blocks + functions, Phases 5 + v0.2 sessions 2a/2b/2c)
+- [ ] **Phase 7: v0.1 release** — `cargo dist` binaries, VS Code marketplace, website, CONTRIBUTING.md, license decision (currently active)
+- [ ] **v0.2 → v1.0 plan** — Phases 8–16 in `docs/05-roadmap.md`. v1.0 = "ship a Vampire-Survivors-class commercial 2D game on Twe."
 
 See `docs/05-roadmap.md` for the detailed plan.
 

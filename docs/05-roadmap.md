@@ -265,39 +265,232 @@ This is the phase where the design becomes mature.
 
 ---
 
-## Phase 8 onward — v0.2 through v1.0
+## Post-v0.1 — the v1.0 plan
 
-After v0.1 the work is responsive rather than scheduled. Driven by:
+After v0.1 cuts, Twe is "stable enough to recommend to others" but **not stable enough to ship a paid game on**. Phases 8–16 close that gap. The thesis: **v1.0 means a developer can ship a Vampire-Survivors-class commercial 2D game on Steam using Twe.**
 
-- Real-world bug reports.
-- Performance profiling on actual games.
-- The verified mode (Tier 3 of the type system).
-- Native code generation (Luau-style) for additional speed.
-- Module / package system for sharing libraries.
-- Sandboxing for user-generated content.
-- Multiplayer / determinism story.
-
-The pacing target: minor releases every 2–3 months, with a v1.0 commitment when the language has been stable for at least six months and three serious games have shipped using it.
+Use case #1 from `README.md` ("2D systematic / RPG hybrid") drives prioritization. 3D continues in maintenance mode but is off the v1.0 critical path; Roblox-class 3D is multi-year and out of scope. See `docs/changes/` for closeout notes that record what slipped from each phase and why.
 
 ---
 
-## Total estimated time to v0.1
+## Phase 8 — v0.2 — Foundations for shipping
 
-If the project moves at the pace described:
+**Status:** in flight. Sessions 1 (`.glb` mesh import), 2a (resumable `if` / `while` blocks), 2b (function-body `wait` on tree-walker), and 2c (VM nested-block parity) shipped 2026-04-29 / 04-30. See `docs/changes/2026-04-29-v0.2-session-1-glb-import.md` and the 2a/2b/2c closeout notes.
 
-| Phase | Weeks |
-|-------|-------|
-| 0 — Design | 4 |
-| 1 — Tree-walker | 8 |
-| 2 — Vertical slice | 6 |
-| 3 — Bytecode VM + tooling | 10 |
-| 4 — Type system v1 | 8 |
-| 5 — 3D + dialogue | 10 |
-| 6 — Tooling + docs | 8 |
-| 7 — Release | 3 |
-| **Total** | **~57 weeks** |
+**Theme:** close the load-bearing gaps that block any real game from running at all. v0.2 is *not* about polish — it's about the absence of features that make a Survivors-class game impossible.
 
-That's about 14 months of part-time work, or 6–7 months of full-time work. If history is any guide, the actual number will be 1.5x–2x this estimate. Plan accordingly.
+**Components:**
+
+- Tilemap rendering + collision (Example 9; `tilemap` block runtime).
+- `save` block compiler (Example 7), built against `docs/07-save-system.md`'s schema (designed in Phase 7 as a v0.2 prerequisite).
+- Mouse input: `mouse.x`, `mouse.y`, `mouse_press.<button>`, `mouse_held.<button>`.
+- Function-body `wait` on the bytecode VM — multi-frame `Vec<BcFiberFrame>` save (the deferred half of session 2c; tree-walker already has it via session 2b).
+- Audio v2: `sound.play(handle, volume:, pitch:)`, `music.play(handle, loop:)`, mixer channels, fade-in / fade-out.
+- **NaN-tagged 64-bit values** (the `Crafting Interpreters` Ch. 30 representation) **+ incremental tracing GC**. Pulled forward from the original "Phase 11 — Performance" slot — value-representation churn pays back over every later phase, and it's been deferred since Phase 3.
+
+**Exit criteria:**
+
+- Example 7 (save/load) and Example 9 (tilemap) run on both backends.
+- `cargo bench` shows ≥3× tree-walker speedup over the bytecode VM with NaN tagging vs. the pre-tag VM.
+- A 1k-entity 60fps stress test produces no visible GC pauses.
+
+---
+
+## Phase 9 — v0.3 — Visuals + assets-for-UI
+
+**Theme:** ship the headline differentiator (Pillar 3 from `README.md`) and the asset machinery UI in Phase 10 needs.
+
+**Components:**
+
+- `visual` block → WGSL fragment-shader compilation. Example 5 (procedural fire), finally. Subset of math + vector + color stdlib usable inside `visual` bodies.
+- `particles` runtime against the parsed `particles` block. Example 6 (particle burst), finally. `on_spawn` / `on_update` lifecycle, `p.age_ratio` implicit field, global `on enemy.death(e)` event glue.
+- Texture atlas + spritesheet loading: `load_atlas("walk.png", grid: (32, 32))`, `sprite(handle, frame: 3, ...)`.
+- TTF / OTF font loading. Replaces macroquad's default font.
+- 2D camera primitive: `camera.follow(entity, lerp:)`, `camera.shake(amplitude:, duration:)`, `camera.zoom`.
+- Color pipeline: HDR-aware blending, gamma-correct compositing.
+- Gamepad input: analog axes (left / right stick + triggers), button mapping table.
+
+**Exit criteria:**
+
+- Example 5 and Example 6 run end-to-end.
+- A spritesheet-driven character animation demo ships in `examples/`.
+- Gamepad + keyboard work interchangeably for `examples/survive.twe`.
+
+---
+
+## Phase 10 — v0.4 — UI + game-shell primitives
+
+Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a Steam pause menu needs.
+
+**Components:**
+
+- Layout primitives: `panel`, `flex`, `grid`, `scroll`, `stack`.
+- Widgets: `button`, `label`, `slider`, `checkbox`, `dropdown`, `text_input`, `progress_bar`.
+- Text input + clipboard: `os.clipboard.read()` / `os.clipboard.write(s)`.
+- Settings system: window size, fullscreen, vsync, monitor selection, master / music / SFX volume sliders, key-binding remap UI. Persists via `save` block (rides v0.2's infra).
+- Localization scaffolding: `lang.t("key", args)` + per-locale resource bundles (`lang/en.toml`, `lang/ja.toml`).
+- Pause-on-window-blur: fibers suspend on focus loss, resume on focus return. Per-state opt-out for always-running tasks.
+
+**Exit criteria:**
+
+- A complete pause menu ships in `examples/` (resume, settings, quit).
+- Settings round-trip across launches.
+- `examples/survive.twe` rebinds its keys at runtime via the settings UI.
+
+---
+
+## Phase 11 — v0.5 — Production hardening
+
+**Theme:** the things Valve or a player will hand back to the dev as a build-rejection.
+
+**Components:**
+
+- Crash reporter with user dialog + dump bundle (anonymized, opt-in upload).
+- Screenshot + simple video capture builtin (F12 / configurable hotkey).
+- Profiler tools: `twec profile <file>` outputs flamegraph-friendly traces; in-game frame-time HUD overlay (toggle with F3 by convention).
+- Bytecode dispatch tuning (computed-goto on nightly; otherwise the LLVM-friendly match the existing dispatch already gets — Phase 3 closeout confirmed this).
+- Asset hot-reload reliability pass. The current mtime-poll has known races (debounce window, partial-write reads).
+
+**Exit criteria:**
+
+- `cargo bench`'s tightest loops are within 2× of equivalent Lua / Luau on a synthetic benchmark suite.
+- A panic from runtime code produces a readable user-facing dialog plus a developer-readable bundle.
+- Three weeks of dogfooding produce zero "the file was half-written when reload fired" reports.
+
+---
+
+## Phase 12 — v0.6 — Asset pipeline + cross-platform build
+
+**Theme:** `twec build my_game/ --target windows-x86_64` produces a single distributable.
+
+**Components:**
+
+- `twec build` subcommand: bundles `.twe` + assets + runtime into a single signed-able binary. Per-platform via `cargo dist`'s machinery (Phase 7 already scaffolds it for the Twe binary itself; this phase generalizes).
+- Asset bundling format (versioned, content-hashed, optionally compressed). Replaces "load from a path on disk" with "load from the bundle" at release.
+- Build configurations: `dev` (hot reload + debug symbols), `release` (optimized + bundled), `profile` (instrumented).
+- Steam-redistributable layout: `steam_appid.txt` location, Depot manifest hooks, redist DLL bundling.
+
+**Exit criteria:**
+
+- A vertical-slice Twe game ships as a 20–60MB single executable that runs on a Windows 10 box without a Twe install.
+- A macOS .app and Linux AppImage equivalent ship from the same source tree.
+
+---
+
+## Phase 13 — v0.7 — Modules + type-system stability
+
+**Theme:** the public-API freeze that v0.8+ depends on.
+
+**Components:**
+
+- Module / package system: `import` syntax, search paths, version pinning. Single-file → multi-file projects. The directory structure becomes the module graph.
+- Strict mode v2: structural-record subtyping under strict (Phase 6 deferral), Luau-style "lax strict" widening rules.
+- Verified mode (Tier 3 per `docs/02-type-system.md`): JSON diagnostics for LLM authorship, `twec verify <file>` subcommand, `--! verified` directive.
+- API freeze warning system: `@deprecated("since v0.7")` annotations, `--warn-deprecated` flag, deprecation log in CHANGELOG.
+
+**Exit criteria:**
+
+- `twec verify` on a real Twe project returns a JSON document an LLM can self-correct against.
+- Deprecation warnings produce ≥ 12 months of carry-over for any v0.7 surface that gets removed in v1.0.
+- Two existing examples are split into multi-file modules without rewriting their bodies.
+
+**Dropped from this plan:** user-defined generics. Conflicts with Principle 2 ("one obvious way per concept"). Built-in generic containers (`array of T`, `map of K => V`, `set of T`) stay; user generics are post-v1.0 if at all.
+
+---
+
+## Phase 14 — v0.8 — Beta + dogfood
+
+**Theme:** prove the language by shipping with it, not just by writing tests for it.
+
+**Components:**
+
+- First-party game #1 enters closed beta. A Vampire-Survivors clone — the README's #1 use case. Exercises tilemap, save/load, particles, visuals, audio mixing, settings, gamepad, controller remap, all in one codebase.
+- Tutorial v2 in `docs/tutorial.md`: long-form Pong → Survivors → mini-RPG, with screenshots + recorded sessions. The Phase 6 tutorial was first-pass; this is the second pass with a real game's worth of context.
+- Examples gallery to ~25 (the Phase 6 deferred target was 20; round up given v0.2–v0.7 added surface).
+- Performance fix list driven entirely by what the beta game hits. No speculative perf work.
+
+**Exit criteria:**
+
+- Beta game ships ≥ one paid release on itch.io with positive (≥ 4-star) reviews.
+- Tutorial completion tracked: a new contributor builds Pong from the tutorial in ≤ 2 hours.
+
+---
+
+## Phase 15 — v0.9 — Release candidate
+
+**Theme:** stop adding things. Make the existing things solid.
+
+**Components:**
+
+- API freeze. No new public surface. Bug fixes and doc fixes only. `@deprecated` warnings stay; new deprecations don't.
+- Doc completeness pass: every keyword, every stdlib function, every block has a documented example.
+- Steam SDK integration v1: achievements, statistics. Cloud saves use v0.2's save-format design — ride that, don't rewrite.
+- Second first-party game enters beta if first is shipped.
+
+**Exit criteria:**
+
+- Zero open public-surface bug reports tagged `crash` or `data-loss`.
+- Steam SDK achievements work end-to-end in the beta game.
+
+---
+
+## Phase 16 — v1.0 — Stable
+
+**Exit gate** (revised from the original "three serious games, six months stable" formulation — softened on the games count because third-party authors are not in the project's control):
+
+- **Two first-party games shipped** on a v0.x release. + N community games (no required count, but the project tracks and links them).
+- **Six months of API stability** since the v0.7 freeze.
+- LTS commitment: v1.x backports for security + critical fixes for **12 months minimum**.
+- Marketing push: Show-HN / blog / demo video pinned to v1.0.
+
+**Components** (mostly non-code):
+
+- v1.0 release blog post.
+- v1.x LTS branch policy in `CONTRIBUTING.md`.
+- A "shipped on Twe" gallery linking the two first-party games + community submissions.
+- Move the v0.x roadmap from "current" to "history" in `docs/05-roadmap.md`; add a v1.x scratch section pointing forward.
+
+---
+
+## What's intentionally *not* in the v1.0 plan
+
+These are deferred to post-v1.0 (the v1.x or v2.0 era), with cause:
+
+- **3D rendering polish** — textures, animation, physics, multi-primitive `.glb`, mouse-driven 3D, `mat4` / `quat`. Stays alive in maintenance mode (current `play3d` keeps working) but is off the v1.0 critical path. The user's "2D commercial game" goal does not require Roblox-class 3D, and Roblox-class 3D is multi-year work.
+- **Native code generation** (Luau-style). Post-v1.0; the bytecode VM with NaN tagging + GC is the v1.0 perf story.
+- **Multiplayer / determinism**. Post-v1.0. Different design conversation entirely (rollback netcode? lockstep? client-server?).
+- **User-defined generics**. Conflict with Principle 2.
+- **Macros / metaprogramming**. Off the table per `CLAUDE.md` "What is locked".
+- **Sandboxing for user-generated content**. Post-v1.0.
+- **Workshop / mod APIs**. Post-v1.0.
+
+---
+
+## Total scope estimate
+
+The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess of ~57 weeks and proved usefully wrong (Phases 1–6 finished in dramatically less calendar time once development started in earnest). Rather than quote weeks that age poorly, post-v0.1 phases use **size markers**: S (one focused week), M (two-to-four weeks), L (one-to-three months), XL (multi-quarter).
+
+| Phase | Release | Size |
+|-------|---------|------|
+| 0 — Design lock-in | (pre-v0.1) | M (closed) |
+| 1 — Tree-walker | (pre-v0.1) | L (closed) |
+| 2 — Vertical-slice game | (pre-v0.1) | M (closed) |
+| 3 — Bytecode VM + tooling | (pre-v0.1) | L (closed) |
+| 4 — Type system v1 | (pre-v0.1) | L (closed) |
+| 5 — 3D + dialogue | (pre-v0.1) | L (closed at v0.1-min-viable) |
+| 6 — Tooling + docs | (pre-v0.1) | M (closed) |
+| 7 — Release engineering | v0.1 | M (active) |
+| 8 — Foundations for shipping | v0.2 | L (in flight) |
+| 9 — Visuals + assets-for-UI | v0.3 | L |
+| 10 — UI + game-shell | v0.4 | M (parallel with 9) |
+| 11 — Production hardening | v0.5 | M |
+| 12 — Asset pipeline + build | v0.6 | M |
+| 13 — Modules + type-system stability | v0.7 | L |
+| 14 — Beta + dogfood | v0.8 | XL (game-dependent) |
+| 15 — Release candidate | v0.9 | M |
+| 16 — Stable | v1.0 | S (mostly non-code) |
+
+The realistic v1.0 ETA is *whenever the beta and RC games ship*, not a wall-clock date. Don't promise dates.
 
 ---
 
@@ -305,12 +498,15 @@ That's about 14 months of part-time work, or 6–7 months of full-time work. If 
 
 | Risk | Likelihood | Mitigation |
 |------|-----------|------------|
-| Solo-maintainer burnout (Wren scenario) | High | Recruit at least one collaborator before Phase 3. Document everything. |
-| Scope creep (every game suggests a feature) | High | The ten examples are the spec. Reject anything not implied by them through Phase 4. |
-| Type system proves harder than expected | Medium | Phase 4 is staged; non-strict ships first. Strict can slip to v0.2. |
-| Engine integration is harder than language design | Medium | Use macroquad in Phase 2 specifically to defer this. Custom engine is post-v0.1. |
-| LLM tooling support never materializes | Low | Twe's grammar is designed for it from day one. JSON diagnostics in Phase 3. |
-| Audience indifference | Medium | The differentiators (procedural visuals, AI-friendly grammar, declarative blocks) are real. Marketing matters; budget Phase 6 properly. |
+| Solo-maintainer burnout (Wren scenario) | High | Recruit at least one collaborator before Phase 8. Document everything. |
+| Scope creep (every game suggests a feature) | High | The eleven examples are the spec. Reject anything not implied by them or by the v1.0 commercial-2D thesis. |
+| Type system proves harder than expected | Medium | Phase 4 staged; non-strict shipped first. Strict mode v2 + verified mode are now Phase 13. |
+| Engine integration is harder than language design | Medium | macroquad chosen in Phase 2 specifically to defer this. Custom engine is post-v1.0. |
+| LLM tooling support never materializes | Low | Twe's grammar is designed for it from day one. Verified mode in Phase 13 is the explicit LLM-authoring story. |
+| Audience indifference | Medium | Differentiators (procedural visuals, AI-friendly grammar, declarative blocks) are real. Marketing rides Phase 16. |
+| Pillar 3 (procedural visuals) was claimed to ship in v0.1 but `visual` block isn't implemented | High | Phase 7 docs honesty fix demoted Pillar 3 to v0.3. `visual` block runtime is now a Phase 9 component with explicit exit criteria (Example 5 runs). |
+| Beta game #1 (Phase 14) doesn't materialize | High | Start a parallel community-game pipeline by Phase 12. If first-party game stalls, court 2–3 external authors with direct support. |
+| NaN tagging slips again | Medium | Pulled into Phase 8 with a hard exit-criterion (3× speedup vs. pre-tag VM); deferred-since-Phase-3 status is unacceptable past v0.2. |
 
 ---
 
