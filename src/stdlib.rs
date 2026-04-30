@@ -83,6 +83,49 @@ pub fn install(env: &mut Env) {
         }))),
     );
 
+    // v0.2 session 3: mouse surface. Mirrors the key / key_press
+    // pair for symmetry. `mouse` carries cursor position + wheel
+    // delta; `mouse_held` is continuous (true while held);
+    // `mouse_press` is edge-triggered (true only on the frame the
+    // button transitions to down). Both backends (macroquad
+    // `play` and winit `play3d`) update these each frame.
+    let mut mouse_fields = HashMap::new();
+    mouse_fields.insert("x".to_string(), Value::Float(0.0));
+    mouse_fields.insert("y".to_string(), Value::Float(0.0));
+    mouse_fields.insert(
+        "pos".to_string(),
+        Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])),
+    );
+    mouse_fields.insert("wheel".to_string(), Value::Float(0.0));
+    env.set(
+        "mouse".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: mouse_fields,
+            kind: "input",
+        }))),
+    );
+    let buttons = ["left", "middle", "right"];
+    let mut held = HashMap::new();
+    let mut pressed = HashMap::new();
+    for b in buttons {
+        held.insert(b.to_string(), Value::Bool(false));
+        pressed.insert(b.to_string(), Value::Bool(false));
+    }
+    env.set(
+        "mouse_held".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: held,
+            kind: "input",
+        }))),
+    );
+    env.set(
+        "mouse_press".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: pressed,
+            kind: "input",
+        }))),
+    );
+
     // Rarity tier symbols. Stay as strings until v0.2 introduces enums.
     for r in ["common", "uncommon", "rare", "epic", "legendary"] {
         env.set(r.to_string(), Value::Str(Rc::new(r.to_string())));

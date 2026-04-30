@@ -44,7 +44,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -69,6 +69,22 @@ const KEYS: &[(&str, KeyCode)] = &[
     ("s", KeyCode::KeyS),
     ("d", KeyCode::KeyD),
 ];
+
+/// Mouse-button names exposed to Twe code. Same set the macroquad
+/// path uses. v0.2 session 3.
+const MOUSE_BUTTON_NAMES: &[&str] = &["left", "middle", "right"];
+
+/// Map a winit `MouseButton` to its Twe-side name. Buttons beyond
+/// left / middle / right (Back / Forward / Other) aren't surfaced
+/// in v0.2 — match what macroquad exposes for cross-backend parity.
+fn mouse_button_name(b: MouseButton) -> Option<&'static str> {
+    match b {
+        MouseButton::Left => Some("left"),
+        MouseButton::Middle => Some("middle"),
+        MouseButton::Right => Some("right"),
+        _ => None,
+    }
+}
 
 /// Cap on instances per frame. Keeps the per-instance buffer at a
 /// fixed size — no reallocation on the hot path. 4096 cubes is
@@ -424,6 +440,19 @@ struct App {
     /// cleared. Matches the macroquad path's edge-triggered
     /// semantics.
     keys_pressed_this_frame: HashSet<&'static str>,
+    /// Mouse cursor position in window logical pixels. Updated on
+    /// `WindowEvent::CursorMoved`. v0.2 session 3.
+    mouse_x: f64,
+    mouse_y: f64,
+    /// Wheel delta accumulated this frame (line-delta y, unitless
+    /// scroll-tick count for typical mice). Reset each frame after
+    /// the env update.
+    mouse_wheel_y: f32,
+    /// Mouse buttons currently held — Twe `mouse_held.<name>`.
+    mouse_buttons_held: HashSet<&'static str>,
+    /// Mouse buttons whose `Pressed` event arrived since the last
+    /// frame — Twe `mouse_press.<name>`. Edge-triggered.
+    mouse_buttons_pressed_this_frame: HashSet<&'static str>,
     exit_code: i32,
 }
 
@@ -437,6 +466,11 @@ impl App {
             last_mtime,
             keys_held: HashSet::new(),
             keys_pressed_this_frame: HashSet::new(),
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            mouse_wheel_y: 0.0,
+            mouse_buttons_held: HashSet::new(),
+            mouse_buttons_pressed_this_frame: HashSet::new(),
             exit_code: 0,
         }
     }
@@ -575,6 +609,39 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                 }
             }
+            // v0.2 session 3: mouse events. CursorMoved tracks
+            // position; MouseInput tracks button held + edge-press;
+            // MouseWheel accumulates the per-frame wheel delta.
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_x = position.x;
+                self.mouse_y = position.y;
+            }
+            WindowEvent::MouseInput { state: btn_state, button, .. } => {
+                if let Some(name) = mouse_button_name(button) {
+                    match btn_state {
+                        ElementState::Pressed => {
+                            self.mouse_buttons_held.insert(name);
+                            self.mouse_buttons_pressed_this_frame.insert(name);
+                        }
+                        ElementState::Released => {
+                            self.mouse_buttons_held.remove(name);
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Two delta shapes: line-based (most desktop mice)
+                // and pixel-based (trackpads). Normalize both into
+                // a single y-axis scroll value summed for the frame.
+                // Pixel-deltas tend to be ~10–20px per "tick"; the
+                // 1/120 factor approximates the macroquad path's
+                // tick-count semantics.
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_x, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 120.0,
+                };
+                self.mouse_wheel_y += dy;
+            }
             WindowEvent::RedrawRequested => {
                 // Hot reload: poll the source's mtime, re-init env
                 // on change. Mirrors `src/play.rs::run_loop`. A
@@ -604,6 +671,18 @@ impl ApplicationHandler for App {
                 // `key_press` Objects before running the frame.
                 update_key_state(&mut self.env, &self.keys_held, &self.keys_pressed_this_frame);
                 self.keys_pressed_this_frame.clear();
+                // v0.2 session 3: same for mouse / mouse_held /
+                // mouse_press. Wheel + edge-press are reset here.
+                update_mouse_state(
+                    &mut self.env,
+                    self.mouse_x,
+                    self.mouse_y,
+                    self.mouse_wheel_y,
+                    &self.mouse_buttons_held,
+                    &self.mouse_buttons_pressed_this_frame,
+                );
+                self.mouse_wheel_y = 0.0;
+                self.mouse_buttons_pressed_this_frame.clear();
 
                 let now = Instant::now();
                 let dt = now.duration_since(self.last_frame_at).as_secs_f32();
@@ -656,6 +735,46 @@ fn update_key_state(
                 kind: "input",
             }))),
         );
+    }
+}
+
+/// Write the current mouse state into the env's `mouse`,
+/// `mouse_held`, and `mouse_press` Objects. Mirror of
+/// `update_key_state` for cursor + buttons + wheel. v0.2 session 3.
+fn update_mouse_state(
+    env: &mut Env,
+    mouse_x: f64,
+    mouse_y: f64,
+    wheel_y: f32,
+    held: &HashSet<&'static str>,
+    pressed: &HashSet<&'static str>,
+) {
+    if let Some(Value::Object(rc)) = env.get("mouse").cloned() {
+        let mut o = rc.borrow_mut();
+        o.fields
+            .insert("x".to_string(), Value::Float(mouse_x));
+        o.fields
+            .insert("y".to_string(), Value::Float(mouse_y));
+        o.fields.insert(
+            "pos".to_string(),
+            Value::Tuple(Rc::new(vec![Value::Float(mouse_x), Value::Float(mouse_y)])),
+        );
+        o.fields
+            .insert("wheel".to_string(), Value::Float(wheel_y as f64));
+    }
+    if let Some(Value::Object(rc)) = env.get("mouse_held").cloned() {
+        let mut o = rc.borrow_mut();
+        for name in MOUSE_BUTTON_NAMES {
+            o.fields
+                .insert((*name).to_string(), Value::Bool(held.contains(name)));
+        }
+    }
+    if let Some(Value::Object(rc)) = env.get("mouse_press").cloned() {
+        let mut o = rc.borrow_mut();
+        for name in MOUSE_BUTTON_NAMES {
+            o.fields
+                .insert((*name).to_string(), Value::Bool(pressed.contains(name)));
+        }
     }
 }
 

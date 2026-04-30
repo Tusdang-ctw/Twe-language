@@ -37,6 +37,12 @@ const KEYS: &[(&str, KeyCode)] = &[
     ("d", KeyCode::D),
 ];
 
+const MOUSE_BUTTONS: &[(&str, MouseButton)] = &[
+    ("left", MouseButton::Left),
+    ("middle", MouseButton::Middle),
+    ("right", MouseButton::Right),
+];
+
 pub fn launch(path: String) -> i32 {
     let conf = window_conf();
     macroquad::Window::from_config(conf, run_loop(path));
@@ -219,9 +225,10 @@ fn flush_vm_output(vm: &mut crate::vm::VM) {
 }
 
 /// Mirror of `update_key_state` for the bytecode VM. The `key`,
-/// `key_press`, and `screen` Objects are the same `Rc<RefCell<Object>>`
-/// instances the stdlib installs, so writes via `.borrow_mut()` here
-/// reach the running scene/state code through their globals.
+/// `key_press`, `mouse`, `mouse_held`, `mouse_press`, and `screen`
+/// Objects are the same `Rc<RefCell<Object>>` instances the
+/// stdlib installs, so writes via `.borrow_mut()` here reach the
+/// running scene/state code through their globals.
 fn update_vm_input(vm: &crate::vm::VM) {
     if let Some(Value::Object(rc)) = vm.get_global("key") {
         let mut o = rc.borrow_mut();
@@ -237,6 +244,9 @@ fn update_vm_input(vm: &crate::vm::VM) {
                 .insert((*name).to_string(), Value::Bool(is_key_pressed(*code)));
         }
     }
+    write_mouse_object(vm.get_global("mouse"));
+    write_mouse_buttons(vm.get_global("mouse_held"), is_mouse_button_down);
+    write_mouse_buttons(vm.get_global("mouse_press"), is_mouse_button_pressed);
     if let Some(Value::Object(rc)) = vm.get_global("screen") {
         let mut o = rc.borrow_mut();
         let w = screen_width() as f64;
@@ -249,6 +259,43 @@ fn update_vm_input(vm: &crate::vm::VM) {
             "center".to_string(),
             Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
         );
+    }
+}
+
+/// Write current mouse position + accumulated wheel delta into the
+/// `mouse` ambient. v0.2 session 3.
+fn write_mouse_object(mouse: Option<Value>) {
+    let Some(Value::Object(rc)) = mouse else { return; };
+    let (mx, my) = mouse_position();
+    let (_wx, wy) = mouse_wheel();
+    let mut o = rc.borrow_mut();
+    o.fields
+        .insert("x".to_string(), Value::Float(mx as f64));
+    o.fields
+        .insert("y".to_string(), Value::Float(my as f64));
+    o.fields.insert(
+        "pos".to_string(),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(mx as f64),
+            Value::Float(my as f64),
+        ])),
+    );
+    // y-axis wheel delta is the canonical "scroll" reading; macroquad
+    // resets `mouse_wheel()` between frames so the value here is the
+    // accumulated delta this frame.
+    o.fields
+        .insert("wheel".to_string(), Value::Float(wy as f64));
+}
+
+/// Write per-button state into `mouse_held` or `mouse_press`. The
+/// caller passes the button-state predicate (`is_mouse_button_down`
+/// for `mouse_held`, `is_mouse_button_pressed` for edge-triggered
+/// `mouse_press`). v0.2 session 3.
+fn write_mouse_buttons(target: Option<Value>, mut pred: impl FnMut(MouseButton) -> bool) {
+    let Some(Value::Object(rc)) = target else { return; };
+    let mut o = rc.borrow_mut();
+    for (name, btn) in MOUSE_BUTTONS {
+        o.fields.insert((*name).to_string(), Value::Bool(pred(*btn)));
     }
 }
 
@@ -339,4 +386,7 @@ fn update_key_state(env: &mut Env) {
             Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
         );
     }
+    write_mouse_object(env.get("mouse").cloned());
+    write_mouse_buttons(env.get("mouse_held").cloned(), is_mouse_button_down);
+    write_mouse_buttons(env.get("mouse_press").cloned(), is_mouse_button_pressed);
 }

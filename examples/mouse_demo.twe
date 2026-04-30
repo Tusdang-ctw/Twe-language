@@ -1,0 +1,47 @@
+# v0.2 session 3 — mouse input demo.
+#
+# Draws a circle at the cursor that grows on hold and changes
+# color on left-click. Wheel scroll changes the base radius.
+#
+# Run with `twec play examples/mouse_demo.twe`.
+#
+# What this exercises:
+#   - `mouse.x` / `mouse.y` cursor position (continuous).
+#   - `mouse_held.left` — true while the button is down.
+#   - `mouse_press.left` — true only on the frame the button
+#     transitions to down (edge-triggered).
+#   - `mouse.wheel` — accumulated scroll delta this frame.
+#
+# Both `twec play` (macroquad) and `twec play3d` (winit) wire
+# these the same way; only the rendering primitives differ
+# (`circle()` works under play; play3d uses cube/sphere/mesh).
+
+var base_radius = 30.0
+var click_count = 0
+var hue_offset = 0.0
+
+on update(dt):
+    # Wheel changes the base radius. Two units per scroll-tick.
+    base_radius = base_radius + mouse.wheel * 2.0
+    if base_radius < 5.0:
+        base_radius = 5.0
+    if base_radius > 200.0:
+        base_radius = 200.0
+
+    # Each press shifts the colour hue.
+    if mouse_press.left:
+        click_count = click_count + 1
+        hue_offset = hue_offset + 0.15
+
+on render():
+    # Larger circle while holding; flat radius otherwise.
+    var r = base_radius
+    if mouse_held.left:
+        r = base_radius * 1.5
+
+    # Pick a colour that drifts as the user clicks.
+    var red = 0.5 + 0.5 * math.sin(hue_offset)
+    var green = 0.5 + 0.5 * math.sin(hue_offset + 2.094)
+    var blue = 0.5 + 0.5 * math.sin(hue_offset + 4.188)
+
+    circle(at: mouse.pos, radius: r, color: (red, green, blue, 1.0))

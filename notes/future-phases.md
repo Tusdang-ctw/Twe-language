@@ -305,6 +305,15 @@ note.
       `BcInstance`) capturing the entire call stack + each
       frame's stack slice. See
       `docs/changes/2026-04-30-v0.2-session-2c-vm-wait-parity.md`.
+- [x] **Session 3 — mouse input** (2026-04-30). Three new
+      ambient Objects: `mouse` (`.x`, `.y`, `.pos`, `.wheel`),
+      `mouse_held.{left,middle,right}` (continuous), and
+      `mouse_press.{left,middle,right}` (edge-triggered).
+      Both backends (`twec play` macroquad, `twec play3d`
+      winit) wire identically. Closes the Phase 8 mouse line
+      item; unblocks Phase 10's UI primitives.
+      `examples/mouse_demo.twe` exercises all three Objects.
+      See `docs/changes/2026-04-30-v0.2-session-3-mouse-input.md`.
 
 ## Triage backlog
 

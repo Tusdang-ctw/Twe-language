@@ -394,6 +394,121 @@ fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
     }
 }
 
+// --- v0.2 session 3: mouse surface ---
+
+#[test]
+fn stdlib_installs_mouse_objects() {
+    use twec::value::Value;
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+
+    // mouse: x, y, pos, wheel
+    let Some(Value::Object(rc)) = env.get("mouse") else {
+        panic!("mouse object missing after stdlib::install");
+    };
+    let m = rc.borrow();
+    assert!(matches!(m.fields.get("x"), Some(Value::Float(_))));
+    assert!(matches!(m.fields.get("y"), Some(Value::Float(_))));
+    assert!(matches!(m.fields.get("pos"), Some(Value::Tuple(_))));
+    assert!(matches!(m.fields.get("wheel"), Some(Value::Float(_))));
+
+    // mouse_held / mouse_press: left, middle, right
+    for name in ["mouse_held", "mouse_press"] {
+        let Some(Value::Object(rc)) = env.get(name) else {
+            panic!("{name} object missing after stdlib::install");
+        };
+        let o = rc.borrow();
+        for btn in ["left", "middle", "right"] {
+            assert!(
+                matches!(o.fields.get(btn), Some(Value::Bool(false))),
+                "{name}.{btn} missing or non-bool after install"
+            );
+        }
+    }
+}
+
+#[test]
+fn mouse_position_drives_on_update_logic() {
+    // Simulate the pattern `play.rs` uses: write to the mouse
+    // ambient before each tick_frame, then have the script read
+    // and react. Here the script accumulates `mouse.x` into a
+    // running total via on_update — proves the field is reachable
+    // from the frame loop the same way `key.right` is.
+    use twec::value::Value;
+    let src = r#"
+var total = 0.0
+on update(dt):
+    total = total + mouse.x
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+
+    set_mouse_x(&env, 10.0);
+    twec::eval::tick_frame(&mut env, 0.016).expect("tick");
+    set_mouse_x(&env, 20.0);
+    twec::eval::tick_frame(&mut env, 0.016).expect("tick");
+    set_mouse_x(&env, 30.0);
+    twec::eval::tick_frame(&mut env, 0.016).expect("tick");
+
+    let total = match env.get("total") {
+        Some(Value::Float(f)) => *f,
+        other => panic!("expected total to be Float, got {other:?}"),
+    };
+    assert_eq!(total, 60.0);
+}
+
+#[test]
+fn mouse_press_left_drives_branching() {
+    // Edge-triggered mouse_press.left fires the body once per
+    // press. Three frames: press, no-press, press again.
+    use twec::value::Value;
+    let src = r#"
+var clicks = 0
+on update(dt):
+    if mouse_press.left:
+        clicks = clicks + 1
+"#;
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+
+    set_mouse_press(&env, "left", true);
+    twec::eval::tick_frame(&mut env, 0.016).expect("tick");
+    set_mouse_press(&env, "left", false);
+    twec::eval::tick_frame(&mut env, 0.016).expect("tick");
+    set_mouse_press(&env, "left", true);
+    twec::eval::tick_frame(&mut env, 0.016).expect("tick");
+
+    let clicks = match env.get("clicks") {
+        Some(Value::Int(n)) => *n,
+        other => panic!("expected clicks to be Int, got {other:?}"),
+    };
+    assert_eq!(clicks, 2);
+}
+
+fn set_mouse_x(env: &twec::value::Env, x: f64) {
+    use twec::value::Value;
+    if let Some(Value::Object(rc)) = env.get("mouse") {
+        rc.borrow_mut()
+            .fields
+            .insert("x".to_string(), Value::Float(x));
+    }
+}
+
+fn set_mouse_press(env: &twec::value::Env, button: &str, value: bool) {
+    use twec::value::Value;
+    if let Some(Value::Object(rc)) = env.get("mouse_press") {
+        rc.borrow_mut()
+            .fields
+            .insert(button.to_string(), Value::Bool(value));
+    }
+}
+
 #[test]
 fn spawn_and_despawn_drive_entity_updates() {
     let out = run_program_frames("tests/programs/spawn_entities.twe", 5, 0.016)
