@@ -761,7 +761,7 @@ pub fn compute_completions(text: &str) -> Vec<Value> {
     for (name, value) in env.iter_bindings() {
         match value {
             crate::value::Value::Object(obj_rc) => {
-                items.push(completion_item(name, ck::VARIABLE, None));
+                items.push(completion_item(&name, ck::VARIABLE, None));
                 let obj = obj_rc.borrow();
                 for field in obj.fields.keys() {
                     items.push(completion_item(
@@ -772,7 +772,7 @@ pub fn compute_completions(text: &str) -> Vec<Value> {
                 }
             }
             _ => {
-                items.push(completion_item(name, ck::FUNCTION, None));
+                items.push(completion_item(&name, ck::FUNCTION, None));
             }
         }
     }

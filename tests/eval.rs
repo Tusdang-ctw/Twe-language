@@ -454,7 +454,7 @@ on update(dt):
     twec::eval::tick_frame(&mut env, 0.016).expect("tick");
 
     let total = match env.get("total") {
-        Some(Value::Float(f)) => *f,
+        Some(Value::Float(f)) => f,
         other => panic!("expected total to be Float, got {other:?}"),
     };
     assert_eq!(total, 60.0);
@@ -485,7 +485,7 @@ on update(dt):
     twec::eval::tick_frame(&mut env, 0.016).expect("tick");
 
     let clicks = match env.get("clicks") {
-        Some(Value::Int(n)) => *n,
+        Some(Value::Int(n)) => n,
         other => panic!("expected clicks to be Int, got {other:?}"),
     };
     assert_eq!(clicks, 2);
@@ -873,7 +873,11 @@ spawn Spark at (50.0, 60.0)
     twec::eval::run_top_level(&mut env, &program).expect("top-level");
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
-    let particles = inst.fields.get("__particles").expect("__particles");
+    let particles = inst
+        .fields
+        .get("__particles")
+        .map(|t| t.clone().to_legacy())
+        .expect("__particles");
     let n = match particles {
         Value::List(rc) => rc.borrow().len(),
         _ => panic!("__particles should be a list"),
@@ -988,7 +992,11 @@ spawn Pin at (12, 34)
     twec::eval::run_top_level(&mut env, &program).expect("top-level");
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
-    let pos = inst.fields.get("pos").expect("pos field");
+    let pos = inst
+        .fields
+        .get("pos")
+        .map(|t| t.clone().to_legacy())
+        .expect("pos field");
     let elems = match pos {
         Value::Tuple(elems) => elems.clone(),
         _ => panic!("pos should be a tuple"),
@@ -1022,7 +1030,11 @@ fn snake_advances_right_by_default() {
 
     let scene = env.active_scene.as_ref().expect("scene");
     let inst = scene.borrow();
-    let snake = inst.fields.get("snake").expect("snake field");
+    let snake = inst
+        .fields
+        .get("snake")
+        .map(|t| t.clone().to_legacy())
+        .expect("snake field");
     let head = match snake {
         Value::List(rc) => rc.borrow()[0].clone(),
         _ => panic!("snake should be a list"),
@@ -1065,7 +1077,11 @@ fn snake_dies_into_a_wall() {
     // Snake eats the food at (15, 7) on the way, so score is 1 by the
     // time it walks off the east wall at x=20.
     let inst = scene.borrow();
-    let score = inst.fields.get("score").expect("score field");
+    let score = inst
+        .fields
+        .get("score")
+        .map(|t| t.clone().to_legacy())
+        .expect("score field");
     assert!(matches!(score, Value::Int(1)), "got: {score:?}");
 }
 

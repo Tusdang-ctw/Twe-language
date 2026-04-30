@@ -169,7 +169,7 @@ impl VM {
         crate::stdlib::install(&mut env);
         let mut globals = HashMap::with_capacity(env.iter_bindings().count());
         for (name, value) in env.iter_bindings() {
-            globals.insert(name.clone(), TaggedValue::from_legacy(value));
+            globals.insert(name, TaggedValue::from_legacy(&value));
         }
         // Replace the stdlib `entities` Object (which routes through
         // tree-walker builtins) with a VM-tagged one so OP_INVOKE

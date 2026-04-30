@@ -6,6 +6,7 @@ use crate::ast::{
     AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, StateMember, Stmt, UnOp,
 };
 use crate::stdlib;
+use crate::tagged_value::TaggedValue;
 use crate::value::{
     Branch, ClassDef, Env, EveryClockDef, Frame, FrameKind, FunctionDef, Instance, MethodDef,
     Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value,
@@ -109,8 +110,8 @@ fn seed_particle_emitter(
 ) -> Result<(), RuntimeError> {
     let (count, lifetime, class) = {
         let inst = emitter.borrow();
-        let count = match inst.fields.get("count") {
-            Some(Value::Int(n)) if *n >= 0 => *n as usize,
+        let count = match inst.fields.get("count").map(|t| t.clone().to_legacy()) {
+            Some(Value::Int(n)) if n >= 0 => n as usize,
             Some(other) => {
                 return Err(RuntimeError {
                     line,
@@ -124,10 +125,10 @@ fn seed_particle_emitter(
             }
             None => 16,
         };
-        let lifetime = match inst.fields.get("lifetime") {
-            Some(Value::Float(f)) => *f,
-            Some(Value::Int(n)) => *n as f64,
-            Some(Value::Quantity { value, .. }) => *value,
+        let lifetime = match inst.fields.get("lifetime").map(|t| t.clone().to_legacy()) {
+            Some(Value::Float(f)) => f,
+            Some(Value::Int(n)) => n as f64,
+            Some(Value::Quantity { value, .. }) => value,
             None => 1.0,
             Some(other) => {
                 return Err(RuntimeError {
@@ -165,7 +166,7 @@ fn seed_particle_emitter(
     }
     emitter.borrow_mut().fields.insert(
         "__particles".to_string(),
-        Value::List(Rc::new(RefCell::new(particles))),
+        TaggedValue::from_legacy(&Value::List(Rc::new(RefCell::new(particles)))),
     );
     Ok(())
 }
@@ -203,7 +204,12 @@ fn tick_particle_emitter(
     dt: f64,
 ) -> Result<(), RuntimeError> {
     let on_update = find_method(class, "on_update");
-    let particles = match emitter.borrow().fields.get("__particles").cloned() {
+    let particles = match emitter
+        .borrow()
+        .fields
+        .get("__particles")
+        .map(|t| t.clone().to_legacy())
+    {
         Some(Value::List(rc)) => rc,
         _ => return Ok(()),
     };
@@ -269,7 +275,12 @@ fn render_particle_emitter(
         return call_method(env, Value::Instance(emitter.clone()), &method, &[], &[], 0, 0)
             .map(|_| ());
     }
-    let particles = match emitter.borrow().fields.get("__particles").cloned() {
+    let particles = match emitter
+        .borrow()
+        .fields
+        .get("__particles")
+        .map(|t| t.clone().to_legacy())
+    {
         Some(Value::List(rc)) => rc,
         _ => return Ok(()),
     };
@@ -321,7 +332,7 @@ fn number_or_zero(v: &Value) -> f64 {
 }
 
 fn update_time_ambient(env: &mut Env, dt: f64) {
-    if let Some(Value::Object(rc)) = env.get("time").cloned() {
+    if let Some(Value::Object(rc)) = env.get("time") {
         rc.borrow_mut()
             .fields
             .insert("dt".to_string(), Value::Float(dt));
@@ -335,7 +346,7 @@ fn dispatch_key_press(
     env: &mut Env,
     scene: &Rc<RefCell<Instance>>,
 ) -> Result<(), RuntimeError> {
-    let pressed = match env.get("key_press").cloned() {
+    let pressed = match env.get("key_press") {
         Some(Value::Object(rc)) => {
             let o = rc.borrow();
             o.fields
@@ -1256,7 +1267,7 @@ fn run_user_call_resumable(
     let saved_params: Vec<(String, Option<Value>)> = def
         .params
         .iter()
-        .map(|p| (p.clone(), env.get(p).cloned()))
+        .map(|p| (p.clone(), env.get(p)))
         .collect();
     for (param, arg) in def.params.iter().zip(bound.iter()) {
         env.set(param.clone(), arg.clone());
@@ -1382,10 +1393,10 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
 fn lookup_name(env: &Env, name: &str) -> Option<Value> {
     if let Some(Value::Instance(rc)) = &env.self_value {
         if let Some(v) = rc.borrow().fields.get(name) {
-            return Some(v.clone());
+            return Some(v.clone().to_legacy());
         }
     }
-    env.get(name).cloned()
+    env.get(name)
 }
 
 fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
@@ -1557,7 +1568,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             Ok(())
         }
         Stmt::Spawn { class, at, line, col } => {
-            let class_val = env.get(class).cloned().ok_or_else(|| RuntimeError {
+            let class_val = env.get(class).ok_or_else(|| RuntimeError {
                 line: *line,
                 col: *col,
                 message: format!("class '{class}' is not defined"),
@@ -1583,7 +1594,9 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             };
             let inst_val = instantiate(class_rc.clone());
             if let (Some(at_value), Value::Instance(rc)) = (&at_value, &inst_val) {
-                rc.borrow_mut().fields.insert("pos".to_string(), at_value.clone());
+                rc.borrow_mut()
+                    .fields
+                    .insert("pos".to_string(), TaggedValue::from_legacy(at_value));
             }
             if let Value::Instance(rc) = &inst_val {
                 if class_rc.kind == "particles" {
@@ -1743,7 +1756,8 @@ fn eval_assign(
                 if let Some(Value::Instance(rc)) = &env.self_value {
                     let mut inst = rc.borrow_mut();
                     if inst.fields.contains_key(name) {
-                        inst.fields.insert(name.clone(), new_value);
+                        inst.fields
+                            .insert(name.clone(), TaggedValue::from_legacy(&new_value));
                         return Ok(());
                     }
                 }
@@ -1760,7 +1774,8 @@ fn eval_assign(
             if let Some(Value::Instance(rc)) = &env.self_value {
                 let mut inst = rc.borrow_mut();
                 if inst.fields.contains_key(name) {
-                    inst.fields.insert(name.clone(), combined);
+                    inst.fields
+                        .insert(name.clone(), TaggedValue::from_legacy(&combined));
                     return Ok(());
                 }
             }
@@ -1806,30 +1821,37 @@ fn eval_assign(
                     let final_value = if matches!(op, AssignOp::Set) {
                         new_value
                     } else {
-                        let current = rc.borrow().fields.get(name).cloned().ok_or_else(|| {
-                            let inst = rc.borrow();
-                            let names: Vec<&String> = inst.fields.keys().collect();
-                            let suggestion =
-                                crate::value::did_you_mean(name, &names).map(str::to_string);
-                            RuntimeError {
-                                line,
-                                col,
-                                message: format!(
-                                    "field '{name}' is not defined on instance of {}",
-                                    inst.class.name
-                                ),
-                                help: match suggestion {
-                                    Some(s) => Some(format!("did you mean `{s}`?")),
-                                    None => Some(
-                                        "use `<instance>.<field> = <value>` only for fields declared on the class"
-                                            .to_string(),
+                        let current = rc
+                            .borrow()
+                            .fields
+                            .get(name)
+                            .map(|t| t.clone().to_legacy())
+                            .ok_or_else(|| {
+                                let inst = rc.borrow();
+                                let names: Vec<&String> = inst.fields.keys().collect();
+                                let suggestion = crate::value::did_you_mean(name, &names)
+                                    .map(str::to_string);
+                                RuntimeError {
+                                    line,
+                                    col,
+                                    message: format!(
+                                        "field '{name}' is not defined on instance of {}",
+                                        inst.class.name
                                     ),
-                                },
-                            }
-                        })?;
+                                    help: match suggestion {
+                                        Some(s) => Some(format!("did you mean `{s}`?")),
+                                        None => Some(
+                                            "use `<instance>.<field> = <value>` only for fields declared on the class"
+                                                .to_string(),
+                                        ),
+                                    },
+                                }
+                            })?;
                         compound(op, &current, &new_value, line, col)?
                     };
-                    rc.borrow_mut().fields.insert(name.clone(), final_value);
+                    rc.borrow_mut()
+                        .fields
+                        .insert(name.clone(), TaggedValue::from_legacy(&final_value));
                     Ok(())
                 }
                 other => Err(RuntimeError {
@@ -2096,7 +2118,7 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
         Value::Instance(rc) => {
             let inst = rc.borrow();
             if let Some(v) = inst.fields.get(name) {
-                return Ok(v.clone());
+                return Ok(v.clone().to_legacy());
             }
             // Methods are not values yet — `obj.method` outside a call site is
             // not supported in this commit. The Call path resolves them
@@ -2533,7 +2555,7 @@ fn call_function(
     let saved_params: Vec<(String, Option<Value>)> = def
         .params
         .iter()
-        .map(|p| (p.clone(), env.get(p).cloned()))
+        .map(|p| (p.clone(), env.get(p)))
         .collect();
     for (param, arg) in def.params.iter().zip(args.iter()) {
         env.set(param.clone(), arg.clone());
@@ -2554,7 +2576,7 @@ fn call_function(
 }
 
 fn instantiate(class: Rc<ClassDef>) -> Value {
-    let mut fields = HashMap::new();
+    let mut fields: HashMap<String, TaggedValue> = HashMap::new();
     // Walk the parent chain, oldest first, so child overrides win.
     let mut chain: Vec<Rc<ClassDef>> = Vec::new();
     let mut cur = Some(class.clone());
@@ -2564,7 +2586,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
     }
     for c in chain.iter().rev() {
         for (k, v) in &c.field_defaults {
-            fields.insert(k.clone(), v.clone());
+            fields.insert(k.clone(), TaggedValue::from_legacy(v));
         }
     }
     Value::Instance(Rc::new(RefCell::new(Instance {
@@ -2627,7 +2649,7 @@ fn call_method(
     let saved_params: Vec<(String, Option<Value>)> = method
         .params
         .iter()
-        .map(|p| (p.clone(), env.get(p).cloned()))
+        .map(|p| (p.clone(), env.get(p)))
         .collect();
     for (param, arg) in method.params.iter().zip(args.iter()) {
         env.set(param.clone(), arg.clone());
@@ -2678,7 +2700,7 @@ fn run_for(
     col: u32,
 ) -> Result<(), RuntimeError> {
     let iter_val = eval_expr(env, iter)?;
-    let saved = env.get(var).cloned();
+    let saved = env.get(var);
     let result = match iter_val {
         Value::Range { start, end, exclusive } => {
             let limit = if exclusive { end } else { end + 1 };

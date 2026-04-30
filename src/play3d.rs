@@ -707,14 +707,14 @@ fn update_key_state(
     held: &HashSet<&'static str>,
     pressed: &HashSet<&'static str>,
 ) {
-    if let Some(Value::Object(rc)) = env.get("key").cloned() {
+    if let Some(Value::Object(rc)) = env.get("key") {
         let mut o = rc.borrow_mut();
         for (name, _) in KEYS {
             o.fields
                 .insert((*name).to_string(), Value::Bool(held.contains(name)));
         }
     }
-    if let Some(Value::Object(rc)) = env.get("key_press").cloned() {
+    if let Some(Value::Object(rc)) = env.get("key_press") {
         let mut o = rc.borrow_mut();
         for (name, _) in KEYS {
             o.fields
@@ -749,7 +749,7 @@ fn update_mouse_state(
     held: &HashSet<&'static str>,
     pressed: &HashSet<&'static str>,
 ) {
-    if let Some(Value::Object(rc)) = env.get("mouse").cloned() {
+    if let Some(Value::Object(rc)) = env.get("mouse") {
         let mut o = rc.borrow_mut();
         o.fields
             .insert("x".to_string(), Value::Float(mouse_x));
@@ -762,14 +762,14 @@ fn update_mouse_state(
         o.fields
             .insert("wheel".to_string(), Value::Float(wheel_y as f64));
     }
-    if let Some(Value::Object(rc)) = env.get("mouse_held").cloned() {
+    if let Some(Value::Object(rc)) = env.get("mouse_held") {
         let mut o = rc.borrow_mut();
         for name in MOUSE_BUTTON_NAMES {
             o.fields
                 .insert((*name).to_string(), Value::Bool(held.contains(name)));
         }
     }
-    if let Some(Value::Object(rc)) = env.get("mouse_press").cloned() {
+    if let Some(Value::Object(rc)) = env.get("mouse_press") {
         let mut o = rc.borrow_mut();
         for name in MOUSE_BUTTON_NAMES {
             o.fields

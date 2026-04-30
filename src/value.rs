@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
+use crate::tagged_value::TaggedValue;
+
 #[derive(Clone)]
 pub enum Value {
     Nil,
@@ -98,7 +100,12 @@ pub struct EveryClockDef {
 #[derive(Debug)]
 pub struct Instance {
     pub class: Rc<ClassDef>,
-    pub fields: HashMap<String, Value>,
+    /// v0.2 Phase 8.5 session 8d: instance fields stored as
+    /// `TaggedValue`. Direct accessors in `eval` shim with
+    /// `to_legacy()` / `from_legacy()` at the boundary; the
+    /// interior pattern matches still operate on legacy `Value`
+    /// until 8f.
+    pub fields: HashMap<String, TaggedValue>,
     pub current_state: Option<String>,
     /// Accumulated seconds since each clock last fired, parallel-indexed
     /// to `current_state`'s `every_clocks`.
@@ -316,7 +323,11 @@ impl fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 pub struct Env {
-    bindings: HashMap<String, Value>,
+    /// v0.2 Phase 8.5 session 8d: globals stored as
+    /// `TaggedValue`. The `get` / `set` / `iter_bindings` API
+    /// converts at the boundary so external callers (eval,
+    /// stdlib) keep working on legacy `Value` until 8e/8f.
+    bindings: HashMap<String, TaggedValue>,
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
     /// Top-level `on render():` handler — runs once per rendered
@@ -439,12 +450,17 @@ impl Env {
         self.rng_state = if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed };
     }
 
-    pub fn get(&self, name: &str) -> Option<&Value> {
-        self.bindings.get(name)
+    /// Look up a binding, converting back to legacy `Value` at
+    /// the boundary. v0.2 Phase 8.5 session 8d: signature changed
+    /// from `Option<&Value>` to `Option<Value>` because the
+    /// underlying storage is now `TaggedValue` and there's no
+    /// `Value` to borrow into.
+    pub fn get(&self, name: &str) -> Option<Value> {
+        self.bindings.get(name).map(|t| t.clone().to_legacy())
     }
 
     pub fn set(&mut self, name: String, value: Value) {
-        self.bindings.insert(name, value);
+        self.bindings.insert(name, TaggedValue::from_legacy(&value));
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -457,9 +473,13 @@ impl Env {
 
     /// Iterate over every (name, value) currently bound. Used by the
     /// bytecode VM to seed its globals from `stdlib::install` without
-    /// duplicating the bootstrap.
-    pub fn iter_bindings(&self) -> impl Iterator<Item = (&String, &Value)> {
-        self.bindings.iter()
+    /// duplicating the bootstrap. v0.2 Phase 8.5 session 8d: yields
+    /// owned (String, Value) tuples since the underlying storage is
+    /// `TaggedValue` and conversion produces fresh `Value`s.
+    pub fn iter_bindings(&self) -> impl Iterator<Item = (String, Value)> + '_ {
+        self.bindings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone().to_legacy()))
     }
 }
 

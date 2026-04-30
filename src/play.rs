@@ -344,14 +344,14 @@ fn flush_output(env: &mut Env) {
 }
 
 fn update_key_state(env: &mut Env) {
-    if let Some(Value::Object(rc)) = env.get("key").cloned() {
+    if let Some(Value::Object(rc)) = env.get("key") {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
             o.fields
                 .insert((*name).to_string(), Value::Bool(is_key_down(*code)));
         }
     }
-    if let Some(Value::Object(rc)) = env.get("key_press").cloned() {
+    if let Some(Value::Object(rc)) = env.get("key_press") {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
             o.fields
@@ -373,7 +373,7 @@ fn update_key_state(env: &mut Env) {
             }))),
         );
     }
-    if let Some(Value::Object(rc)) = env.get("screen").cloned() {
+    if let Some(Value::Object(rc)) = env.get("screen") {
         let mut o = rc.borrow_mut();
         let w = screen_width() as f64;
         let h = screen_height() as f64;
@@ -386,7 +386,7 @@ fn update_key_state(env: &mut Env) {
             Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
         );
     }
-    write_mouse_object(env.get("mouse").cloned());
-    write_mouse_buttons(env.get("mouse_held").cloned(), is_mouse_button_down);
-    write_mouse_buttons(env.get("mouse_press").cloned(), is_mouse_button_pressed);
+    write_mouse_object(env.get("mouse"));
+    write_mouse_buttons(env.get("mouse_held"), is_mouse_button_down);
+    write_mouse_buttons(env.get("mouse_press"), is_mouse_button_pressed);
 }

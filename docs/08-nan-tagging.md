@@ -223,11 +223,12 @@ This is the load-bearing part of the doc. NaN tagging + GC isn't one session; it
 - The `from_legacy` / `to_legacy` shim now covers every `Value` variant — the 8a/8b shim only covered primitives + the heap variants 8b added; 8c expanded `HeapBody` with `Class` / `Function` / `Instance` / `BcFunction` / `BcClass` / `BcInstance` / `Builtin` so non-primitive Values round-trip through the heap path.
 - 497 → 499 tests pass: shim round-trip tests added for heap variants and BcFunction (per the design's "every session adds at least one new test exercising the migrated path" rule).
 
-#### Session 8d — Tree-walker migration
+#### Session 8d — Tree-walker migration ✅ shipped 2026-04-30
 
-- `src/eval.rs`: same rewrite as VM. `Env::bindings` becomes `HashMap<String, TaggedValue>`.
-- `Instance::fields` migrates.
-- Every existing tree-walker test must still pass.
+- `Env::bindings` migrated from `HashMap<String, Value>` to `HashMap<String, TaggedValue>` in `src/value.rs`. The `Env::get` signature changed from `Option<&Value>` to `Option<Value>` (cloned + converted at the boundary) because the underlying storage now stores tagged slots — there's no `Value` to borrow into. `Env::iter_bindings` now yields owned `(String, Value)` tuples for the same reason.
+- `Instance::fields` migrated to `HashMap<String, TaggedValue>`. Direct accessors throughout `eval.rs` shim with `t.clone().to_legacy()` on read and `TaggedValue::from_legacy(&v)` on insert. The interior pattern matches still operate on legacy `Value` until 8f.
+- Object::fields stays on `HashMap<String, Value>` for now — that migrates with stdlib in 8e.
+- All 499 tests still pass; clippy clean.
 
 #### Session 8e — Stdlib + save migration
 
