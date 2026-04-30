@@ -509,6 +509,54 @@ fn set_mouse_press(env: &twec::value::Env, button: &str, value: bool) {
     }
 }
 
+// --- v0.2 session 4: save_to / load_from ---
+
+#[test]
+fn save_to_and_load_from_round_trip_a_tuple() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("twec_eval_save_round_trip.json");
+    let _ = std::fs::remove_file(&path);
+    let path_str = path.to_str().expect("temp path is valid UTF-8");
+
+    let src = format!(
+        r#"
+let p = "{}"
+save_to(p, (42, 3.14, "hi", true))
+let back = load_from(p)
+print(back)
+"#,
+        path_str.replace('\\', "\\\\")
+    );
+    let out = run_program_str(&src).expect("program should run");
+    let _ = std::fs::remove_file(&path);
+    // Tuple round-trips back as a tuple. Display format mirrors
+    // `Value::display`'s tuple printer.
+    assert!(
+        out.contains("42") && out.contains("3.14") && out.contains("hi") && out.contains("true"),
+        "expected round-tripped tuple in output, got: {out:?}"
+    );
+}
+
+#[test]
+fn load_from_missing_file_errors_at_runtime() {
+    let src = r#"let _ = load_from("nope-not-a-real-save.json")"#;
+    let err = run_program_str(src).expect_err("should fail");
+    assert!(err.contains("cannot read"), "got: {err}");
+}
+
+#[test]
+fn save_to_refuses_a_function_value() {
+    let src = r#"
+function greet(): nil
+save_to("ignored.json", greet)
+"#;
+    let err = run_program_str(src).expect_err("functions can't save");
+    assert!(
+        err.contains("function") && err.contains("data, not code"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn spawn_and_despawn_drive_entity_updates() {
     let out = run_program_frames("tests/programs/spawn_entities.twe", 5, 0.016)

@@ -12,6 +12,7 @@ pub mod parser;
 pub mod play;
 pub mod play3d;
 pub mod printer;
+pub mod save;
 pub mod stdlib;
 pub mod types;
 pub mod value;

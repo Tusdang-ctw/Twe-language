@@ -58,6 +58,27 @@ pub fn install(env: &mut Env) {
             func: load_impl,
         },
     );
+    // v0.2 session 4: save / load for Twe Values. Bottom layer
+    // of the eventual `save` block compiler — see
+    // `docs/07-save-system.md`. Schema declarations come in
+    // session 5+; for now `save_to` / `load_from` round-trip
+    // the serializable Value subset directly.
+    env.set(
+        "save_to".to_string(),
+        Value::Builtin {
+            name: "save_to",
+            params: &["path", "value"],
+            func: save_to_impl,
+        },
+    );
+    env.set(
+        "load_from".to_string(),
+        Value::Builtin {
+            name: "load_from",
+            params: &["path"],
+            func: load_from_impl,
+        },
+    );
 
     let key_names = [
         "right", "left", "up", "down", "space", "escape", "enter", "r", "w", "a", "s", "d",
@@ -407,6 +428,55 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         fields,
         kind: "sprite",
     }))))
+}
+
+/// `save_to(path, value)` — serialize `value` to JSON and write
+/// atomically to `path`. Errors when `value` includes a non-
+/// serializable type (functions, instances, builtins). v0.2
+/// session 4.
+fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "save_to")?;
+    let path = match &args[0] {
+        Value::Str(s) => s.as_ref().clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "save_to expects a string path, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `save_to(\"slot1.save\", { hp: 100 })`".to_string()),
+            });
+        }
+    };
+    crate::save::save_to_path(std::path::Path::new(&path), &args[1])
+        .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
+    Ok(Value::Nil)
+}
+
+/// `load_from(path)` — read + JSON-parse + decode a saved value.
+/// Returns the value the saver passed to `save_to`. v0.2 session
+/// 4 — schema enforcement deferred.
+fn load_from_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "load_from")?;
+    let path = match &args[0] {
+        Value::Str(s) => s.as_ref().clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "load_from expects a string path, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `let state = load_from(\"slot1.save\")`".to_string()),
+            });
+        }
+    };
+    let v = crate::save::load_from_path(std::path::Path::new(&path))
+        .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
+    Ok(v)
 }
 
 fn arity(args: &[Value], expected: usize, name: &str) -> Result<(), RuntimeError> {

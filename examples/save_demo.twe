@@ -1,0 +1,30 @@
+# v0.2 session 4 — minimal save / load demo.
+#
+# Saves a tuple of game state to disk, then reads it back. This
+# is the bottom layer of Twe's eventual `save` block compiler
+# (per docs/07-save-system.md) — schemas + version migration
+# are session 5+. For now, save_to / load_from operate on any
+# value in the *serializable* subset:
+#
+#   primitives        Nil, Bool, Int, Float, Str
+#   Twe-specific      Percent, Quantity, Range
+#   composites        Tuple, List, Object — when every element is
+#                     itself serializable
+#
+# Functions, instances, classes, and stdlib ambients (key, mouse)
+# refuse to serialize and surface an error pointing at the
+# offending type.
+#
+# Run with `twec run examples/save_demo.twe`.
+
+let path = "demo.save"
+
+# Save a tuple of (level, player_name, hp, alive, position).
+let snapshot = (3, "Hero", 75.5, true, (120, 200))
+save_to(path, snapshot)
+print("saved level/name/hp/alive/pos to " + path)
+
+# Round-trip: read it back.
+let loaded = load_from(path)
+print("loaded:")
+print(loaded)

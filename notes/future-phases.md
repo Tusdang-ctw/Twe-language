@@ -314,6 +314,19 @@ note.
       item; unblocks Phase 10's UI primitives.
       `examples/mouse_demo.twe` exercises all three Objects.
       See `docs/changes/2026-04-30-v0.2-session-3-mouse-input.md`.
+- [x] **Session 4 — save / load bottom layer** (2026-04-30).
+      `src/save.rs` module + `save_to(path, value)` and
+      `load_from(path) -> value` stdlib builtins. Operates on
+      Twe's serializable subset (primitives + Percent + Range
+      + Quantity + Tuple + List + Object); refuses Function /
+      Class / Instance / Builtin / stdlib ambients with
+      messages pointing at the offending type. Atomic write
+      via write-to-`<path>.tmp` + rename. Tagged JSON shape
+      so Tuple-vs-List, Percent, Range, Quantity round-trip
+      losslessly. Schema-block syntax, version migration, and
+      versioned binary + CRC format ride session 5+ per
+      `docs/07-save-system.md`. See
+      `docs/changes/2026-04-30-v0.2-session-4-save-load-bottom.md`.
 
 ## Triage backlog
 
