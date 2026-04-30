@@ -37,46 +37,42 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::json;
-use crate::value::{Object, RuntimeError, Value};
+use crate::value::{Object, RuntimeError, Value, LegacyValue, ToLegacyShim};
 
 /// Encode a Twe `Value` into a `json::Value`. Returns an error
 /// describing the offending type if the value contains anything
 /// outside the serializable subset.
 pub fn encode(value: &Value) -> Result<json::Value, String> {
-    match value {
-        Value::Nil => Ok(json::Value::Null),
-        Value::Bool(b) => Ok(json::Value::Bool(*b)),
-        Value::Int(n) => Ok(json::Value::Int(*n)),
-        Value::Float(f) => Ok(json::Value::Float(*f)),
-        Value::Str(s) => Ok(json::Value::Str((**s).clone())),
-        Value::Percent(p) => Ok(tagged("percent", &[("v", json::Value::Float(*p))])),
-        Value::Range {
-            start,
-            end,
-            exclusive,
-        } => Ok(tagged(
+    match value.to_legacy() {
+        LegacyValue::Nil => Ok(json::Value::Null),
+        LegacyValue::Bool(b) => Ok(json::Value::Bool(b)),
+        LegacyValue::Int(n) => Ok(json::Value::Int(n)),
+        LegacyValue::Float(f) => Ok(json::Value::Float(f)),
+        LegacyValue::Str(s) => Ok(json::Value::Str((*s).clone())),
+        LegacyValue::Percent(p) => Ok(tagged("percent", &[("v", json::Value::Float(p))])),
+        LegacyValue::Range { start: start, end: end, exclusive: exclusive } => Ok(tagged(
             "range",
             &[
-                ("start", json::Value::Int(*start)),
-                ("end", json::Value::Int(*end)),
-                ("exclusive", json::Value::Bool(*exclusive)),
+                ("start", json::Value::Int(start)),
+                ("end", json::Value::Int(end)),
+                ("exclusive", json::Value::Bool(exclusive)),
             ],
         )),
-        Value::Quantity { value, unit } => Ok(tagged(
+        LegacyValue::Quantity { value: value, unit: unit } => Ok(tagged(
             "quantity",
             &[
-                ("value", json::Value::Float(*value)),
-                ("unit", json::Value::Str((**unit).clone())),
+                ("value", json::Value::Float(value)),
+                ("unit", json::Value::Str((*unit).clone())),
             ],
         )),
-        Value::Tuple(elems) => {
+        LegacyValue::Tuple(elems) => {
             let mut arr = Vec::with_capacity(elems.len());
             for e in elems.iter() {
                 arr.push(encode(e)?);
             }
             Ok(tagged("tuple", &[("v", json::Value::Array(arr))]))
         }
-        Value::List(rc) => {
+        LegacyValue::List(rc) => {
             let v = rc.borrow();
             let mut arr = Vec::with_capacity(v.len());
             for e in v.iter() {
@@ -84,7 +80,7 @@ pub fn encode(value: &Value) -> Result<json::Value, String> {
             }
             Ok(json::Value::Array(arr))
         }
-        Value::Object(rc) => {
+        LegacyValue::Object(rc) => {
             let o = rc.borrow();
             // Refuse to save Objects whose `kind` is "class",
             // "input", "module" — these are stdlib ambients
@@ -106,35 +102,35 @@ pub fn encode(value: &Value) -> Result<json::Value, String> {
                         "object field name '__twe' is reserved by the save format".to_string(),
                     );
                 }
-                map.insert(k.clone(), encode(&v.clone().to_legacy())?);
+                map.insert(k.clone(), encode(v)?);
             }
             Ok(json::Value::Object(map))
         }
-        Value::Class(c) => Err(format!(
+        LegacyValue::Class(c) => Err(format!(
             "cannot save class '{}' — saves hold data, not declarations",
             c.name
         )),
-        Value::Instance(rc) => Err(format!(
+        LegacyValue::Instance(rc) => Err(format!(
             "cannot save instance of `{}` — saves hold data, not live objects (extract the fields you want into a tuple or a plain Object first)",
             rc.borrow().class.name
         )),
-        Value::BcInstance(rc) => Err(format!(
+        LegacyValue::BcInstance(rc) => Err(format!(
             "cannot save bytecode instance of `{}` — same restriction as `Instance`",
             rc.borrow().class.name
         )),
-        Value::Function(f) => Err(format!(
+        LegacyValue::Function(f) => Err(format!(
             "cannot save function '{}' — saves hold data, not code",
             f.name
         )),
-        Value::BcFunction(f) => Err(format!(
+        LegacyValue::BcFunction(f) => Err(format!(
             "cannot save bytecode function '{}' — saves hold data, not code",
             f.name
         )),
-        Value::BcClass(c) => Err(format!(
+        LegacyValue::BcClass(c) => Err(format!(
             "cannot save bytecode class '{}' — saves hold data, not declarations",
             c.name
         )),
-        Value::Builtin { name, .. } => Err(format!(
+        LegacyValue::Builtin { name, .. } => Err(format!(
             "cannot save builtin '{name}' — saves hold data, not code"
         )),
     }
@@ -148,14 +144,14 @@ pub fn encode(value: &Value) -> Result<json::Value, String> {
 /// that distinguishes "loaded from disk" from stdlib ambients).
 pub fn decode(value: &json::Value) -> Value {
     match value {
-        json::Value::Null => Value::Nil,
-        json::Value::Bool(b) => Value::Bool(*b),
-        json::Value::Int(n) => Value::Int(*n),
-        json::Value::Float(f) => Value::Float(*f),
-        json::Value::Str(s) => Value::Str(Rc::new(s.clone())),
+        json::Value::Null => Value::NIL,
+        json::Value::Bool(b) => Value::from_bool(*b),
+        json::Value::Int(n) => Value::from_int(*n),
+        json::Value::Float(f) => Value::from_float(*f),
+        json::Value::Str(s) => Value::from_string(s.clone()),
         json::Value::Array(arr) => {
             let elems: Vec<Value> = arr.iter().map(decode).collect();
-            Value::List(Rc::new(RefCell::new(elems)))
+            Value::from_list(Rc::new(RefCell::new(elems)))
         }
         json::Value::Object(map) => {
             // Tagged round-trip for Twe-specific scalars.
@@ -164,15 +160,15 @@ pub fn decode(value: &json::Value) -> Value {
                     "tuple" => {
                         if let Some(json::Value::Array(arr)) = map.get("v") {
                             let elems: Vec<Value> = arr.iter().map(decode).collect();
-                            return Value::Tuple(Rc::new(elems));
+                            return Value::from_tuple(Rc::new(elems));
                         }
                     }
                     "percent" => {
                         if let Some(json::Value::Float(f)) = map.get("v") {
-                            return Value::Percent(*f);
+                            return Value::from_percent(*f);
                         }
                         if let Some(json::Value::Int(n)) = map.get("v") {
-                            return Value::Percent(*n as f64);
+                            return Value::from_percent(*n as f64);
                         }
                     }
                     "range" => {
@@ -182,11 +178,7 @@ pub fn decode(value: &json::Value) -> Value {
                             Some(json::Value::Bool(ex)),
                         ) = (map.get("start"), map.get("end"), map.get("exclusive"))
                         {
-                            return Value::Range {
-                                start: *s,
-                                end: *e,
-                                exclusive: *ex,
-                            };
+                            return Value::from_range(*s, *e, *ex);
                         }
                     }
                     "quantity" => {
@@ -198,10 +190,7 @@ pub fn decode(value: &json::Value) -> Value {
                         if let (Some(value), Some(json::Value::Str(unit))) =
                             (value, map.get("unit"))
                         {
-                            return Value::Quantity {
-                                value,
-                                unit: Rc::new(unit.clone()),
-                            };
+                            return Value::from_quantity(value, Rc::new(unit.clone()));
                         }
                     }
                     _ => {}
@@ -213,8 +202,8 @@ pub fn decode(value: &json::Value) -> Value {
             for (k, v) in map {
                 fields.insert(k.clone(), decode(v));
             }
-            Value::Object(Rc::new(RefCell::new(Object {
-                fields: crate::value::legacy_fields_to_tagged(fields),
+            Value::from_object(Rc::new(RefCell::new(Object {
+                fields,
                 kind: "save",
             })))
         }
@@ -223,7 +212,7 @@ pub fn decode(value: &json::Value) -> Value {
 
 fn tagged(tag: &str, fields: &[(&str, json::Value)]) -> json::Value {
     let mut map = std::collections::BTreeMap::new();
-    map.insert("__twe".to_string(), json::Value::Str(tag.to_string()));
+    map.insert("__twe".to_string(), json::Value::Str((tag.to_string()).to_string()));
     for (k, v) in fields {
         map.insert((*k).to_string(), v.clone());
     }
@@ -302,36 +291,36 @@ mod tests {
 
     #[test]
     fn primitives_round_trip() {
-        match round_trip(Value::Int(42)) {
-            Value::Int(42) => {}
+        match round_trip(Value::from_int(42)).to_legacy() {
+            LegacyValue::Int(42) => {}
             other => panic!("expected Int(42), got {other:?}"),
         }
-        match round_trip(Value::Float(3.14)) {
-            Value::Float(f) if (f - 3.14).abs() < 1e-9 => {}
+        match round_trip(Value::from_float(3.14)).to_legacy() {
+            LegacyValue::Float(f) if (f - 3.14).abs() < 1e-9 => {}
             other => panic!("expected ~Float(3.14), got {other:?}"),
         }
-        match round_trip(Value::Bool(true)) {
-            Value::Bool(true) => {}
+        match round_trip(Value::TRUE).to_legacy() {
+            LegacyValue::Bool(true) => {}
             other => panic!("expected Bool(true), got {other:?}"),
         }
-        match round_trip(Value::Nil) {
-            Value::Nil => {}
+        match round_trip(Value::NIL).to_legacy() {
+            LegacyValue::Nil => {}
             other => panic!("expected Nil, got {other:?}"),
         }
-        match round_trip(Value::Str(Rc::new("hello".to_string()))) {
-            Value::Str(s) if &**s == "hello" => {}
+        match round_trip(Value::from_string("hello".to_string())).to_legacy() {
+            LegacyValue::Str(s) if &**s == "hello" => {}
             other => panic!("expected Str(\"hello\"), got {other:?}"),
         }
     }
 
     #[test]
     fn tuple_round_trips_as_tuple_not_list() {
-        let v = Value::Tuple(Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        let v = Value::from_tuple(Rc::new(vec![Value::from_int(1), Value::from_int(2), Value::from_int(3)]));
         let back = round_trip(v);
-        match back {
-            Value::Tuple(elems) => {
+        match back.to_legacy() {
+            LegacyValue::Tuple(elems) => {
                 assert_eq!(elems.len(), 3);
-                assert!(matches!(elems[0], Value::Int(1)));
+                assert!(matches!(elems[0].to_legacy(), LegacyValue::Int(1)));
             }
             other => panic!("expected Tuple, got {other:?}"),
         }
@@ -339,22 +328,19 @@ mod tests {
 
     #[test]
     fn list_round_trips_as_list() {
-        let v = Value::List(Rc::new(RefCell::new(vec![Value::Int(7), Value::Int(8)])));
+        let v = Value::from_list(Rc::new(RefCell::new(vec![Value::from_int(7), Value::from_int(8)])));
         let back = round_trip(v);
-        match back {
-            Value::List(rc) => assert_eq!(rc.borrow().len(), 2),
+        match back.to_legacy() {
+            LegacyValue::List(rc) => assert_eq!(rc.borrow().len(), 2),
             other => panic!("expected List, got {other:?}"),
         }
     }
 
     #[test]
     fn quantity_round_trips_with_unit() {
-        let v = Value::Quantity {
-            value: 5.0,
-            unit: Rc::new("kg".to_string()),
-        };
-        match round_trip(v) {
-            Value::Quantity { value, unit } => {
+        let v = Value::from_quantity(5.0, Rc::new("kg".to_string()));
+        match round_trip(v).to_legacy() {
+            LegacyValue::Quantity { value: value, unit: unit } => {
                 assert_eq!(value, 5.0);
                 assert_eq!(&**unit, "kg");
             }
@@ -364,17 +350,9 @@ mod tests {
 
     #[test]
     fn range_round_trips() {
-        let v = Value::Range {
-            start: 0,
-            end: 10,
-            exclusive: true,
-        };
-        match round_trip(v) {
-            Value::Range {
-                start,
-                end,
-                exclusive,
-            } => {
+        let v = Value::from_range(0, 10, true);
+        match round_trip(v).to_legacy() {
+            LegacyValue::Range { start: start, end: end, exclusive: exclusive } => {
                 assert_eq!(start, 0);
                 assert_eq!(end, 10);
                 assert!(exclusive);
@@ -385,9 +363,9 @@ mod tests {
 
     #[test]
     fn percent_round_trips() {
-        let v = Value::Percent(0.25);
-        match round_trip(v) {
-            Value::Percent(p) => assert!((p - 0.25).abs() < 1e-9),
+        let v = Value::from_percent(0.25);
+        match round_trip(v).to_legacy() {
+            LegacyValue::Percent(p) => assert!((p - 0.25).abs() < 1e-9),
             other => panic!("expected Percent, got {other:?}"),
         }
     }
@@ -395,17 +373,17 @@ mod tests {
     #[test]
     fn nested_object_round_trips() {
         let mut inner = HashMap::new();
-        inner.insert("hp".to_string(), Value::Int(100));
-        inner.insert("name".to_string(), Value::Str(Rc::new("Hero".to_string())));
-        let v = Value::Object(Rc::new(RefCell::new(Object {
+        inner.insert("hp".to_string(), Value::from_int(100));
+        inner.insert("name".to_string(), Value::from_string("Hero".to_string()));
+        let v = Value::from_object(Rc::new(RefCell::new(Object {
             fields: crate::value::legacy_fields_to_tagged(inner),
             kind: "save",
         })));
-        match round_trip(v) {
-            Value::Object(rc) => {
+        match round_trip(v).to_legacy() {
+            LegacyValue::Object(rc) => {
                 let o = rc.borrow();
-                assert!(matches!(o.get_field("hp"), Some(Value::Int(100))));
-                assert!(matches!(o.get_field("name"), Some(Value::Str(_))));
+                assert!(matches!(o.get_field("hp").to_legacy(), Some(LegacyValue::Int(100))));
+                assert!(matches!(o.get_field("name").to_legacy(), Some(LegacyValue::Str(_))));
             }
             other => panic!("expected Object, got {other:?}"),
         }
@@ -420,14 +398,14 @@ mod tests {
             params: vec![],
             body: vec![],
         };
-        let v = Value::Function(Rc::new(def));
+        let v = Value::from_function(Rc::new(def));
         let err = encode(&v).expect_err("functions must not save");
         assert!(err.contains("function") && err.contains("data, not code"));
     }
 
     #[test]
     fn input_ambient_refuses_to_serialize() {
-        let v = Value::Object(Rc::new(RefCell::new(Object {
+        let v = Value::from_object(Rc::new(RefCell::new(Object {
             fields: HashMap::new(),
             kind: "input",
         })));
@@ -442,12 +420,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut fields = HashMap::new();
-        fields.insert("hp".to_string(), Value::Int(75));
+        fields.insert("hp".to_string(), Value::from_int(75));
         fields.insert(
             "name".to_string(),
-            Value::Str(Rc::new("Hero".to_string())),
+            Value::from_string("Hero".to_string()),
         );
-        let v = Value::Object(Rc::new(RefCell::new(Object {
+        let v = Value::from_object(Rc::new(RefCell::new(Object {
             fields: crate::value::legacy_fields_to_tagged(fields),
             kind: "save",
         })));
@@ -456,10 +434,10 @@ mod tests {
         let loaded = load_from_path(&path).expect("load");
         let _ = std::fs::remove_file(&path);
 
-        match loaded {
-            Value::Object(rc) => {
+        match loaded.to_legacy() {
+            LegacyValue::Object(rc) => {
                 let o = rc.borrow();
-                assert!(matches!(o.get_field("hp"), Some(Value::Int(75))));
+                assert!(matches!(o.get_field("hp").to_legacy(), Some(LegacyValue::Int(75))));
             }
             other => panic!("expected Object, got {other:?}"),
         }

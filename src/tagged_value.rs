@@ -112,11 +112,12 @@ pub enum HeapBody {
         end: i64,
         exclusive: bool,
     },
-    /// Immutable tuple. Sessions 8c–8e migrate the inner
-    /// `Vec<crate::value::Value>` to `Vec<TaggedValue>`.
-    Tuple(Rc<Vec<crate::value::Value>>),
-    /// Mutable list. Same migration path as Tuple.
-    List(Rc<RefCell<Vec<crate::value::Value>>>),
+    /// Immutable tuple. v0.2 Phase 8.5 session 8f: interior is
+    /// `Vec<TaggedValue>`. Shared `Rc` with `LegacyValue::Tuple` so
+    /// `to_legacy` rewraps without deep-copy.
+    Tuple(Rc<Vec<TaggedValue>>),
+    /// Mutable list. Same migration as Tuple.
+    List(Rc<RefCell<Vec<TaggedValue>>>),
     /// Generic object — Twe stdlib's `key`, `mouse`, sprite/sound
     /// handles, save-loaded data, etc. all use this.
     Object(Rc<RefCell<crate::value::Object>>),
@@ -291,11 +292,11 @@ impl TaggedValue {
         Self::from_heap(HeapBody::Range { start, end, exclusive })
     }
 
-    pub fn from_tuple(elems: Rc<Vec<crate::value::Value>>) -> Self {
+    pub fn from_tuple(elems: Rc<Vec<TaggedValue>>) -> Self {
         Self::from_heap(HeapBody::Tuple(elems))
     }
 
-    pub fn from_list(elems: Rc<RefCell<Vec<crate::value::Value>>>) -> Self {
+    pub fn from_list(elems: Rc<RefCell<Vec<TaggedValue>>>) -> Self {
         Self::from_heap(HeapBody::List(elems))
     }
 
@@ -461,6 +462,307 @@ impl TaggedValue {
         self.with_obj_body(|b| HeapBodyKind::of(b) == kind)
     }
 
+    /// Twe truthiness: only `false` is falsy. Per Principle 3 +
+    /// `docs/03-runtime.md` pitfall #2.
+    pub fn is_truthy(&self) -> bool {
+        !self.is_bool() || self.as_bool()
+    }
+
+    pub fn is_falsy(&self) -> bool {
+        self.is_bool() && !self.as_bool()
+    }
+
+    /// Twe type name for error messages and `type_of`.
+    pub fn type_name(&self) -> &'static str {
+        if self.is_nil() {
+            return "nil";
+        }
+        if self.is_bool() {
+            return "bool";
+        }
+        if self.is_int_or_boxed_int() {
+            return "int";
+        }
+        if self.is_float() {
+            return "float";
+        }
+        if self.is_str() {
+            return "string";
+        }
+        if self.is_obj() {
+            return self.with_obj_body(|b| match b {
+                HeapBody::Percent(_) => "percent",
+                HeapBody::Quantity { .. } => "quantity",
+                HeapBody::Range { .. } => "range",
+                HeapBody::Tuple(_) => "tuple",
+                HeapBody::List(_) => "list",
+                HeapBody::Object(o) => o.borrow().kind,
+                HeapBody::Class(_) | HeapBody::BcClass(_) => "class",
+                HeapBody::Instance(_) | HeapBody::BcInstance(_) => "instance",
+                HeapBody::Function(_) | HeapBody::BcFunction(_) | HeapBody::Builtin { .. } => {
+                    "function"
+                }
+                HeapBody::String(_) => unreachable!("strings live behind TAG_STR"),
+                HeapBody::BoxedInt(_) => "int",
+            });
+        }
+        "unknown"
+    }
+
+    /// Source-style display. Matches the legacy `LegacyValue::display`.
+    pub fn display(&self) -> String {
+        if self.is_nil() {
+            return "nil".to_string();
+        }
+        if self.is_bool() {
+            return self.as_bool().to_string();
+        }
+        if self.is_int_or_boxed_int() {
+            return self.as_int().to_string();
+        }
+        if self.is_float() {
+            return format!("{:?}", self.as_float());
+        }
+        if self.is_str() {
+            return self.as_string();
+        }
+        if self.is_obj() {
+            return self.with_obj_body(|b| match b {
+                HeapBody::Percent(p) => format!("{p}%"),
+                HeapBody::Quantity { value, unit } => format!("{value}{unit}"),
+                HeapBody::Range { start, end, exclusive } => {
+                    let op = if *exclusive { "..<" } else { ".." };
+                    format!("{start}{op}{end}")
+                }
+                HeapBody::Tuple(elems) => {
+                    let parts: Vec<String> = elems.iter().map(|t| t.display()).collect();
+                    format!("({})", parts.join(", "))
+                }
+                HeapBody::List(rc) => {
+                    let parts: Vec<String> = rc.borrow().iter().map(|t| t.display()).collect();
+                    format!("[{}]", parts.join(", "))
+                }
+                HeapBody::Object(o) => format!("<{}>", o.borrow().kind),
+                HeapBody::Class(c) => format!("<{} {}>", c.kind, c.name),
+                HeapBody::Instance(i) => format!("<{}>", i.borrow().class.name),
+                HeapBody::Function(func) => format!("<function {}>", func.name),
+                HeapBody::BcFunction(func) => format!("<function {}>", func.name),
+                HeapBody::BcClass(c) => format!("<{} {}>", c.kind, c.name),
+                HeapBody::BcInstance(i) => format!("<{}>", i.borrow().class.name),
+                HeapBody::Builtin { name, .. } => format!("<builtin {name}>"),
+                HeapBody::String(_) => unreachable!("strings live behind TAG_STR"),
+                HeapBody::BoxedInt(n) => n.to_string(),
+            });
+        }
+        "<unknown>".to_string()
+    }
+
+    /// Twe value equality. Numeric int↔float cross-compares, strings by
+    /// content, tuples / lists element-wise; everything else by `Rc` identity.
+    pub fn equals(&self, other: &TaggedValue) -> bool {
+        if self.is_nil() && other.is_nil() {
+            return true;
+        }
+        if self.is_bool() && other.is_bool() {
+            return self.as_bool() == other.as_bool();
+        }
+        if self.is_int_or_boxed_int() && other.is_int_or_boxed_int() {
+            return self.as_int() == other.as_int();
+        }
+        if self.is_float() && other.is_float() {
+            return self.as_float() == other.as_float();
+        }
+        if self.is_int_or_boxed_int() && other.is_float() {
+            return (self.as_int() as f64) == other.as_float();
+        }
+        if self.is_float() && other.is_int_or_boxed_int() {
+            return self.as_float() == (other.as_int() as f64);
+        }
+        if self.is_str() && other.is_str() {
+            return self.as_string() == other.as_string();
+        }
+        if self.is_obj() && other.is_obj() {
+            return self.with_obj_body(|a| {
+                other.with_obj_body(|b| match (a, b) {
+                    (HeapBody::Percent(x), HeapBody::Percent(y)) => x == y,
+                    (
+                        HeapBody::Quantity { value: vx, unit: ux },
+                        HeapBody::Quantity { value: vy, unit: uy },
+                    ) => vx == vy && ux == uy,
+                    (
+                        HeapBody::Range { start: sa, end: ea, exclusive: xa },
+                        HeapBody::Range { start: sb, end: eb, exclusive: xb },
+                    ) => sa == sb && ea == eb && xa == xb,
+                    (HeapBody::Tuple(ra), HeapBody::Tuple(rb)) => {
+                        ra.len() == rb.len()
+                            && ra.iter().zip(rb.iter()).all(|(x, y)| x.equals(y))
+                    }
+                    (HeapBody::List(ra), HeapBody::List(rb)) => {
+                        let a = ra.borrow();
+                        let b = rb.borrow();
+                        a.len() == b.len()
+                            && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
+                    }
+                    (HeapBody::Object(ra), HeapBody::Object(rb)) => Rc::ptr_eq(ra, rb),
+                    (HeapBody::Class(ra), HeapBody::Class(rb)) => Rc::ptr_eq(ra, rb),
+                    (HeapBody::Instance(ra), HeapBody::Instance(rb)) => Rc::ptr_eq(ra, rb),
+                    (HeapBody::Function(ra), HeapBody::Function(rb)) => Rc::ptr_eq(ra, rb),
+                    (HeapBody::BcFunction(ra), HeapBody::BcFunction(rb)) => Rc::ptr_eq(ra, rb),
+                    (HeapBody::BcClass(ra), HeapBody::BcClass(rb)) => Rc::ptr_eq(ra, rb),
+                    (HeapBody::BcInstance(ra), HeapBody::BcInstance(rb)) => Rc::ptr_eq(ra, rb),
+                    (
+                        HeapBody::Builtin { func: fa, .. },
+                        HeapBody::Builtin { func: fb, .. },
+                    ) => std::ptr::eq(*fa as *const (), *fb as *const ()),
+                    _ => false,
+                })
+            });
+        }
+        false
+    }
+
+    // ---- per-heap-variant predicates ----
+    pub fn is_percent(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Percent)
+    }
+    pub fn is_quantity(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Quantity)
+    }
+    pub fn is_range(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Range)
+    }
+    pub fn is_tuple(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Tuple)
+    }
+    pub fn is_list(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::List)
+    }
+    pub fn is_object(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Object)
+    }
+    pub fn is_class(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Class)
+    }
+    pub fn is_instance(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Instance)
+    }
+    pub fn is_function(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Function)
+    }
+    pub fn is_bc_function(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::BcFunction)
+    }
+    pub fn is_bc_class(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::BcClass)
+    }
+    pub fn is_bc_instance(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::BcInstance)
+    }
+    pub fn is_builtin(&self) -> bool {
+        self.is_obj_body_kind(HeapBodyKind::Builtin)
+    }
+    pub fn is_callable(&self) -> bool {
+        self.is_function() || self.is_bc_function() || self.is_builtin()
+    }
+
+    // ---- per-heap-variant extractors (panic on mismatch) ----
+    pub fn as_percent(&self) -> f64 {
+        self.with_obj_body(|b| match b {
+            HeapBody::Percent(p) => *p,
+            other => panic!("as_percent: not a percent: {other:?}"),
+        })
+    }
+
+    pub fn as_quantity(&self) -> (f64, Rc<String>) {
+        self.with_obj_body(|b| match b {
+            HeapBody::Quantity { value, unit } => (*value, unit.clone()),
+            other => panic!("as_quantity: not a quantity: {other:?}"),
+        })
+    }
+
+    pub fn as_range(&self) -> (i64, i64, bool) {
+        self.with_obj_body(|b| match b {
+            HeapBody::Range { start, end, exclusive } => (*start, *end, *exclusive),
+            other => panic!("as_range: not a range: {other:?}"),
+        })
+    }
+
+    pub fn as_tuple(&self) -> Rc<Vec<TaggedValue>> {
+        self.with_obj_body(|b| match b {
+            HeapBody::Tuple(rc) => rc.clone(),
+            other => panic!("as_tuple: not a tuple: {other:?}"),
+        })
+    }
+
+    pub fn as_list(&self) -> Rc<RefCell<Vec<TaggedValue>>> {
+        self.with_obj_body(|b| match b {
+            HeapBody::List(rc) => rc.clone(),
+            other => panic!("as_list: not a list: {other:?}"),
+        })
+    }
+
+    pub fn as_object(&self) -> Rc<RefCell<crate::value::Object>> {
+        self.with_obj_body(|b| match b {
+            HeapBody::Object(rc) => rc.clone(),
+            other => panic!("as_object: not an object: {other:?}"),
+        })
+    }
+
+    pub fn as_class(&self) -> Rc<crate::value::ClassDef> {
+        self.with_obj_body(|b| match b {
+            HeapBody::Class(rc) => rc.clone(),
+            other => panic!("as_class: not a class: {other:?}"),
+        })
+    }
+
+    pub fn as_instance(&self) -> Rc<RefCell<crate::value::Instance>> {
+        self.with_obj_body(|b| match b {
+            HeapBody::Instance(rc) => rc.clone(),
+            other => panic!("as_instance: not an instance: {other:?}"),
+        })
+    }
+
+    pub fn as_function(&self) -> Rc<crate::value::FunctionDef> {
+        self.with_obj_body(|b| match b {
+            HeapBody::Function(rc) => rc.clone(),
+            other => panic!("as_function: not a function: {other:?}"),
+        })
+    }
+
+    pub fn as_bc_function(&self) -> Rc<crate::bytecode::BcFunction> {
+        self.with_obj_body(|b| match b {
+            HeapBody::BcFunction(rc) => rc.clone(),
+            other => panic!("as_bc_function: not a bc_function: {other:?}"),
+        })
+    }
+
+    pub fn as_bc_class(&self) -> Rc<crate::bytecode::BcClassDef> {
+        self.with_obj_body(|b| match b {
+            HeapBody::BcClass(rc) => rc.clone(),
+            other => panic!("as_bc_class: not a bc_class: {other:?}"),
+        })
+    }
+
+    pub fn as_bc_instance(&self) -> Rc<RefCell<crate::bytecode::BcInstance>> {
+        self.with_obj_body(|b| match b {
+            HeapBody::BcInstance(rc) => rc.clone(),
+            other => panic!("as_bc_instance: not a bc_instance: {other:?}"),
+        })
+    }
+
+    pub fn as_builtin(
+        &self,
+    ) -> (
+        &'static str,
+        &'static [&'static str],
+        crate::value::BuiltinFn,
+    ) {
+        self.with_obj_body(|b| match b {
+            HeapBody::Builtin { name, params, func } => (*name, *params, *func),
+            other => panic!("as_builtin: not a builtin: {other:?}"),
+        })
+    }
+
     /// Borrow the heap object behind a pointer-tagged value.
     /// The closure runs while the `Rc` is alive; the refcount
     /// stays balanced. **The caller's closure must not hold
@@ -544,87 +846,82 @@ impl std::fmt::Debug for TaggedValue {
 // (8c–8e), conversions migrate inward; in 8f the shim deletes.
 
 impl TaggedValue {
-    /// Convert from the legacy `crate::value::Value` enum. Every
-    /// variant round-trips: primitives stay immediate, heap
-    /// variants share their existing `Rc` (no deep copy). v0.2
-    /// Phase 8.5 session 8c — full coverage.
-    pub fn from_legacy(v: &crate::value::Value) -> Self {
-        use crate::value::Value;
+    /// Convert from `LegacyValue`. Migration-only shim during 8f;
+    /// deletes once every match site uses predicate dispatch.
+    pub fn from_legacy(v: &crate::value::LegacyValue) -> Self {
+        use crate::value::LegacyValue as L;
         match v {
-            Value::Nil => Self::NIL,
-            Value::Bool(b) => Self::from_bool(*b),
-            Value::Int(n) => Self::from_int(*n),
-            Value::Float(f) => Self::from_float(*f),
-            Value::Percent(p) => Self::from_percent(*p),
-            Value::Quantity { value, unit } => Self::from_quantity(*value, unit.clone()),
-            Value::Range { start, end, exclusive } => {
-                Self::from_range(*start, *end, *exclusive)
-            }
-            Value::Str(rc) => Self::from_string((**rc).clone()),
-            Value::Tuple(rc) => Self::from_tuple(rc.clone()),
-            Value::List(rc) => Self::from_list(rc.clone()),
-            Value::Object(rc) => Self::from_object(rc.clone()),
-            Value::Class(rc) => Self::from_class(rc.clone()),
-            Value::Instance(rc) => Self::from_instance(rc.clone()),
-            Value::Function(rc) => Self::from_function(rc.clone()),
-            Value::BcFunction(rc) => Self::from_bc_function(rc.clone()),
-            Value::BcClass(rc) => Self::from_bc_class(rc.clone()),
-            Value::BcInstance(rc) => Self::from_bc_instance(rc.clone()),
-            Value::Builtin { name, params, func } => Self::from_builtin(name, params, *func),
+            L::Nil => Self::NIL,
+            L::Bool(b) => Self::from_bool(*b),
+            L::Int(n) => Self::from_int(*n),
+            L::Float(f) => Self::from_float(*f),
+            L::Percent(p) => Self::from_percent(*p),
+            L::Quantity { value, unit } => Self::from_quantity(*value, unit.clone()),
+            L::Range { start, end, exclusive } => Self::from_range(*start, *end, *exclusive),
+            L::Str(rc) => Self::from_string((**rc).clone()),
+            L::Tuple(rc) => Self::from_tuple(rc.clone()),
+            L::List(rc) => Self::from_list(rc.clone()),
+            L::Object(rc) => Self::from_object(rc.clone()),
+            L::Class(rc) => Self::from_class(rc.clone()),
+            L::Instance(rc) => Self::from_instance(rc.clone()),
+            L::Function(rc) => Self::from_function(rc.clone()),
+            L::BcFunction(rc) => Self::from_bc_function(rc.clone()),
+            L::BcClass(rc) => Self::from_bc_class(rc.clone()),
+            L::BcInstance(rc) => Self::from_bc_instance(rc.clone()),
+            L::Builtin { name, params, func } => Self::from_builtin(name, params, *func),
         }
     }
 
-    /// Convert back to the legacy `crate::value::Value` enum.
-    /// Heap variants share the same `Rc` they hold internally
-    /// — no copy. v0.2 Phase 8.5 session 8c — full coverage.
-    pub fn to_legacy(&self) -> crate::value::Value {
-        use crate::value::Value;
+    /// Convert back to `LegacyValue`. Same migration-only role as
+    /// `from_legacy`. Heap variants share the same `Rc` (no copy).
+    pub fn to_legacy(&self) -> crate::value::LegacyValue {
+        use crate::value::LegacyValue as L;
         if self.is_nil() {
-            return Value::Nil;
+            return L::Nil;
         }
         if self.is_bool() {
-            return Value::Bool(self.as_bool());
+            return L::Bool(self.as_bool());
         }
         if self.is_int() {
-            return Value::Int(self.as_int());
+            return L::Int(self.as_int());
         }
         if self.is_float() {
-            return Value::Float(self.as_float());
+            return L::Float(self.as_float());
         }
         if self.is_str() {
-            return Value::Str(Rc::new(self.as_string()));
+            return L::Str(Rc::new(self.as_string()));
         }
         if self.is_obj() {
             return self.with_obj_body(|b| match b {
                 HeapBody::String(_) => unreachable!("strings live behind TAG_STR"),
-                HeapBody::BoxedInt(n) => Value::Int(*n),
-                HeapBody::Percent(p) => Value::Percent(*p),
-                HeapBody::Quantity { value, unit } => Value::Quantity {
+                HeapBody::BoxedInt(n) => L::Int(*n),
+                HeapBody::Percent(p) => L::Percent(*p),
+                HeapBody::Quantity { value, unit } => L::Quantity {
                     value: *value,
                     unit: unit.clone(),
                 },
-                HeapBody::Range { start, end, exclusive } => Value::Range {
+                HeapBody::Range { start, end, exclusive } => L::Range {
                     start: *start,
                     end: *end,
                     exclusive: *exclusive,
                 },
-                HeapBody::Tuple(rc) => Value::Tuple(rc.clone()),
-                HeapBody::List(rc) => Value::List(rc.clone()),
-                HeapBody::Object(rc) => Value::Object(rc.clone()),
-                HeapBody::Class(rc) => Value::Class(rc.clone()),
-                HeapBody::Function(rc) => Value::Function(rc.clone()),
-                HeapBody::Instance(rc) => Value::Instance(rc.clone()),
-                HeapBody::BcFunction(rc) => Value::BcFunction(rc.clone()),
-                HeapBody::BcClass(rc) => Value::BcClass(rc.clone()),
-                HeapBody::BcInstance(rc) => Value::BcInstance(rc.clone()),
-                HeapBody::Builtin { name, params, func } => Value::Builtin {
+                HeapBody::Tuple(rc) => L::Tuple(rc.clone()),
+                HeapBody::List(rc) => L::List(rc.clone()),
+                HeapBody::Object(rc) => L::Object(rc.clone()),
+                HeapBody::Class(rc) => L::Class(rc.clone()),
+                HeapBody::Function(rc) => L::Function(rc.clone()),
+                HeapBody::Instance(rc) => L::Instance(rc.clone()),
+                HeapBody::BcFunction(rc) => L::BcFunction(rc.clone()),
+                HeapBody::BcClass(rc) => L::BcClass(rc.clone()),
+                HeapBody::BcInstance(rc) => L::BcInstance(rc.clone()),
+                HeapBody::Builtin { name, params, func } => L::Builtin {
                     name,
                     params,
                     func: *func,
                 },
             });
         }
-        Value::Nil
+        L::Nil
     }
 }
 
@@ -828,57 +1125,50 @@ mod tests {
     }
 
     #[test]
-    fn tuple_round_trip_holds_legacy_values() {
-        use crate::value::Value;
-        let elems = Rc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    fn tuple_round_trip_holds_tagged_values() {
+        let elems = Rc::new(vec![
+            TaggedValue::from_int(1),
+            TaggedValue::from_int(2),
+            TaggedValue::from_int(3),
+        ]);
         let v = TaggedValue::from_tuple(elems);
-        assert!(v.is_obj_body_kind(HeapBodyKind::Tuple));
-        v.with_obj_body(|b| match b {
-            HeapBody::Tuple(rc) => {
-                assert_eq!(rc.len(), 3);
-                assert!(matches!(rc[0], Value::Int(1)));
-            }
-            other => panic!("expected Tuple, got {other:?}"),
-        });
+        assert!(v.is_tuple());
+        let rc = v.as_tuple();
+        assert_eq!(rc.len(), 3);
+        assert!(rc[0].is_int());
+        assert_eq!(rc[0].as_int(), 1);
     }
 
     #[test]
-    fn list_round_trip_holds_mutable_legacy_values() {
-        use crate::value::Value;
-        let inner = Rc::new(RefCell::new(vec![Value::Int(7), Value::Int(8)]));
+    fn list_round_trip_holds_mutable_tagged_values() {
+        let inner = Rc::new(RefCell::new(vec![
+            TaggedValue::from_int(7),
+            TaggedValue::from_int(8),
+        ]));
         let v = TaggedValue::from_list(inner.clone());
-        assert!(v.is_obj_body_kind(HeapBodyKind::List));
-        // Mutate through the original Rc; the TaggedValue should
-        // see the update because List shares the inner Rc.
-        inner.borrow_mut().push(Value::Int(9));
-        v.with_obj_body(|b| match b {
-            HeapBody::List(rc) => assert_eq!(rc.borrow().len(), 3),
-            other => panic!("expected List, got {other:?}"),
-        });
+        assert!(v.is_list());
+        inner.borrow_mut().push(TaggedValue::from_int(9));
+        let rc = v.as_list();
+        assert_eq!(rc.borrow().len(), 3);
     }
 
     #[test]
     fn object_round_trip_carries_kind_string() {
         use std::collections::HashMap;
         let mut fields = HashMap::new();
-        fields.insert("hp".to_string(), crate::value::Value::Int(100));
+        fields.insert("hp".to_string(), TaggedValue::from_int(100));
         let obj = Rc::new(RefCell::new(crate::value::Object {
-            fields: crate::value::legacy_fields_to_tagged(fields),
+            fields,
             kind: "test",
         }));
         let v = TaggedValue::from_object(obj);
-        assert!(v.is_obj_body_kind(HeapBodyKind::Object));
-        v.with_obj_body(|b| match b {
-            HeapBody::Object(rc) => {
-                let o = rc.borrow();
-                assert_eq!(o.kind, "test");
-                assert!(matches!(
-                    o.get_field("hp"),
-                    Some(crate::value::Value::Int(100))
-                ));
-            }
-            other => panic!("expected Object, got {other:?}"),
-        });
+        assert!(v.is_object());
+        let rc = v.as_object();
+        let o = rc.borrow();
+        assert_eq!(o.kind, "test");
+        let hp = o.get_field("hp").expect("hp");
+        assert!(hp.is_int());
+        assert_eq!(hp.as_int(), 100);
     }
 
     #[test]
@@ -909,55 +1199,38 @@ mod tests {
 
     #[test]
     fn legacy_shim_round_trips_primitives() {
-        use crate::value::Value;
-        let cases: Vec<Value> = vec![
-            Value::Nil,
-            Value::Bool(true),
-            Value::Bool(false),
-            Value::Int(123),
-            Value::Float(0.5),
-            Value::Str(Rc::new("hi".to_string())),
+        use crate::value::LegacyValue as L;
+        let cases: Vec<L> = vec![
+            L::Nil,
+            L::Bool(true),
+            L::Bool(false),
+            L::Int(123),
+            L::Float(0.5),
+            L::Str(Rc::new("hi".to_string())),
         ];
         for legacy in cases {
             let tagged = TaggedValue::from_legacy(&legacy);
             let back = tagged.to_legacy();
-            // Compare via Debug-string since Value isn't Eq.
             assert_eq!(format!("{legacy:?}"), format!("{back:?}"));
         }
     }
 
-    // --- v0.2 Phase 8.5 session 8c: heap-variant shim round-trips ---
-    //
-    // The VM migration relies on every Value variant making the
-    // round-trip Value → TaggedValue → Value unchanged. These
-    // tests pin that contract.
-
     #[test]
     fn legacy_shim_round_trips_heap_variants() {
-        use crate::value::Value;
-        // Tuple
-        let t = Value::Tuple(Rc::new(vec![Value::Int(1), Value::Int(2)]));
-        match TaggedValue::from_legacy(&t).to_legacy() {
-            Value::Tuple(rc) => assert_eq!(rc.len(), 2),
-            other => panic!("tuple shim broke: {other:?}"),
-        }
-        // List (mutability preserved through shared Rc).
-        let inner = Rc::new(RefCell::new(vec![Value::Int(7)]));
-        let l = Value::List(inner.clone());
-        let back = TaggedValue::from_legacy(&l).to_legacy();
-        if let Value::List(rc) = back {
-            rc.borrow_mut().push(Value::Int(8));
+        use crate::value::LegacyValue as L;
+        let t = L::Tuple(Rc::new(vec![TaggedValue::from_int(1), TaggedValue::from_int(2)]));
+        let back = TaggedValue::from_legacy(&t).to_legacy();
+        if let L::Tuple(rc) = back {
+            assert_eq!(rc.len(), 2);
         } else {
-            panic!("list shim lost type");
+            panic!("tuple shim broke: {back:?}");
         }
-        assert_eq!(inner.borrow().len(), 2, "shim must share Rc, not deep-copy");
-        // Quantity
-        let q = Value::Quantity {
+        let q = L::Quantity {
             value: 5.0,
             unit: Rc::new("kg".to_string()),
         };
         match TaggedValue::from_legacy(&q).to_legacy() {
-            Value::Quantity { value, unit } => {
+            L::Quantity { value, unit } => {
                 assert_eq!(value, 5.0);
                 assert_eq!(&*unit, "kg");
             }
@@ -968,11 +1241,11 @@ mod tests {
     #[test]
     fn legacy_shim_round_trips_bc_function() {
         use crate::bytecode::{BcFunction, Chunk};
-        use crate::value::Value;
+        use crate::value::LegacyValue as L;
         let f = Rc::new(BcFunction::new("test_fn", 0, Chunk::new()));
-        let v = Value::BcFunction(f.clone());
+        let v = L::BcFunction(f.clone());
         match TaggedValue::from_legacy(&v).to_legacy() {
-            Value::BcFunction(rc) => assert!(Rc::ptr_eq(&rc, &f), "shim must preserve Rc identity"),
+            L::BcFunction(rc) => assert!(Rc::ptr_eq(&rc, &f), "shim must preserve Rc identity"),
             other => panic!("BcFunction shim broke: {other:?}"),
         }
     }

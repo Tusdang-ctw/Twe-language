@@ -49,7 +49,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::value::{DrawCall3d, Env, Object, Primitive, Value};
+use crate::value::{DrawCall3d, Env, Object, Primitive, Value, LegacyValue, ToLegacyShim};
 use crate::{eval, lexer, parser, stdlib};
 
 /// Twe-side key names ↔ winit physical key codes. Same name set
@@ -707,16 +707,16 @@ fn update_key_state(
     held: &HashSet<&'static str>,
     pressed: &HashSet<&'static str>,
 ) {
-    if let Some(Value::Object(rc)) = env.get("key") {
+    if let Some(LegacyValue::Object(rc)) = env.get("key").to_legacy() {
         let mut o = rc.borrow_mut();
         for (name, _) in KEYS {
-            o.insert_field(*name, Value::Bool(held.contains(name)));
+            o.insert_field(*name, Value::from_bool(held.contains(name)));
         }
     }
-    if let Some(Value::Object(rc)) = env.get("key_press") {
+    if let Some(LegacyValue::Object(rc)) = env.get("key_press").to_legacy() {
         let mut o = rc.borrow_mut();
         for (name, _) in KEYS {
-            o.insert_field(*name, Value::Bool(pressed.contains(name)));
+            o.insert_field(*name, Value::from_bool(pressed.contains(name)));
         }
     } else {
         // Lazily install `key_press` if a hot-reload-loaded env
@@ -727,11 +727,11 @@ fn update_key_state(
             kind: "input",
         };
         for (name, _) in KEYS {
-            press.insert_field(*name, Value::Bool(pressed.contains(name)));
+            press.insert_field(*name, Value::from_bool(pressed.contains(name)));
         }
         env.set(
             "key_press".to_string(),
-            Value::Object(Rc::new(RefCell::new(press))),
+            Value::from_object(Rc::new(RefCell::new(press))),
         );
     }
 }
@@ -747,26 +747,26 @@ fn update_mouse_state(
     held: &HashSet<&'static str>,
     pressed: &HashSet<&'static str>,
 ) {
-    if let Some(Value::Object(rc)) = env.get("mouse") {
+    if let Some(LegacyValue::Object(rc)) = env.get("mouse").to_legacy() {
         let mut o = rc.borrow_mut();
-        o.insert_field("x", Value::Float(mouse_x));
-        o.insert_field("y", Value::Float(mouse_y));
+        o.insert_field("x", Value::from_float(mouse_x));
+        o.insert_field("y", Value::from_float(mouse_y));
         o.insert_field(
             "pos",
-            Value::Tuple(Rc::new(vec![Value::Float(mouse_x), Value::Float(mouse_y)])),
+            Value::from_tuple(Rc::new(vec![Value::from_float(mouse_x), Value::from_float(mouse_y)])),
         );
-        o.insert_field("wheel", Value::Float(wheel_y as f64));
+        o.insert_field("wheel", Value::from_float(wheel_y as f64));
     }
-    if let Some(Value::Object(rc)) = env.get("mouse_held") {
+    if let Some(LegacyValue::Object(rc)) = env.get("mouse_held").to_legacy() {
         let mut o = rc.borrow_mut();
         for name in MOUSE_BUTTON_NAMES {
-            o.insert_field(*name, Value::Bool(held.contains(name)));
+            o.insert_field(*name, Value::from_bool(held.contains(name)));
         }
     }
-    if let Some(Value::Object(rc)) = env.get("mouse_press") {
+    if let Some(LegacyValue::Object(rc)) = env.get("mouse_press").to_legacy() {
         let mut o = rc.borrow_mut();
         for name in MOUSE_BUTTON_NAMES {
-            o.insert_field(*name, Value::Bool(pressed.contains(name)));
+            o.insert_field(*name, Value::from_bool(pressed.contains(name)));
         }
     }
 }
@@ -1331,8 +1331,8 @@ fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
     let eye_default = [0.0, 1.5, 3.0];
     let target_default = [0.0, 0.0, 0.0];
     let up_default = [0.0, 1.0, 0.0];
-    let camera = match env.get("camera") {
-        Some(Value::Object(rc)) => rc.clone(),
+    let camera = match env.get("camera").to_legacy() {
+        Some(LegacyValue::Object(rc)) => rc.clone(),
         _ => return (eye_default, target_default, up_default),
     };
     let cam = camera.borrow();
@@ -1355,7 +1355,7 @@ fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
 }
 
 fn value_as_vec3(v: &Value) -> Option<[f32; 3]> {
-    if let Value::Tuple(elems) = v {
+    if let LegacyValue::Tuple(elems) = v.to_legacy() {
         if elems.len() == 3 {
             let x = number(&elems[0])?;
             let y = number(&elems[1])?;
@@ -1367,9 +1367,9 @@ fn value_as_vec3(v: &Value) -> Option<[f32; 3]> {
 }
 
 fn number(v: &Value) -> Option<f64> {
-    match v {
-        Value::Int(n) => Some(*n as f64),
-        Value::Float(f) => Some(*f),
+    match v.to_legacy() {
+        LegacyValue::Int(n) => Some(n as f64),
+        LegacyValue::Float(f) => Some(f),
         _ => None,
     }
 }

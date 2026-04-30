@@ -359,7 +359,7 @@ impl BcFunction {
 pub struct BcClassDef {
     pub kind: &'static str,
     pub name: String,
-    pub field_defaults: HashMap<String, Value>,
+    pub field_defaults: HashMap<String, TaggedValue>,
     pub methods: HashMap<String, Rc<BcFunction>>,
     pub states: HashMap<String, Rc<BcStateDef>>,
     pub initial_state: Option<String>,
@@ -433,7 +433,7 @@ pub struct BcInstance {
     /// are intact. v0.2 session 7 (replaces the
     /// single-frame `entry_resume_locals`; it now covers
     /// every frame on the suspended fiber).
-    pub fiber_stack: Vec<Value>,
+    pub fiber_stack: Vec<TaggedValue>,
     pub entry_wait_remaining: f64,
     /// Phase 5 task 4: parallel-indexed to the active state's
     /// `on_predicates`. Records the last evaluated truthiness so the
@@ -443,15 +443,15 @@ pub struct BcInstance {
 }
 
 impl BcInstance {
-    /// Read a field as legacy `Value`. v0.2 Phase 8.5 session 8e:
-    /// convenience wrapper around the `TaggedValue` storage.
-    pub fn get_field(&self, name: &str) -> Option<Value> {
-        self.fields.get(name).map(|t| t.clone().to_legacy())
+    /// Read a field. v0.2 Phase 8.5 session 8f: returns the
+    /// stored `TaggedValue` directly.
+    pub fn get_field(&self, name: &str) -> Option<TaggedValue> {
+        self.fields.get(name).cloned()
     }
 
-    pub fn insert_field(&mut self, name: impl Into<String>, value: Value) {
+    pub fn insert_field(&mut self, name: impl Into<String>, value: TaggedValue) {
         self.fields
-            .insert(name.into(), TaggedValue::from_legacy(&value));
+            .insert(name.into(), value);
     }
 }
 
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn write_and_disassemble_constant_plus_return() {
         let mut chunk = Chunk::new();
-        let idx = chunk.add_constant(Value::Float(1.2));
+        let idx = chunk.add_constant(Value::from_float(1.2));
         chunk.write_op(OpCode::Constant, 1);
         chunk.write_byte(idx, 1);
         chunk.write_op(OpCode::Return, 1);

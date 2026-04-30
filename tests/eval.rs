@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use twec::{eval, lexer, parser};
+use twec::value::{LegacyValue, ToLegacyShim};
 
 fn run_program(path: &str) -> Result<String, String> {
     let src = fs::read_to_string(Path::new(path))
@@ -387,9 +388,9 @@ scene S:
 
 fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
     use twec::value::Value;
-    if let Some(Value::Object(rc)) = env.get("key_press") {
+    if let Some(LegacyValue::Object(rc)) = env.get("key_press").to_legacy() {
         rc.borrow_mut()
-            .insert_field(key.to_string(), Value::Bool(value));
+            .insert_field(key.to_string(), Value::from_bool(value));
     }
 }
 
@@ -402,24 +403,20 @@ fn stdlib_installs_mouse_objects() {
     twec::stdlib::install(&mut env);
 
     // mouse: x, y, pos, wheel
-    let Some(Value::Object(rc)) = env.get("mouse") else {
-        panic!("mouse object missing after stdlib::install");
-    };
+    let rc = match env.get("mouse") { Some(t) if t.is_object() => t.as_object(), _ => panic!("mouse object missing after stdlib::install") };
     let m = rc.borrow();
-    assert!(matches!(m.get_field("x"), Some(Value::Float(_))));
-    assert!(matches!(m.get_field("y"), Some(Value::Float(_))));
-    assert!(matches!(m.get_field("pos"), Some(Value::Tuple(_))));
-    assert!(matches!(m.get_field("wheel"), Some(Value::Float(_))));
+    assert!(matches!(m.get_field("x").to_legacy(), Some(LegacyValue::Float(_))));
+    assert!(matches!(m.get_field("y").to_legacy(), Some(LegacyValue::Float(_))));
+    assert!(matches!(m.get_field("pos").to_legacy(), Some(LegacyValue::Tuple(_))));
+    assert!(matches!(m.get_field("wheel").to_legacy(), Some(LegacyValue::Float(_))));
 
     // mouse_held / mouse_press: left, middle, right
     for name in ["mouse_held", "mouse_press"] {
-        let Some(Value::Object(rc)) = env.get(name) else {
-            panic!("{name} object missing after stdlib::install");
-        };
+        let rc = match env.get(name) { Some(t) if t.is_object() => t.as_object(), _ => panic!("{name} object missing after stdlib::install") };
         let o = rc.borrow();
         for btn in ["left", "middle", "right"] {
             assert!(
-                matches!(o.get_field(btn), Some(Value::Bool(false))),
+                matches!(o.get_field(btn).to_legacy(), Some(LegacyValue::Bool(false))),
                 "{name}.{btn} missing or non-bool after install"
             );
         }
@@ -452,8 +449,8 @@ on update(dt):
     set_mouse_x(&env, 30.0);
     twec::eval::tick_frame(&mut env, 0.016).expect("tick");
 
-    let total = match env.get("total") {
-        Some(Value::Float(f)) => f,
+    let total = match env.get("total").to_legacy() {
+        Some(LegacyValue::Float(f)) => f,
         other => panic!("expected total to be Float, got {other:?}"),
     };
     assert_eq!(total, 60.0);
@@ -483,8 +480,8 @@ on update(dt):
     set_mouse_press(&env, "left", true);
     twec::eval::tick_frame(&mut env, 0.016).expect("tick");
 
-    let clicks = match env.get("clicks") {
-        Some(Value::Int(n)) => n,
+    let clicks = match env.get("clicks").to_legacy() {
+        Some(LegacyValue::Int(n)) => n,
         other => panic!("expected clicks to be Int, got {other:?}"),
     };
     assert_eq!(clicks, 2);
@@ -492,16 +489,16 @@ on update(dt):
 
 fn set_mouse_x(env: &twec::value::Env, x: f64) {
     use twec::value::Value;
-    if let Some(Value::Object(rc)) = env.get("mouse") {
-        rc.borrow_mut().insert_field("x", Value::Float(x));
+    if let Some(LegacyValue::Object(rc)) = env.get("mouse").to_legacy() {
+        rc.borrow_mut().insert_field("x", Value::from_float(x));
     }
 }
 
 fn set_mouse_press(env: &twec::value::Env, button: &str, value: bool) {
     use twec::value::Value;
-    if let Some(Value::Object(rc)) = env.get("mouse_press") {
+    if let Some(LegacyValue::Object(rc)) = env.get("mouse_press").to_legacy() {
         rc.borrow_mut()
-            .insert_field(button.to_string(), Value::Bool(value));
+            .insert_field(button.to_string(), Value::from_bool(value));
     }
 }
 
@@ -550,25 +547,21 @@ fn stdlib_installs_audio_v2_surface() {
 
     // sound module: load + play (v0.1) + play_at + stop +
     // set_volume (v0.2 session 5).
-    let Some(Value::Object(rc)) = env.get("sound") else {
-        panic!("sound object missing after stdlib::install");
-    };
+    let rc = match env.get("sound") { Some(t) if t.is_object() => t.as_object(), _ => panic!("sound object missing after stdlib::install") };
     let s = rc.borrow();
     for name in ["load", "play", "play_at", "stop", "set_volume"] {
         assert!(
-            matches!(s.get_field(name), Some(Value::Builtin { .. })),
+            matches!(s.get_field(name).to_legacy(), Some(LegacyValue::Builtin { .. })),
             "sound.{name} missing or not a builtin"
         );
     }
 
     // music module: play, play_at, stop. New in v0.2 session 5.
-    let Some(Value::Object(rc)) = env.get("music") else {
-        panic!("music object missing after stdlib::install");
-    };
+    let rc = match env.get("music") { Some(t) if t.is_object() => t.as_object(), _ => panic!("music object missing after stdlib::install") };
     let m = rc.borrow();
     for name in ["play", "play_at", "stop"] {
         assert!(
-            matches!(m.get_field(name), Some(Value::Builtin { .. })),
+            matches!(m.get_field(name).to_legacy(), Some(LegacyValue::Builtin { .. })),
             "music.{name} missing or not a builtin"
         );
     }
@@ -732,7 +725,7 @@ print(h.y)
 "#;
     let out = run_program_str(src).expect("program should run");
     assert_eq!(out, "tests/assets/hero.png\n0\n0\n");
-    let _ = Value::Nil;
+    let _ = Value::NIL;
 }
 
 #[test]
@@ -870,8 +863,8 @@ spawn Spark at (50.0, 60.0)
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
     let particles = inst.get_field("__particles").expect("__particles");
-    let n = match particles {
-        Value::List(rc) => rc.borrow().len(),
+    let n = match particles.to_legacy() {
+        LegacyValue::List(rc) => rc.borrow().len(),
         _ => panic!("__particles should be a list"),
     };
     assert_eq!(n, 4);
@@ -985,12 +978,12 @@ spawn Pin at (12, 34)
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
     let pos = inst.get_field("pos").expect("pos field");
-    let elems = match pos {
-        Value::Tuple(elems) => elems.clone(),
+    let elems = match pos.to_legacy() {
+        LegacyValue::Tuple(elems) => elems.clone(),
         _ => panic!("pos should be a tuple"),
     };
-    assert!(matches!(elems[0], Value::Int(12)));
-    assert!(matches!(elems[1], Value::Int(34)));
+    assert!(matches!(elems[0].to_legacy(), LegacyValue::Int(12)));
+    assert!(matches!(elems[1].to_legacy(), LegacyValue::Int(34)));
 }
 
 #[test]
@@ -1019,13 +1012,13 @@ fn snake_advances_right_by_default() {
     let scene = env.active_scene.as_ref().expect("scene");
     let inst = scene.borrow();
     let snake = inst.get_field("snake").expect("snake field");
-    let head = match snake {
-        Value::List(rc) => rc.borrow()[0].clone(),
+    let head = match snake.to_legacy() {
+        LegacyValue::List(rc) => rc.borrow()[0].clone(),
         _ => panic!("snake should be a list"),
     };
-    let (hx, hy) = match head {
-        Value::Tuple(elems) => match (&elems[0], &elems[1]) {
-            (Value::Int(x), Value::Int(y)) => (*x, *y),
+    let (hx, hy) = match head.to_legacy() {
+        LegacyValue::Tuple(elems) => match (&elems[0], &elems[1]).to_legacy() {
+            (LegacyValue::Int(x), LegacyValue::Int(y)) => (x, y),
             _ => panic!("head should be (Int, Int)"),
         },
         _ => panic!("head should be a tuple"),
@@ -1062,7 +1055,7 @@ fn snake_dies_into_a_wall() {
     // time it walks off the east wall at x=20.
     let inst = scene.borrow();
     let score = inst.get_field("score").expect("score field");
-    assert!(matches!(score, Value::Int(1)), "got: {score:?}");
+    assert!(matches!(score.to_legacy(), LegacyValue::Int(1)), "got: {score:?}");
 }
 
 #[test]

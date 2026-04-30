@@ -7,10 +7,8 @@ use crate::ast::{
 };
 use crate::stdlib;
 use crate::tagged_value::TaggedValue;
-use crate::value::{
-    Branch, ClassDef, Env, EveryClockDef, Frame, FrameKind, FunctionDef, Instance, MethodDef,
-    Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value,
-};
+use crate::value::{Branch, ClassDef, Env, EveryClockDef, Frame, FrameKind, FunctionDef, Instance, MethodDef,
+    Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value, LegacyValue, ToLegacyShim};
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
     run_with_frames(program, 0, 1.0 / 60.0)
@@ -50,7 +48,7 @@ pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeErro
 pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     update_time_ambient(env, dt);
     if let Some(handler) = env.on_update.clone() {
-        env.set(handler.param.clone(), Value::Float(dt));
+        env.set(handler.param.clone(), Value::from_float(dt));
         run_block(env, &handler.body)?;
         if env.returning.take().is_some() {
             return Ok(());
@@ -82,9 +80,9 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
         };
         call_method(
             env,
-            Value::Instance(entity),
+            Value::from_instance(entity),
             &method,
-            &[Value::Float(dt)],
+            &[Value::from_float(dt)],
             &[],
             0,
             0,
@@ -110,8 +108,8 @@ fn seed_particle_emitter(
 ) -> Result<(), RuntimeError> {
     let (count, lifetime, class) = {
         let inst = emitter.borrow();
-        let count = match inst.get_field("count") {
-            Some(Value::Int(n)) if n >= 0 => n as usize,
+        let count = match inst.get_field("count").to_legacy() {
+            Some(LegacyValue::Int(n)) if n >= 0 => n as usize,
             Some(other) => {
                 return Err(RuntimeError {
                     line,
@@ -125,10 +123,10 @@ fn seed_particle_emitter(
             }
             None => 16,
         };
-        let lifetime = match inst.get_field("lifetime") {
-            Some(Value::Float(f)) => f,
-            Some(Value::Int(n)) => n as f64,
-            Some(Value::Quantity { value, .. }) => value,
+        let lifetime = match inst.get_field("lifetime").to_legacy() {
+            Some(LegacyValue::Float(f)) => f,
+            Some(LegacyValue::Int(n)) => n as f64,
+            Some(LegacyValue::Quantity { value, .. }) => value,
             None => 1.0,
             Some(other) => {
                 return Err(RuntimeError {
@@ -148,13 +146,13 @@ fn seed_particle_emitter(
     let mut particles: Vec<Value> = Vec::with_capacity(count);
     let initial_pos = at
         .cloned()
-        .unwrap_or_else(|| Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])));
+        .unwrap_or_else(|| Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)])));
     for _ in 0..count {
         let p = make_particle(&initial_pos, lifetime);
         if let Some(method) = on_spawn.clone() {
             call_method(
                 env,
-                Value::Instance(emitter.clone()),
+                Value::from_instance(emitter.clone()),
                 &method,
                 std::slice::from_ref(&p),
                 &[],
@@ -166,7 +164,7 @@ fn seed_particle_emitter(
     }
     emitter.borrow_mut().insert_field(
         "__particles",
-        Value::List(Rc::new(RefCell::new(particles))),
+        Value::from_list(Rc::new(RefCell::new(particles))),
     );
     Ok(())
 }
@@ -179,22 +177,22 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
     o.insert_field("pos", initial_pos.clone());
     o.insert_field(
         "velocity",
-        Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])),
+        Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)])),
     );
     o.insert_field(
         "color",
-        Value::Tuple(Rc::new(vec![
-            Value::Float(1.0),
-            Value::Float(1.0),
-            Value::Float(1.0),
-            Value::Float(1.0),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(1.0),
+            Value::from_float(1.0),
+            Value::from_float(1.0),
+            Value::from_float(1.0),
         ])),
     );
-    o.insert_field("size", Value::Float(4.0));
-    o.insert_field("age", Value::Float(0.0));
-    o.insert_field("age_ratio", Value::Float(0.0));
-    o.insert_field("lifetime", Value::Float(lifetime));
-    Value::Object(Rc::new(RefCell::new(o)))
+    o.insert_field("size", Value::from_float(4.0));
+    o.insert_field("age", Value::from_float(0.0));
+    o.insert_field("age_ratio", Value::from_float(0.0));
+    o.insert_field("lifetime", Value::from_float(lifetime));
+    Value::from_object(Rc::new(RefCell::new(o)))
 }
 
 fn tick_particle_emitter(
@@ -206,9 +204,8 @@ fn tick_particle_emitter(
     let on_update = find_method(class, "on_update");
     let particles = match emitter
         .borrow()
-        .get_field("__particles")
-    {
-        Some(Value::List(rc)) => rc,
+        .get_field("__particles").to_legacy() {
+        Some(LegacyValue::List(rc)) => rc,
         _ => return Ok(()),
     };
     let snapshot: Vec<Value> = particles.borrow().clone();
@@ -216,39 +213,39 @@ fn tick_particle_emitter(
         if let Some(method) = on_update.clone() {
             call_method(
                 env,
-                Value::Instance(emitter.clone()),
+                Value::from_instance(emitter.clone()),
                 &method,
-                &[p.clone(), Value::Float(dt)],
+                &[p.clone(), Value::from_float(dt)],
                 &[],
                 0,
                 0,
             )?;
         }
-        if let Value::Object(rc) = p {
+        if let LegacyValue::Object(rc) = p.to_legacy() {
             let mut o = rc.borrow_mut();
-            let age = match o.get_field("age") {
-                Some(Value::Float(a)) => a + dt,
-                Some(Value::Int(a)) => a as f64 + dt,
+            let age = match o.get_field("age").to_legacy() {
+                Some(LegacyValue::Float(a)) => a + dt,
+                Some(LegacyValue::Int(a)) => a as f64 + dt,
                 _ => dt,
             };
-            let lifetime = match o.get_field("lifetime") {
-                Some(Value::Float(l)) => l,
+            let lifetime = match o.get_field("lifetime").to_legacy() {
+                Some(LegacyValue::Float(l)) => l,
                 _ => 1.0,
             };
-            o.insert_field("age".to_string(), Value::Float(age));
+            o.insert_field("age".to_string(), Value::from_float(age));
             let ratio = if lifetime > 0.0 {
                 (age / lifetime).clamp(0.0, 1.0)
             } else {
                 1.0
             };
-            o.insert_field("age_ratio", Value::Float(ratio));
+            o.insert_field("age_ratio", Value::from_float(ratio));
         }
     }
     // Drop dead particles.
-    particles.borrow_mut().retain(|p| match p {
-        Value::Object(rc) => match rc.borrow().get_field("age") {
-            Some(Value::Float(age)) => match rc.borrow().get_field("lifetime") {
-                Some(Value::Float(lt)) => age < lt,
+    particles.borrow_mut().retain(|p| match p.to_legacy() {
+        LegacyValue::Object(rc) => match rc.borrow().get_field("age").to_legacy() {
+            Some(LegacyValue::Float(age)) => match rc.borrow().get_field("lifetime").to_legacy() {
+                Some(LegacyValue::Float(lt)) => age < lt,
                 _ => true,
             },
             _ => true,
@@ -269,36 +266,35 @@ fn render_particle_emitter(
     // If the user defined a custom `render()`, defer to it and skip the
     // built-in circle-per-particle path.
     if let Some(method) = find_method(class, "render") {
-        return call_method(env, Value::Instance(emitter.clone()), &method, &[], &[], 0, 0)
+        return call_method(env, Value::from_instance(emitter.clone()), &method, &[], &[], 0, 0)
             .map(|_| ());
     }
     let particles = match emitter
         .borrow()
-        .get_field("__particles")
-    {
-        Some(Value::List(rc)) => rc,
+        .get_field("__particles").to_legacy() {
+        Some(LegacyValue::List(rc)) => rc,
         _ => return Ok(()),
     };
     if !env.in_render {
         return Ok(());
     }
     for p in particles.borrow().iter() {
-        if let Value::Object(rc) = p {
+        if let LegacyValue::Object(rc) = p.to_legacy() {
             let o = rc.borrow();
-            let (px, py) = match o.get_field("pos") {
-                Some(Value::Tuple(elems)) if elems.len() >= 2 => (
+            let (px, py) = match o.get_field("pos").to_legacy() {
+                Some(LegacyValue::Tuple(elems)) if elems.len() >= 2 => (
                     number_or_zero(&elems[0]),
                     number_or_zero(&elems[1]),
                 ),
                 _ => (0.0, 0.0),
             };
-            let radius = match o.get_field("size") {
-                Some(Value::Float(f)) => f as f32,
-                Some(Value::Int(n)) => n as f32,
+            let radius = match o.get_field("size").to_legacy() {
+                Some(LegacyValue::Float(f)) => f as f32,
+                Some(LegacyValue::Int(n)) => n as f32,
                 _ => 4.0,
             };
-            let color = match o.get_field("color") {
-                Some(Value::Tuple(elems)) if elems.len() >= 3 => {
+            let color = match o.get_field("color").to_legacy() {
+                Some(LegacyValue::Tuple(elems)) if elems.len() >= 3 => {
                     let r = number_or_zero(&elems[0]) as f32;
                     let g = number_or_zero(&elems[1]) as f32;
                     let b = number_or_zero(&elems[2]) as f32;
@@ -318,17 +314,17 @@ fn render_particle_emitter(
 }
 
 fn number_or_zero(v: &Value) -> f64 {
-    match v {
-        Value::Int(n) => *n as f64,
-        Value::Float(f) => *f,
-        Value::Quantity { value, .. } => *value,
+    match v.to_legacy() {
+        LegacyValue::Int(n) => n as f64,
+        LegacyValue::Float(f) => f,
+        LegacyValue::Quantity { value, .. } => value,
         _ => 0.0,
     }
 }
 
 fn update_time_ambient(env: &mut Env, dt: f64) {
-    if let Some(Value::Object(rc)) = env.get("time") {
-        rc.borrow_mut().insert_field("dt", Value::Float(dt));
+    if let Some(LegacyValue::Object(rc)) = env.get("time").to_legacy() {
+        rc.borrow_mut().insert_field("dt", Value::from_float(dt));
     }
 }
 
@@ -339,13 +335,13 @@ fn dispatch_key_press(
     env: &mut Env,
     scene: &Rc<RefCell<Instance>>,
 ) -> Result<(), RuntimeError> {
-    let pressed = match env.get("key_press") {
-        Some(Value::Object(rc)) => {
+    let pressed = match env.get("key_press").to_legacy() {
+        Some(LegacyValue::Object(rc)) => {
             let o = rc.borrow();
             o.fields
                 .iter()
                 .filter_map(|(k, v)| {
-                    if matches!(v.clone().to_legacy(), Value::Bool(true)) {
+                    if matches!(v.clone().to_legacy(), LegacyValue::Bool(true)) {
                         Some(k.clone())
                     } else {
                         None
@@ -372,7 +368,7 @@ fn dispatch_key_press(
             None => return Ok(()),
         }
     };
-    let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
     for body in bodies {
         run_block(env, &body)?;
         if env.returning.is_some() {
@@ -425,7 +421,7 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
                 .and_then(|state| state.on_render.clone())
         };
         if let Some(body) = body {
-            let prev_self = env.self_value.replace(Value::Instance(scene));
+            let prev_self = env.self_value.replace(Value::from_instance(scene));
             run_block(env, &body)?;
             env.self_value = prev_self;
         }
@@ -445,7 +441,7 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
             Some(m) => m,
             None => continue,
         };
-        call_method(env, Value::Instance(entity), &method, &[], &[], 0, 0)?;
+        call_method(env, Value::from_instance(entity), &method, &[], &[], 0, 0)?;
     }
     Ok(())
 }
@@ -479,7 +475,7 @@ fn tick_scene(
     if state_name.is_none() {
         return Ok(());
     }
-    let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
     // Phase 5 fibers / v0.2 sessions 2a + 2b: if the state's
     // fiber is suspended on a `wait`, count down by `dt` and
     // either keep waiting (skip the rest of this state's
@@ -527,7 +523,7 @@ fn tick_scene(
             .and_then(|state| state.on_update.clone())
     };
     if let Some(handler) = state_on_update {
-        env.set(handler.param.clone(), Value::Float(dt));
+        env.set(handler.param.clone(), Value::from_float(dt));
         run_block(env, &handler.body)?;
         if env.returning.is_some() {
             env.self_value = prev_self;
@@ -680,7 +676,7 @@ fn enter_state(
     }
     // Resolve each every-clock interval (in seconds) by evaluating the
     // interval expression with self bound to the scene instance.
-    let prev_self = env.self_value.replace(Value::Instance(scene.clone()));
+    let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
     let mut intervals = Vec::with_capacity(state.every_clocks.len());
     for clock in &state.every_clocks {
         let v = eval_expr(env, &clock.interval)?;
@@ -1186,13 +1182,13 @@ fn is_top_level_user_call(env: &Env, expr: &Expr) -> bool {
     };
     // Self-method takes precedence — those don't suspend in
     // session 2b (method-body wait deferred to a follow-on).
-    if let Some(Value::Instance(rc)) = &env.self_value {
+    if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
         let class = rc.borrow().class.clone();
         if find_method(&class, name).is_some() {
             return false;
         }
     }
-    matches!(env.get(name), Some(Value::Function(_)))
+    matches!(env.get(name).to_legacy(), Some(LegacyValue::Function(_)))
 }
 
 /// Run a `Stmt::Expr(Call)` whose callee is a user function,
@@ -1224,8 +1220,8 @@ fn run_user_call_resumable(
         }
         _ => unreachable!("guarded by is_top_level_user_call"),
     };
-    let def: Rc<FunctionDef> = match env.get(&name) {
-        Some(Value::Function(d)) => d.clone(),
+    let def: Rc<FunctionDef> = match env.get(&name).to_legacy() {
+        Some(LegacyValue::Function(d)) => d.clone(),
         _ => unreachable!("guarded by is_top_level_user_call"),
     };
 
@@ -1384,7 +1380,7 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
 /// `self.ticks`. Without this, scene fields would only be reachable via
 /// explicit `self.x` syntax — verbose and unusual.
 fn lookup_name(env: &Env, name: &str) -> Option<Value> {
-    if let Some(Value::Instance(rc)) = &env.self_value {
+    if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
         if let Some(v) = rc.borrow().get_field(name) {
             return Some(v);
         }
@@ -1393,12 +1389,12 @@ fn lookup_name(env: &Env, name: &str) -> Option<Value> {
 }
 
 fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
-    match v {
-        Value::Quantity { value, unit } => match unit.as_str() {
-            "s" => Ok(*value),
-            "ms" => Ok(*value / 1000.0),
-            "min" => Ok(*value * 60.0),
-            "h" => Ok(*value * 3600.0),
+    match v.to_legacy() {
+        LegacyValue::Quantity { value: value, unit: unit } => match unit.as_str() {
+            "s" => Ok(value),
+            "ms" => Ok(value / 1000.0),
+            "min" => Ok(value * 60.0),
+            "h" => Ok(value * 3600.0),
             other => Err(RuntimeError {
                 line,
                 col,
@@ -1411,8 +1407,8 @@ fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeErr
                 ),
             }),
         },
-        Value::Float(f) => Ok(*f),
-        Value::Int(n) => Ok(*n as f64),
+        LegacyValue::Float(f) => Ok(f),
+        LegacyValue::Int(n) => Ok(n as f64),
         other => Err(RuntimeError {
             line,
             col,
@@ -1483,7 +1479,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
             env.set(
                 name.clone(),
-                Value::Function(Rc::new(FunctionDef {
+                Value::from_function(Rc::new(FunctionDef {
                     name: name.clone(),
                     params: param_names,
                     body: body.clone(),
@@ -1507,7 +1503,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             }
             let v = match value {
                 Some(e) => eval_expr(env, e)?,
-                None => Value::Nil,
+                None => Value::NIL,
             };
             env.returning = Some(v);
             Ok(())
@@ -1567,8 +1563,8 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 message: format!("class '{class}' is not defined"),
                 help: Some(format!("declare it with `entity {class}:` first")),
             })?;
-            let class_rc = match class_val {
-                Value::Class(c) => c,
+            let class_rc = match class_val.to_legacy() {
+                LegacyValue::Class(c) => c,
                 other => {
                     return Err(RuntimeError {
                         line: *line,
@@ -1586,13 +1582,16 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 None => None,
             };
             let inst_val = instantiate(class_rc.clone());
-            if let (Some(at_value), Value::Instance(rc)) = (&at_value, &inst_val) {
-                rc.borrow_mut()
-                    .insert_field("pos", at_value.clone());
+            if let Some(av) = &at_value {
+                if inst_val.is_instance() {
+                    let rc = inst_val.as_instance();
+                    rc.borrow_mut().insert_field("pos", av.clone());
+                }
             }
-            if let Value::Instance(rc) = &inst_val {
+            if inst_val.is_instance() {
+                let rc = inst_val.as_instance();
                 if class_rc.kind == "particles" {
-                    seed_particle_emitter(env, rc, at_value.as_ref(), *line, *col)?;
+                    seed_particle_emitter(env, &rc, at_value.as_ref(), *line, *col)?;
                 }
                 env.active_entities.push(rc.clone());
             }
@@ -1600,8 +1599,8 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
         }
         Stmt::Despawn { target, line, col } => {
             let v = eval_expr(env, target)?;
-            match v {
-                Value::Instance(rc) => {
+            match v.to_legacy() {
+                LegacyValue::Instance(rc) => {
                     rc.borrow_mut().despawned = true;
                     Ok(())
                 }
@@ -1626,7 +1625,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             // surfaces if a user tries it — see the
             // `wait`-context error in the Stmt::Wait arm). A
             // per-dialogue scheduler is a Phase 5 task 3 follow-on.
-            let dialogue = Value::Function(Rc::new(FunctionDef {
+            let dialogue = Value::from_function(Rc::new(FunctionDef {
                 name: name.clone(),
                 params: Vec::new(),
                 body: body.clone(),
@@ -1648,9 +1647,9 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     // (Wren-style), strings show themselves, anything
                     // else falls back to `display`. Output is a
                     // single line per `say`.
-                    let label = match &av {
-                        Value::Instance(inst) => inst.borrow().class.name.clone(),
-                        Value::Str(s) => s.as_ref().clone(),
+                    let label = match &av.to_legacy() {
+                        LegacyValue::Instance(inst) => inst.borrow().class.name.clone(),
+                        LegacyValue::Str(s) => s.as_ref().clone(),
                         other => other.display(),
                     };
                     env.out.push_str(&format!("{label}: {text_str}\n"));
@@ -1745,7 +1744,7 @@ fn eval_assign(
                 // Mutate the instance field if `name` is one (scope chain),
                 // else fall back to env. New `let` bindings are introduced
                 // by Stmt::Let, not by plain `name = value`.
-                if let Some(Value::Instance(rc)) = &env.self_value {
+                if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
                     let mut inst = rc.borrow_mut();
                     if inst.fields.contains_key(name) {
                         inst.insert_field(name.clone(), new_value);
@@ -1762,7 +1761,7 @@ fn eval_assign(
                 help: Some(format!("declare it with `let {name} = ...` before use")),
             })?;
             let combined = compound(op, &current, &new_value, line, col)?;
-            if let Some(Value::Instance(rc)) = &env.self_value {
+            if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
                 let mut inst = rc.borrow_mut();
                 if inst.fields.contains_key(name) {
                     inst.insert_field(name.clone(), combined);
@@ -1774,8 +1773,8 @@ fn eval_assign(
         }
         AssignTarget::Field { object, name } => {
             let obj_val = eval_expr(env, object)?;
-            match obj_val {
-                Value::Object(rc) => {
+            match obj_val.to_legacy() {
+                LegacyValue::Object(rc) => {
                     let final_value = if matches!(op, AssignOp::Set) {
                         new_value
                     } else {
@@ -1793,7 +1792,7 @@ fn eval_assign(
                     // also updates `.x` and `.y`. Mirrors Example 1's
                     // tuple-as-Vector2 behavior.
                     if name == "pos" {
-                        if let Value::Tuple(elems) = &final_value {
+                        if let LegacyValue::Tuple(elems) = &final_value.to_legacy() {
                             if elems.len() >= 2 {
                                 let mut o = rc.borrow_mut();
                                 o.insert_field("x".to_string(), elems[0].clone());
@@ -1807,7 +1806,7 @@ fn eval_assign(
                     }
                     Ok(())
                 }
-                Value::Instance(rc) => {
+                LegacyValue::Instance(rc) => {
                     let final_value = if matches!(op, AssignOp::Set) {
                         new_value
                     } else {
@@ -1860,12 +1859,12 @@ fn refresh_pos(rc: &Rc<std::cell::RefCell<crate::value::Object>>) {
     let (x, y) = {
         let o = rc.borrow();
         (
-            o.get_field("x").unwrap_or(Value::Nil),
-            o.get_field("y").unwrap_or(Value::Nil),
+            o.get_field("x").unwrap_or(Value::NIL),
+            o.get_field("y").unwrap_or(Value::NIL),
         )
     };
     rc.borrow_mut()
-        .insert_field("pos", Value::Tuple(Rc::new(vec![x, y])));
+        .insert_field("pos", Value::from_tuple(Rc::new(vec![x, y])));
 }
 
 fn compound(
@@ -1887,7 +1886,7 @@ fn compound(
 
 fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
     match expr {
-        Expr::Str { value, .. } => Ok(Value::Str(Rc::new(value.clone()))),
+        Expr::Str { value, .. } => Ok(Value::from_string(value.clone())),
         Expr::Interp { parts, exprs, .. } => {
             // parts.len() == exprs.len() + 1 by construction in lex_string.
             let mut out = String::new();
@@ -1898,16 +1897,13 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
                     out.push_str(&v.display());
                 }
             }
-            Ok(Value::Str(Rc::new(out)))
+            Ok(Value::from_string(out))
         }
-        Expr::Int { value, .. } => Ok(Value::Int(*value)),
-        Expr::Float { value, .. } => Ok(Value::Float(*value)),
-        Expr::Bool { value, .. } => Ok(Value::Bool(*value)),
-        Expr::Percent { value, .. } => Ok(Value::Percent(*value)),
-        Expr::Quantity { value, unit, .. } => Ok(Value::Quantity {
-            value: *value,
-            unit: Rc::new(unit.clone()),
-        }),
+        Expr::Int { value, .. } => Ok(Value::from_int(*value)),
+        Expr::Float { value, .. } => Ok(Value::from_float(*value)),
+        Expr::Bool { value, .. } => Ok(Value::from_bool(*value)),
+        Expr::Percent { value, .. } => Ok(Value::from_percent(*value)),
+        Expr::Quantity { value, unit, .. } => Ok(Value::from_quantity(*value, Rc::new(unit.clone()))),
         Expr::Ident { name, line, col } => lookup_name(env, name).ok_or_else(|| RuntimeError {
             line: *line,
             col: *col,
@@ -1928,14 +1924,14 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             for e in elems {
                 vals.push(eval_expr(env, e)?);
             }
-            Ok(Value::Tuple(Rc::new(vals)))
+            Ok(Value::from_tuple(Rc::new(vals)))
         }
         Expr::List { elems, .. } => {
             let mut vals = Vec::with_capacity(elems.len());
             for e in elems {
                 vals.push(eval_expr(env, e)?);
             }
-            Ok(Value::List(Rc::new(RefCell::new(vals))))
+            Ok(Value::from_list(Rc::new(RefCell::new(vals))))
         }
         Expr::Index { object, index, line, col } => {
             let obj = eval_expr(env, object)?;
@@ -1951,12 +1947,8 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
         } => {
             let s = eval_expr(env, start)?;
             let e = eval_expr(env, end)?;
-            match (&s, &e) {
-                (Value::Int(a), Value::Int(b)) => Ok(Value::Range {
-                    start: *a,
-                    end: *b,
-                    exclusive: *exclusive,
-                }),
+            match (&s, &e).to_legacy() {
+                (LegacyValue::Int(a), LegacyValue::Int(b)) => Ok(Value::from_range(a, b, *exclusive)),
                 _ => Err(RuntimeError {
                     line: *line,
                     col: *col,
@@ -1992,16 +1984,16 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             col,
         } => {
             let v = eval_expr(env, operand)?;
-            match (op, &v) {
-                (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
-                (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
+            match (op, v.to_legacy()) {
+                (UnOp::Neg, LegacyValue::Int(n)) => Ok(Value::from_int(-n)),
+                (UnOp::Neg, LegacyValue::Float(x)) => Ok(Value::from_float(-x)),
                 (UnOp::Neg, _) => Err(RuntimeError {
                     line: *line,
                     col: *col,
                     message: format!("cannot negate value of type {}", v.type_name()),
                     help: Some("`-` is defined on int and float".to_string()),
                 }),
-                (UnOp::Not, _) => Ok(Value::Bool(!is_truthy(&v))),
+                (UnOp::Not, _) => Ok(Value::from_bool(!is_truthy(&v))),
             }
         }
         Expr::Binary {
@@ -2015,11 +2007,11 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
 }
 
 fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, RuntimeError> {
-    match (obj, idx) {
-        (Value::List(rc), Value::Int(i)) => {
+    match (obj, idx).to_legacy() {
+        (LegacyValue::List(rc), LegacyValue::Int(i)) => {
             let v = rc.borrow();
             let len = v.len() as i64;
-            let actual = if *i < 0 { *i + len } else { *i };
+            let actual = if i < 0 { i + len } else { i };
             if actual < 0 || actual >= len {
                 return Err(RuntimeError {
                     line,
@@ -2032,9 +2024,9 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
             }
             Ok(v[actual as usize].clone())
         }
-        (Value::Tuple(elems), Value::Int(i)) => {
+        (LegacyValue::Tuple(elems), LegacyValue::Int(i)) => {
             let len = elems.len() as i64;
-            let actual = if *i < 0 { *i + len } else { *i };
+            let actual = if i < 0 { i + len } else { i };
             if actual < 0 || actual >= len {
                 return Err(RuntimeError {
                     line,
@@ -2048,7 +2040,7 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
             }
             Ok(elems[actual as usize].clone())
         }
-        (Value::List(_) | Value::Tuple(_), other) => Err(RuntimeError {
+        (LegacyValue::List(_) | LegacyValue::Tuple(_), other) => Err(RuntimeError {
             line,
             col,
             message: format!("index must be int, got {}", other.type_name()),
@@ -2064,8 +2056,8 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
 }
 
 fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, RuntimeError> {
-    match obj {
-        Value::Tuple(elems) => match name {
+    match obj.to_legacy() {
+        LegacyValue::Tuple(elems) => match name {
             "x" if !elems.is_empty() => Ok(elems[0].clone()),
             "y" if elems.len() >= 2 => Ok(elems[1].clone()),
             "z" if elems.len() >= 3 => Ok(elems[2].clone()),
@@ -2079,8 +2071,8 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 ),
             }),
         },
-        Value::List(rc) => match name {
-            "length" => Ok(Value::Int(rc.borrow().len() as i64)),
+        LegacyValue::List(rc) => match name {
+            "length" => Ok(Value::from_int(rc.borrow().len() as i64)),
             _ => Err(RuntimeError {
                 line,
                 col,
@@ -2092,7 +2084,7 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 ),
             }),
         },
-        Value::Object(rc) => rc.borrow().get_field(name).ok_or_else(|| {
+        LegacyValue::Object(rc) => rc.borrow().get_field(name).ok_or_else(|| {
             RuntimeError {
                 line,
                 col,
@@ -2100,7 +2092,7 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 help: Some(format!("set it first with `obj.{name} = ...`")),
             }
         }),
-        Value::Instance(rc) => {
+        LegacyValue::Instance(rc) => {
             let inst = rc.borrow();
             if let Some(v) = inst.get_field(name) {
                 return Ok(v);
@@ -2141,14 +2133,14 @@ fn eval_call(
     // this, scene methods would only be reachable via `self.method()`
     // — verbose, and Snake-style code uses bare calls.
     if let Expr::Ident { name, .. } = callee {
-        if let Some(Value::Instance(rc)) = env.self_value.clone() {
+        if let Some(LegacyValue::Instance(rc)) = env.self_value.clone().to_legacy() {
             let class = rc.borrow().class.clone();
             if let Some(method) = find_method(&class, name) {
                 let arg_vals = eval_args(env, args)?;
                 let kwarg_vals = eval_kwargs(env, kwargs)?;
                 return call_method(
                     env,
-                    Value::Instance(rc),
+                    Value::from_instance(rc),
                     &method,
                     &arg_vals,
                     &kwarg_vals,
@@ -2163,7 +2155,7 @@ fn eval_call(
     if let Expr::Field { object, name, .. } = callee {
         let recv = eval_expr(env, object)?;
         // List built-in methods.
-        if let Value::List(rc) = &recv {
+        if let LegacyValue::List(rc) = &recv.to_legacy() {
             if !kwargs.is_empty() {
                 return Err(no_kwargs_error(&format!("list.{name}"), line, col));
             }
@@ -2171,7 +2163,7 @@ fn eval_call(
                 return Ok(v);
             }
         }
-        if let Value::Range { start, end, exclusive } = &recv {
+        if let LegacyValue::Range { start: start, end: end, exclusive: exclusive } = &recv.to_legacy() {
             if !kwargs.is_empty() {
                 return Err(no_kwargs_error(&format!("range.{name}"), line, col));
             }
@@ -2188,7 +2180,7 @@ fn eval_call(
                 return Ok(v);
             }
         }
-        if let Value::Instance(rc) = &recv {
+        if let LegacyValue::Instance(rc) = &recv.to_legacy() {
             let class = rc.borrow().class.clone();
             if let Some(method) = find_method(&class, name) {
                 let arg_vals = eval_args(env, args)?;
@@ -2348,13 +2340,13 @@ fn list_method_call(
             arity_check(1)?;
             let v = eval_expr(env, &args[0])?;
             rc.borrow_mut().push(v);
-            Ok(Some(Value::Nil))
+            Ok(Some(Value::NIL))
         }
         "prepend" => {
             arity_check(1)?;
             let v = eval_expr(env, &args[0])?;
             rc.borrow_mut().insert(0, v);
-            Ok(Some(Value::Nil))
+            Ok(Some(Value::NIL))
         }
         "pop_back" => {
             arity_check(0)?;
@@ -2382,7 +2374,7 @@ fn list_method_call(
             arity_check(1)?;
             let needle = eval_expr(env, &args[0])?;
             let found = rc.borrow().iter().any(|v| values_equal(v, &needle));
-            Ok(Some(Value::Bool(found)))
+            Ok(Some(Value::from_bool(found)))
         }
         _ => Ok(None),
     }
@@ -2420,7 +2412,7 @@ fn range_method_call(
             }
             let n = env.next_random_u64();
             let span = (upper - start) as u64;
-            Ok(Some(Value::Int(start + (n % span) as i64)))
+            Ok(Some(Value::from_int(start + (n % span) as i64)))
         }
         "contains" => {
             if args.len() != 1 {
@@ -2433,11 +2425,11 @@ fn range_method_call(
             }
             let v = eval_expr(env, &args[0])?;
             let upper = if exclusive { end } else { end + 1 };
-            let result = match v {
-                Value::Int(n) => n >= start && n < upper,
+            let result = match v.to_legacy() {
+                LegacyValue::Int(n) => n >= start && n < upper,
                 _ => false,
             };
-            Ok(Some(Value::Bool(result)))
+            Ok(Some(Value::from_bool(result)))
         }
         _ => Ok(None),
     }
@@ -2451,8 +2443,8 @@ fn apply_call(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
-    match f {
-        Value::Builtin { name, params, func } => {
+    match f.to_legacy() {
+        LegacyValue::Builtin { name: name, params: params, func: func } => {
             if params.is_empty() {
                 if !kwargs.is_empty() {
                     return Err(no_kwargs_error(name, line, col));
@@ -2470,8 +2462,8 @@ fn apply_call(
                 func(env, &bound)
             }
         }
-        Value::Function(def) => call_function(env, &def, args, kwargs, line, col),
-        Value::Class(class) => {
+        LegacyValue::Function(def) => call_function(env, &def, args, kwargs, line, col),
+        LegacyValue::Class(class) => {
             if !args.is_empty() || !kwargs.is_empty() {
                 return Err(RuntimeError {
                     line,
@@ -2548,7 +2540,7 @@ fn call_function(
     env.call_depth += 1;
     let body_result = run_block(env, &def.body);
     env.call_depth -= 1;
-    let return_value = env.returning.take().unwrap_or(Value::Nil);
+    let return_value = env.returning.take().unwrap_or(Value::NIL);
     env.returning = saved_returning;
     for (name, prev) in saved_params {
         match prev {
@@ -2571,10 +2563,10 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
     }
     for c in chain.iter().rev() {
         for (k, v) in &c.field_defaults {
-            fields.insert(k.clone(), TaggedValue::from_legacy(v));
+            fields.insert(k.clone(), v.clone());
         }
     }
-    Value::Instance(Rc::new(RefCell::new(Instance {
+    Value::from_instance(Rc::new(RefCell::new(Instance {
         class,
         fields,
         current_state: None,
@@ -2642,7 +2634,7 @@ fn call_method(
     env.call_depth += 1;
     let body_result = run_block(env, &method.body);
     env.call_depth -= 1;
-    let return_value = env.returning.take().unwrap_or(Value::Nil);
+    let return_value = env.returning.take().unwrap_or(Value::NIL);
     env.returning = saved_returning;
     env.self_value = saved_self;
     for (name, prev) in saved_params {
@@ -2686,16 +2678,16 @@ fn run_for(
 ) -> Result<(), RuntimeError> {
     let iter_val = eval_expr(env, iter)?;
     let saved = env.get(var);
-    let result = match iter_val {
-        Value::Range { start, end, exclusive } => {
+    let result = match iter_val.to_legacy() {
+        LegacyValue::Range { start: start, end: end, exclusive: exclusive } => {
             let limit = if exclusive { end } else { end + 1 };
-            run_for_iter(env, var, body, (start..limit).map(Value::Int))
+            run_for_iter(env, var, body, (start..limit).map(Value::from_int))
         }
-        Value::List(rc) => {
+        LegacyValue::List(rc) => {
             let snapshot: Vec<Value> = rc.borrow().clone();
             run_for_iter(env, var, body, snapshot.into_iter())
         }
-        Value::Tuple(elems) => {
+        LegacyValue::Tuple(elems) => {
             let snapshot: Vec<Value> = elems.iter().cloned().collect();
             run_for_iter(env, var, body, snapshot.into_iter())
         }
@@ -2749,8 +2741,8 @@ fn eval_decl(
     col: u32,
 ) -> Result<(), RuntimeError> {
     let parent_class = if let Some(p) = parent {
-        match env.get(p) {
-            Some(Value::Class(c)) => Some(c.clone()),
+        match env.get(p).to_legacy() {
+            Some(LegacyValue::Class(c)) => Some(c.clone()),
             Some(other) => {
                 return Err(RuntimeError {
                     line,
@@ -2870,13 +2862,13 @@ fn eval_decl(
         states,
         initial_state,
     });
-    env.set(name.to_string(), Value::Class(class.clone()));
+    env.set(name.to_string(), Value::from_class(class.clone()));
 
     // Scenes auto-instantiate at declaration time and become the active
     // scene. There's only one active scene per program in v0.1.
     if matches!(kind, DeclKind::Scene) {
-        let inst = match instantiate(class.clone()) {
-            Value::Instance(rc) => rc,
+        let inst = match instantiate(class.clone()).to_legacy() {
+            LegacyValue::Instance(rc) => rc,
             _ => unreachable!("instantiate always returns Instance"),
         };
         env.active_scene = Some(inst.clone());
@@ -2907,14 +2899,14 @@ fn eval_binary(
     let r = eval_expr(env, right)?;
     match op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => apply_arith(op, &l, &r, line, col),
-        BinOp::Eq => Ok(Value::Bool(values_equal(&l, &r))),
-        BinOp::Neq => Ok(Value::Bool(!values_equal(&l, &r))),
+        BinOp::Eq => Ok(Value::from_bool(values_equal(&l, &r))),
+        BinOp::Neq => Ok(Value::from_bool(!values_equal(&l, &r))),
         BinOp::Lt => cmp_int(&l, &r, |a, b| a < b, |a, b| a < b, "<", line, col),
         BinOp::Gt => cmp_int(&l, &r, |a, b| a > b, |a, b| a > b, ">", line, col),
         BinOp::Lte => cmp_int(&l, &r, |a, b| a <= b, |a, b| a <= b, "<=", line, col),
         BinOp::Gte => cmp_int(&l, &r, |a, b| a >= b, |a, b| a >= b, ">=", line, col),
-        BinOp::In => Ok(Value::Bool(value_in(&l, &r, line, col)?)),
-        BinOp::NotIn => Ok(Value::Bool(!value_in(&l, &r, line, col)?)),
+        BinOp::In => Ok(Value::from_bool(value_in(&l, &r, line, col)?)),
+        BinOp::NotIn => Ok(Value::from_bool(!value_in(&l, &r, line, col)?)),
         BinOp::And | BinOp::Or => unreachable!("handled above"),
     }
 }
@@ -2925,18 +2917,18 @@ fn value_in(
     line: u32,
     col: u32,
 ) -> Result<bool, RuntimeError> {
-    match haystack {
-        Value::List(rc) => Ok(rc.borrow().iter().any(|v| values_equal(v, needle))),
-        Value::Tuple(elems) => Ok(elems.iter().any(|v| values_equal(v, needle))),
-        Value::Range { start, end, exclusive } => match needle {
-            Value::Int(n) => {
-                let upper = if *exclusive { *end } else { *end + 1 };
-                Ok(*n >= *start && *n < upper)
+    match haystack.to_legacy() {
+        LegacyValue::List(rc) => Ok(rc.borrow().iter().any(|v| values_equal(v, needle))),
+        LegacyValue::Tuple(elems) => Ok(elems.iter().any(|v| values_equal(v, needle))),
+        LegacyValue::Range { start: start, end: end, exclusive: exclusive } => match needle.to_legacy() {
+            LegacyValue::Int(n) => {
+                let upper = if exclusive { end } else { end + 1 };
+                Ok(n >= start && n < upper)
             }
             _ => Ok(false),
         },
-        Value::Str(s) => match needle {
-            Value::Str(sub) => Ok(s.contains(sub.as_ref())),
+        LegacyValue::Str(s) => match needle.to_legacy() {
+            LegacyValue::Str(sub) => Ok(s.contains(sub.as_ref())),
             _ => Ok(false),
         },
         other => Err(RuntimeError {
@@ -2967,17 +2959,17 @@ fn apply_arith(
     };
     // String concatenation via `+`.
     if matches!(op, BinOp::Add) {
-        if let (Value::Str(a), Value::Str(b)) = (l, r) {
+        if let (LegacyValue::Str(a), LegacyValue::Str(b)) = (l, r).to_legacy() {
             let mut s = String::with_capacity(a.len() + b.len());
-            s.push_str(a);
-            s.push_str(b);
-            return Ok(Value::Str(Rc::new(s)));
+            s.push_str(a.as_str());
+            s.push_str(b.as_str());
+            return Ok(Value::from_string(s));
         }
     }
     // Tuple arithmetic — element-wise add/sub between same-length tuples
     // (Snake's `snake[0] + direction` shape) and tuple * scalar (Snake's
     // `cell * cell_size`).
-    if let (Value::Tuple(a), Value::Tuple(b)) = (l, r) {
+    if let (LegacyValue::Tuple(a), LegacyValue::Tuple(b)) = (l, r).to_legacy() {
         if matches!(op, BinOp::Add | BinOp::Sub) {
             if a.len() != b.len() {
                 return Err(RuntimeError {
@@ -2996,32 +2988,32 @@ fn apply_arith(
             for (x, y) in a.iter().zip(b.iter()) {
                 out_elems.push(apply_arith(op, x, y, line, col)?);
             }
-            return Ok(Value::Tuple(Rc::new(out_elems)));
+            return Ok(Value::from_tuple(Rc::new(out_elems)));
         }
     }
-    if let Value::Tuple(elems) = l {
+    if let LegacyValue::Tuple(elems) = l.to_legacy() {
         if matches!(op, BinOp::Mul | BinOp::Div) && is_scalar(r) {
             let mut out_elems = Vec::with_capacity(elems.len());
             for x in elems.iter() {
                 out_elems.push(apply_arith(op, x, r, line, col)?);
             }
-            return Ok(Value::Tuple(Rc::new(out_elems)));
+            return Ok(Value::from_tuple(Rc::new(out_elems)));
         }
     }
-    if let Value::Tuple(elems) = r {
+    if let LegacyValue::Tuple(elems) = r.to_legacy() {
         if matches!(op, BinOp::Mul) && is_scalar(l) {
             let mut out_elems = Vec::with_capacity(elems.len());
             for y in elems.iter() {
                 out_elems.push(apply_arith(op, l, y, line, col)?);
             }
-            return Ok(Value::Tuple(Rc::new(out_elems)));
+            return Ok(Value::from_tuple(Rc::new(out_elems)));
         }
     }
-    let pair = match (l, r) {
-        (Value::Int(a), Value::Int(b)) => NumPair::Ints(*a, *b),
-        (Value::Float(a), Value::Float(b)) => NumPair::Floats(*a, *b),
-        (Value::Int(a), Value::Float(b)) => NumPair::Floats(*a as f64, *b),
-        (Value::Float(a), Value::Int(b)) => NumPair::Floats(*a, *b as f64),
+    let pair = match (l, r).to_legacy() {
+        (LegacyValue::Int(a), LegacyValue::Int(b)) => NumPair::Ints(a, b),
+        (LegacyValue::Float(a), LegacyValue::Float(b)) => NumPair::Floats(a, b),
+        (LegacyValue::Int(a), LegacyValue::Float(b)) => NumPair::Floats(a as f64, b),
+        (LegacyValue::Float(a), LegacyValue::Int(b)) => NumPair::Floats(a, b as f64),
         _ => {
             return Err(RuntimeError {
                 line,
@@ -3036,20 +3028,20 @@ fn apply_arith(
         }
     };
     match (op, pair) {
-        (BinOp::Add, NumPair::Ints(a, b)) => Ok(Value::Int(a + b)),
-        (BinOp::Sub, NumPair::Ints(a, b)) => Ok(Value::Int(a - b)),
-        (BinOp::Mul, NumPair::Ints(a, b)) => Ok(Value::Int(a * b)),
+        (BinOp::Add, NumPair::Ints(a, b)) => Ok(Value::from_int(a + b)),
+        (BinOp::Sub, NumPair::Ints(a, b)) => Ok(Value::from_int(a - b)),
+        (BinOp::Mul, NumPair::Ints(a, b)) => Ok(Value::from_int(a * b)),
         (BinOp::Div, NumPair::Ints(_, 0)) => Err(RuntimeError {
             line,
             col,
             message: "division by zero".to_string(),
             help: Some("guard the divisor with `if b != 0:` before dividing".to_string()),
         }),
-        (BinOp::Div, NumPair::Ints(a, b)) => Ok(Value::Int(a / b)),
-        (BinOp::Add, NumPair::Floats(a, b)) => Ok(Value::Float(a + b)),
-        (BinOp::Sub, NumPair::Floats(a, b)) => Ok(Value::Float(a - b)),
-        (BinOp::Mul, NumPair::Floats(a, b)) => Ok(Value::Float(a * b)),
-        (BinOp::Div, NumPair::Floats(a, b)) => Ok(Value::Float(a / b)),
+        (BinOp::Div, NumPair::Ints(a, b)) => Ok(Value::from_int(a / b)),
+        (BinOp::Add, NumPair::Floats(a, b)) => Ok(Value::from_float(a + b)),
+        (BinOp::Sub, NumPair::Floats(a, b)) => Ok(Value::from_float(a - b)),
+        (BinOp::Mul, NumPair::Floats(a, b)) => Ok(Value::from_float(a * b)),
+        (BinOp::Div, NumPair::Floats(a, b)) => Ok(Value::from_float(a / b)),
         _ => unreachable!(),
     }
 }
@@ -3060,7 +3052,7 @@ enum NumPair {
 }
 
 fn is_scalar(v: &Value) -> bool {
-    matches!(v, Value::Int(_) | Value::Float(_))
+    matches!(v.to_legacy(), LegacyValue::Int(_) | LegacyValue::Float(_))
 }
 
 fn cmp_int(
@@ -3072,11 +3064,11 @@ fn cmp_int(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
-    match (l, r) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(int_cmp(*a, *b))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(float_cmp(*a, *b))),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Bool(float_cmp(*a as f64, *b))),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Bool(float_cmp(*a, *b as f64))),
+    match (l, r).to_legacy() {
+        (LegacyValue::Int(a), LegacyValue::Int(b)) => Ok(Value::from_bool(int_cmp(a, b))),
+        (LegacyValue::Float(a), LegacyValue::Float(b)) => Ok(Value::from_bool(float_cmp(a, b))),
+        (LegacyValue::Int(a), LegacyValue::Float(b)) => Ok(Value::from_bool(float_cmp(a as f64, b))),
+        (LegacyValue::Float(a), LegacyValue::Int(b)) => Ok(Value::from_bool(float_cmp(a, b as f64))),
         _ => Err(RuntimeError {
             line,
             col,
@@ -3091,32 +3083,24 @@ fn cmp_int(
 }
 
 fn values_equal(l: &Value, r: &Value) -> bool {
-    match (l, r) {
-        (Value::Nil, Value::Nil) => true,
-        (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::Int(a), Value::Int(b)) => a == b,
-        (Value::Float(a), Value::Float(b)) => a == b,
-        (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
-        (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
-        (Value::Percent(a), Value::Percent(b)) => a == b,
+    match (l, r).to_legacy() {
+        (LegacyValue::Nil, LegacyValue::Nil) => true,
+        (LegacyValue::Bool(a), LegacyValue::Bool(b)) => a == b,
+        (LegacyValue::Int(a), LegacyValue::Int(b)) => a == b,
+        (LegacyValue::Float(a), LegacyValue::Float(b)) => a == b,
+        (LegacyValue::Int(a), LegacyValue::Float(b)) => (a as f64) == b,
+        (LegacyValue::Float(a), LegacyValue::Int(b)) => a == (b as f64),
+        (LegacyValue::Percent(a), LegacyValue::Percent(b)) => a == b,
         (
-            Value::Quantity { value: a, unit: u1 },
-            Value::Quantity { value: b, unit: u2 },
+            LegacyValue::Quantity { value: a, unit: u1 },
+            LegacyValue::Quantity { value: b, unit: u2 },
         ) => a == b && u1 == u2,
         (
-            Value::Range {
-                start: s1,
-                end: e1,
-                exclusive: x1,
-            },
-            Value::Range {
-                start: s2,
-                end: e2,
-                exclusive: x2,
-            },
+            LegacyValue::Range { start: s1, end: e1, exclusive: x1 },
+            LegacyValue::Range { start: s2, end: e2, exclusive: x2 },
         ) => s1 == s2 && e1 == e2 && x1 == x2,
-        (Value::Str(a), Value::Str(b)) => a == b,
-        (Value::Tuple(a), Value::Tuple(b)) => {
+        (LegacyValue::Str(a), LegacyValue::Str(b)) => a == b,
+        (LegacyValue::Tuple(a), LegacyValue::Tuple(b)) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_equal(x, y))
         }
         _ => false,
@@ -3124,5 +3108,5 @@ fn values_equal(l: &Value, r: &Value) -> bool {
 }
 
 fn is_truthy(v: &Value) -> bool {
-    !matches!(v, Value::Bool(false))
+    v.is_truthy()
 }

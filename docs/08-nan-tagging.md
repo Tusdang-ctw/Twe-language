@@ -240,13 +240,25 @@ This is the load-bearing part of the doc. NaN tagging + GC isn't one session; it
 - Stdlib's interior pattern matches still operate on legacy `Value` (the rule "every `Value::` in builtins becomes `TaggedValue::*`" lands at 8f when the legacy enum deletes — keeping 8e mechanical kept the regression surface in line with 8c–8d).
 - All 499 tests still pass; clippy clean.
 
-#### Session 8f — Delete legacy Value (pending)
+#### Session 8f — Delete legacy Value (✅ structural half shipped 2026-04-30, predicate cleanup deferred)
 
-- `src/value.rs`: remove `enum Value`. `Value` becomes a type alias for `TaggedValue` (or fully renamed).
-- Delete the `to_legacy` / `from_legacy` shim.
-- Strict-mode inferer uses TaggedValue type names in diagnostics.
-- 100% migration verified by zero `Value::` patterns outside `tagged_value.rs`.
-- **Scope reality:** 917 `Value::` pattern-match sites across the codebase as of post-8e. Each site is mechanical (`match v { Value::Int(n) => ... }` → `if v.is_int() { let n = v.as_int(); ... }` or `match v.to_legacy()` for one-shots), but the volume is genuinely a multi-session sub-phase on its own. Once 8f lands, 8g–8i become straightforward: the GC takes over the (already-replaced) heap allocations, roots wire to known TaggedValue locations, bench measures the post-shim VM.
+What 8f shipped this session:
+
+- `src/value.rs`: `pub enum Value { … }` renamed to `pub enum LegacyValue { … }`; `pub type Value = TaggedValue;` added so every existing `Value`-typed signature, struct field, and constructor site automatically aligns with the NaN-tagged representation.
+- All struct-field storage flipped to `TaggedValue` (= `Value` alias): `ClassDef::field_defaults`, `BcClassDef::field_defaults`, `Env::self_value`, `Env::returning`, `Env::bindings`, `Object::fields`, `Instance::fields`, `BcInstance::fields`, `BcInstance::fiber_stack`, `FrameKind::Function::saved_returning` / `saved_params`. Same for the `BuiltinFn` signature: `fn(&mut Env, &[TaggedValue]) -> Result<TaggedValue, _>`.
+- `HeapBody::Tuple` / `HeapBody::List` interiors migrated to `Vec<TaggedValue>`. `LegacyValue::Tuple` / `List` now wrap the same Rc, so `from_legacy` / `to_legacy` share the heap rather than deep-copying — preserves mutation semantics through the shim.
+- All 992 `Value::Foo(...)` constructor / pattern sites in the 12 source files + `tests/eval.rs` were rewritten by a mechanical migration pass: constructors became `Value::from_*(...)`, `Value::NIL` / `TRUE` / `FALSE` constants, etc. New helper API on `TaggedValue` covers this (`from_tuple` / `as_tuple`, `is_object` / `as_object`, `is_truthy`, `display`, `type_name`, `equals`, etc., plus per-heap-variant predicate + extractor pairs for every `HeapBodyKind`).
+- 499 tests still pass. `cargo build --release` clean. `cargo clippy --lib --tests` shows only the four pre-existing `approx_constant` warnings on `3.14`-as-test-float in `save.rs` / `tagged_value.rs`.
+
+What 8f deferred (call it 8f-followup or 8f.5):
+
+- ~373 match-arm dispatch sites still spell out `match X.to_legacy() { LegacyValue::Foo(x) => ... }` rather than predicate-dispatching directly on `TaggedValue` (`if X.is_foo() { let x = X.as_foo(); ... }`). The shim in `src/value.rs` (`pub trait ToLegacyShim` for `Option<TaggedValue>` / tuples + `LegacyValue::display` / `type_name`) keeps these compiling.
+- Therefore `enum LegacyValue`, `TaggedValue::to_legacy` / `from_legacy`, and the `ToLegacyShim` trait still ship. The "100% verified by zero `Value::` patterns outside `tagged_value.rs`" exit criterion is **not** met yet — the alias makes the production representation NaN-tagged, but the legacy enum is still load-bearing for match dispatch.
+- Strict-mode inferer diagnostics still mention legacy variant names when they appear; updating to TaggedValue terminology rides the same predicate-conversion pass.
+
+**Why split:** the structural-half is the unblocking work for 8g (GC allocator) and 8h (roots wiring) — both need every storage location to be `TaggedValue` and the heap interior to be `Vec<TaggedValue>`, both of which now hold. The match-arm cleanup is independent volume that can land on its own track without gating GC.
+
+**Scope reality (preserved from original plan):** 917 `Value::` pattern-match sites across the codebase as of post-8e. Constructor + storage migration ate ~550 of those mechanically; the remaining ~370 live behind the `to_legacy()` shim and are the predicate-dispatch follow-up. Each site is still mechanical (`match v.to_legacy() { LegacyValue::Int(n) => ... }` → `if v.is_int_or_boxed_int() { let n = v.as_int(); ... }`); the volume is what makes it its own session.
 
 #### Session 8g — GC heap allocator
 

@@ -30,6 +30,8 @@ use std::rc::Rc;
 use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, StateMember, UnOp};
 use crate::bytecode::{BcClassDef, BcFunction, BcStateDef, Chunk, OpCode};
 use crate::value::Value;
+use crate::value::LegacyValue;
+use crate::value::ToLegacyShim;
 
 /// What the compiler refuses to compile in the current session's
 /// scope, with a source position.
@@ -236,7 +238,7 @@ impl Compiler {
                                 let idx = self
                                     .frame_mut()
                                     .chunk
-                                    .add_constant(Value::Str(Rc::new(String::new())));
+                                    .add_constant(Value::from_string(String::new()));
                                 self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                                 self.frame_mut().chunk.write_byte(idx, *line);
                                 self.frame_mut().chunk.write_op(OpCode::Print, *line);
@@ -334,7 +336,7 @@ impl Compiler {
                 let func_idx = self
                     .frame_mut()
                     .chunk
-                    .add_constant(Value::BcFunction(Rc::new(func)));
+                    .add_constant(Value::from_bc_function(Rc::new(func)));
                 self.frame_mut().chunk.write_op(OpCode::SetOnUpdate, *line);
                 self.frame_mut().chunk.write_byte(func_idx, *line);
             }
@@ -356,7 +358,7 @@ impl Compiler {
                 let name_idx = self
                     .frame_mut()
                     .chunk
-                    .add_constant(Value::Str(Rc::new(target.clone())));
+                    .add_constant(Value::from_string(target.clone()));
                 self.frame_mut().chunk.write_op(OpCode::Transition, *line);
                 self.frame_mut().chunk.write_byte(name_idx, *line);
             }
@@ -371,7 +373,7 @@ impl Compiler {
                 let name_idx = self
                     .frame_mut()
                     .chunk
-                    .add_constant(Value::Str(Rc::new(class.clone())));
+                    .add_constant(Value::from_string(class.clone()));
                 self.frame_mut().chunk.write_op(OpCode::GetGlobal, *line);
                 self.frame_mut().chunk.write_byte(name_idx, *line);
                 self.frame_mut().chunk.write_op(OpCode::Spawn, *line);
@@ -393,7 +395,7 @@ impl Compiler {
                 // and removes the brittle compile-time
                 // `allows_wait` flag.
                 if let Some(secs) = const_eval_seconds(duration) {
-                    let idx = self.frame_mut().chunk.add_constant(Value::Float(secs));
+                    let idx = self.frame_mut().chunk.add_constant(Value::from_float(secs));
                     self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                     self.frame_mut().chunk.write_byte(idx, *line);
                 } else {
@@ -431,7 +433,7 @@ impl Compiler {
             let name_idx = self
                 .frame_mut()
                 .chunk
-                .add_constant(Value::Str(Rc::new(name.to_string())));
+                .add_constant(Value::from_string(name.to_string()));
             self.frame_mut().chunk.write_op(OpCode::DefineGlobal, line);
             self.frame_mut().chunk.write_byte(name_idx, line);
         } else {
@@ -497,7 +499,7 @@ impl Compiler {
         let func_idx = self
             .frame_mut()
             .chunk
-            .add_constant(Value::BcFunction(Rc::new(function)));
+            .add_constant(Value::from_bc_function(Rc::new(function)));
         self.frame_mut().chunk.write_op(OpCode::Constant, line);
         self.frame_mut().chunk.write_byte(func_idx, line);
 
@@ -506,7 +508,7 @@ impl Compiler {
         let name_idx = self
             .frame_mut()
             .chunk
-            .add_constant(Value::Str(Rc::new(name.to_string())));
+            .add_constant(Value::from_string(name.to_string()));
         self.frame_mut().chunk.write_op(OpCode::DefineGlobal, line);
         self.frame_mut().chunk.write_byte(name_idx, line);
         Ok(())
@@ -630,7 +632,7 @@ impl Compiler {
         self.mark_initialised();
         let base_slot = (self.frame().locals.len() - 1) as u8;
         // Push counter (Int 0), register hidden local.
-        let zero_idx = self.frame_mut().chunk.add_constant(Value::Int(0));
+        let zero_idx = self.frame_mut().chunk.add_constant(Value::from_int(0));
         self.frame_mut().chunk.write_op(OpCode::Constant, line);
         self.frame_mut().chunk.write_byte(zero_idx, line);
         self.declare_local(&counter_name, line, var_col)?;
@@ -714,7 +716,7 @@ impl Compiler {
                     let name_idx = self
                         .frame_mut()
                         .chunk
-                        .add_constant(Value::Str(Rc::new(name.clone())));
+                        .add_constant(Value::from_string(name.clone()));
                     if matches!(op, AssignOp::Set) {
                         // Stack: [self, value]
                         self.frame_mut().chunk.write_op(OpCode::GetLocal, line);
@@ -741,7 +743,7 @@ impl Compiler {
                     let name_idx = self
                         .frame_mut()
                         .chunk
-                        .add_constant(Value::Str(Rc::new(name.clone())));
+                        .add_constant(Value::from_string(name.clone()));
                     if matches!(op, AssignOp::Set) {
                         self.emit_expr(value)?;
                     } else {
@@ -773,7 +775,7 @@ impl Compiler {
                     let load_name = self
                         .frame_mut()
                         .chunk
-                        .add_constant(Value::Str(Rc::new(name.clone())));
+                        .add_constant(Value::from_string(name.clone()));
                     self.frame_mut().chunk.write_op(OpCode::GetField, line);
                     self.frame_mut().chunk.write_byte(load_name, line);
                     self.emit_expr(value)?;
@@ -783,7 +785,7 @@ impl Compiler {
                 let name_idx = self
                     .frame_mut()
                     .chunk
-                    .add_constant(Value::Str(Rc::new(name.clone())));
+                    .add_constant(Value::from_string(name.clone()));
                 self.frame_mut().chunk.write_op(OpCode::SetField, line);
                 self.frame_mut().chunk.write_byte(name_idx, line);
                 self.frame_mut().chunk.write_op(OpCode::Pop, line);
@@ -797,12 +799,12 @@ impl Compiler {
     fn emit_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match expr {
             Expr::Int { value, line, .. } => {
-                let idx = self.frame_mut().chunk.add_constant(Value::Int(*value));
+                let idx = self.frame_mut().chunk.add_constant(Value::from_int(*value));
                 self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
             Expr::Float { value, line, .. } => {
-                let idx = self.frame_mut().chunk.add_constant(Value::Float(*value));
+                let idx = self.frame_mut().chunk.add_constant(Value::from_float(*value));
                 self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
@@ -816,12 +818,12 @@ impl Compiler {
                 let idx = self
                     .frame_mut()
                     .chunk
-                    .add_constant(Value::Str(Rc::new(value.clone())));
+                    .add_constant(Value::from_string(value.clone()));
                 self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
             Expr::Percent { value, line, .. } => {
-                let idx = self.frame_mut().chunk.add_constant(Value::Float(*value));
+                let idx = self.frame_mut().chunk.add_constant(Value::from_float(*value));
                 self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
@@ -837,14 +839,14 @@ impl Compiler {
                     let name_idx = self
                         .frame_mut()
                         .chunk
-                        .add_constant(Value::Str(Rc::new(name.clone())));
+                        .add_constant(Value::from_string(name.clone()));
                     self.frame_mut().chunk.write_op(OpCode::GetField, *line);
                     self.frame_mut().chunk.write_byte(name_idx, *line);
                 } else {
                     let name_idx = self
                         .frame_mut()
                         .chunk
-                        .add_constant(Value::Str(Rc::new(name.clone())));
+                        .add_constant(Value::from_string(name.clone()));
                     self.frame_mut().chunk.write_op(OpCode::GetGlobal, *line);
                     self.frame_mut().chunk.write_byte(name_idx, *line);
                 }
@@ -939,7 +941,7 @@ impl Compiler {
                 let name_idx = self
                     .frame_mut()
                     .chunk
-                    .add_constant(Value::Str(Rc::new(name.clone())));
+                    .add_constant(Value::from_string(name.clone()));
                 self.frame_mut().chunk.write_op(OpCode::GetField, *line);
                 self.frame_mut().chunk.write_byte(name_idx, *line);
             }
@@ -962,7 +964,7 @@ impl Compiler {
                     let idx = self
                         .frame_mut()
                         .chunk
-                        .add_constant(Value::Str(Rc::new(p.clone())));
+                        .add_constant(Value::from_string(p.clone()));
                     self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                     self.frame_mut().chunk.write_byte(idx, *line);
                     if let Some(e) = exprs.get(i) {
@@ -1036,7 +1038,7 @@ impl Compiler {
             let name_idx = self
                 .frame_mut()
                 .chunk
-                .add_constant(Value::Str(Rc::new(name.clone())));
+                .add_constant(Value::from_string(name.clone()));
             self.frame_mut().chunk.write_op(OpCode::Invoke, *fline);
             self.frame_mut().chunk.write_byte(name_idx, *fline);
             self.frame_mut().chunk.write_byte(args.len() as u8, *fline);
@@ -1334,13 +1336,13 @@ impl Compiler {
         let class_idx = self
             .frame_mut()
             .chunk
-            .add_constant(Value::BcClass(class));
+            .add_constant(Value::from_bc_class(class));
         self.frame_mut().chunk.write_op(OpCode::Constant, line);
         self.frame_mut().chunk.write_byte(class_idx, line);
         let name_idx = self
             .frame_mut()
             .chunk
-            .add_constant(Value::Str(Rc::new(name.to_string())));
+            .add_constant(Value::from_string(name.to_string()));
         self.frame_mut().chunk.write_op(OpCode::DefineGlobal, line);
         self.frame_mut().chunk.write_byte(name_idx, line);
         // Scene auto-instantiation happens at the VM, triggered by
@@ -1651,18 +1653,18 @@ fn const_eval_seconds(e: &Expr) -> Option<f64> {
 /// `None` for any expression that depends on runtime state.
 fn const_eval(e: &Expr) -> Option<Value> {
     match e {
-        Expr::Int { value, .. } => Some(Value::Int(*value)),
-        Expr::Float { value, .. } => Some(Value::Float(*value)),
-        Expr::Bool { value, .. } => Some(Value::Bool(*value)),
-        Expr::Str { value, .. } => Some(Value::Str(Rc::new(value.clone()))),
-        Expr::Percent { value, .. } => Some(Value::Percent(*value)),
+        Expr::Int { value, .. } => Some(Value::from_int(*value)),
+        Expr::Float { value, .. } => Some(Value::from_float(*value)),
+        Expr::Bool { value, .. } => Some(Value::from_bool(*value)),
+        Expr::Str { value, .. } => Some(Value::from_string(value.clone())),
+        Expr::Percent { value, .. } => Some(Value::from_percent(*value)),
         Expr::Tuple { elems, .. } => {
             let vals: Option<Vec<Value>> = elems.iter().map(const_eval).collect();
-            vals.map(|v| Value::Tuple(Rc::new(v)))
+            vals.map(|v| Value::from_tuple(Rc::new(v)))
         }
-        Expr::Unary { op: UnOp::Neg, operand, .. } => match const_eval(operand)? {
-            Value::Int(n) => Some(Value::Int(-n)),
-            Value::Float(x) => Some(Value::Float(-x)),
+        Expr::Unary { op: UnOp::Neg, operand, .. } => match const_eval(operand)?.to_legacy() {
+            LegacyValue::Int(n) => Some(Value::from_int(-n)),
+            LegacyValue::Float(x) => Some(Value::from_float(-x)),
             _ => None,
         },
         _ => None,
@@ -1837,7 +1839,7 @@ mod tests {
         let chunk = compile_program(&prog).expect("compile");
         // The outer chunk should hold the BcFunction as a constant,
         // followed by OP_DEFINE_GLOBAL for the name.
-        let has_function_constant = chunk.constants.iter().any(|v| matches!(v, Value::BcFunction(_)));
+        let has_function_constant = chunk.constants.iter().any(|v| matches!(v.to_legacy(), LegacyValue::BcFunction(_)));
         assert!(has_function_constant, "expected a BcFunction constant: {:?}", chunk.constants);
         assert!(
             chunk.code.contains(&(OpCode::DefineGlobal as u8)),

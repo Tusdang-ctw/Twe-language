@@ -5,8 +5,21 @@ use std::rc::Rc;
 
 use crate::tagged_value::TaggedValue;
 
+/// v0.2 Phase 8.5 session 8f: `Value` is a type alias for
+/// `TaggedValue`. Every signature, struct field, and constructor
+/// site in the codebase that wrote `Value` automatically aligns
+/// with the NaN-tagged representation. The legacy sum-type was
+/// renamed to `LegacyValue` and kept only as a transitional shim
+/// during the call-site migration; it deletes once every match
+/// site has converted to predicate dispatch.
+pub type Value = TaggedValue;
+
+/// v0.2 Phase 8.5 session 8f: the original sum-type Value, kept
+/// alive only as a temporary shim during the migration. New code
+/// should use `TaggedValue` (= `Value`) directly. Deletes at end
+/// of 8f cleanup.
 #[derive(Clone)]
-pub enum Value {
+pub enum LegacyValue {
     Nil,
     Bool(bool),
     Int(i64),
@@ -15,29 +28,17 @@ pub enum Value {
     Quantity { value: f64, unit: Rc<String> },
     Range { start: i64, end: i64, exclusive: bool },
     Str(Rc<String>),
-    Tuple(Rc<Vec<Value>>),
-    List(Rc<RefCell<Vec<Value>>>),
+    Tuple(Rc<Vec<TaggedValue>>),
+    List(Rc<RefCell<Vec<TaggedValue>>>),
     Object(Rc<RefCell<Object>>),
     Class(Rc<ClassDef>),
     Instance(Rc<RefCell<Instance>>),
     Function(Rc<FunctionDef>),
-    /// Compiled function for the Phase-3 bytecode VM. The tree-walker
-    /// in `crate::eval` doesn't produce or consume these — they're a
-    /// separate code path. When NaN tagging lands, both `Function` and
-    /// `BcFunction` will fold into a single `Obj` pointer; until then
-    /// the two coexist.
     BcFunction(Rc<crate::bytecode::BcFunction>),
-    /// Bytecode-VM class. Sibling of `Class` for the same reason —
-    /// the tree-walker stores AST methods, the bytecode VM stores
-    /// compiled chunks.
     BcClass(Rc<crate::bytecode::BcClassDef>),
-    /// Bytecode-VM instance. Sibling of `Instance`.
     BcInstance(Rc<RefCell<crate::bytecode::BcInstance>>),
     Builtin {
         name: &'static str,
-        /// Parameter names for keyword-argument distribution.
-        /// Empty slice = variadic (positional only, kwargs rejected).
-        /// Otherwise the call site reorders kwargs into this declaration order.
         params: &'static [&'static str],
         func: BuiltinFn,
     },
@@ -55,7 +56,7 @@ pub struct ClassDef {
     pub kind: &'static str,
     pub name: String,
     pub parent: Option<Rc<ClassDef>>,
-    pub field_defaults: HashMap<String, Value>,
+    pub field_defaults: HashMap<String, TaggedValue>,
     pub methods: HashMap<String, Rc<MethodDef>>,
     pub states: HashMap<String, Rc<StateDef>>,
     pub initial_state: Option<String>,
@@ -140,15 +141,14 @@ pub struct Instance {
 }
 
 impl Instance {
-    /// Read a field as legacy `Value`. v0.2 Phase 8.5 session 8e:
-    /// convenience wrapper around the `TaggedValue` storage.
-    pub fn get_field(&self, name: &str) -> Option<Value> {
-        self.fields.get(name).map(|t| t.clone().to_legacy())
+    /// Read a field. v0.2 Phase 8.5 session 8f: returns the
+    /// stored `TaggedValue` (Value alias) directly.
+    pub fn get_field(&self, name: &str) -> Option<TaggedValue> {
+        self.fields.get(name).cloned()
     }
 
-    pub fn insert_field(&mut self, name: impl Into<String>, value: Value) {
-        self.fields
-            .insert(name.into(), TaggedValue::from_legacy(&value));
+    pub fn insert_field(&mut self, name: impl Into<String>, value: TaggedValue) {
+        self.fields.insert(name.into(), value);
     }
 }
 
@@ -217,8 +217,8 @@ pub enum FrameKind {
     StateEntry,
     Function {
         def: Rc<crate::value::FunctionDef>,
-        saved_returning: Option<Value>,
-        saved_params: Vec<(String, Option<Value>)>,
+        saved_returning: Option<TaggedValue>,
+        saved_params: Vec<(String, Option<TaggedValue>)>,
     },
 }
 
@@ -234,118 +234,146 @@ pub struct Object {
 }
 
 impl Object {
-    /// Read a field as legacy `Value`. Convenience wrapper around
-    /// the `TaggedValue` storage so existing call sites keep
-    /// working through 8e–8f. v0.2 Phase 8.5 session 8e.
-    pub fn get_field(&self, name: &str) -> Option<Value> {
-        self.fields.get(name).map(|t| t.clone().to_legacy())
+    /// Read a field. v0.2 Phase 8.5 session 8f: returns the
+    /// `TaggedValue` directly.
+    pub fn get_field(&self, name: &str) -> Option<TaggedValue> {
+        self.fields.get(name).cloned()
     }
 
-    /// Write a legacy `Value` into a field. Mirror of `get_field`.
-    pub fn insert_field(&mut self, name: impl Into<String>, value: Value) {
-        self.fields
-            .insert(name.into(), TaggedValue::from_legacy(&value));
+    pub fn insert_field(&mut self, name: impl Into<String>, value: TaggedValue) {
+        self.fields.insert(name.into(), value);
     }
 }
 
-/// Convert a legacy `HashMap<String, Value>` to the
-/// `HashMap<String, TaggedValue>` shape used by `Object::fields` /
-/// `Instance::fields` / `BcInstance::fields`. Used by stdlib
-/// bootstrap and save-load to assemble field maps imperatively
-/// (build with `Value`, hand off as `TaggedValue`). v0.2 Phase
-/// 8.5 session 8e.
+/// v0.2 Phase 8.5 session 8f: identity passthrough during the
+/// migration. With `Value = TaggedValue`, this is `HashMap → HashMap`
+/// with no conversion. Deletes once stdlib + save migrate.
 pub fn legacy_fields_to_tagged(
-    legacy: HashMap<String, Value>,
+    fields: HashMap<String, TaggedValue>,
 ) -> HashMap<String, TaggedValue> {
-    legacy
-        .into_iter()
-        .map(|(k, v)| (k, TaggedValue::from_legacy(&v)))
-        .collect()
+    fields
 }
 
-pub type BuiltinFn = fn(&mut Env, &[Value]) -> Result<Value, RuntimeError>;
+/// v0.2 Phase 8.5 session 8f: extension trait that adds `.to_legacy()`
+/// to `Option<TaggedValue>` and `(TaggedValue, TaggedValue)` so the
+/// migration's match scrutinees compile while interior arm patterns
+/// still spell out `LegacyValue::Foo(...)`. Deletes at end of 8f.
+pub trait ToLegacyShim {
+    type Out;
+    fn to_legacy(&self) -> Self::Out;
+}
 
-impl fmt::Debug for Value {
+impl ToLegacyShim for Option<TaggedValue> {
+    type Out = Option<LegacyValue>;
+    fn to_legacy(&self) -> Option<LegacyValue> {
+        self.as_ref().map(|t| t.to_legacy())
+    }
+}
+
+impl ToLegacyShim for (TaggedValue, TaggedValue) {
+    type Out = (LegacyValue, LegacyValue);
+    fn to_legacy(&self) -> (LegacyValue, LegacyValue) {
+        (self.0.to_legacy(), self.1.to_legacy())
+    }
+}
+
+impl ToLegacyShim for (&TaggedValue, &TaggedValue) {
+    type Out = (LegacyValue, LegacyValue);
+    fn to_legacy(&self) -> (LegacyValue, LegacyValue) {
+        (self.0.to_legacy(), self.1.to_legacy())
+    }
+}
+
+impl ToLegacyShim for Option<&TaggedValue> {
+    type Out = Option<LegacyValue>;
+    fn to_legacy(&self) -> Option<LegacyValue> {
+        self.map(|t| t.to_legacy())
+    }
+}
+
+pub type BuiltinFn = fn(&mut Env, &[TaggedValue]) -> Result<TaggedValue, RuntimeError>;
+
+impl fmt::Debug for LegacyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::Nil => write!(f, "Nil"),
-            Value::Bool(b) => write!(f, "Bool({b})"),
-            Value::Int(n) => write!(f, "Int({n})"),
-            Value::Float(x) => write!(f, "Float({x:?})"),
-            Value::Percent(p) => write!(f, "Percent({p})"),
-            Value::Quantity { value, unit } => write!(f, "Quantity({value} {unit})"),
-            Value::Range { start, end, exclusive } => {
+            LegacyValue::Nil => write!(f, "Nil"),
+            LegacyValue::Bool(b) => write!(f, "Bool({b})"),
+            LegacyValue::Int(n) => write!(f, "Int({n})"),
+            LegacyValue::Float(x) => write!(f, "Float({x:?})"),
+            LegacyValue::Percent(p) => write!(f, "Percent({p})"),
+            LegacyValue::Quantity { value, unit } => write!(f, "Quantity({value} {unit})"),
+            LegacyValue::Range { start, end, exclusive } => {
                 let op = if *exclusive { "..<" } else { ".." };
                 write!(f, "Range({start}{op}{end})")
             }
-            Value::Str(s) => write!(f, "Str({s:?})"),
-            Value::Tuple(t) => write!(f, "Tuple({t:?})"),
-            Value::List(l) => write!(f, "List({:?})", l.borrow()),
-            Value::Object(o) => write!(f, "Object({})", o.borrow().kind),
-            Value::Class(c) => write!(f, "Class({} {})", c.kind, c.name),
-            Value::Instance(i) => write!(f, "Instance({})", i.borrow().class.name),
-            Value::Function(func) => write!(f, "Function({})", func.name),
-            Value::BcFunction(func) => write!(f, "BcFunction({})", func.name),
-            Value::BcClass(c) => write!(f, "BcClass({} {})", c.kind, c.name),
-            Value::BcInstance(i) => write!(f, "BcInstance({})", i.borrow().class.name),
-            Value::Builtin { name, .. } => write!(f, "Builtin({name})"),
+            LegacyValue::Str(s) => write!(f, "Str({s:?})"),
+            LegacyValue::Tuple(t) => write!(f, "Tuple({t:?})"),
+            LegacyValue::List(l) => write!(f, "List({:?})", l.borrow()),
+            LegacyValue::Object(o) => write!(f, "Object({})", o.borrow().kind),
+            LegacyValue::Class(c) => write!(f, "Class({} {})", c.kind, c.name),
+            LegacyValue::Instance(i) => write!(f, "Instance({})", i.borrow().class.name),
+            LegacyValue::Function(func) => write!(f, "Function({})", func.name),
+            LegacyValue::BcFunction(func) => write!(f, "BcFunction({})", func.name),
+            LegacyValue::BcClass(c) => write!(f, "BcClass({} {})", c.kind, c.name),
+            LegacyValue::BcInstance(i) => write!(f, "BcInstance({})", i.borrow().class.name),
+            LegacyValue::Builtin { name, .. } => write!(f, "Builtin({name})"),
         }
     }
 }
 
-impl Value {
+impl LegacyValue {
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Nil => "nil",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Percent(_) => "percent",
-            Value::Quantity { .. } => "quantity",
-            Value::Range { .. } => "range",
-            Value::Str(_) => "string",
-            Value::Tuple(_) => "tuple",
-            Value::List(_) => "list",
-            Value::Object(o) => o.borrow().kind,
-            Value::Class(_) => "class",
-            Value::Instance(_) => "instance",
-            Value::Function(_) => "function",
-            Value::BcFunction(_) => "function",
-            Value::BcClass(_) => "class",
-            Value::BcInstance(_) => "instance",
-            Value::Builtin { .. } => "function",
+            LegacyValue::Nil => "nil",
+            LegacyValue::Bool(_) => "bool",
+            LegacyValue::Int(_) => "int",
+            LegacyValue::Float(_) => "float",
+            LegacyValue::Percent(_) => "percent",
+            LegacyValue::Quantity { .. } => "quantity",
+            LegacyValue::Range { .. } => "range",
+            LegacyValue::Str(_) => "string",
+            LegacyValue::Tuple(_) => "tuple",
+            LegacyValue::List(_) => "list",
+            LegacyValue::Object(o) => o.borrow().kind,
+            LegacyValue::Class(_) => "class",
+            LegacyValue::Instance(_) => "instance",
+            LegacyValue::Function(_) => "function",
+            LegacyValue::BcFunction(_) => "function",
+            LegacyValue::BcClass(_) => "class",
+            LegacyValue::BcInstance(_) => "instance",
+            LegacyValue::Builtin { .. } => "function",
         }
     }
 
     pub fn display(&self) -> String {
         match self {
-            Value::Nil => "nil".to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Int(n) => n.to_string(),
-            Value::Float(x) => format!("{x:?}"),
-            Value::Percent(p) => format!("{p}%"),
-            Value::Quantity { value, unit } => format!("{value}{unit}"),
-            Value::Range { start, end, exclusive } => {
+            LegacyValue::Nil => "nil".to_string(),
+            LegacyValue::Bool(b) => b.to_string(),
+            LegacyValue::Int(n) => n.to_string(),
+            LegacyValue::Float(x) => format!("{x:?}"),
+            LegacyValue::Percent(p) => format!("{p}%"),
+            LegacyValue::Quantity { value, unit } => format!("{value}{unit}"),
+            LegacyValue::Range { start, end, exclusive } => {
                 let op = if *exclusive { "..<" } else { ".." };
                 format!("{start}{op}{end}")
             }
-            Value::Str(s) => s.as_ref().clone(),
-            Value::Tuple(elems) => {
-                let parts: Vec<String> = elems.iter().map(Value::display).collect();
+            LegacyValue::Str(s) => s.as_ref().clone(),
+            LegacyValue::Tuple(elems) => {
+                let parts: Vec<String> = elems.iter().map(|t| t.display()).collect();
                 format!("({})", parts.join(", "))
             }
-            Value::List(rc) => {
-                let parts: Vec<String> = rc.borrow().iter().map(Value::display).collect();
+            LegacyValue::List(rc) => {
+                let parts: Vec<String> = rc.borrow().iter().map(|t| t.display()).collect();
                 format!("[{}]", parts.join(", "))
             }
-            Value::Object(o) => format!("<{}>", o.borrow().kind),
-            Value::Class(c) => format!("<{} {}>", c.kind, c.name),
-            Value::Instance(i) => format!("<{}>", i.borrow().class.name),
-            Value::Function(func) => format!("<function {}>", func.name),
-            Value::BcFunction(func) => format!("<function {}>", func.name),
-            Value::BcClass(c) => format!("<{} {}>", c.kind, c.name),
-            Value::BcInstance(i) => format!("<{}>", i.borrow().class.name),
-            Value::Builtin { name, .. } => format!("<builtin {name}>"),
+            LegacyValue::Object(o) => format!("<{}>", o.borrow().kind),
+            LegacyValue::Class(c) => format!("<{} {}>", c.kind, c.name),
+            LegacyValue::Instance(i) => format!("<{}>", i.borrow().class.name),
+            LegacyValue::Function(func) => format!("<function {}>", func.name),
+            LegacyValue::BcFunction(func) => format!("<function {}>", func.name),
+            LegacyValue::BcClass(c) => format!("<{} {}>", c.kind, c.name),
+            LegacyValue::BcInstance(i) => format!("<{}>", i.borrow().class.name),
+            LegacyValue::Builtin { name, .. } => format!("<builtin {name}>"),
         }
     }
 }
@@ -384,8 +412,8 @@ pub struct Env {
     pub top_on_render: Option<Vec<crate::ast::Stmt>>,
     pub active_scene: Option<Rc<RefCell<Instance>>>,
     pub active_entities: Vec<Rc<RefCell<Instance>>>,
-    pub self_value: Option<Value>,
-    pub returning: Option<Value>,
+    pub self_value: Option<TaggedValue>,
+    pub returning: Option<TaggedValue>,
     pub transitioning: Option<String>,
     pub breaking: bool,
     pub continuing: bool,
@@ -498,17 +526,14 @@ impl Env {
         self.rng_state = if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed };
     }
 
-    /// Look up a binding, converting back to legacy `Value` at
-    /// the boundary. v0.2 Phase 8.5 session 8d: signature changed
-    /// from `Option<&Value>` to `Option<Value>` because the
-    /// underlying storage is now `TaggedValue` and there's no
-    /// `Value` to borrow into.
-    pub fn get(&self, name: &str) -> Option<Value> {
-        self.bindings.get(name).map(|t| t.clone().to_legacy())
+    /// Look up a binding. v0.2 Phase 8.5 session 8f: returns the
+    /// stored `TaggedValue` directly.
+    pub fn get(&self, name: &str) -> Option<TaggedValue> {
+        self.bindings.get(name).cloned()
     }
 
-    pub fn set(&mut self, name: String, value: Value) {
-        self.bindings.insert(name, TaggedValue::from_legacy(&value));
+    pub fn set(&mut self, name: String, value: TaggedValue) {
+        self.bindings.insert(name, value);
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -519,15 +544,10 @@ impl Env {
         self.bindings.remove(name);
     }
 
-    /// Iterate over every (name, value) currently bound. Used by the
-    /// bytecode VM to seed its globals from `stdlib::install` without
-    /// duplicating the bootstrap. v0.2 Phase 8.5 session 8d: yields
-    /// owned (String, Value) tuples since the underlying storage is
-    /// `TaggedValue` and conversion produces fresh `Value`s.
-    pub fn iter_bindings(&self) -> impl Iterator<Item = (String, Value)> + '_ {
-        self.bindings
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone().to_legacy()))
+    /// Iterate over every (name, value) currently bound. v0.2 Phase
+    /// 8.5 session 8f: yields owned `(String, TaggedValue)` tuples.
+    pub fn iter_bindings(&self) -> impl Iterator<Item = (String, TaggedValue)> + '_ {
+        self.bindings.iter().map(|(k, v)| (k.clone(), v.clone()))
     }
 }
 

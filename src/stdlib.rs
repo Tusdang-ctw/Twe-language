@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::value::{legacy_fields_to_tagged, Env, Object, RuntimeError, Value};
+use crate::value::{legacy_fields_to_tagged, Env, Object, RuntimeError, Value, LegacyValue, ToLegacyShim};
 
 // Texture cache: macroquad's `Texture2D` can only be constructed once
 // the GL context exists, so loading is lazy — the first `sprite(spr, at)`
@@ -44,19 +44,11 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 pub fn install(env: &mut Env) {
     env.set(
         "print".to_string(),
-        Value::Builtin {
-            name: "print",
-            params: &[],
-            func: print_impl,
-        },
+        Value::from_builtin("print", &[], print_impl),
     );
     env.set(
         "load".to_string(),
-        Value::Builtin {
-            name: "load",
-            params: &["path"],
-            func: load_impl,
-        },
+        Value::from_builtin("load", &["path"], load_impl),
     );
     // v0.2 session 4: save / load for Twe Values. Bottom layer
     // of the eventual `save` block compiler — see
@@ -65,19 +57,11 @@ pub fn install(env: &mut Env) {
     // the serializable Value subset directly.
     env.set(
         "save_to".to_string(),
-        Value::Builtin {
-            name: "save_to",
-            params: &["path", "value"],
-            func: save_to_impl,
-        },
+        Value::from_builtin("save_to", &["path", "value"], save_to_impl),
     );
     env.set(
         "load_from".to_string(),
-        Value::Builtin {
-            name: "load_from",
-            params: &["path"],
-            func: load_from_impl,
-        },
+        Value::from_builtin("load_from", &["path"], load_from_impl),
     );
 
     let key_names = [
@@ -86,19 +70,19 @@ pub fn install(env: &mut Env) {
     let mut key_fields = HashMap::new();
     let mut press_fields = HashMap::new();
     for k in key_names {
-        key_fields.insert(k.to_string(), Value::Bool(false));
-        press_fields.insert(k.to_string(), Value::Bool(false));
+        key_fields.insert(k.to_string(), Value::FALSE);
+        press_fields.insert(k.to_string(), Value::FALSE);
     }
     env.set(
         "key".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(key_fields),
             kind: "input",
         }))),
     );
     env.set(
         "key_press".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(press_fields),
             kind: "input",
         }))),
@@ -111,16 +95,16 @@ pub fn install(env: &mut Env) {
     // button transitions to down). Both backends (macroquad
     // `play` and winit `play3d`) update these each frame.
     let mut mouse_fields = HashMap::new();
-    mouse_fields.insert("x".to_string(), Value::Float(0.0));
-    mouse_fields.insert("y".to_string(), Value::Float(0.0));
+    mouse_fields.insert("x".to_string(), Value::from_float(0.0));
+    mouse_fields.insert("y".to_string(), Value::from_float(0.0));
     mouse_fields.insert(
         "pos".to_string(),
-        Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])),
+        Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)])),
     );
-    mouse_fields.insert("wheel".to_string(), Value::Float(0.0));
+    mouse_fields.insert("wheel".to_string(), Value::from_float(0.0));
     env.set(
         "mouse".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(mouse_fields),
             kind: "input",
         }))),
@@ -129,19 +113,19 @@ pub fn install(env: &mut Env) {
     let mut held = HashMap::new();
     let mut pressed = HashMap::new();
     for b in buttons {
-        held.insert(b.to_string(), Value::Bool(false));
-        pressed.insert(b.to_string(), Value::Bool(false));
+        held.insert(b.to_string(), Value::FALSE);
+        pressed.insert(b.to_string(), Value::FALSE);
     }
     env.set(
         "mouse_held".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(held),
             kind: "input",
         }))),
     );
     env.set(
         "mouse_press".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(pressed),
             kind: "input",
         }))),
@@ -149,7 +133,7 @@ pub fn install(env: &mut Env) {
 
     // Rarity tier symbols. Stay as strings until v0.2 introduces enums.
     for r in ["common", "uncommon", "rare", "epic", "legendary"] {
-        env.set(r.to_string(), Value::Str(Rc::new(r.to_string())));
+        env.set(r.to_string(), Value::from_string(r.to_string()));
     }
 
     install_math(env);
@@ -168,19 +152,11 @@ fn install_sound(env: &mut Env) {
     let mut sound = HashMap::new();
     sound.insert(
         "load".to_string(),
-        Value::Builtin {
-            name: "sound.load",
-            params: &["path"],
-            func: sound_load,
-        },
+        Value::from_builtin("sound.load", &["path"], sound_load),
     );
     sound.insert(
         "play".to_string(),
-        Value::Builtin {
-            name: "sound.play",
-            params: &["handle"],
-            func: sound_play,
-        },
+        Value::from_builtin("sound.play", &["handle"], sound_play),
     );
     // v0.2 session 5: audio v2. Twe's calling convention requires
     // every kwarg to be supplied (no defaults yet), so configurable
@@ -189,31 +165,19 @@ fn install_sound(env: &mut Env) {
     // backend doesn't support it.
     sound.insert(
         "play_at".to_string(),
-        Value::Builtin {
-            name: "sound.play_at",
-            params: &["handle", "volume"],
-            func: sound_play_at,
-        },
+        Value::from_builtin("sound.play_at", &["handle", "volume"], sound_play_at),
     );
     sound.insert(
         "stop".to_string(),
-        Value::Builtin {
-            name: "sound.stop",
-            params: &["handle"],
-            func: sound_stop,
-        },
+        Value::from_builtin("sound.stop", &["handle"], sound_stop),
     );
     sound.insert(
         "set_volume".to_string(),
-        Value::Builtin {
-            name: "sound.set_volume",
-            params: &["handle", "volume"],
-            func: sound_set_volume,
-        },
+        Value::from_builtin("sound.set_volume", &["handle", "volume"], sound_set_volume),
     );
     env.set(
         "sound".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(sound),
             kind: "module",
         }))),
@@ -225,31 +189,19 @@ fn install_sound(env: &mut Env) {
     let mut music = HashMap::new();
     music.insert(
         "play".to_string(),
-        Value::Builtin {
-            name: "music.play",
-            params: &["handle"],
-            func: music_play,
-        },
+        Value::from_builtin("music.play", &["handle"], music_play),
     );
     music.insert(
         "play_at".to_string(),
-        Value::Builtin {
-            name: "music.play_at",
-            params: &["handle", "volume"],
-            func: music_play_at,
-        },
+        Value::from_builtin("music.play_at", &["handle", "volume"], music_play_at),
     );
     music.insert(
         "stop".to_string(),
-        Value::Builtin {
-            name: "music.stop",
-            params: &["handle"],
-            func: sound_stop, // identical underlying op
-        },
+        Value::from_builtin("music.stop", &["handle"], sound_stop),
     );
     env.set(
         "music".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(music),
             kind: "module",
         }))),
@@ -258,8 +210,8 @@ fn install_sound(env: &mut Env) {
 
 fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.load")?;
-    let path = match &args[0] {
-        Value::Str(s) => s.as_ref().clone(),
+    let path = match &args[0].to_legacy() {
+        LegacyValue::Str(s) => s.as_ref().clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -284,8 +236,8 @@ fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     let mut fields = HashMap::new();
-    fields.insert("path".to_string(), Value::Str(Rc::new(path)));
-    Ok(Value::Object(Rc::new(RefCell::new(Object {
+    fields.insert("path".to_string(), Value::from_string(path));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
         fields: legacy_fields_to_tagged(fields),
         kind: "sound",
     }))))
@@ -295,7 +247,7 @@ fn sound_play(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.play")?;
     let path = sound_handle_path(&args[0], "sound.play")?;
     play_sound_path(&path, "sound.play", 1.0, false)?;
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// `sound.play_at(handle, volume)` — one-shot at the given volume.
@@ -305,7 +257,7 @@ fn sound_play_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     let path = sound_handle_path(&args[0], "sound.play_at")?;
     let volume = number(&args[1], "sound.play_at.volume")? as f32;
     play_sound_path(&path, "sound.play_at", volume.clamp(0.0, 1.0), false)?;
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// `sound.stop(handle)` — stop all playing instances of this
@@ -319,7 +271,7 @@ fn sound_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             macroquad::audio::stop_sound(snd);
         }
     });
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// `sound.set_volume(handle, volume)` — adjust volume of any
@@ -333,7 +285,7 @@ fn sound_set_volume(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
             macroquad::audio::set_sound_volume(snd, volume.clamp(0.0, 1.0));
         }
     });
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// `music.play(handle)` — looped play at default volume. Same
@@ -343,7 +295,7 @@ fn music_play(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "music.play")?;
     let path = sound_handle_path(&args[0], "music.play")?;
     play_sound_path(&path, "music.play", 1.0, true)?;
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// `music.play_at(handle, volume)` — looped play at the given
@@ -353,14 +305,14 @@ fn music_play_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     let path = sound_handle_path(&args[0], "music.play_at")?;
     let volume = number(&args[1], "music.play_at.volume")? as f32;
     play_sound_path(&path, "music.play_at", volume.clamp(0.0, 1.0), true)?;
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// Pull the on-disk path out of a sound handle, validating
 /// `kind` and the `path` field. Shared by every audio builtin.
 fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
-    match v {
-        Value::Object(rc) => {
+    match v.to_legacy() {
+        LegacyValue::Object(rc) => {
             let o = rc.borrow();
             if o.kind != "sound" {
                 return Err(RuntimeError {
@@ -373,8 +325,8 @@ fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
                     help: None,
                 });
             }
-            match o.get_field("path") {
-                Some(Value::Str(s)) => Ok(s.as_ref().clone()),
+            match o.get_field("path").to_legacy() {
+                Some(LegacyValue::Str(s)) => Ok(s.as_ref().clone()),
                 _ => Err(RuntimeError {
                     line: 0,
                     col: 0,
@@ -437,10 +389,10 @@ fn install_time(env: &mut Env) {
     // read the live frame delta instead of hardcoding `0.016`. Closes
     // Phase-2 frustration F8.
     let mut fields = HashMap::new();
-    fields.insert("dt".to_string(), Value::Float(0.0));
+    fields.insert("dt".to_string(), Value::from_float(0.0));
     env.set(
         "time".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(fields),
             kind: "module",
         }))),
@@ -451,75 +403,43 @@ fn install_math(env: &mut Env) {
     let mut math = HashMap::new();
     math.insert(
         "abs".to_string(),
-        Value::Builtin {
-            name: "math.abs",
-            params: &["x"],
-            func: math_abs,
-        },
+        Value::from_builtin("math.abs", &["x"], math_abs),
     );
     math.insert(
         "sqrt".to_string(),
-        Value::Builtin {
-            name: "math.sqrt",
-            params: &["x"],
-            func: math_sqrt,
-        },
+        Value::from_builtin("math.sqrt", &["x"], math_sqrt),
     );
     math.insert(
         "floor".to_string(),
-        Value::Builtin {
-            name: "math.floor",
-            params: &["x"],
-            func: math_floor,
-        },
+        Value::from_builtin("math.floor", &["x"], math_floor),
     );
     math.insert(
         "ceil".to_string(),
-        Value::Builtin {
-            name: "math.ceil",
-            params: &["x"],
-            func: math_ceil,
-        },
+        Value::from_builtin("math.ceil", &["x"], math_ceil),
     );
     math.insert(
         "min".to_string(),
-        Value::Builtin {
-            name: "math.min",
-            params: &["a", "b"],
-            func: math_min,
-        },
+        Value::from_builtin("math.min", &["a", "b"], math_min),
     );
     math.insert(
         "max".to_string(),
-        Value::Builtin {
-            name: "math.max",
-            params: &["a", "b"],
-            func: math_max,
-        },
+        Value::from_builtin("math.max", &["a", "b"], math_max),
     );
     math.insert(
         "sin".to_string(),
-        Value::Builtin {
-            name: "math.sin",
-            params: &["x"],
-            func: math_sin,
-        },
+        Value::from_builtin("math.sin", &["x"], math_sin),
     );
     math.insert(
         "cos".to_string(),
-        Value::Builtin {
-            name: "math.cos",
-            params: &["x"],
-            func: math_cos,
-        },
+        Value::from_builtin("math.cos", &["x"], math_cos),
     );
     math.insert(
         "pi".to_string(),
-        Value::Float(std::f64::consts::PI),
+        Value::from_float(std::f64::consts::PI),
     );
     env.set(
         "math".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(math),
             kind: "module",
         }))),
@@ -530,7 +450,7 @@ fn print_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let parts: Vec<String> = args.iter().map(Value::display).collect();
     env.out.push_str(&parts.join(" "));
     env.out.push('\n');
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -540,8 +460,8 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     // constructed after the GL context exists. Path existence is
     // checked here so typos fail fast.
     arity(args, 1, "load")?;
-    let path = match &args[0] {
-        Value::Str(s) => s.as_ref().clone(),
+    let path = match &args[0].to_legacy() {
+        LegacyValue::Str(s) => s.as_ref().clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -563,10 +483,10 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     let mut fields = HashMap::new();
-    fields.insert("path".to_string(), Value::Str(Rc::new(path)));
-    fields.insert("x".to_string(), Value::Int(0));
-    fields.insert("y".to_string(), Value::Int(0));
-    Ok(Value::Object(Rc::new(RefCell::new(Object {
+    fields.insert("path".to_string(), Value::from_string(path));
+    fields.insert("x".to_string(), Value::from_int(0));
+    fields.insert("y".to_string(), Value::from_int(0));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
         fields: legacy_fields_to_tagged(fields),
         kind: "sprite",
     }))))
@@ -578,8 +498,8 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// session 4.
 fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "save_to")?;
-    let path = match &args[0] {
-        Value::Str(s) => s.as_ref().clone(),
+    let path = match &args[0].to_legacy() {
+        LegacyValue::Str(s) => s.as_ref().clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -594,7 +514,7 @@ fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
     crate::save::save_to_path(std::path::Path::new(&path), &args[1])
         .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// `load_from(path)` — read + JSON-parse + decode a saved value.
@@ -602,8 +522,8 @@ fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// 4 — schema enforcement deferred.
 fn load_from_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "load_from")?;
-    let path = match &args[0] {
-        Value::Str(s) => s.as_ref().clone(),
+    let path = match &args[0].to_legacy() {
+        LegacyValue::Str(s) => s.as_ref().clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -638,9 +558,9 @@ fn arity(args: &[Value], expected: usize, name: &str) -> Result<(), RuntimeError
 }
 
 fn as_f64(v: &Value, op: &str) -> Result<f64, RuntimeError> {
-    match v {
-        Value::Int(n) => Ok(*n as f64),
-        Value::Float(f) => Ok(*f),
+    match v.to_legacy() {
+        LegacyValue::Int(n) => Ok(n as f64),
+        LegacyValue::Float(f) => Ok(f),
         other => Err(RuntimeError {
             line: 0,
             col: 0,
@@ -652,9 +572,9 @@ fn as_f64(v: &Value, op: &str) -> Result<f64, RuntimeError> {
 
 fn math_abs(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.abs")?;
-    match &args[0] {
-        Value::Int(n) => Ok(Value::Int(n.abs())),
-        Value::Float(f) => Ok(Value::Float(f.abs())),
+    match &args[0].to_legacy() {
+        LegacyValue::Int(n) => Ok(Value::from_int(n.abs())),
+        LegacyValue::Float(f) => Ok(Value::from_float(f.abs())),
         other => Err(RuntimeError {
             line: 0,
             col: 0,
@@ -675,92 +595,72 @@ fn math_sqrt(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             help: Some("complex numbers ship later; check your input".to_string()),
         });
     }
-    Ok(Value::Float(x.sqrt()))
+    Ok(Value::from_float(x.sqrt()))
 }
 
 fn math_floor(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.floor")?;
     let x = as_f64(&args[0], "math.floor")?;
-    Ok(Value::Int(x.floor() as i64))
+    Ok(Value::from_int(x.floor() as i64))
 }
 
 fn math_ceil(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.ceil")?;
     let x = as_f64(&args[0], "math.ceil")?;
-    Ok(Value::Int(x.ceil() as i64))
+    Ok(Value::from_int(x.ceil() as i64))
 }
 
 fn math_min(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "math.min")?;
-    match (&args[0], &args[1]) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int((*a).min(*b))),
-        (a, b) => {
-            let af = as_f64(a, "math.min")?;
-            let bf = as_f64(b, "math.min")?;
-            Ok(Value::Float(af.min(bf)))
-        }
+    if args[0].is_int_or_boxed_int() && args[1].is_int_or_boxed_int() {
+        return Ok(Value::from_int(args[0].as_int().min(args[1].as_int())));
     }
+    let af = as_f64(&args[0], "math.min")?;
+    let bf = as_f64(&args[1], "math.min")?;
+    Ok(Value::from_float(af.min(bf)))
 }
 
 fn math_max(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "math.max")?;
-    match (&args[0], &args[1]) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int((*a).max(*b))),
-        (a, b) => {
-            let af = as_f64(a, "math.max")?;
-            let bf = as_f64(b, "math.max")?;
-            Ok(Value::Float(af.max(bf)))
-        }
+    if args[0].is_int_or_boxed_int() && args[1].is_int_or_boxed_int() {
+        return Ok(Value::from_int(args[0].as_int().max(args[1].as_int())));
     }
+    let af = as_f64(&args[0], "math.max")?;
+    let bf = as_f64(&args[1], "math.max")?;
+    Ok(Value::from_float(af.max(bf)))
 }
 
 fn math_sin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.sin")?;
-    Ok(Value::Float(as_f64(&args[0], "math.sin")?.sin()))
+    Ok(Value::from_float(as_f64(&args[0], "math.sin")?.sin()))
 }
 
 fn math_cos(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.cos")?;
-    Ok(Value::Float(as_f64(&args[0], "math.cos")?.cos()))
+    Ok(Value::from_float(as_f64(&args[0], "math.cos")?.cos()))
 }
 
 fn install_random(env: &mut Env) {
     let mut random = HashMap::new();
     random.insert(
         "int".to_string(),
-        Value::Builtin {
-            name: "random.int",
-            params: &["range"],
-            func: random_int,
-        },
+        Value::from_builtin("random.int", &["range"], random_int),
     );
     random.insert(
         "float".to_string(),
-        Value::Builtin {
-            name: "random.float",
-            params: &[],
-            func: random_float,
-        },
+        Value::from_builtin("random.float", &[], random_float),
     );
     random.insert(
         "choice".to_string(),
-        Value::Builtin {
-            name: "random.choice",
-            params: &["list"],
-            func: random_choice,
-        },
+        Value::from_builtin("random.choice", &["list"], random_choice),
     );
     random.insert(
         "seed".to_string(),
-        Value::Builtin {
-            name: "random.seed",
-            params: &["seed"],
-            func: random_seed,
-        },
+        Value::from_builtin("random.seed", &["seed"], random_seed),
     );
     env.set(
         "random".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(random),
             kind: "module",
         }))),
@@ -769,19 +669,18 @@ fn install_random(env: &mut Env) {
 
 fn random_int(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "random.int")?;
-    let (start, end, exclusive) = match &args[0] {
-        Value::Range { start, end, exclusive } => (*start, *end, *exclusive),
-        other => {
-            return Err(RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!(
-                    "random.int expected a range, got {}",
-                    other.type_name()
-                ),
-                help: Some("e.g. `random.int(1..6)` rolls a six-sided die".to_string()),
-            });
-        }
+    let (start, end, exclusive) = if args[0].is_range() {
+        args[0].as_range()
+    } else {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "random.int expected a range, got {}",
+                args[0].type_name()
+            ),
+            help: Some("e.g. `random.int(1..6)` rolls a six-sided die".to_string()),
+        });
     };
     let upper = if exclusive { end } else { end + 1 };
     if upper <= start {
@@ -794,7 +693,7 @@ fn random_int(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     }
     let n = env.next_random_u64();
     let span = (upper - start) as u64;
-    Ok(Value::Int(start + (n % span) as i64))
+    Ok(Value::from_int(start + (n % span) as i64))
 }
 
 fn random_float(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -802,13 +701,13 @@ fn random_float(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     // 53 bits of randomness mapped to [0.0, 1.0).
     let n = env.next_random_u64() >> 11;
     let f = n as f64 * (1.0 / ((1u64 << 53) as f64));
-    Ok(Value::Float(f))
+    Ok(Value::from_float(f))
 }
 
 fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "random.choice")?;
-    match &args[0] {
-        Value::List(rc) => {
+    match &args[0].to_legacy() {
+        LegacyValue::List(rc) => {
             let v = rc.borrow();
             if v.is_empty() {
                 return Err(RuntimeError {
@@ -835,10 +734,10 @@ fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "random.seed")?;
-    match &args[0] {
-        Value::Int(n) => {
-            env.seed_rng(*n as u64);
-            Ok(Value::Nil)
+    match args[0].to_legacy() {
+        LegacyValue::Int(n) => {
+            env.seed_rng(n as u64);
+            Ok(Value::NIL)
         }
         other => Err(RuntimeError {
             line: 0,
@@ -869,17 +768,17 @@ fn install_color(env: &mut Env) {
     for (name, r, g, b, a) in palette {
         fields.insert(
             (*name).to_string(),
-            Value::Tuple(Rc::new(vec![
-                Value::Float(*r),
-                Value::Float(*g),
-                Value::Float(*b),
-                Value::Float(*a),
+            Value::from_tuple(Rc::new(vec![
+                Value::from_float(*r),
+                Value::from_float(*g),
+                Value::from_float(*b),
+                Value::from_float(*a),
             ])),
         );
     }
     env.set(
         "color".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(fields),
             kind: "module",
         }))),
@@ -891,15 +790,15 @@ fn install_screen(env: &mut Env) {
     let mut fields = HashMap::new();
     fields.insert(
         "size".to_string(),
-        Value::Tuple(Rc::new(vec![Value::Float(640.0), Value::Float(480.0)])),
+        Value::from_tuple(Rc::new(vec![Value::from_float(640.0), Value::from_float(480.0)])),
     );
     fields.insert(
         "center".to_string(),
-        Value::Tuple(Rc::new(vec![Value::Float(320.0), Value::Float(240.0)])),
+        Value::from_tuple(Rc::new(vec![Value::from_float(320.0), Value::from_float(240.0)])),
     );
     env.set(
         "screen".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(fields),
             kind: "module",
         }))),
@@ -914,35 +813,19 @@ fn install_tilemap(env: &mut Env) {
     // queries today.
     env.set(
         "tilemap".to_string(),
-        Value::Builtin {
-            name: "tilemap",
-            params: &["layout", "tile_size", "tiles"],
-            func: tilemap_build,
-        },
+        Value::from_builtin("tilemap", &["layout", "tile_size", "tiles"], tilemap_build),
     );
     env.set(
         "tilemap_render".to_string(),
-        Value::Builtin {
-            name: "tilemap_render",
-            params: &["map", "at"],
-            func: tilemap_render,
-        },
+        Value::from_builtin("tilemap_render", &["map", "at"], tilemap_render),
     );
     env.set(
         "tilemap_at".to_string(),
-        Value::Builtin {
-            name: "tilemap_at",
-            params: &["map", "x", "y"],
-            func: tilemap_at,
-        },
+        Value::from_builtin("tilemap_at", &["map", "x", "y"], tilemap_at),
     );
     env.set(
         "tilemap_solid_at".to_string(),
-        Value::Builtin {
-            name: "tilemap_solid_at",
-            params: &["map", "x", "y"],
-            func: tilemap_solid_at,
-        },
+        Value::from_builtin("tilemap_solid_at", &["map", "x", "y"], tilemap_solid_at),
     );
 }
 
@@ -973,8 +856,8 @@ fn install_tilemap(env: &mut Env) {
 /// v0.2 session 6.
 fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "tilemap")?;
-    let layout = match &args[0] {
-        Value::Str(s) => (**s).clone(),
+    let layout = match &args[0].to_legacy() {
+        LegacyValue::Str(s) => (*s).clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -1001,8 +884,8 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 
     // Parse the `tiles` list into a char → spec map. Each entry
     // is a tuple `(char_str, name_str, traits_list)`.
-    let tiles_arg = match &args[2] {
-        Value::List(rc) => rc.clone(),
+    let tiles_arg = match &args[2].to_legacy() {
+        LegacyValue::List(rc) => rc.clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -1018,8 +901,8 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     let mut by_char: HashMap<char, (String, Vec<String>)> = HashMap::new();
     let mut tile_specs_field: HashMap<String, Value> = HashMap::new();
     for (i, entry) in tiles_arg.borrow().iter().enumerate() {
-        let elems = match entry {
-            Value::Tuple(elems) => elems.clone(),
+        let elems = match entry.to_legacy() {
+            LegacyValue::Tuple(elems) => elems.clone(),
             _ => {
                 return Err(RuntimeError {
                     line: 0,
@@ -1044,9 +927,9 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 help: None,
             });
         }
-        let ch_str = match &elems[0] {
-            Value::Str(s) if s.chars().count() == 1 => s.chars().next().unwrap(),
-            Value::Str(_) => {
+        let ch_str = match &elems[0].to_legacy() {
+            LegacyValue::Str(s) if s.chars().count() == 1 => s.chars().next().unwrap(),
+            LegacyValue::Str(_) => {
                 return Err(RuntimeError {
                     line: 0,
                     col: 0,
@@ -1066,8 +949,8 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 });
             }
         };
-        let name = match &elems[1] {
-            Value::Str(s) => (**s).clone(),
+        let name: String = match elems[1].to_legacy() {
+            LegacyValue::Str(s) => (*s).clone(),
             other => {
                 return Err(RuntimeError {
                     line: 0,
@@ -1080,13 +963,13 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 });
             }
         };
-        let traits = match &elems[2] {
-            Value::List(rc) => {
+        let traits: Vec<String> = match elems[2].to_legacy() {
+            LegacyValue::List(rc) => {
                 let v = rc.borrow();
-                let mut out = Vec::with_capacity(v.len());
+                let mut out: Vec<String> = Vec::with_capacity(v.len());
                 for (j, t) in v.iter().enumerate() {
-                    match t {
-                        Value::Str(s) => out.push((**s).clone()),
+                    match t.to_legacy() {
+                        LegacyValue::Str(s) => out.push((*s).clone()),
                         other => {
                             return Err(RuntimeError {
                                 line: 0,
@@ -1102,7 +985,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 }
                 out
             }
-            Value::Nil => Vec::new(),
+            LegacyValue::Nil => Vec::new(),
             other => {
                 return Err(RuntimeError {
                     line: 0,
@@ -1120,18 +1003,18 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
         // Also expose the spec as a Twe-readable Object on the
         // tilemap's `tiles` field, keyed by name.
         let mut spec_fields = HashMap::new();
-        spec_fields.insert("name".to_string(), Value::Str(Rc::new(name.clone())));
+        spec_fields.insert("name".to_string(), Value::from_string(name.clone()));
         let trait_values: Vec<Value> = traits
             .iter()
-            .map(|t| Value::Str(Rc::new(t.clone())))
+            .map(|t| Value::from_string(t.clone()))
             .collect();
         spec_fields.insert(
             "traits".to_string(),
-            Value::List(Rc::new(RefCell::new(trait_values))),
+            Value::from_list(Rc::new(RefCell::new(trait_values))),
         );
         tile_specs_field.insert(
             name,
-            Value::Object(Rc::new(RefCell::new(Object {
+            Value::from_object(Rc::new(RefCell::new(Object {
                 fields: legacy_fields_to_tagged(spec_fields),
                 kind: "tile_spec",
             }))),
@@ -1161,28 +1044,28 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 .get(&ch)
                 .map(|(n, _)| n.clone())
                 .unwrap_or_default();
-            row.push(Value::Str(Rc::new(name)));
+            row.push(Value::from_string(name));
         }
-        cells.push(Value::List(Rc::new(RefCell::new(row))));
+        cells.push(Value::from_list(Rc::new(RefCell::new(row))));
     }
 
     let mut fields = HashMap::new();
-    fields.insert("layout".to_string(), Value::Str(Rc::new(layout)));
-    fields.insert("tile_size".to_string(), Value::Int(tile_size));
-    fields.insert("width".to_string(), Value::Int(width as i64));
-    fields.insert("height".to_string(), Value::Int(height as i64));
+    fields.insert("layout".to_string(), Value::from_string((*layout).clone()));
+    fields.insert("tile_size".to_string(), Value::from_int(tile_size));
+    fields.insert("width".to_string(), Value::from_int(width as i64));
+    fields.insert("height".to_string(), Value::from_int(height as i64));
     fields.insert(
         "cells".to_string(),
-        Value::List(Rc::new(RefCell::new(cells))),
+        Value::from_list(Rc::new(RefCell::new(cells))),
     );
     fields.insert(
         "tiles".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(tile_specs_field),
             kind: "tile_specs",
         }))),
     );
-    Ok(Value::Object(Rc::new(RefCell::new(Object {
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
         fields: legacy_fields_to_tagged(fields),
         kind: "tilemap",
     }))))
@@ -1197,8 +1080,8 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     require_render(env, "tilemap_render")?;
     arity(args, 2, "tilemap_render")?;
     let map = expect_tilemap(&args[0], "tilemap_render.map")?;
-    let (origin_x, origin_y) = match &args[1] {
-        Value::Tuple(elems) if elems.len() == 2 => {
+    let (origin_x, origin_y) = match &args[1].to_legacy() {
+        LegacyValue::Tuple(elems) if elems.len() == 2 => {
             let x = number(&elems[0], "tilemap_render.at.x")? as f32;
             let y = number(&elems[1], "tilemap_render.at.y")? as f32;
             (x, y)
@@ -1216,36 +1099,37 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
         }
     };
     let m = map.borrow();
-    let tile_size = match m.get_field("tile_size") {
-        Some(Value::Int(n)) => n as f32,
+    let tile_size = match m.get_field("tile_size").to_legacy() {
+        Some(LegacyValue::Int(n)) => n as f32,
         _ => return Err(tilemap_internal_error("tile_size")),
     };
     let cells_value = m.get_field("cells");
     let tiles_value = m.get_field("tiles");
     drop(m);
 
-    let cells_rc = match cells_value {
-        Some(Value::List(rc)) => rc,
+    let cells_rc = match cells_value.to_legacy() {
+        Some(LegacyValue::List(rc)) => rc,
         _ => return Err(tilemap_internal_error("cells")),
     };
-    let tile_specs_rc = match tiles_value {
-        Some(Value::Object(rc)) => rc,
+    let tile_specs_rc = match tiles_value.to_legacy() {
+        Some(LegacyValue::Object(rc)) => rc,
         _ => return Err(tilemap_internal_error("tiles")),
     };
 
     let cells = cells_rc.borrow();
     let tile_specs = tile_specs_rc.borrow();
     for (row_idx, row_value) in cells.iter().enumerate() {
-        let row_rc = match row_value {
-            Value::List(rc) => rc,
+        let row_rc = match row_value.to_legacy() {
+            LegacyValue::List(rc) => rc,
             _ => continue,
         };
         let row = row_rc.borrow();
         for (col_idx, cell) in row.iter().enumerate() {
-            let name = match cell {
-                Value::Str(s) => s.as_str(),
+            let name_string: String = match cell.to_legacy() {
+                LegacyValue::Str(s) => (*s).clone(),
                 _ => continue,
             };
+            let name = name_string.as_str();
             if name.is_empty() {
                 continue;
             }
@@ -1255,7 +1139,7 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             push_rect(env, tx, ty, tile_size, color);
         }
     }
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// Fixed palette per trait. Keeps v0.2 dependency-free; Phase 9
@@ -1267,19 +1151,19 @@ fn trait_color(
     let traits = tile_specs
         .get(tile_name)
         .and_then(|v| match v.clone().to_legacy() {
-            Value::Object(rc) => Some(rc),
+            LegacyValue::Object(rc) => Some(rc),
             _ => None,
         })
-        .and_then(|rc| match rc.borrow().get_field("traits") {
-            Some(Value::List(list_rc)) => Some(list_rc.clone()),
+        .and_then(|rc| match rc.borrow().get_field("traits").to_legacy() {
+            Some(LegacyValue::List(list_rc)) => Some(list_rc.clone()),
             _ => None,
         });
     let traits_vec: Vec<String> = match traits {
         Some(rc) => rc
             .borrow()
             .iter()
-            .filter_map(|v| match v {
-                Value::Str(s) => Some((**s).clone()),
+            .filter_map(|v| match v.to_legacy() {
+                LegacyValue::Str(s) => Some((*s).clone()),
                 _ => None,
             })
             .collect(),
@@ -1308,16 +1192,16 @@ fn push_rect(env: &mut Env, x: f32, y: f32, size: f32, color: [f32; 4]) {
     // for v0.2 minimum we go through the same `rect` builtin to
     // reuse its existing pipe. Build the args inline.
     let args = vec![
-        Value::Tuple(Rc::new(vec![Value::Float(x as f64), Value::Float(y as f64)])),
-        Value::Tuple(Rc::new(vec![
-            Value::Float(size as f64),
-            Value::Float(size as f64),
+        Value::from_tuple(Rc::new(vec![Value::from_float(x as f64), Value::from_float(y as f64)])),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(size as f64),
+            Value::from_float(size as f64),
         ])),
-        Value::Tuple(Rc::new(vec![
-            Value::Float(color[0] as f64),
-            Value::Float(color[1] as f64),
-            Value::Float(color[2] as f64),
-            Value::Float(color[3] as f64),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(color[0] as f64),
+            Value::from_float(color[1] as f64),
+            Value::from_float(color[2] as f64),
+            Value::from_float(color[3] as f64),
         ])),
     ];
     let _ = draw_rect(env, &args);
@@ -1332,7 +1216,7 @@ fn tilemap_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let x = number(&args[1], "tilemap_at.x")? as f32;
     let y = number(&args[2], "tilemap_at.y")? as f32;
     let name = tilemap_name_at(&map, x, y);
-    Ok(Value::Str(Rc::new(name)))
+    Ok(Value::from_string(name))
 }
 
 /// `tilemap_solid_at(map, x, y)` — true if the tile at pixel
@@ -1345,37 +1229,37 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let y = number(&args[2], "tilemap_solid_at.y")? as f32;
     let name = tilemap_name_at(&map, x, y);
     if name.is_empty() {
-        return Ok(Value::Bool(false));
+        return Ok(Value::FALSE);
     }
-    let tile_specs = match map.borrow().get_field("tiles") {
-        Some(Value::Object(rc)) => rc,
-        _ => return Ok(Value::Bool(false)),
+    let tile_specs = match map.borrow().get_field("tiles").to_legacy() {
+        Some(LegacyValue::Object(rc)) => rc,
+        _ => return Ok(Value::FALSE),
     };
     let specs = tile_specs.borrow();
     let solid = specs
         .get_field(&name)
-        .and_then(|v| match v {
-            Value::Object(rc) => Some(rc),
+        .and_then(|v| match v.to_legacy() {
+            LegacyValue::Object(rc) => Some(rc),
             _ => None,
         })
-        .and_then(|rc| match rc.borrow().get_field("traits") {
-            Some(Value::List(list_rc)) => Some(list_rc.clone()),
+        .and_then(|rc| match rc.borrow().get_field("traits").to_legacy() {
+            Some(LegacyValue::List(list_rc)) => Some(list_rc.clone()),
             _ => None,
         })
         .map(|rc| {
-            rc.borrow().iter().any(|v| match v {
-                Value::Str(s) => &**s == "solid",
+            rc.borrow().iter().any(|v| match v.to_legacy() {
+                LegacyValue::Str(s) => &**s == "solid",
                 _ => false,
             })
         })
         .unwrap_or(false);
-    Ok(Value::Bool(solid))
+    Ok(Value::from_bool(solid))
 }
 
 fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     let m = map.borrow();
-    let tile_size = match m.get_field("tile_size") {
-        Some(Value::Int(n)) => n as f32,
+    let tile_size = match m.get_field("tile_size").to_legacy() {
+        Some(LegacyValue::Int(n)) => n as f32,
         _ => return String::new(),
     };
     if tile_size <= 0.0 {
@@ -1386,8 +1270,8 @@ fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     if col < 0 || row < 0 {
         return String::new();
     }
-    let cells = match m.get_field("cells") {
-        Some(Value::List(rc)) => rc.clone(),
+    let cells = match m.get_field("cells").to_legacy() {
+        Some(LegacyValue::List(rc)) => rc.clone(),
         _ => return String::new(),
     };
     let cells = cells.borrow();
@@ -1395,8 +1279,8 @@ fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     if row_idx >= cells.len() {
         return String::new();
     }
-    let row_rc = match &cells[row_idx] {
-        Value::List(rc) => rc.clone(),
+    let row_rc = match &cells[row_idx].to_legacy() {
+        LegacyValue::List(rc) => rc.clone(),
         _ => return String::new(),
     };
     let row = row_rc.borrow();
@@ -1404,15 +1288,15 @@ fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     if col_idx >= row.len() {
         return String::new();
     }
-    match &row[col_idx] {
-        Value::Str(s) => (**s).clone(),
+    match row[col_idx].to_legacy() {
+        LegacyValue::Str(s) => (*s).clone(),
         _ => String::new(),
     }
 }
 
 fn expect_tilemap(v: &Value, what: &str) -> Result<Rc<RefCell<Object>>, RuntimeError> {
-    match v {
-        Value::Object(rc) if rc.borrow().kind == "tilemap" => Ok(rc.clone()),
+    match v.to_legacy() {
+        LegacyValue::Object(rc) if rc.borrow().kind == "tilemap" => Ok(rc.clone()),
         other => Err(RuntimeError {
             line: 0,
             col: 0,
@@ -1439,46 +1323,26 @@ fn tilemap_internal_error(field: &str) -> RuntimeError {
 fn install_draw(env: &mut Env) {
     env.set(
         "rect".to_string(),
-        Value::Builtin {
-            name: "rect",
-            params: &["at", "size", "color"],
-            func: draw_rect,
-        },
+        Value::from_builtin("rect", &["at", "size", "color"], draw_rect),
     );
     env.set(
         "circle".to_string(),
-        Value::Builtin {
-            name: "circle",
-            params: &["at", "radius", "color"],
-            func: draw_circle,
-        },
+        Value::from_builtin("circle", &["at", "radius", "color"], draw_circle),
     );
     env.set(
         "line".to_string(),
-        Value::Builtin {
-            name: "line",
-            params: &["from", "to", "width", "color"],
-            func: draw_line,
-        },
+        Value::from_builtin("line", &["from", "to", "width", "color"], draw_line),
     );
     env.set(
         "text".to_string(),
-        Value::Builtin {
-            name: "text",
-            params: &["content", "at", "size", "color"],
-            func: draw_text,
-        },
+        Value::from_builtin("text", &["content", "at", "size", "color"], draw_text),
     );
     // sprite() is variadic-style — 2 or 3 positional args, no kwargs in v0.1.
     // Add named-param support when the optional `size` slot has a clean
     // representation in bind_kwargs.
     env.set(
         "sprite".to_string(),
-        Value::Builtin {
-            name: "sprite",
-            params: &[],
-            func: draw_sprite,
-        },
+        Value::from_builtin("sprite", &[], draw_sprite),
     );
 }
 
@@ -1495,8 +1359,8 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             help: None,
         });
     }
-    let path = match &args[0] {
-        Value::Object(rc) => {
+    let path = match &args[0].to_legacy() {
+        LegacyValue::Object(rc) => {
             let o = rc.borrow();
             if o.kind != "sprite" {
                 return Err(RuntimeError {
@@ -1509,8 +1373,8 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                     help: None,
                 });
             }
-            match o.get_field("path") {
-                Some(Value::Str(s)) => s.as_ref().clone(),
+            match o.get_field("path").to_legacy() {
+                Some(LegacyValue::Str(s)) => s.as_ref().clone(),
                 _ => {
                     return Err(RuntimeError {
                         line: 0,
@@ -1577,7 +1441,7 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         }
         Ok(())
     })?;
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
@@ -1597,8 +1461,8 @@ fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
 }
 
 fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
-    match v {
-        Value::Tuple(elems) if elems.len() >= 2 => {
+    match v.to_legacy() {
+        LegacyValue::Tuple(elems) if elems.len() >= 2 => {
             Ok((number(&elems[0], what)?, number(&elems[1], what)?))
         }
         other => Err(RuntimeError {
@@ -1614,8 +1478,8 @@ fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
 }
 
 fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeError> {
-    match v {
-        Value::Tuple(elems) if elems.len() >= 3 => {
+    match v.to_legacy() {
+        LegacyValue::Tuple(elems) if elems.len() >= 3 => {
             let r = number(&elems[0], what)? as f32;
             let g = number(&elems[1], what)? as f32;
             let b = number(&elems[2], what)? as f32;
@@ -1636,10 +1500,10 @@ fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeErr
 }
 
 fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
-    match v {
-        Value::Int(n) => Ok(*n as f64),
-        Value::Float(f) => Ok(*f),
-        Value::Quantity { value, .. } => Ok(*value),
+    match v.to_legacy() {
+        LegacyValue::Int(n) => Ok(n as f64),
+        LegacyValue::Float(f) => Ok(f),
+        LegacyValue::Quantity { value, .. } => Ok(value),
         other => Err(RuntimeError {
             line: 0,
             col: 0,
@@ -1656,7 +1520,7 @@ fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (w, h) = xy_of(&args[1], "rect.size")?;
     let color = color_of(&args[2], "rect.color")?;
     macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, color);
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1666,7 +1530,7 @@ fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let radius = number(&args[1], "circle.radius")? as f32;
     let color = color_of(&args[2], "circle.color")?;
     macroquad::shapes::draw_circle(x as f32, y as f32, radius, color);
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1679,30 +1543,22 @@ fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     macroquad::shapes::draw_line(
         x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color,
     );
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 fn install_entities(env: &mut Env) {
     let mut entities = HashMap::new();
     entities.insert(
         "of".to_string(),
-        Value::Builtin {
-            name: "entities.of",
-            params: &["class"],
-            func: entities_of,
-        },
+        Value::from_builtin("entities.of", &["class"], entities_of),
     );
     entities.insert(
         "count".to_string(),
-        Value::Builtin {
-            name: "entities.count",
-            params: &["class"],
-            func: entities_count,
-        },
+        Value::from_builtin("entities.count", &["class"], entities_count),
     );
     env.set(
         "entities".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(entities),
             kind: "module",
         }))),
@@ -1711,8 +1567,8 @@ fn install_entities(env: &mut Env) {
 
 fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "entities.of")?;
-    let class = match &args[0] {
-        Value::Class(c) => c.clone(),
+    let class = match &args[0].to_legacy() {
+        LegacyValue::Class(c) => c.clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -1735,16 +1591,16 @@ fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         }
         if Rc::ptr_eq(&borrowed.class, &class) {
             drop(borrowed);
-            result.push(Value::Instance(inst.clone()));
+            result.push(Value::from_instance(inst.clone()));
         }
     }
-    Ok(Value::List(Rc::new(RefCell::new(result))))
+    Ok(Value::from_list(Rc::new(RefCell::new(result))))
 }
 
 fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "entities.count")?;
-    let class = match &args[0] {
-        Value::Class(c) => c.clone(),
+    let class = match &args[0].to_legacy() {
+        LegacyValue::Class(c) => c.clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -1767,21 +1623,21 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             n += 1;
         }
     }
-    Ok(Value::Int(n))
+    Ok(Value::from_int(n))
 }
 
 fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     require_render(env, "text")?;
     arity(args, 4, "text")?;
-    let content = match &args[0] {
-        Value::Str(s) => s.as_ref().clone(),
+    let content = match &args[0].to_legacy() {
+        LegacyValue::Str(s) => s.as_ref().clone(),
         other => other.display(),
     };
     let (x, y) = xy_of(&args[1], "text.at")?;
     let size = number(&args[2], "text.size")? as f32;
     let color = color_of(&args[3], "text.color")?;
     macroquad::text::draw_text(&content, x as f32, y as f32, size, color);
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 // --- Phase 5 task 5 sessions (d) + (e): 3D rendering surface ---
@@ -1795,11 +1651,7 @@ fn install_3d(env: &mut Env) {
     //   `cube(at: vec3(0, 1, 0), …)`
     env.set(
         "vec3".to_string(),
-        Value::Builtin {
-            name: "vec3",
-            params: &["x", "y", "z"],
-            func: vec3_impl,
-        },
+        Value::from_builtin("vec3", &["x", "y", "z"], vec3_impl),
     );
 
     // `cube(at: vec3, color: (r, g, b, a), size: float)` — queues a
@@ -1807,11 +1659,7 @@ fn install_3d(env: &mut Env) {
     // Only valid inside `on render():` (require_render guards).
     env.set(
         "cube".to_string(),
-        Value::Builtin {
-            name: "cube",
-            params: &["at", "color", "size"],
-            func: cube_impl,
-        },
+        Value::from_builtin("cube", &["at", "color", "size"], cube_impl),
     );
 
     // `sphere(at: vec3, color: (r, g, b, a), size: float)` — same
@@ -1819,11 +1667,7 @@ fn install_3d(env: &mut Env) {
     // first v0.2 carry-over to actually ship in v0.1).
     env.set(
         "sphere".to_string(),
-        Value::Builtin {
-            name: "sphere",
-            params: &["at", "color", "size"],
-            func: sphere_impl,
-        },
+        Value::from_builtin("sphere", &["at", "color", "size"], sphere_impl),
     );
 
     // `mesh(path: string, at: vec3, color: (r, g, b, a), size: float)`
@@ -1833,11 +1677,7 @@ fn install_3d(env: &mut Env) {
     // and node transforms are a follow-on. v0.2 session 1.
     env.set(
         "mesh".to_string(),
-        Value::Builtin {
-            name: "mesh",
-            params: &["path", "at", "color", "size"],
-            func: mesh_impl,
-        },
+        Value::from_builtin("mesh", &["path", "at", "color", "size"], mesh_impl),
     );
 
     // `camera` ambient — eye / target / up are mutable Tuple fields
@@ -1846,31 +1686,31 @@ fn install_3d(env: &mut Env) {
     let mut fields = HashMap::new();
     fields.insert(
         "eye".to_string(),
-        Value::Tuple(Rc::new(vec![
-            Value::Float(0.0),
-            Value::Float(1.5),
-            Value::Float(3.0),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(1.5),
+            Value::from_float(3.0),
         ])),
     );
     fields.insert(
         "target".to_string(),
-        Value::Tuple(Rc::new(vec![
-            Value::Float(0.0),
-            Value::Float(0.0),
-            Value::Float(0.0),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(0.0),
+            Value::from_float(0.0),
         ])),
     );
     fields.insert(
         "up".to_string(),
-        Value::Tuple(Rc::new(vec![
-            Value::Float(0.0),
-            Value::Float(1.0),
-            Value::Float(0.0),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(1.0),
+            Value::from_float(0.0),
         ])),
     );
     env.set(
         "camera".to_string(),
-        Value::Object(Rc::new(RefCell::new(Object {
+        Value::from_object(Rc::new(RefCell::new(Object {
             fields: legacy_fields_to_tagged(fields),
             kind: "camera",
         }))),
@@ -1882,10 +1722,10 @@ fn vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let x = number(&args[0], "vec3.x")?;
     let y = number(&args[1], "vec3.y")?;
     let z = number(&args[2], "vec3.z")?;
-    Ok(Value::Tuple(Rc::new(vec![
-        Value::Float(x),
-        Value::Float(y),
-        Value::Float(z),
+    Ok(Value::from_tuple(Rc::new(vec![
+        Value::from_float(x),
+        Value::from_float(y),
+        Value::from_float(z),
     ])))
 }
 
@@ -1901,7 +1741,7 @@ fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         color,
         size,
     });
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1916,14 +1756,14 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         color,
         size,
     });
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     require_render(env, "mesh")?;
     arity(args, 4, "mesh")?;
-    let path = match &args[0] {
-        Value::Str(s) => s.clone(),
+    let path = match &args[0].to_legacy() {
+        LegacyValue::Str(s) => s.clone(),
         other => {
             return Err(RuntimeError {
                 line: 0,
@@ -1946,14 +1786,14 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         color,
         size,
     });
-    Ok(Value::Nil)
+    Ok(Value::NIL)
 }
 
 /// Pull a 3-component float vector out of a Twe tuple. Used by the
 /// 3D builtins. Mirrors `xy_of` but for the third axis.
 fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
-    match v {
-        Value::Tuple(elems) if elems.len() == 3 => Ok([
+    match v.to_legacy() {
+        LegacyValue::Tuple(elems) if elems.len() == 3 => Ok([
             number(&elems[0], what)? as f32,
             number(&elems[1], what)? as f32,
             number(&elems[2], what)? as f32,
@@ -1972,8 +1812,8 @@ fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
 
 /// Pull an RGBA float quartet out of a Twe tuple.
 fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
-    match v {
-        Value::Tuple(elems) if elems.len() == 4 => Ok([
+    match v.to_legacy() {
+        LegacyValue::Tuple(elems) if elems.len() == 4 => Ok([
             number(&elems[0], what)? as f32,
             number(&elems[1], what)? as f32,
             number(&elems[2], what)? as f32,

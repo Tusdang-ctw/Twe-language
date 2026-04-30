@@ -20,7 +20,7 @@ use std::time::SystemTime;
 
 use macroquad::prelude::*;
 
-use crate::value::{Env, Object, Value};
+use crate::value::{Env, Object, Value, LegacyValue, ToLegacyShim};
 
 const KEYS: &[(&str, KeyCode)] = &[
     ("right", KeyCode::Right),
@@ -230,32 +230,32 @@ fn flush_vm_output(vm: &mut crate::vm::VM) {
 /// stdlib installs, so writes via `.borrow_mut()` here reach the
 /// running scene/state code through their globals.
 fn update_vm_input(vm: &crate::vm::VM) {
-    if let Some(Value::Object(rc)) = vm.get_global("key") {
+    if let Some(LegacyValue::Object(rc)) = vm.get_global("key").to_legacy() {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.insert_field(*name, Value::Bool(is_key_down(*code)));
+            o.insert_field(*name, Value::from_bool(is_key_down(*code)));
         }
     }
-    if let Some(Value::Object(rc)) = vm.get_global("key_press") {
+    if let Some(LegacyValue::Object(rc)) = vm.get_global("key_press").to_legacy() {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.insert_field(*name, Value::Bool(is_key_pressed(*code)));
+            o.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
         }
     }
     write_mouse_object(vm.get_global("mouse"));
     write_mouse_buttons(vm.get_global("mouse_held"), is_mouse_button_down);
     write_mouse_buttons(vm.get_global("mouse_press"), is_mouse_button_pressed);
-    if let Some(Value::Object(rc)) = vm.get_global("screen") {
+    if let Some(LegacyValue::Object(rc)) = vm.get_global("screen").to_legacy() {
         let mut o = rc.borrow_mut();
         let w = screen_width() as f64;
         let h = screen_height() as f64;
         o.insert_field(
             "size".to_string(),
-            Value::Tuple(Rc::new(vec![Value::Float(w), Value::Float(h)])),
+            Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
         );
         o.insert_field(
             "center".to_string(),
-            Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
+            Value::from_tuple(Rc::new(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)])),
         );
     }
 }
@@ -263,23 +263,25 @@ fn update_vm_input(vm: &crate::vm::VM) {
 /// Write current mouse position + accumulated wheel delta into the
 /// `mouse` ambient. v0.2 session 3.
 fn write_mouse_object(mouse: Option<Value>) {
-    let Some(Value::Object(rc)) = mouse else { return; };
+    let Some(t) = mouse else { return; };
+    if !t.is_object() { return; }
+    let rc = t.as_object();
     let (mx, my) = mouse_position();
     let (_wx, wy) = mouse_wheel();
     let mut o = rc.borrow_mut();
-    o.insert_field("x", Value::Float(mx as f64));
-    o.insert_field("y", Value::Float(my as f64));
+    o.insert_field("x", Value::from_float(mx as f64));
+    o.insert_field("y", Value::from_float(my as f64));
     o.insert_field(
         "pos",
-        Value::Tuple(Rc::new(vec![
-            Value::Float(mx as f64),
-            Value::Float(my as f64),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(mx as f64),
+            Value::from_float(my as f64),
         ])),
     );
     // y-axis wheel delta is the canonical "scroll" reading; macroquad
     // resets `mouse_wheel()` between frames so the value here is the
     // accumulated delta this frame.
-    o.insert_field("wheel", Value::Float(wy as f64));
+    o.insert_field("wheel", Value::from_float(wy as f64));
 }
 
 /// Write per-button state into `mouse_held` or `mouse_press`. The
@@ -287,10 +289,12 @@ fn write_mouse_object(mouse: Option<Value>) {
 /// for `mouse_held`, `is_mouse_button_pressed` for edge-triggered
 /// `mouse_press`). v0.2 session 3.
 fn write_mouse_buttons(target: Option<Value>, mut pred: impl FnMut(MouseButton) -> bool) {
-    let Some(Value::Object(rc)) = target else { return; };
+    let Some(t) = target else { return; };
+    if !t.is_object() { return; }
+    let rc = t.as_object();
     let mut o = rc.borrow_mut();
     for (name, btn) in MOUSE_BUTTONS {
-        o.insert_field((*name).to_string(), Value::Bool(pred(*btn)));
+        o.insert_field((*name).to_string(), Value::from_bool(pred(*btn)));
     }
 }
 
@@ -339,16 +343,16 @@ fn flush_output(env: &mut Env) {
 }
 
 fn update_key_state(env: &mut Env) {
-    if let Some(Value::Object(rc)) = env.get("key") {
+    if let Some(LegacyValue::Object(rc)) = env.get("key").to_legacy() {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.insert_field(*name, Value::Bool(is_key_down(*code)));
+            o.insert_field(*name, Value::from_bool(is_key_down(*code)));
         }
     }
-    if let Some(Value::Object(rc)) = env.get("key_press") {
+    if let Some(LegacyValue::Object(rc)) = env.get("key_press").to_legacy() {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.insert_field(*name, Value::Bool(is_key_pressed(*code)));
+            o.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
         }
     } else {
         // Lazily install key_press as a sibling object next to key. The
@@ -359,24 +363,24 @@ fn update_key_state(env: &mut Env) {
             kind: "input",
         };
         for (name, code) in KEYS {
-            press.insert_field(*name, Value::Bool(is_key_pressed(*code)));
+            press.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
         }
         env.set(
             "key_press".to_string(),
-            Value::Object(Rc::new(RefCell::new(press))),
+            Value::from_object(Rc::new(RefCell::new(press))),
         );
     }
-    if let Some(Value::Object(rc)) = env.get("screen") {
+    if let Some(LegacyValue::Object(rc)) = env.get("screen").to_legacy() {
         let mut o = rc.borrow_mut();
         let w = screen_width() as f64;
         let h = screen_height() as f64;
         o.insert_field(
             "size".to_string(),
-            Value::Tuple(Rc::new(vec![Value::Float(w), Value::Float(h)])),
+            Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
         );
         o.insert_field(
             "center".to_string(),
-            Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
+            Value::from_tuple(Rc::new(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)])),
         );
     }
     write_mouse_object(env.get("mouse"));

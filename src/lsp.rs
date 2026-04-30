@@ -759,21 +759,19 @@ pub fn compute_completions(text: &str) -> Vec<Value> {
     let mut env = crate::value::Env::new();
     crate::stdlib::install(&mut env);
     for (name, value) in env.iter_bindings() {
-        match value {
-            crate::value::Value::Object(obj_rc) => {
-                items.push(completion_item(&name, ck::VARIABLE, None));
-                let obj = obj_rc.borrow();
-                for field in obj.fields.keys() {
-                    items.push(completion_item(
-                        &format!("{name}.{field}"),
-                        ck::FUNCTION,
-                        None,
-                    ));
-                }
+        if value.is_object() {
+            let obj_rc = value.as_object();
+            items.push(completion_item(&name, ck::VARIABLE, None));
+            let obj = obj_rc.borrow();
+            for field in obj.fields.keys() {
+                items.push(completion_item(
+                    &format!("{name}.{field}"),
+                    ck::FUNCTION,
+                    None,
+                ));
             }
-            _ => {
-                items.push(completion_item(&name, ck::FUNCTION, None));
-            }
+        } else {
+            items.push(completion_item(&name, ck::FUNCTION, None));
         }
     }
 
