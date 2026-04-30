@@ -1662,11 +1662,18 @@ fn const_eval(e: &Expr) -> Option<Value> {
             let vals: Option<Vec<Value>> = elems.iter().map(const_eval).collect();
             vals.map(|v| Value::from_tuple(Rc::new(v)))
         }
-        Expr::Unary { op: UnOp::Neg, operand, .. } => match const_eval(operand)?.to_legacy() {
-            LegacyValue::Int(n) => Some(Value::from_int(-n)),
-            LegacyValue::Float(x) => Some(Value::from_float(-x)),
-            _ => None,
-        },
+        Expr::Unary { op: UnOp::Neg, operand, .. } => {
+let __t = const_eval(operand)?;
+if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+Some(Value::from_int(-n))
+} else if __t.is_float() {
+let x = __t.as_float();
+Some(Value::from_float(-x))
+} else {
+None
+}
+},
         _ => None,
     }
 }
@@ -1839,7 +1846,7 @@ mod tests {
         let chunk = compile_program(&prog).expect("compile");
         // The outer chunk should hold the BcFunction as a constant,
         // followed by OP_DEFINE_GLOBAL for the name.
-        let has_function_constant = chunk.constants.iter().any(|v| matches!(v.to_legacy(), LegacyValue::BcFunction(_)));
+        let has_function_constant = chunk.constants.iter().any(|v| v.is_bc_function());
         assert!(has_function_constant, "expected a BcFunction constant: {:?}", chunk.constants);
         assert!(
             chunk.code.contains(&(OpCode::DefineGlobal as u8)),

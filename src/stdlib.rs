@@ -210,10 +210,14 @@ fn install_sound(env: &mut Env) {
 
 fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.load")?;
-    let path = match &args[0].to_legacy() {
-        LegacyValue::Str(s) => s.as_ref().clone(),
-        other => {
-            return Err(RuntimeError {
+    let path = {
+let __t = &args[0];
+if __t.is_str() {
+let s = __t.as_string();
+s.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -222,8 +226,8 @@ fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 ),
                 help: Some("e.g. `sound.load(\"shot.wav\")`".to_string()),
             });
-        }
-    };
+}
+};
     if std::fs::metadata(&path).is_err() {
         return Err(RuntimeError {
             line: 0,
@@ -311,9 +315,9 @@ fn music_play_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 /// Pull the on-disk path out of a sound handle, validating
 /// `kind` and the `path` field. Shared by every audio builtin.
 fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Object(rc) => {
-            let o = rc.borrow();
+    if v.is_object() {
+let rc = v.as_object();
+let o = rc.borrow();
             if o.kind != "sound" {
                 return Err(RuntimeError {
                     line: 0,
@@ -325,17 +329,32 @@ fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
                     help: None,
                 });
             }
-            match o.get_field("path").to_legacy() {
-                Some(LegacyValue::Str(s)) => Ok(s.as_ref().clone()),
-                _ => Err(RuntimeError {
+            {
+let __opt = o.get_field("path");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_str() {
+let s = __t.as_string();
+Ok(s.clone())
+} else {
+Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: "sound handle is missing a `path` field".to_string(),
                     help: None,
-                }),
-            }
-        }
-        other => Err(RuntimeError {
+                })
+}
+} else {
+Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: "sound handle is missing a `path` field".to_string(),
+                    help: None,
+                })
+}
+}
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -343,8 +362,8 @@ fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 /// Decode-then-play helper. Caches decoded `Sound` values per
@@ -460,17 +479,21 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     // constructed after the GL context exists. Path existence is
     // checked here so typos fail fast.
     arity(args, 1, "load")?;
-    let path = match &args[0].to_legacy() {
-        LegacyValue::Str(s) => s.as_ref().clone(),
-        other => {
-            return Err(RuntimeError {
+    let path = {
+let __t = &args[0];
+if __t.is_str() {
+let s = __t.as_string();
+s.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!("load expected a string path, got {}", other.type_name()),
                 help: Some("e.g. `load(\"hero.png\")`".to_string()),
             });
-        }
-    };
+}
+};
     if std::fs::metadata(&path).is_err() {
         return Err(RuntimeError {
             line: 0,
@@ -498,10 +521,14 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// session 4.
 fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "save_to")?;
-    let path = match &args[0].to_legacy() {
-        LegacyValue::Str(s) => s.as_ref().clone(),
-        other => {
-            return Err(RuntimeError {
+    let path = {
+let __t = &args[0];
+if __t.is_str() {
+let s = __t.as_string();
+s.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -510,8 +537,8 @@ fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 ),
                 help: Some("e.g. `save_to(\"slot1.save\", { hp: 100 })`".to_string()),
             });
-        }
-    };
+}
+};
     crate::save::save_to_path(std::path::Path::new(&path), &args[1])
         .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
     Ok(Value::NIL)
@@ -522,10 +549,14 @@ fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// 4 — schema enforcement deferred.
 fn load_from_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "load_from")?;
-    let path = match &args[0].to_legacy() {
-        LegacyValue::Str(s) => s.as_ref().clone(),
-        other => {
-            return Err(RuntimeError {
+    let path = {
+let __t = &args[0];
+if __t.is_str() {
+let s = __t.as_string();
+s.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -534,8 +565,8 @@ fn load_from_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
                 ),
                 help: Some("e.g. `let state = load_from(\"slot1.save\")`".to_string()),
             });
-        }
-    };
+}
+};
     let v = crate::save::load_from_path(std::path::Path::new(&path))
         .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
     Ok(v)
@@ -558,30 +589,43 @@ fn arity(args: &[Value], expected: usize, name: &str) -> Result<(), RuntimeError
 }
 
 fn as_f64(v: &Value, op: &str) -> Result<f64, RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Int(n) => Ok(n as f64),
-        LegacyValue::Float(f) => Ok(f),
-        other => Err(RuntimeError {
+    if v.is_int_or_boxed_int() {
+let n = v.as_int();
+Ok(n as f64)
+} else if v.is_float() {
+let f = v.as_float();
+Ok(f)
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("{op} expected a numeric argument, got {}", other.type_name()),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 fn math_abs(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.abs")?;
-    match &args[0].to_legacy() {
-        LegacyValue::Int(n) => Ok(Value::from_int(n.abs())),
-        LegacyValue::Float(f) => Ok(Value::from_float(f.abs())),
-        other => Err(RuntimeError {
+    {
+let __t = &args[0];
+if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+Ok(Value::from_int(n.abs()))
+} else if __t.is_float() {
+let f = __t.as_float();
+Ok(Value::from_float(f.abs()))
+} else {
+let other = __t.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("math.abs expected int or float, got {}", other.type_name()),
             help: None,
-        }),
-    }
+        })
+}
+}
 }
 
 fn math_sqrt(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -706,9 +750,11 @@ fn random_float(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "random.choice")?;
-    match &args[0].to_legacy() {
-        LegacyValue::List(rc) => {
-            let v = rc.borrow();
+    {
+let __t = &args[0];
+if __t.is_list() {
+let rc = __t.as_list();
+let v = rc.borrow();
             if v.is_empty() {
                 return Err(RuntimeError {
                     line: 0,
@@ -719,8 +765,9 @@ fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             }
             let idx = (env.next_random_u64() as usize) % v.len();
             Ok(v[idx].clone())
-        }
-        other => Err(RuntimeError {
+} else {
+let other = __t.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -728,18 +775,22 @@ fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
+}
 }
 
 fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "random.seed")?;
-    match args[0].to_legacy() {
-        LegacyValue::Int(n) => {
-            env.seed_rng(n as u64);
+    {
+let __t = &args[0];
+if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+env.seed_rng(n as u64);
             Ok(Value::NIL)
-        }
-        other => Err(RuntimeError {
+} else {
+let other = __t.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -747,8 +798,9 @@ fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
+}
 }
 
 fn install_color(env: &mut Env) {
@@ -856,10 +908,14 @@ fn install_tilemap(env: &mut Env) {
 /// v0.2 session 6.
 fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "tilemap")?;
-    let layout = match &args[0].to_legacy() {
-        LegacyValue::Str(s) => (*s).clone(),
-        other => {
-            return Err(RuntimeError {
+    let layout = {
+let __t = &args[0];
+if __t.is_str() {
+let s = __t.as_string();
+s
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -870,8 +926,8 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                     "use a triple-quoted multi-line string for the grid".to_string(),
                 ),
             });
-        }
-    };
+}
+};
     let tile_size = number(&args[1], "tilemap.tile_size")? as i64;
     if tile_size <= 0 {
         return Err(RuntimeError {
@@ -884,10 +940,14 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 
     // Parse the `tiles` list into a char → spec map. Each entry
     // is a tuple `(char_str, name_str, traits_list)`.
-    let tiles_arg = match &args[2].to_legacy() {
-        LegacyValue::List(rc) => rc.clone(),
-        other => {
-            return Err(RuntimeError {
+    let tiles_arg = {
+let __t = &args[2];
+if __t.is_list() {
+let rc = __t.as_list();
+rc.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -896,15 +956,16 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 ),
                 help: None,
             });
-        }
-    };
+}
+};
     let mut by_char: HashMap<char, (String, Vec<String>)> = HashMap::new();
     let mut tile_specs_field: HashMap<String, Value> = HashMap::new();
     for (i, entry) in tiles_arg.borrow().iter().enumerate() {
-        let elems = match entry.to_legacy() {
-            LegacyValue::Tuple(elems) => elems.clone(),
-            _ => {
-                return Err(RuntimeError {
+        let elems = if entry.is_tuple() {
+let elems = entry.as_tuple();
+elems.clone()
+} else {
+return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!(
@@ -914,8 +975,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                         "e.g. `(\".\", \"floor\", [\"walkable\"])`".to_string(),
                     ),
                 });
-            }
-        };
+};
         if elems.len() != 3 {
             return Err(RuntimeError {
                 line: 0,
@@ -927,18 +987,22 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 help: None,
             });
         }
-        let ch_str = match &elems[0].to_legacy() {
-            LegacyValue::Str(s) if s.chars().count() == 1 => s.chars().next().unwrap(),
-            LegacyValue::Str(_) => {
-                return Err(RuntimeError {
+        let ch_str = {
+let __t = &elems[0];
+if __t.is_str() && { let s = __t.as_string();
+s.chars().count() == 1 } {
+let s = __t.as_string();
+s.chars().next().unwrap()
+} else if __t.is_str() {
+return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!("tilemap.tiles[{i}].char must be a single character"),
                     help: None,
                 });
-            }
-            other => {
-                return Err(RuntimeError {
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!(
@@ -947,12 +1011,16 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                     ),
                     help: None,
                 });
-            }
-        };
-        let name: String = match elems[1].to_legacy() {
-            LegacyValue::Str(s) => (*s).clone(),
-            other => {
-                return Err(RuntimeError {
+}
+};
+        let name: String = {
+let __t = &elems[1];
+if __t.is_str() {
+let s = __t.as_string();
+s
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!(
@@ -961,17 +1029,21 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                     ),
                     help: None,
                 });
-            }
-        };
-        let traits: Vec<String> = match elems[2].to_legacy() {
-            LegacyValue::List(rc) => {
-                let v = rc.borrow();
+}
+};
+        let traits: Vec<String> = {
+let __t = &elems[2];
+if __t.is_list() {
+let rc = __t.as_list();
+let v = rc.borrow();
                 let mut out: Vec<String> = Vec::with_capacity(v.len());
                 for (j, t) in v.iter().enumerate() {
-                    match t.to_legacy() {
-                        LegacyValue::Str(s) => out.push((*s).clone()),
-                        other => {
-                            return Err(RuntimeError {
+                    if t.is_str() {
+let s = t.as_string();
+out.push(s)
+} else {
+let other = t.clone();
+return Err(RuntimeError {
                                 line: 0,
                                 col: 0,
                                 message: format!(
@@ -980,14 +1052,14 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                                 ),
                                 help: None,
                             });
-                        }
-                    }
+}
                 }
                 out
-            }
-            LegacyValue::Nil => Vec::new(),
-            other => {
-                return Err(RuntimeError {
+} else if __t.is_nil() {
+Vec::new()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!(
@@ -996,8 +1068,8 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                     ),
                     help: None,
                 });
-            }
-        };
+}
+};
         by_char.insert(ch_str, (name.clone(), traits.clone()));
 
         // Also expose the spec as a Twe-readable Object on the
@@ -1050,7 +1122,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     }
 
     let mut fields = HashMap::new();
-    fields.insert("layout".to_string(), Value::from_string((*layout).clone()));
+    fields.insert("layout".to_string(), Value::from_string(layout));
     fields.insert("tile_size".to_string(), Value::from_int(tile_size));
     fields.insert("width".to_string(), Value::from_int(width as i64));
     fields.insert("height".to_string(), Value::from_int(height as i64));
@@ -1080,14 +1152,17 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     require_render(env, "tilemap_render")?;
     arity(args, 2, "tilemap_render")?;
     let map = expect_tilemap(&args[0], "tilemap_render.map")?;
-    let (origin_x, origin_y) = match &args[1].to_legacy() {
-        LegacyValue::Tuple(elems) if elems.len() == 2 => {
-            let x = number(&elems[0], "tilemap_render.at.x")? as f32;
+    let (origin_x, origin_y) = {
+let __t = &args[1];
+if __t.is_tuple() && { let elems = __t.as_tuple();
+elems.len() == 2 } {
+let elems = __t.as_tuple();
+let x = number(&elems[0], "tilemap_render.at.x")? as f32;
             let y = number(&elems[1], "tilemap_render.at.y")? as f32;
             (x, y)
-        }
-        other => {
-            return Err(RuntimeError {
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1096,39 +1171,64 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 ),
                 help: None,
             });
-        }
-    };
+}
+};
     let m = map.borrow();
-    let tile_size = match m.get_field("tile_size").to_legacy() {
-        Some(LegacyValue::Int(n)) => n as f32,
-        _ => return Err(tilemap_internal_error("tile_size")),
-    };
+    let tile_size = {
+let __opt = m.get_field("tile_size");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+n as f32
+} else {
+return Err(tilemap_internal_error("tile_size"))
+}
+} else {
+return Err(tilemap_internal_error("tile_size"))
+}
+};
     let cells_value = m.get_field("cells");
     let tiles_value = m.get_field("tiles");
     drop(m);
 
-    let cells_rc = match cells_value.to_legacy() {
-        Some(LegacyValue::List(rc)) => rc,
-        _ => return Err(tilemap_internal_error("cells")),
-    };
-    let tile_specs_rc = match tiles_value.to_legacy() {
-        Some(LegacyValue::Object(rc)) => rc,
-        _ => return Err(tilemap_internal_error("tiles")),
-    };
+    let cells_rc = if let Some(__t) = (cells_value).as_ref() {
+if __t.is_list() {
+let rc = __t.as_list();
+rc
+} else {
+return Err(tilemap_internal_error("cells"))
+}
+} else {
+return Err(tilemap_internal_error("cells"))
+};
+    let tile_specs_rc = if let Some(__t) = (tiles_value).as_ref() {
+if __t.is_object() {
+let rc = __t.as_object();
+rc
+} else {
+return Err(tilemap_internal_error("tiles"))
+}
+} else {
+return Err(tilemap_internal_error("tiles"))
+};
 
     let cells = cells_rc.borrow();
     let tile_specs = tile_specs_rc.borrow();
     for (row_idx, row_value) in cells.iter().enumerate() {
-        let row_rc = match row_value.to_legacy() {
-            LegacyValue::List(rc) => rc,
-            _ => continue,
-        };
+        let row_rc = if row_value.is_list() {
+let rc = row_value.as_list();
+rc
+} else {
+continue
+};
         let row = row_rc.borrow();
         for (col_idx, cell) in row.iter().enumerate() {
-            let name_string: String = match cell.to_legacy() {
-                LegacyValue::Str(s) => (*s).clone(),
-                _ => continue,
-            };
+            let name_string: String = if cell.is_str() {
+let s = cell.as_string();
+s
+} else {
+continue
+};
             let name = name_string.as_str();
             if name.is_empty() {
                 continue;
@@ -1150,22 +1250,38 @@ fn trait_color(
 ) -> [f32; 4] {
     let traits = tile_specs
         .get(tile_name)
-        .and_then(|v| match v.clone().to_legacy() {
-            LegacyValue::Object(rc) => Some(rc),
-            _ => None,
-        })
-        .and_then(|rc| match rc.borrow().get_field("traits").to_legacy() {
-            Some(LegacyValue::List(list_rc)) => Some(list_rc.clone()),
-            _ => None,
-        });
+        .and_then(|v| {
+let __t = v.clone();
+if __t.is_object() {
+let rc = __t.as_object();
+Some(rc)
+} else {
+None
+}
+})
+        .and_then(|rc| {
+let __opt = rc.borrow().get_field("traits");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_list() {
+let list_rc = __t.as_list();
+Some(list_rc.clone())
+} else {
+None
+}
+} else {
+None
+}
+});
     let traits_vec: Vec<String> = match traits {
         Some(rc) => rc
             .borrow()
             .iter()
-            .filter_map(|v| match v.to_legacy() {
-                LegacyValue::Str(s) => Some((*s).clone()),
-                _ => None,
-            })
+            .filter_map(|v| if v.is_str() {
+let s = v.as_string();
+Some(s)
+} else {
+None
+})
             .collect(),
         None => Vec::new(),
     };
@@ -1231,26 +1347,48 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     if name.is_empty() {
         return Ok(Value::FALSE);
     }
-    let tile_specs = match map.borrow().get_field("tiles").to_legacy() {
-        Some(LegacyValue::Object(rc)) => rc,
-        _ => return Ok(Value::FALSE),
-    };
+    let tile_specs = {
+let __opt = map.borrow().get_field("tiles");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_object() {
+let rc = __t.as_object();
+rc
+} else {
+return Ok(Value::FALSE)
+}
+} else {
+return Ok(Value::FALSE)
+}
+};
     let specs = tile_specs.borrow();
     let solid = specs
         .get_field(&name)
-        .and_then(|v| match v.to_legacy() {
-            LegacyValue::Object(rc) => Some(rc),
-            _ => None,
-        })
-        .and_then(|rc| match rc.borrow().get_field("traits").to_legacy() {
-            Some(LegacyValue::List(list_rc)) => Some(list_rc.clone()),
-            _ => None,
-        })
+        .and_then(|v| if v.is_object() {
+let rc = v.as_object();
+Some(rc)
+} else {
+None
+})
+        .and_then(|rc| {
+let __opt = rc.borrow().get_field("traits");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_list() {
+let list_rc = __t.as_list();
+Some(list_rc.clone())
+} else {
+None
+}
+} else {
+None
+}
+})
         .map(|rc| {
-            rc.borrow().iter().any(|v| match v.to_legacy() {
-                LegacyValue::Str(s) => &**s == "solid",
-                _ => false,
-            })
+            rc.borrow().iter().any(|v| if v.is_str() {
+let s = v.as_string();
+s == "solid"
+} else {
+false
+})
         })
         .unwrap_or(false);
     Ok(Value::from_bool(solid))
@@ -1258,10 +1396,19 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 
 fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     let m = map.borrow();
-    let tile_size = match m.get_field("tile_size").to_legacy() {
-        Some(LegacyValue::Int(n)) => n as f32,
-        _ => return String::new(),
-    };
+    let tile_size = {
+let __opt = m.get_field("tile_size");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+n as f32
+} else {
+return String::new()
+}
+} else {
+return String::new()
+}
+};
     if tile_size <= 0.0 {
         return String::new();
     }
@@ -1270,43 +1417,67 @@ fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     if col < 0 || row < 0 {
         return String::new();
     }
-    let cells = match m.get_field("cells").to_legacy() {
-        Some(LegacyValue::List(rc)) => rc.clone(),
-        _ => return String::new(),
-    };
+    let cells = {
+let __opt = m.get_field("cells");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_list() {
+let rc = __t.as_list();
+rc.clone()
+} else {
+return String::new()
+}
+} else {
+return String::new()
+}
+};
     let cells = cells.borrow();
     let row_idx = row as usize;
     if row_idx >= cells.len() {
         return String::new();
     }
-    let row_rc = match &cells[row_idx].to_legacy() {
-        LegacyValue::List(rc) => rc.clone(),
-        _ => return String::new(),
-    };
+    let row_rc = {
+let __t = &cells[row_idx];
+if __t.is_list() {
+let rc = __t.as_list();
+rc.clone()
+} else {
+return String::new()
+}
+};
     let row = row_rc.borrow();
     let col_idx = col as usize;
     if col_idx >= row.len() {
         return String::new();
     }
-    match row[col_idx].to_legacy() {
-        LegacyValue::Str(s) => (*s).clone(),
-        _ => String::new(),
-    }
+    {
+let __t = &row[col_idx];
+if __t.is_str() {
+let s = __t.as_string();
+s
+} else {
+String::new()
+}
+}
 }
 
 fn expect_tilemap(v: &Value, what: &str) -> Result<Rc<RefCell<Object>>, RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Object(rc) if rc.borrow().kind == "tilemap" => Ok(rc.clone()),
-        other => Err(RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!(
-                "{what} expects a tilemap value from `tilemap(...)`, got {}",
-                other.type_name()
-            ),
-            help: None,
-        }),
+    if v.is_object() {
+        let rc = v.as_object();
+        let is_tilemap = rc.borrow().kind == "tilemap";
+        if is_tilemap {
+            return Ok(rc);
+        }
     }
+    let other = v.clone();
+    Err(RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!(
+            "{what} expects a tilemap value from `tilemap(...)`, got {}",
+            other.type_name()
+        ),
+        help: None,
+    })
 }
 
 fn tilemap_internal_error(field: &str) -> RuntimeError {
@@ -1359,9 +1530,11 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             help: None,
         });
     }
-    let path = match &args[0].to_legacy() {
-        LegacyValue::Object(rc) => {
-            let o = rc.borrow();
+    let path = {
+let __t = &args[0];
+if __t.is_object() {
+let rc = __t.as_object();
+let o = rc.borrow();
             if o.kind != "sprite" {
                 return Err(RuntimeError {
                     line: 0,
@@ -1373,10 +1546,14 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                     help: None,
                 });
             }
-            match o.get_field("path").to_legacy() {
-                Some(LegacyValue::Str(s)) => s.as_ref().clone(),
-                _ => {
-                    return Err(RuntimeError {
+            {
+let __opt = o.get_field("path");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_str() {
+let s = __t.as_string();
+s.clone()
+} else {
+return Err(RuntimeError {
                         line: 0,
                         col: 0,
                         message: "sprite handle is missing a `path` field".to_string(),
@@ -1386,11 +1563,23 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                                 .to_string(),
                         ),
                     });
-                }
-            }
-        }
-        other => {
-            return Err(RuntimeError {
+}
+} else {
+return Err(RuntimeError {
+                        line: 0,
+                        col: 0,
+                        message: "sprite handle is missing a `path` field".to_string(),
+                        help: Some(
+                            "build the handle with `load(\"file.png\")` rather than \
+                             constructing one by hand"
+                                .to_string(),
+                        ),
+                    });
+}
+}
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1399,8 +1588,8 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 ),
                 help: None,
             });
-        }
-    };
+}
+};
     let (x, y) = xy_of(&args[1], "sprite.at")?;
     let size = if args.len() == 3 {
         Some(xy_of(&args[2], "sprite.size")?)
@@ -1461,11 +1650,13 @@ fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
 }
 
 fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Tuple(elems) if elems.len() >= 2 => {
-            Ok((number(&elems[0], what)?, number(&elems[1], what)?))
-        }
-        other => Err(RuntimeError {
+    if v.is_tuple() && { let elems = v.as_tuple();
+elems.len() >= 2 } {
+let elems = v.as_tuple();
+Ok((number(&elems[0], what)?, number(&elems[1], what)?))
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -1473,14 +1664,15 @@ fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Tuple(elems) if elems.len() >= 3 => {
-            let r = number(&elems[0], what)? as f32;
+    if v.is_tuple() && { let elems = v.as_tuple();
+elems.len() >= 3 } {
+let elems = v.as_tuple();
+let r = number(&elems[0], what)? as f32;
             let g = number(&elems[1], what)? as f32;
             let b = number(&elems[2], what)? as f32;
             let a = if elems.len() >= 4 {
@@ -1489,28 +1681,36 @@ fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeErr
                 1.0
             };
             Ok(macroquad::color::Color::new(r, g, b, a))
-        }
-        other => Err(RuntimeError {
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("{what} expects an (r, g, b[, a]) tuple, got {}", other.type_name()),
             help: Some("use color.red, color.green, … or build with `(0.5, 0.0, 0.0, 1.0)`".to_string()),
-        }),
-    }
+        })
+}
 }
 
 fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Int(n) => Ok(n as f64),
-        LegacyValue::Float(f) => Ok(f),
-        LegacyValue::Quantity { value, .. } => Ok(value),
-        other => Err(RuntimeError {
+    if v.is_int_or_boxed_int() {
+let n = v.as_int();
+Ok(n as f64)
+} else if v.is_float() {
+let f = v.as_float();
+Ok(f)
+} else if v.is_quantity() {
+let (value, _) = v.as_quantity();
+Ok(value)
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("{what} expects a number, got {}", other.type_name()),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1567,10 +1767,14 @@ fn install_entities(env: &mut Env) {
 
 fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "entities.of")?;
-    let class = match &args[0].to_legacy() {
-        LegacyValue::Class(c) => c.clone(),
-        other => {
-            return Err(RuntimeError {
+    let class = {
+let __t = &args[0];
+if __t.is_class() {
+let c = __t.as_class();
+c.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1581,8 +1785,8 @@ fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                     "pass the entity class itself, not an instance".to_string(),
                 ),
             });
-        }
-    };
+}
+};
     let mut result = Vec::new();
     for inst in &env.active_entities {
         let borrowed = inst.borrow();
@@ -1599,10 +1803,14 @@ fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 
 fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "entities.count")?;
-    let class = match &args[0].to_legacy() {
-        LegacyValue::Class(c) => c.clone(),
-        other => {
-            return Err(RuntimeError {
+    let class = {
+let __t = &args[0];
+if __t.is_class() {
+let c = __t.as_class();
+c.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1611,8 +1819,8 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                 ),
                 help: None,
             });
-        }
-    };
+}
+};
     let mut n: i64 = 0;
     for inst in &env.active_entities {
         let borrowed = inst.borrow();
@@ -1629,10 +1837,16 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     require_render(env, "text")?;
     arity(args, 4, "text")?;
-    let content = match &args[0].to_legacy() {
-        LegacyValue::Str(s) => s.as_ref().clone(),
-        other => other.display(),
-    };
+    let content = {
+let __t = &args[0];
+if __t.is_str() {
+let s = __t.as_string();
+s.clone()
+} else {
+let other = __t.clone();
+other.display()
+}
+};
     let (x, y) = xy_of(&args[1], "text.at")?;
     let size = number(&args[2], "text.size")? as f32;
     let color = color_of(&args[3], "text.color")?;
@@ -1762,10 +1976,14 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     require_render(env, "mesh")?;
     arity(args, 4, "mesh")?;
-    let path = match &args[0].to_legacy() {
-        LegacyValue::Str(s) => s.clone(),
-        other => {
-            return Err(RuntimeError {
+    let path = {
+let __t = &args[0];
+if __t.is_str() {
+let s = __t.as_string();
+s.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1774,8 +1992,8 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 ),
                 help: Some("e.g. `mesh(\"models/box.glb\", at: ...)`".to_string()),
             });
-        }
-    };
+}
+};
     let at = xyz_of(&args[1], "mesh.at")?;
     let color = rgba_of(&args[2], "mesh.color")?;
     let size = number(&args[3], "mesh.size")? as f32;
@@ -1792,13 +2010,17 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// Pull a 3-component float vector out of a Twe tuple. Used by the
 /// 3D builtins. Mirrors `xy_of` but for the third axis.
 fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Tuple(elems) if elems.len() == 3 => Ok([
+    if v.is_tuple() && { let elems = v.as_tuple();
+elems.len() == 3 } {
+let elems = v.as_tuple();
+Ok([
             number(&elems[0], what)? as f32,
             number(&elems[1], what)? as f32,
             number(&elems[2], what)? as f32,
-        ]),
-        other => Err(RuntimeError {
+        ])
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -1806,20 +2028,24 @@ fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
                 other.type_name()
             ),
             help: Some("e.g. `vec3(0, 1, 0)` or `(0, 1, 0)`".to_string()),
-        }),
-    }
+        })
+}
 }
 
 /// Pull an RGBA float quartet out of a Twe tuple.
 fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Tuple(elems) if elems.len() == 4 => Ok([
+    if v.is_tuple() && { let elems = v.as_tuple();
+elems.len() == 4 } {
+let elems = v.as_tuple();
+Ok([
             number(&elems[0], what)? as f32,
             number(&elems[1], what)? as f32,
             number(&elems[2], what)? as f32,
             number(&elems[3], what)? as f32,
-        ]),
-        other => Err(RuntimeError {
+        ])
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -1829,6 +2055,6 @@ fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
             help: Some(
                 "use `color.red` etc. or build with `(r, g, b, a)` floats".to_string(),
             ),
-        }),
-    }
+        })
+}
 }

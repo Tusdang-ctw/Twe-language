@@ -43,45 +43,60 @@ use crate::value::{Object, RuntimeError, Value, LegacyValue, ToLegacyShim};
 /// describing the offending type if the value contains anything
 /// outside the serializable subset.
 pub fn encode(value: &Value) -> Result<json::Value, String> {
-    match value.to_legacy() {
-        LegacyValue::Nil => Ok(json::Value::Null),
-        LegacyValue::Bool(b) => Ok(json::Value::Bool(b)),
-        LegacyValue::Int(n) => Ok(json::Value::Int(n)),
-        LegacyValue::Float(f) => Ok(json::Value::Float(f)),
-        LegacyValue::Str(s) => Ok(json::Value::Str((*s).clone())),
-        LegacyValue::Percent(p) => Ok(tagged("percent", &[("v", json::Value::Float(p))])),
-        LegacyValue::Range { start: start, end: end, exclusive: exclusive } => Ok(tagged(
+    if value.is_nil() {
+Ok(json::Value::Null)
+} else if value.is_bool() {
+let b = value.as_bool();
+Ok(json::Value::Bool(b))
+} else if value.is_int_or_boxed_int() {
+let n = value.as_int();
+Ok(json::Value::Int(n))
+} else if value.is_float() {
+let f = value.as_float();
+Ok(json::Value::Float(f))
+} else if value.is_str() {
+let s = value.as_string();
+Ok(json::Value::Str(s))
+} else if value.is_percent() {
+let p = value.as_percent();
+Ok(tagged("percent", &[("v", json::Value::Float(p))]))
+} else if value.is_range() {
+let (start, end, exclusive) = value.as_range();
+Ok(tagged(
             "range",
             &[
                 ("start", json::Value::Int(start)),
                 ("end", json::Value::Int(end)),
                 ("exclusive", json::Value::Bool(exclusive)),
             ],
-        )),
-        LegacyValue::Quantity { value: value, unit: unit } => Ok(tagged(
+        ))
+} else if value.is_quantity() {
+let (value, unit) = value.as_quantity();
+Ok(tagged(
             "quantity",
             &[
                 ("value", json::Value::Float(value)),
                 ("unit", json::Value::Str((*unit).clone())),
             ],
-        )),
-        LegacyValue::Tuple(elems) => {
-            let mut arr = Vec::with_capacity(elems.len());
+        ))
+} else if value.is_tuple() {
+let elems = value.as_tuple();
+let mut arr = Vec::with_capacity(elems.len());
             for e in elems.iter() {
                 arr.push(encode(e)?);
             }
             Ok(tagged("tuple", &[("v", json::Value::Array(arr))]))
-        }
-        LegacyValue::List(rc) => {
-            let v = rc.borrow();
+} else if value.is_list() {
+let rc = value.as_list();
+let v = rc.borrow();
             let mut arr = Vec::with_capacity(v.len());
             for e in v.iter() {
                 arr.push(encode(e)?);
             }
             Ok(json::Value::Array(arr))
-        }
-        LegacyValue::Object(rc) => {
-            let o = rc.borrow();
+} else if value.is_object() {
+let rc = value.as_object();
+let o = rc.borrow();
             // Refuse to save Objects whose `kind` is "class",
             // "input", "module" — these are stdlib ambients
             // (`key`, `mouse`, `math`) that capture host state,
@@ -105,35 +120,48 @@ pub fn encode(value: &Value) -> Result<json::Value, String> {
                 map.insert(k.clone(), encode(v)?);
             }
             Ok(json::Value::Object(map))
-        }
-        LegacyValue::Class(c) => Err(format!(
+} else if value.is_class() {
+let c = value.as_class();
+Err(format!(
             "cannot save class '{}' — saves hold data, not declarations",
             c.name
-        )),
-        LegacyValue::Instance(rc) => Err(format!(
+        ))
+} else if value.is_instance() {
+let rc = value.as_instance();
+Err(format!(
             "cannot save instance of `{}` — saves hold data, not live objects (extract the fields you want into a tuple or a plain Object first)",
             rc.borrow().class.name
-        )),
-        LegacyValue::BcInstance(rc) => Err(format!(
+        ))
+} else if value.is_bc_instance() {
+let rc = value.as_bc_instance();
+Err(format!(
             "cannot save bytecode instance of `{}` — same restriction as `Instance`",
             rc.borrow().class.name
-        )),
-        LegacyValue::Function(f) => Err(format!(
+        ))
+} else if value.is_function() {
+let f = value.as_function();
+Err(format!(
             "cannot save function '{}' — saves hold data, not code",
             f.name
-        )),
-        LegacyValue::BcFunction(f) => Err(format!(
+        ))
+} else if value.is_bc_function() {
+let f = value.as_bc_function();
+Err(format!(
             "cannot save bytecode function '{}' — saves hold data, not code",
             f.name
-        )),
-        LegacyValue::BcClass(c) => Err(format!(
+        ))
+} else if value.is_bc_class() {
+let c = value.as_bc_class();
+Err(format!(
             "cannot save bytecode class '{}' — saves hold data, not declarations",
             c.name
-        )),
-        LegacyValue::Builtin { name, .. } => Err(format!(
+        ))
+} else if value.is_builtin() {
+let (name, _, _) = value.as_builtin();
+Err(format!(
             "cannot save builtin '{name}' — saves hold data, not code"
-        )),
-    }
+        ))
+} else { unreachable!("non-exhaustive predicate dispatch") }
 }
 
 /// Decode a `json::Value` into a Twe `Value`. JSON's data model
@@ -295,79 +323,122 @@ mod tests {
             LegacyValue::Int(42) => {}
             other => panic!("expected Int(42), got {other:?}"),
         }
-        match round_trip(Value::from_float(3.14)).to_legacy() {
-            LegacyValue::Float(f) if (f - 3.14).abs() < 1e-9 => {}
-            other => panic!("expected ~Float(3.14), got {other:?}"),
+        {
+let __t = round_trip(Value::from_float(3.14));
+if __t.is_float() && { let f = __t.as_float();
+(f - 3.14).abs() < 1e-9 } {
+let f = __t.as_float();
+
+} else {
+let other = __t.clone();
+panic!("expected ~Float(3.14), got {other:?}")
+}
+}
+        {
+            let __t = round_trip(Value::TRUE);
+            if __t.is_bool() && __t.as_bool() {
+                // ok
+            } else {
+                let other = __t.clone();
+                panic!("expected Bool(true), got {other:?}")
+            }
         }
-        match round_trip(Value::TRUE).to_legacy() {
-            LegacyValue::Bool(true) => {}
-            other => panic!("expected Bool(true), got {other:?}"),
-        }
-        match round_trip(Value::NIL).to_legacy() {
-            LegacyValue::Nil => {}
-            other => panic!("expected Nil, got {other:?}"),
-        }
-        match round_trip(Value::from_string("hello".to_string())).to_legacy() {
-            LegacyValue::Str(s) if &**s == "hello" => {}
-            other => panic!("expected Str(\"hello\"), got {other:?}"),
-        }
+        {
+let __t = round_trip(Value::NIL);
+if __t.is_nil() {
+
+} else {
+let other = __t.clone();
+panic!("expected Nil, got {other:?}")
+}
+}
+        {
+let __t = round_trip(Value::from_string("hello".to_string()));
+if __t.is_str() && { let s = __t.as_string();
+s == "hello" } {
+let s = __t.as_string();
+
+} else {
+let other = __t.clone();
+panic!("expected Str(\"hello\"), got {other:?}")
+}
+}
     }
 
     #[test]
     fn tuple_round_trips_as_tuple_not_list() {
         let v = Value::from_tuple(Rc::new(vec![Value::from_int(1), Value::from_int(2), Value::from_int(3)]));
         let back = round_trip(v);
-        match back.to_legacy() {
-            LegacyValue::Tuple(elems) => {
-                assert_eq!(elems.len(), 3);
-                assert!(matches!(elems[0].to_legacy(), LegacyValue::Int(1)));
-            }
-            other => panic!("expected Tuple, got {other:?}"),
-        }
+        if back.is_tuple() {
+let elems = back.as_tuple();
+assert_eq!(elems.len(), 3);
+                assert!(elems[0].is_int_or_boxed_int());
+} else {
+let other = back.clone();
+panic!("expected Tuple, got {other:?}")
+}
     }
 
     #[test]
     fn list_round_trips_as_list() {
         let v = Value::from_list(Rc::new(RefCell::new(vec![Value::from_int(7), Value::from_int(8)])));
         let back = round_trip(v);
-        match back.to_legacy() {
-            LegacyValue::List(rc) => assert_eq!(rc.borrow().len(), 2),
-            other => panic!("expected List, got {other:?}"),
+        if back.is_list() {
+            let rc = back.as_list();
+            let len = rc.borrow().len();
+            assert_eq!(len, 2);
+        } else {
+            let other = back.clone();
+            panic!("expected List, got {other:?}")
         }
     }
 
     #[test]
     fn quantity_round_trips_with_unit() {
         let v = Value::from_quantity(5.0, Rc::new("kg".to_string()));
-        match round_trip(v).to_legacy() {
-            LegacyValue::Quantity { value: value, unit: unit } => {
-                assert_eq!(value, 5.0);
+        {
+let __t = round_trip(v);
+if __t.is_quantity() {
+let (value, unit) = __t.as_quantity();
+assert_eq!(value, 5.0);
                 assert_eq!(&**unit, "kg");
-            }
-            other => panic!("expected Quantity, got {other:?}"),
-        }
+} else {
+let other = __t.clone();
+panic!("expected Quantity, got {other:?}")
+}
+}
     }
 
     #[test]
     fn range_round_trips() {
         let v = Value::from_range(0, 10, true);
-        match round_trip(v).to_legacy() {
-            LegacyValue::Range { start: start, end: end, exclusive: exclusive } => {
-                assert_eq!(start, 0);
+        {
+let __t = round_trip(v);
+if __t.is_range() {
+let (start, end, exclusive) = __t.as_range();
+assert_eq!(start, 0);
                 assert_eq!(end, 10);
                 assert!(exclusive);
-            }
-            other => panic!("expected Range, got {other:?}"),
-        }
+} else {
+let other = __t.clone();
+panic!("expected Range, got {other:?}")
+}
+}
     }
 
     #[test]
     fn percent_round_trips() {
         let v = Value::from_percent(0.25);
-        match round_trip(v).to_legacy() {
-            LegacyValue::Percent(p) => assert!((p - 0.25).abs() < 1e-9),
-            other => panic!("expected Percent, got {other:?}"),
-        }
+        {
+let __t = round_trip(v);
+if __t.is_percent() {
+let p = __t.as_percent();
+assert!((p - 0.25).abs() < 1e-9)
+} else {
+let other = __t.clone();
+panic!("expected Percent, got {other:?}")
+}
+}
     }
 
     #[test]
@@ -379,14 +450,18 @@ mod tests {
             fields: crate::value::legacy_fields_to_tagged(inner),
             kind: "save",
         })));
-        match round_trip(v).to_legacy() {
-            LegacyValue::Object(rc) => {
-                let o = rc.borrow();
-                assert!(matches!(o.get_field("hp").to_legacy(), Some(LegacyValue::Int(100))));
-                assert!(matches!(o.get_field("name").to_legacy(), Some(LegacyValue::Str(_))));
-            }
-            other => panic!("expected Object, got {other:?}"),
-        }
+        {
+let __t = round_trip(v);
+if __t.is_object() {
+let rc = __t.as_object();
+let o = rc.borrow();
+                assert!(o.get_field("hp").as_ref().map_or(false, |t| t.is_int_or_boxed_int()));
+                assert!(o.get_field("name").as_ref().map_or(false, |t| t.is_str()));
+} else {
+let other = __t.clone();
+panic!("expected Object, got {other:?}")
+}
+}
     }
 
     #[test]
@@ -434,13 +509,14 @@ mod tests {
         let loaded = load_from_path(&path).expect("load");
         let _ = std::fs::remove_file(&path);
 
-        match loaded.to_legacy() {
-            LegacyValue::Object(rc) => {
-                let o = rc.borrow();
-                assert!(matches!(o.get_field("hp").to_legacy(), Some(LegacyValue::Int(75))));
-            }
-            other => panic!("expected Object, got {other:?}"),
-        }
+        if loaded.is_object() {
+let rc = loaded.as_object();
+let o = rc.borrow();
+                assert!(o.get_field("hp").as_ref().map_or(false, |t| t.is_int_or_boxed_int()));
+} else {
+let other = loaded.clone();
+panic!("expected Object, got {other:?}")
+}
     }
 
     #[test]

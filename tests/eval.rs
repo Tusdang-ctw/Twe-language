@@ -405,10 +405,10 @@ fn stdlib_installs_mouse_objects() {
     // mouse: x, y, pos, wheel
     let rc = match env.get("mouse") { Some(t) if t.is_object() => t.as_object(), _ => panic!("mouse object missing after stdlib::install") };
     let m = rc.borrow();
-    assert!(matches!(m.get_field("x").to_legacy(), Some(LegacyValue::Float(_))));
-    assert!(matches!(m.get_field("y").to_legacy(), Some(LegacyValue::Float(_))));
-    assert!(matches!(m.get_field("pos").to_legacy(), Some(LegacyValue::Tuple(_))));
-    assert!(matches!(m.get_field("wheel").to_legacy(), Some(LegacyValue::Float(_))));
+    assert!(m.get_field("x").as_ref().map_or(false, |t| t.is_float()));
+    assert!(m.get_field("y").as_ref().map_or(false, |t| t.is_float()));
+    assert!(m.get_field("pos").as_ref().map_or(false, |t| t.is_tuple()));
+    assert!(m.get_field("wheel").as_ref().map_or(false, |t| t.is_float()));
 
     // mouse_held / mouse_press: left, middle, right
     for name in ["mouse_held", "mouse_press"] {
@@ -416,7 +416,7 @@ fn stdlib_installs_mouse_objects() {
         let o = rc.borrow();
         for btn in ["left", "middle", "right"] {
             assert!(
-                matches!(o.get_field(btn).to_legacy(), Some(LegacyValue::Bool(false))),
+                o.get_field(btn).as_ref().map_or(false, |t| t.is_bool()),
                 "{name}.{btn} missing or non-bool after install"
             );
         }
@@ -551,7 +551,7 @@ fn stdlib_installs_audio_v2_surface() {
     let s = rc.borrow();
     for name in ["load", "play", "play_at", "stop", "set_volume"] {
         assert!(
-            matches!(s.get_field(name).to_legacy(), Some(LegacyValue::Builtin { .. })),
+            s.get_field(name).as_ref().map_or(false, |t| t.is_builtin()),
             "sound.{name} missing or not a builtin"
         );
     }
@@ -561,7 +561,7 @@ fn stdlib_installs_audio_v2_surface() {
     let m = rc.borrow();
     for name in ["play", "play_at", "stop"] {
         assert!(
-            matches!(m.get_field(name).to_legacy(), Some(LegacyValue::Builtin { .. })),
+            m.get_field(name).as_ref().map_or(false, |t| t.is_builtin()),
             "music.{name} missing or not a builtin"
         );
     }
@@ -863,9 +863,12 @@ spawn Spark at (50.0, 60.0)
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
     let particles = inst.get_field("__particles").expect("__particles");
-    let n = match particles.to_legacy() {
-        LegacyValue::List(rc) => rc.borrow().len(),
-        _ => panic!("__particles should be a list"),
+    let n = if particles.is_list() {
+        let rc = particles.as_list();
+        let len = rc.borrow().len();
+        len
+    } else {
+        panic!("__particles should be a list")
     };
     assert_eq!(n, 4);
 }
@@ -978,12 +981,14 @@ spawn Pin at (12, 34)
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
     let pos = inst.get_field("pos").expect("pos field");
-    let elems = match pos.to_legacy() {
-        LegacyValue::Tuple(elems) => elems.clone(),
-        _ => panic!("pos should be a tuple"),
-    };
-    assert!(matches!(elems[0].to_legacy(), LegacyValue::Int(12)));
-    assert!(matches!(elems[1].to_legacy(), LegacyValue::Int(34)));
+    let elems = if pos.is_tuple() {
+let elems = pos.as_tuple();
+elems.clone()
+} else {
+panic!("pos should be a tuple")
+};
+    assert!(elems[0].is_int_or_boxed_int());
+    assert!(elems[1].is_int_or_boxed_int());
 }
 
 #[test]
@@ -1012,17 +1017,22 @@ fn snake_advances_right_by_default() {
     let scene = env.active_scene.as_ref().expect("scene");
     let inst = scene.borrow();
     let snake = inst.get_field("snake").expect("snake field");
-    let head = match snake.to_legacy() {
-        LegacyValue::List(rc) => rc.borrow()[0].clone(),
-        _ => panic!("snake should be a list"),
+    let head = if snake.is_list() {
+        let rc = snake.as_list();
+        let h = rc.borrow()[0].clone();
+        h
+    } else {
+        panic!("snake should be a list")
     };
-    let (hx, hy) = match head.to_legacy() {
-        LegacyValue::Tuple(elems) => match (&elems[0], &elems[1]).to_legacy() {
+    let (hx, hy) = if head.is_tuple() {
+let elems = head.as_tuple();
+match (&elems[0], &elems[1]).to_legacy() {
             (LegacyValue::Int(x), LegacyValue::Int(y)) => (x, y),
             _ => panic!("head should be (Int, Int)"),
-        },
-        _ => panic!("head should be a tuple"),
-    };
+        }
+} else {
+panic!("head should be a tuple")
+};
     // Snake starts at (10, 7) heading right; after one 150ms tick the
     // head should be at (11, 7).
     assert_eq!((hx, hy), (11, 7));
@@ -1055,7 +1065,7 @@ fn snake_dies_into_a_wall() {
     // time it walks off the east wall at x=20.
     let inst = scene.borrow();
     let score = inst.get_field("score").expect("score field");
-    assert!(matches!(score.to_legacy(), LegacyValue::Int(1)), "got: {score:?}");
+    assert!(score.is_int_or_boxed_int(), "got: {score:?}");
 }
 
 #[test]

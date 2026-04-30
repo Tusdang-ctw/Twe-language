@@ -123,13 +123,21 @@ fn seed_particle_emitter(
             }
             None => 16,
         };
-        let lifetime = match inst.get_field("lifetime").to_legacy() {
-            Some(LegacyValue::Float(f)) => f,
-            Some(LegacyValue::Int(n)) => n as f64,
-            Some(LegacyValue::Quantity { value, .. }) => value,
-            None => 1.0,
-            Some(other) => {
-                return Err(RuntimeError {
+        let lifetime = {
+let __opt = inst.get_field("lifetime");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_float() {
+let f = __t.as_float();
+f
+} else if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+n as f64
+} else if __t.is_quantity() {
+let (value, _) = __t.as_quantity();
+value
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                     line,
                     col,
                     message: format!(
@@ -138,8 +146,11 @@ fn seed_particle_emitter(
                     ),
                     help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
                 });
-            }
-        };
+}
+} else {
+1.0
+}
+};
         (count, lifetime, inst.class.clone())
     };
     let on_spawn = find_method(&class, "on_spawn");
@@ -202,12 +213,21 @@ fn tick_particle_emitter(
     dt: f64,
 ) -> Result<(), RuntimeError> {
     let on_update = find_method(class, "on_update");
-    let particles = match emitter
+    let particles = {
+let __opt = emitter
         .borrow()
-        .get_field("__particles").to_legacy() {
-        Some(LegacyValue::List(rc)) => rc,
-        _ => return Ok(()),
-    };
+        .get_field("__particles");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_list() {
+let rc = __t.as_list();
+rc
+} else {
+return Ok(())
+}
+} else {
+return Ok(())
+}
+};
     let snapshot: Vec<Value> = particles.borrow().clone();
     for p in &snapshot {
         if let Some(method) = on_update.clone() {
@@ -221,17 +241,38 @@ fn tick_particle_emitter(
                 0,
             )?;
         }
-        if let LegacyValue::Object(rc) = p.to_legacy() {
+        if p.is_object() {
+            let rc = p.as_object();
             let mut o = rc.borrow_mut();
-            let age = match o.get_field("age").to_legacy() {
-                Some(LegacyValue::Float(a)) => a + dt,
-                Some(LegacyValue::Int(a)) => a as f64 + dt,
-                _ => dt,
-            };
-            let lifetime = match o.get_field("lifetime").to_legacy() {
-                Some(LegacyValue::Float(l)) => l,
-                _ => 1.0,
-            };
+            let age = {
+let __opt = o.get_field("age");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_float() {
+let a = __t.as_float();
+a + dt
+} else if __t.is_int_or_boxed_int() {
+let a = __t.as_int();
+a as f64 + dt
+} else {
+dt
+}
+} else {
+dt
+}
+};
+            let lifetime = {
+let __opt = o.get_field("lifetime");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_float() {
+let l = __t.as_float();
+l
+} else {
+1.0
+}
+} else {
+1.0
+}
+};
             o.insert_field("age".to_string(), Value::from_float(age));
             let ratio = if lifetime > 0.0 {
                 (age / lifetime).clamp(0.0, 1.0)
@@ -242,15 +283,20 @@ fn tick_particle_emitter(
         }
     }
     // Drop dead particles.
-    particles.borrow_mut().retain(|p| match p.to_legacy() {
-        LegacyValue::Object(rc) => match rc.borrow().get_field("age").to_legacy() {
-            Some(LegacyValue::Float(age)) => match rc.borrow().get_field("lifetime").to_legacy() {
-                Some(LegacyValue::Float(lt)) => age < lt,
-                _ => true,
-            },
-            _ => true,
-        },
-        _ => true,
+    particles.borrow_mut().retain(|p| {
+        if p.is_object() {
+            let rc = p.as_object();
+            let age_opt = rc.borrow().get_field("age");
+            let lifetime_opt = rc.borrow().get_field("lifetime");
+            if let (Some(age_v), Some(lt_v)) = (age_opt, lifetime_opt) {
+                if age_v.is_float() && lt_v.is_float() {
+                    return age_v.as_float() < lt_v.as_float();
+                }
+            }
+            true
+        } else {
+            true
+        }
     });
     if particles.borrow().is_empty() {
         emitter.borrow_mut().despawned = true;
@@ -269,17 +315,27 @@ fn render_particle_emitter(
         return call_method(env, Value::from_instance(emitter.clone()), &method, &[], &[], 0, 0)
             .map(|_| ());
     }
-    let particles = match emitter
+    let particles = {
+let __opt = emitter
         .borrow()
-        .get_field("__particles").to_legacy() {
-        Some(LegacyValue::List(rc)) => rc,
-        _ => return Ok(()),
-    };
+        .get_field("__particles");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_list() {
+let rc = __t.as_list();
+rc
+} else {
+return Ok(())
+}
+} else {
+return Ok(())
+}
+};
     if !env.in_render {
         return Ok(());
     }
     for p in particles.borrow().iter() {
-        if let LegacyValue::Object(rc) = p.to_legacy() {
+        if p.is_object() {
+            let rc = p.as_object();
             let o = rc.borrow();
             let (px, py) = match o.get_field("pos").to_legacy() {
                 Some(LegacyValue::Tuple(elems)) if elems.len() >= 2 => (
@@ -288,11 +344,22 @@ fn render_particle_emitter(
                 ),
                 _ => (0.0, 0.0),
             };
-            let radius = match o.get_field("size").to_legacy() {
-                Some(LegacyValue::Float(f)) => f as f32,
-                Some(LegacyValue::Int(n)) => n as f32,
-                _ => 4.0,
-            };
+            let radius = {
+let __opt = o.get_field("size");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_float() {
+let f = __t.as_float();
+f as f32
+} else if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+n as f32
+} else {
+4.0
+}
+} else {
+4.0
+}
+};
             let color = match o.get_field("color").to_legacy() {
                 Some(LegacyValue::Tuple(elems)) if elems.len() >= 3 => {
                     let r = number_or_zero(&elems[0]) as f32;
@@ -314,18 +381,25 @@ fn render_particle_emitter(
 }
 
 fn number_or_zero(v: &Value) -> f64 {
-    match v.to_legacy() {
-        LegacyValue::Int(n) => n as f64,
-        LegacyValue::Float(f) => f,
-        LegacyValue::Quantity { value, .. } => value,
-        _ => 0.0,
-    }
+    if v.is_int_or_boxed_int() {
+let n = v.as_int();
+n as f64
+} else if v.is_float() {
+let f = v.as_float();
+f
+} else if v.is_quantity() {
+let (value, _) = v.as_quantity();
+value
+} else {
+0.0
+}
 }
 
 fn update_time_ambient(env: &mut Env, dt: f64) {
-    if let Some(LegacyValue::Object(rc)) = env.get("time").to_legacy() {
+    if let Some(__t) = (env.get("time")).as_ref() { if __t.is_object() { let rc = __t.as_object();
         rc.borrow_mut().insert_field("dt", Value::from_float(dt));
     }
+}
 }
 
 /// Look at `env.key_press` (an Object whose fields are bool flags set
@@ -335,22 +409,29 @@ fn dispatch_key_press(
     env: &mut Env,
     scene: &Rc<RefCell<Instance>>,
 ) -> Result<(), RuntimeError> {
-    let pressed = match env.get("key_press").to_legacy() {
-        Some(LegacyValue::Object(rc)) => {
-            let o = rc.borrow();
+    let pressed = {
+let __opt = env.get("key_press");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_object() {
+let rc = __t.as_object();
+let o = rc.borrow();
             o.fields
                 .iter()
                 .filter_map(|(k, v)| {
-                    if matches!(v.clone().to_legacy(), LegacyValue::Bool(true)) {
+                    if v.is_bool() && v.as_bool() {
                         Some(k.clone())
                     } else {
                         None
                     }
                 })
                 .collect::<Vec<_>>()
-        }
-        _ => return Ok(()),
-    };
+} else {
+return Ok(())
+}
+} else {
+return Ok(())
+}
+};
     if pressed.is_empty() {
         return Ok(());
     }
@@ -1182,13 +1263,13 @@ fn is_top_level_user_call(env: &Env, expr: &Expr) -> bool {
     };
     // Self-method takes precedence — those don't suspend in
     // session 2b (method-body wait deferred to a follow-on).
-    if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
+    if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
         let class = rc.borrow().class.clone();
         if find_method(&class, name).is_some() {
             return false;
         }
-    }
-    matches!(env.get(name).to_legacy(), Some(LegacyValue::Function(_)))
+    } }
+    env.get(name).as_ref().map_or(false, |t| t.is_function())
 }
 
 /// Run a `Stmt::Expr(Call)` whose callee is a user function,
@@ -1220,10 +1301,19 @@ fn run_user_call_resumable(
         }
         _ => unreachable!("guarded by is_top_level_user_call"),
     };
-    let def: Rc<FunctionDef> = match env.get(&name).to_legacy() {
-        Some(LegacyValue::Function(d)) => d.clone(),
-        _ => unreachable!("guarded by is_top_level_user_call"),
-    };
+    let def: Rc<FunctionDef> = {
+let __opt = env.get(&name);
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_function() {
+let d = __t.as_function();
+d.clone()
+} else {
+unreachable!("guarded by is_top_level_user_call")
+}
+} else {
+unreachable!("guarded by is_top_level_user_call")
+}
+};
 
     // Argument evaluation runs in the caller's scope before any
     // params are shadowed.
@@ -1380,17 +1470,22 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
 /// `self.ticks`. Without this, scene fields would only be reachable via
 /// explicit `self.x` syntax — verbose and unusual.
 fn lookup_name(env: &Env, name: &str) -> Option<Value> {
-    if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
-        if let Some(v) = rc.borrow().get_field(name) {
-            return Some(v);
+    if let Some(t) = env.self_value.as_ref() {
+        if t.is_instance() {
+            let rc = t.as_instance();
+            let v_opt = rc.borrow().get_field(name);
+            if let Some(v) = v_opt {
+                return Some(v);
+            }
         }
     }
     env.get(name)
 }
 
 fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Quantity { value: value, unit: unit } => match unit.as_str() {
+    if v.is_quantity() {
+let (value, unit) = v.as_quantity();
+match unit.as_str() {
             "s" => Ok(value),
             "ms" => Ok(value / 1000.0),
             "min" => Ok(value * 60.0),
@@ -1406,10 +1501,16 @@ fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeErr
                         .to_string(),
                 ),
             }),
-        },
-        LegacyValue::Float(f) => Ok(f),
-        LegacyValue::Int(n) => Ok(n as f64),
-        other => Err(RuntimeError {
+        }
+} else if v.is_float() {
+let f = v.as_float();
+Ok(f)
+} else if v.is_int_or_boxed_int() {
+let n = v.as_int();
+Ok(n as f64)
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line,
             col,
             message: format!(
@@ -1417,8 +1518,8 @@ fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeErr
                 other.type_name()
             ),
             help: Some("e.g. `every 100ms:` or `every 0.5s:`".to_string()),
-        }),
-    }
+        })
+}
 }
 
 fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
@@ -1563,10 +1664,12 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 message: format!("class '{class}' is not defined"),
                 help: Some(format!("declare it with `entity {class}:` first")),
             })?;
-            let class_rc = match class_val.to_legacy() {
-                LegacyValue::Class(c) => c,
-                other => {
-                    return Err(RuntimeError {
+            let class_rc = if class_val.is_class() {
+let c = class_val.as_class();
+c
+} else {
+let other = class_val.clone();
+return Err(RuntimeError {
                         line: *line,
                         col: *col,
                         message: format!(
@@ -1575,8 +1678,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                         ),
                         help: None,
                     });
-                }
-            };
+};
             let at_value = match at {
                 Some(expr) => Some(eval_expr(env, expr)?),
                 None => None,
@@ -1599,12 +1701,13 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
         }
         Stmt::Despawn { target, line, col } => {
             let v = eval_expr(env, target)?;
-            match v.to_legacy() {
-                LegacyValue::Instance(rc) => {
-                    rc.borrow_mut().despawned = true;
+            if v.is_instance() {
+let rc = v.as_instance();
+rc.borrow_mut().despawned = true;
                     Ok(())
-                }
-                other => Err(RuntimeError {
+} else {
+let other = v.clone();
+Err(RuntimeError {
                     line: *line,
                     col: *col,
                     message: format!(
@@ -1612,8 +1715,8 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                         other.type_name()
                     ),
                     help: None,
-                }),
-            }
+                })
+}
         }
         Stmt::DialogueDecl { name, body, .. } => {
             // Register the dialogue as a parameterless callable. We
@@ -1647,10 +1750,14 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     // (Wren-style), strings show themselves, anything
                     // else falls back to `display`. Output is a
                     // single line per `say`.
-                    let label = match &av.to_legacy() {
-                        LegacyValue::Instance(inst) => inst.borrow().class.name.clone(),
-                        LegacyValue::Str(s) => s.as_ref().clone(),
-                        other => other.display(),
+                    let label = if av.is_instance() {
+                        let inst = av.as_instance();
+                        let n = inst.borrow().class.name.clone();
+                        n
+                    } else if av.is_str() {
+                        av.as_string()
+                    } else {
+                        av.display()
                     };
                     env.out.push_str(&format!("{label}: {text_str}\n"));
                 }
@@ -1744,13 +1851,13 @@ fn eval_assign(
                 // Mutate the instance field if `name` is one (scope chain),
                 // else fall back to env. New `let` bindings are introduced
                 // by Stmt::Let, not by plain `name = value`.
-                if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
+                if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
                     let mut inst = rc.borrow_mut();
                     if inst.fields.contains_key(name) {
                         inst.insert_field(name.clone(), new_value);
                         return Ok(());
                     }
-                }
+                } }
                 env.set(name.clone(), new_value);
                 return Ok(());
             }
@@ -1761,21 +1868,21 @@ fn eval_assign(
                 help: Some(format!("declare it with `let {name} = ...` before use")),
             })?;
             let combined = compound(op, &current, &new_value, line, col)?;
-            if let Some(LegacyValue::Instance(rc)) = &env.self_value.to_legacy() {
+            if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
                 let mut inst = rc.borrow_mut();
                 if inst.fields.contains_key(name) {
                     inst.insert_field(name.clone(), combined);
                     return Ok(());
                 }
-            }
+            } }
             env.set(name.clone(), combined);
             Ok(())
         }
         AssignTarget::Field { object, name } => {
             let obj_val = eval_expr(env, object)?;
-            match obj_val.to_legacy() {
-                LegacyValue::Object(rc) => {
-                    let final_value = if matches!(op, AssignOp::Set) {
+            if obj_val.is_object() {
+let rc = obj_val.as_object();
+let final_value = if matches!(op, AssignOp::Set) {
                         new_value
                     } else {
                         let current = rc.borrow().get_field(name).ok_or_else(|| {
@@ -1792,7 +1899,8 @@ fn eval_assign(
                     // also updates `.x` and `.y`. Mirrors Example 1's
                     // tuple-as-Vector2 behavior.
                     if name == "pos" {
-                        if let LegacyValue::Tuple(elems) = &final_value.to_legacy() {
+                        if final_value.is_tuple() {
+                            let elems = &final_value.as_tuple();
                             if elems.len() >= 2 {
                                 let mut o = rc.borrow_mut();
                                 o.insert_field("x".to_string(), elems[0].clone());
@@ -1805,9 +1913,9 @@ fn eval_assign(
                         refresh_pos(&rc);
                     }
                     Ok(())
-                }
-                LegacyValue::Instance(rc) => {
-                    let final_value = if matches!(op, AssignOp::Set) {
+} else if obj_val.is_instance() {
+let rc = obj_val.as_instance();
+let final_value = if matches!(op, AssignOp::Set) {
                         new_value
                     } else {
                         let current = rc
@@ -1838,8 +1946,9 @@ fn eval_assign(
                     };
                     rc.borrow_mut().insert_field(name.clone(), final_value);
                     Ok(())
-                }
-                other => Err(RuntimeError {
+} else {
+let other = obj_val.clone();
+Err(RuntimeError {
                     line,
                     col,
                     message: format!(
@@ -1849,8 +1958,8 @@ fn eval_assign(
                     help: Some(
                         "only objects and class instances support field assignment".to_string(),
                     ),
-                }),
-            }
+                })
+}
         }
     }
 }
@@ -2056,8 +2165,9 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
 }
 
 fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, RuntimeError> {
-    match obj.to_legacy() {
-        LegacyValue::Tuple(elems) => match name {
+    if obj.is_tuple() {
+let elems = obj.as_tuple();
+match name {
             "x" if !elems.is_empty() => Ok(elems[0].clone()),
             "y" if elems.len() >= 2 => Ok(elems[1].clone()),
             "z" if elems.len() >= 3 => Ok(elems[2].clone()),
@@ -2070,8 +2180,10 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                         .to_string(),
                 ),
             }),
-        },
-        LegacyValue::List(rc) => match name {
+        }
+} else if obj.is_list() {
+let rc = obj.as_list();
+match name {
             "length" => Ok(Value::from_int(rc.borrow().len() as i64)),
             _ => Err(RuntimeError {
                 line,
@@ -2083,17 +2195,19 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                         .to_string(),
                 ),
             }),
-        },
-        LegacyValue::Object(rc) => rc.borrow().get_field(name).ok_or_else(|| {
-            RuntimeError {
-                line,
-                col,
-                message: format!("field '{name}' is not defined on this object"),
-                help: Some(format!("set it first with `obj.{name} = ...`")),
-            }
-        }),
-        LegacyValue::Instance(rc) => {
-            let inst = rc.borrow();
+        }
+} else if obj.is_object() {
+    let rc = obj.as_object();
+    let result = rc.borrow().get_field(name).ok_or_else(|| RuntimeError {
+        line,
+        col,
+        message: format!("field '{name}' is not defined on this object"),
+        help: Some(format!("set it first with `obj.{name} = ...`")),
+    });
+    result
+} else if obj.is_instance() {
+let rc = obj.as_instance();
+let inst = rc.borrow();
             if let Some(v) = inst.get_field(name) {
                 return Ok(v);
             }
@@ -2109,14 +2223,14 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 ),
                 help: None,
             })
-        }
-        _ => Err(RuntimeError {
+} else {
+Err(RuntimeError {
             line,
             col,
             message: format!("cannot read field on value of type {}", obj.type_name()),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 fn eval_call(
@@ -2133,7 +2247,7 @@ fn eval_call(
     // this, scene methods would only be reachable via `self.method()`
     // — verbose, and Snake-style code uses bare calls.
     if let Expr::Ident { name, .. } = callee {
-        if let Some(LegacyValue::Instance(rc)) = env.self_value.clone().to_legacy() {
+        if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
             let class = rc.borrow().class.clone();
             if let Some(method) = find_method(&class, name) {
                 let arg_vals = eval_args(env, args)?;
@@ -2148,14 +2262,15 @@ fn eval_call(
                     col,
                 );
             }
-        }
+        } }
     }
     // Method call: `recv.method(args)`. Resolved here (not via field_get)
     // because methods aren't first-class values yet.
     if let Expr::Field { object, name, .. } = callee {
         let recv = eval_expr(env, object)?;
         // List built-in methods.
-        if let LegacyValue::List(rc) = &recv.to_legacy() {
+        if recv.is_list() {
+            let rc = &recv.as_list();
             if !kwargs.is_empty() {
                 return Err(no_kwargs_error(&format!("list.{name}"), line, col));
             }
@@ -2163,7 +2278,8 @@ fn eval_call(
                 return Ok(v);
             }
         }
-        if let LegacyValue::Range { start: start, end: end, exclusive: exclusive } = &recv.to_legacy() {
+        if recv.is_range() {
+            let (start, end, exclusive) = &recv.as_range();
             if !kwargs.is_empty() {
                 return Err(no_kwargs_error(&format!("range.{name}"), line, col));
             }
@@ -2180,7 +2296,8 @@ fn eval_call(
                 return Ok(v);
             }
         }
-        if let LegacyValue::Instance(rc) = &recv.to_legacy() {
+        if recv.is_instance() {
+            let rc = &recv.as_instance();
             let class = rc.borrow().class.clone();
             if let Some(method) = find_method(&class, name) {
                 let arg_vals = eval_args(env, args)?;
@@ -2425,10 +2542,12 @@ fn range_method_call(
             }
             let v = eval_expr(env, &args[0])?;
             let upper = if exclusive { end } else { end + 1 };
-            let result = match v.to_legacy() {
-                LegacyValue::Int(n) => n >= start && n < upper,
-                _ => false,
-            };
+            let result = if v.is_int_or_boxed_int() {
+let n = v.as_int();
+n >= start && n < upper
+} else {
+false
+};
             Ok(Some(Value::from_bool(result)))
         }
         _ => Ok(None),
@@ -2443,9 +2562,9 @@ fn apply_call(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
-    match f.to_legacy() {
-        LegacyValue::Builtin { name: name, params: params, func: func } => {
-            if params.is_empty() {
+    if f.is_builtin() {
+let (name, params, func) = f.as_builtin();
+if params.is_empty() {
                 if !kwargs.is_empty() {
                     return Err(no_kwargs_error(name, line, col));
                 }
@@ -2461,10 +2580,12 @@ fn apply_call(
                 )?;
                 func(env, &bound)
             }
-        }
-        LegacyValue::Function(def) => call_function(env, &def, args, kwargs, line, col),
-        LegacyValue::Class(class) => {
-            if !args.is_empty() || !kwargs.is_empty() {
+} else if f.is_function() {
+let def = f.as_function();
+call_function(env, &def, args, kwargs, line, col)
+} else if f.is_class() {
+let class = f.as_class();
+if !args.is_empty() || !kwargs.is_empty() {
                 return Err(RuntimeError {
                     line,
                     col,
@@ -2481,16 +2602,17 @@ fn apply_call(
                 });
             }
             Ok(instantiate(class))
-        }
-        other => Err(RuntimeError {
+} else {
+let other = f.clone();
+Err(RuntimeError {
             line,
             col,
             message: format!("cannot call value of type {}", other.type_name()),
             help: Some(
                 "only functions, builtins, and class constructors are callable".to_string(),
             ),
-        }),
-    }
+        })
+}
 }
 
 fn call_function(
@@ -2678,20 +2800,21 @@ fn run_for(
 ) -> Result<(), RuntimeError> {
     let iter_val = eval_expr(env, iter)?;
     let saved = env.get(var);
-    let result = match iter_val.to_legacy() {
-        LegacyValue::Range { start: start, end: end, exclusive: exclusive } => {
-            let limit = if exclusive { end } else { end + 1 };
+    let result = if iter_val.is_range() {
+let (start, end, exclusive) = iter_val.as_range();
+let limit = if exclusive { end } else { end + 1 };
             run_for_iter(env, var, body, (start..limit).map(Value::from_int))
-        }
-        LegacyValue::List(rc) => {
-            let snapshot: Vec<Value> = rc.borrow().clone();
+} else if iter_val.is_list() {
+let rc = iter_val.as_list();
+let snapshot: Vec<Value> = rc.borrow().clone();
             run_for_iter(env, var, body, snapshot.into_iter())
-        }
-        LegacyValue::Tuple(elems) => {
-            let snapshot: Vec<Value> = elems.iter().cloned().collect();
+} else if iter_val.is_tuple() {
+let elems = iter_val.as_tuple();
+let snapshot: Vec<Value> = elems.iter().cloned().collect();
             run_for_iter(env, var, body, snapshot.into_iter())
-        }
-        other => Err(RuntimeError {
+} else {
+let other = iter_val.clone();
+Err(RuntimeError {
             line,
             col,
             message: format!(
@@ -2699,8 +2822,8 @@ fn run_for(
                 other.type_name()
             ),
             help: None,
-        }),
-    };
+        })
+};
     match saved {
         Some(v) => env.set(var.to_string(), v),
         None => env.remove(var),
@@ -2741,10 +2864,15 @@ fn eval_decl(
     col: u32,
 ) -> Result<(), RuntimeError> {
     let parent_class = if let Some(p) = parent {
-        match env.get(p).to_legacy() {
-            Some(LegacyValue::Class(c)) => Some(c.clone()),
-            Some(other) => {
-                return Err(RuntimeError {
+        {
+let __opt = env.get(p);
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_class() {
+let c = __t.as_class();
+Some(c.clone())
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                     line,
                     col,
                     message: format!(
@@ -2753,9 +2881,9 @@ fn eval_decl(
                     ),
                     help: None,
                 });
-            }
-            None => {
-                return Err(RuntimeError {
+}
+} else {
+return Err(RuntimeError {
                     line,
                     col,
                     message: format!("parent `{p}` is not defined"),
@@ -2763,8 +2891,8 @@ fn eval_decl(
                         "declare `{p}` with `entity {p}:` or `item {p}:` before extending it"
                     )),
                 });
-            }
-        }
+}
+}
     } else {
         None
     };
@@ -2867,10 +2995,15 @@ fn eval_decl(
     // Scenes auto-instantiate at declaration time and become the active
     // scene. There's only one active scene per program in v0.1.
     if matches!(kind, DeclKind::Scene) {
-        let inst = match instantiate(class.clone()).to_legacy() {
-            LegacyValue::Instance(rc) => rc,
-            _ => unreachable!("instantiate always returns Instance"),
-        };
+        let inst = {
+let __t = instantiate(class.clone());
+if __t.is_instance() {
+let rc = __t.as_instance();
+rc
+} else {
+unreachable!("instantiate always returns Instance")
+}
+};
         env.active_scene = Some(inst.clone());
         if let Some(start) = class.initial_state.clone() {
             enter_state(env, &inst, &start)?;
@@ -2917,21 +3050,33 @@ fn value_in(
     line: u32,
     col: u32,
 ) -> Result<bool, RuntimeError> {
-    match haystack.to_legacy() {
-        LegacyValue::List(rc) => Ok(rc.borrow().iter().any(|v| values_equal(v, needle))),
-        LegacyValue::Tuple(elems) => Ok(elems.iter().any(|v| values_equal(v, needle))),
-        LegacyValue::Range { start: start, end: end, exclusive: exclusive } => match needle.to_legacy() {
-            LegacyValue::Int(n) => {
-                let upper = if exclusive { end } else { end + 1 };
+    if haystack.is_list() {
+        let rc = haystack.as_list();
+        let answer = rc.borrow().iter().any(|v| values_equal(v, needle));
+        Ok(answer)
+} else if haystack.is_tuple() {
+let elems = haystack.as_tuple();
+Ok(elems.iter().any(|v| values_equal(v, needle)))
+} else if haystack.is_range() {
+let (start, end, exclusive) = haystack.as_range();
+if needle.is_int_or_boxed_int() {
+let n = needle.as_int();
+let upper = if exclusive { end } else { end + 1 };
                 Ok(n >= start && n < upper)
-            }
-            _ => Ok(false),
-        },
-        LegacyValue::Str(s) => match needle.to_legacy() {
-            LegacyValue::Str(sub) => Ok(s.contains(sub.as_ref())),
-            _ => Ok(false),
-        },
-        other => Err(RuntimeError {
+} else {
+Ok(false)
+}
+} else if haystack.is_str() {
+let s = haystack.as_string();
+if needle.is_str() {
+let sub = needle.as_string();
+Ok(s.contains(sub.as_str()))
+} else {
+Ok(false)
+}
+} else {
+let other = haystack.clone();
+Err(RuntimeError {
             line,
             col,
             message: format!(
@@ -2939,8 +3084,8 @@ fn value_in(
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 fn apply_arith(
@@ -2991,7 +3136,8 @@ fn apply_arith(
             return Ok(Value::from_tuple(Rc::new(out_elems)));
         }
     }
-    if let LegacyValue::Tuple(elems) = l.to_legacy() {
+    if l.is_tuple() {
+        let elems = l.as_tuple();
         if matches!(op, BinOp::Mul | BinOp::Div) && is_scalar(r) {
             let mut out_elems = Vec::with_capacity(elems.len());
             for x in elems.iter() {
@@ -3000,7 +3146,8 @@ fn apply_arith(
             return Ok(Value::from_tuple(Rc::new(out_elems)));
         }
     }
-    if let LegacyValue::Tuple(elems) = r.to_legacy() {
+    if r.is_tuple() {
+        let elems = r.as_tuple();
         if matches!(op, BinOp::Mul) && is_scalar(l) {
             let mut out_elems = Vec::with_capacity(elems.len());
             for y in elems.iter() {

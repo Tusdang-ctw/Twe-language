@@ -230,22 +230,22 @@ fn flush_vm_output(vm: &mut crate::vm::VM) {
 /// stdlib installs, so writes via `.borrow_mut()` here reach the
 /// running scene/state code through their globals.
 fn update_vm_input(vm: &crate::vm::VM) {
-    if let Some(LegacyValue::Object(rc)) = vm.get_global("key").to_legacy() {
+    if let Some(__t) = (vm.get_global("key")).as_ref() { if __t.is_object() { let rc = __t.as_object();
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
             o.insert_field(*name, Value::from_bool(is_key_down(*code)));
         }
-    }
-    if let Some(LegacyValue::Object(rc)) = vm.get_global("key_press").to_legacy() {
+    } }
+    if let Some(__t) = (vm.get_global("key_press")).as_ref() { if __t.is_object() { let rc = __t.as_object();
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
             o.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
         }
-    }
+    } }
     write_mouse_object(vm.get_global("mouse"));
     write_mouse_buttons(vm.get_global("mouse_held"), is_mouse_button_down);
     write_mouse_buttons(vm.get_global("mouse_press"), is_mouse_button_pressed);
-    if let Some(LegacyValue::Object(rc)) = vm.get_global("screen").to_legacy() {
+    if let Some(__t) = (vm.get_global("screen")).as_ref() { if __t.is_object() { let rc = __t.as_object();
         let mut o = rc.borrow_mut();
         let w = screen_width() as f64;
         let h = screen_height() as f64;
@@ -257,7 +257,7 @@ fn update_vm_input(vm: &crate::vm::VM) {
             "center".to_string(),
             Value::from_tuple(Rc::new(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)])),
         );
-    }
+    } }
 }
 
 /// Write current mouse position + accumulated wheel delta into the
@@ -343,21 +343,24 @@ fn flush_output(env: &mut Env) {
 }
 
 fn update_key_state(env: &mut Env) {
-    if let Some(LegacyValue::Object(rc)) = env.get("key").to_legacy() {
-        let mut o = rc.borrow_mut();
-        for (name, code) in KEYS {
-            o.insert_field(*name, Value::from_bool(is_key_down(*code)));
+    if let Some(t) = env.get("key") {
+        if t.is_object() {
+            let rc = t.as_object();
+            let mut o = rc.borrow_mut();
+            for (name, code) in KEYS {
+                o.insert_field(*name, Value::from_bool(is_key_down(*code)));
+            }
         }
     }
-    if let Some(LegacyValue::Object(rc)) = env.get("key_press").to_legacy() {
+    let kp = env.get("key_press");
+    if kp.as_ref().map_or(false, |t| t.is_object()) {
+        let rc = kp.unwrap().as_object();
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
             o.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
         }
     } else {
-        // Lazily install key_press as a sibling object next to key. The
-        // stdlib already installs it but legacy scripts loaded via
-        // hot-reload may have a stale env without it.
+        // Lazily install key_press as a sibling object next to key.
         let mut press = Object {
             fields: HashMap::new(),
             kind: "input",
@@ -370,18 +373,21 @@ fn update_key_state(env: &mut Env) {
             Value::from_object(Rc::new(RefCell::new(press))),
         );
     }
-    if let Some(LegacyValue::Object(rc)) = env.get("screen").to_legacy() {
-        let mut o = rc.borrow_mut();
-        let w = screen_width() as f64;
-        let h = screen_height() as f64;
-        o.insert_field(
-            "size".to_string(),
-            Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
-        );
-        o.insert_field(
-            "center".to_string(),
-            Value::from_tuple(Rc::new(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)])),
-        );
+    if let Some(t) = env.get("screen") {
+        if t.is_object() {
+            let rc = t.as_object();
+            let mut o = rc.borrow_mut();
+            let w = screen_width() as f64;
+            let h = screen_height() as f64;
+            o.insert_field(
+                "size".to_string(),
+                Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
+            );
+            o.insert_field(
+                "center".to_string(),
+                Value::from_tuple(Rc::new(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)])),
+            );
+        }
     }
     write_mouse_object(env.get("mouse"));
     write_mouse_buttons(env.get("mouse_held"), is_mouse_button_down);

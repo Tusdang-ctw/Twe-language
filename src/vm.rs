@@ -43,8 +43,9 @@ const MAX_CATCHUP_FIRES_PER_FRAME: u32 = 8;
 /// doesn't reach into the tree-walker's eval module. The two will
 /// reconcile when the value layer unifies (post-NaN-tagging).
 fn wait_duration_to_seconds(v: &Value, line: u32) -> Result<f64, RuntimeError> {
-    match v.to_legacy() {
-        LegacyValue::Quantity { value: value, unit: unit } => match unit.as_str() {
+    if v.is_quantity() {
+let (value, unit) = v.as_quantity();
+match unit.as_str() {
             "s" => Ok(value),
             "ms" => Ok(value / 1000.0),
             "min" => Ok(value * 60.0),
@@ -57,10 +58,16 @@ fn wait_duration_to_seconds(v: &Value, line: u32) -> Result<f64, RuntimeError> {
                 ),
                 help: None,
             }),
-        },
-        LegacyValue::Float(f) => Ok(f),
-        LegacyValue::Int(n) => Ok(n as f64),
-        other => Err(RuntimeError {
+        }
+} else if v.is_float() {
+let f = v.as_float();
+Ok(f)
+} else if v.is_int_or_boxed_int() {
+let n = v.as_int();
+Ok(n as f64)
+} else {
+let other = v.clone();
+Err(RuntimeError {
             line,
             col: 0,
             message: format!(
@@ -68,8 +75,8 @@ fn wait_duration_to_seconds(v: &Value, line: u32) -> Result<f64, RuntimeError> {
                 other.type_name()
             ),
             help: Some("e.g. `wait 0.5s` or `wait 250ms`".to_string()),
-        }),
-    }
+        })
+}
 }
 
 #[derive(Copy, Clone)]
@@ -268,9 +275,14 @@ impl VM {
         }
         macro_rules! read_string_const {
             ($idx:expr, $line:expr) => {{
-                match &current_func.chunk.constants[$idx].to_legacy() {
-                    LegacyValue::Str(s) => Ok(s.clone()),
-                    other => Err(RuntimeError {
+                {
+let __t = &current_func.chunk.constants[$idx];
+if __t.is_str() {
+let s = __t.as_string();
+Ok(s.clone())
+} else {
+let other = __t.clone();
+Err(RuntimeError {
                         line: $line,
                         col: 0,
                         message: format!(
@@ -280,8 +292,9 @@ impl VM {
                         help: Some(
                             "compiler bug — global ops must point at a Value::Str".to_string(),
                         ),
-                    }),
-                }
+                    })
+}
+}
             }};
         }
 
@@ -530,7 +543,7 @@ impl VM {
                         message: "vm: stack underflow on DefineGlobal".to_string(),
                         help: None,
                     })?;
-                    self.globals.insert((*name).clone(), tagged);
+                    self.globals.insert(name, tagged);
                 }
                 OpCode::GetGlobal => {
                     let idx = read_byte!() as usize;
@@ -566,7 +579,7 @@ impl VM {
                         message: "vm: stack underflow on SetGlobal".to_string(),
                         help: None,
                     })?;
-                    self.globals.insert((*name).clone(), tagged);
+                    self.globals.insert(name, tagged);
                 }
                 OpCode::Call => {
                     let arg_count = read_byte!() as usize;
@@ -628,10 +641,12 @@ impl VM {
                     let parts = self.pop_n(n, line)?;
                     let mut out = String::new();
                     for p in &parts {
-                        match p.to_legacy() {
-                            LegacyValue::Str(s) => out.push_str(s.as_str()),
-                            other => {
-                                return Err(RuntimeError {
+                        if p.is_str() {
+let s = p.as_string();
+out.push_str(s.as_str())
+} else {
+let other = p.clone();
+return Err(RuntimeError {
                                     line,
                                     col: 0,
                                     message: format!(
@@ -644,8 +659,7 @@ impl VM {
                                             .to_string(),
                                     ),
                                 });
-                            }
-                        }
+}
                     }
                     self.push(Value::from_string(out));
                 }
@@ -672,10 +686,12 @@ impl VM {
                 }
                 OpCode::InitScene => {
                     let class_val = self.pop()?;
-                    let class = match class_val.to_legacy() {
-                        LegacyValue::BcClass(c) => c,
-                        other => {
-                            return Err(RuntimeError {
+                    let class = if class_val.is_bc_class() {
+let c = class_val.as_bc_class();
+c
+} else {
+let other = class_val.clone();
+return Err(RuntimeError {
                                 line,
                                 col: 0,
                                 message: format!(
@@ -684,12 +700,16 @@ impl VM {
                                 ),
                                 help: Some("compiler bug".to_string()),
                             });
-                        }
-                    };
-                    let inst = match instantiate_bc(class.clone()).to_legacy() {
-                        LegacyValue::BcInstance(rc) => rc,
-                        _ => unreachable!(),
-                    };
+};
+                    let inst = {
+let __t = instantiate_bc(class.clone());
+if __t.is_bc_instance() {
+let rc = __t.as_bc_instance();
+rc
+} else {
+unreachable!()
+}
+};
                     self.active_scene = Some(inst.clone());
                     if let Some(start) = class.initial_state.clone() {
                         // enter_state runs nested invocations via
@@ -703,10 +723,12 @@ impl VM {
                     let with_at = read_byte!() != 0;
                     let class_val = self.pop()?;
                     let at_value = if with_at { Some(self.pop()?) } else { None };
-                    let class = match class_val.to_legacy() {
-                        LegacyValue::BcClass(c) => c,
-                        other => {
-                            return Err(RuntimeError {
+                    let class = if class_val.is_bc_class() {
+let c = class_val.as_bc_class();
+c
+} else {
+let other = class_val.clone();
+return Err(RuntimeError {
                                 line,
                                 col: 0,
                                 message: format!(
@@ -715,12 +737,16 @@ impl VM {
                                 ),
                                 help: None,
                             });
-                        }
-                    };
-                    let inst = match instantiate_bc(class.clone()).to_legacy() {
-                        LegacyValue::BcInstance(rc) => rc,
-                        _ => unreachable!(),
-                    };
+};
+                    let inst = {
+let __t = instantiate_bc(class.clone());
+if __t.is_bc_instance() {
+let rc = __t.as_bc_instance();
+rc
+} else {
+unreachable!()
+}
+};
                     if let Some(at) = at_value.clone() {
                         inst.borrow_mut().insert_field("pos".to_string(), at);
                     }
@@ -736,12 +762,12 @@ impl VM {
                 }
                 OpCode::Despawn => {
                     let target = self.pop()?;
-                    match target.to_legacy() {
-                        LegacyValue::BcInstance(rc) => {
-                            rc.borrow_mut().despawned = true;
-                        }
-                        other => {
-                            return Err(RuntimeError {
+                    if target.is_bc_instance() {
+let rc = target.as_bc_instance();
+rc.borrow_mut().despawned = true;
+} else {
+let other = target.clone();
+return Err(RuntimeError {
                                 line,
                                 col: 0,
                                 message: format!(
@@ -750,23 +776,22 @@ impl VM {
                                 ),
                                 help: None,
                             });
-                        }
-                    }
+}
                 }
                 OpCode::Transition => {
                     let idx = read_byte!() as usize;
                     let target = read_string_const!(idx, line)?;
-                    self.transitioning = Some((*target).clone());
+                    self.transitioning = Some(target);
                 }
                 OpCode::SetOnUpdate => {
                     let idx = read_byte!() as usize;
                     let value = current_func.chunk.constants[idx].clone();
-                    match value.to_legacy() {
-                        LegacyValue::BcFunction(func) => {
-                            self.on_update = Some(func);
-                        }
-                        other => {
-                            return Err(RuntimeError {
+                    if value.is_bc_function() {
+let func = value.as_bc_function();
+self.on_update = Some(func);
+} else {
+let other = value.clone();
+return Err(RuntimeError {
                                 line,
                                 col: 0,
                                 message: format!(
@@ -775,8 +800,7 @@ impl VM {
                                 ),
                                 help: Some("compiler bug".to_string()),
                             });
-                        }
-                    }
+}
                 }
                 OpCode::Invoke => {
                     let name_idx = read_byte!() as usize;
@@ -812,33 +836,33 @@ impl VM {
                         }
                     };
                     let iter_value = self.slot_get(abs_iter).unwrap_or(Value::NIL);
-                    let next = match iter_value.to_legacy() {
-                        LegacyValue::Range { start, end, exclusive } => {
-                            let limit = if exclusive { end } else { end + 1 };
+                    let next = if iter_value.is_range() {
+let (start, end, exclusive) = iter_value.as_range();
+let limit = if exclusive { end } else { end + 1 };
                             let cur = start + counter;
                             if cur < limit {
                                 Some(Value::from_int(cur))
                             } else {
                                 None
                             }
-                        }
-                        LegacyValue::List(rc) => {
-                            let v = rc.borrow();
+} else if iter_value.is_list() {
+let rc = iter_value.as_list();
+let v = rc.borrow();
                             if (counter as usize) < v.len() {
                                 Some(v[counter as usize].clone())
                             } else {
                                 None
                             }
-                        }
-                        LegacyValue::Tuple(elems) => {
-                            if (counter as usize) < elems.len() {
+} else if iter_value.is_tuple() {
+let elems = iter_value.as_tuple();
+if (counter as usize) < elems.len() {
                                 Some(elems[counter as usize].clone())
                             } else {
                                 None
                             }
-                        }
-                        other => {
-                            return Err(RuntimeError {
+} else {
+let other = iter_value.clone();
+return Err(RuntimeError {
                                 line,
                                 col: 0,
                                 message: format!(
@@ -848,8 +872,7 @@ impl VM {
                                 ),
                                 help: None,
                             });
-                        }
-                    };
+};
                     match next {
                         Some(elem) => {
                             self.slot_set(abs_counter, Value::from_int(counter + 1));
@@ -1047,7 +1070,7 @@ impl VM {
                 .fields
                 .iter()
                 .filter_map(|(k, v)| {
-                    if matches!(v.clone().to_legacy(), LegacyValue::Bool(true)) {
+                    if v.is_bool() && v.as_bool() {
                         Some(k.clone())
                     } else {
                         None
@@ -1117,13 +1140,21 @@ impl VM {
                 }
                 None => 16,
             };
-            let lifetime = match inst.get_field("lifetime").to_legacy() {
-                Some(LegacyValue::Float(f)) => f,
-                Some(LegacyValue::Int(n)) => n as f64,
-                Some(LegacyValue::Quantity { value, .. }) => value,
-                None => 1.0,
-                Some(other) => {
-                    return Err(RuntimeError {
+            let lifetime = {
+let __opt = inst.get_field("lifetime");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_float() {
+let f = __t.as_float();
+f
+} else if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+n as f64
+} else if __t.is_quantity() {
+let (value, _) = __t.as_quantity();
+value
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                         line,
                         col: 0,
                         message: format!(
@@ -1132,8 +1163,11 @@ impl VM {
                         ),
                         help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
                     });
-                }
-            };
+}
+} else {
+1.0
+}
+};
             let on_spawn = inst.class.methods.get("on_spawn").cloned();
             (count, lifetime, on_spawn)
         };
@@ -1170,10 +1204,19 @@ impl VM {
     ) -> Result<(), RuntimeError> {
         let class = emitter.borrow().class.clone();
         let on_update = class.methods.get("on_update").cloned();
-        let particles = match emitter.borrow().get_field("__particles").to_legacy() {
-            Some(LegacyValue::List(rc)) => rc,
-            _ => return Ok(()),
-        };
+        let particles = {
+let __opt = emitter.borrow().get_field("__particles");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_list() {
+let rc = __t.as_list();
+rc
+} else {
+return Ok(())
+}
+} else {
+return Ok(())
+}
+};
         let snapshot: Vec<Value> = particles.borrow().clone();
         for p in &snapshot {
             if let Some(method) = on_update.clone() {
@@ -1183,17 +1226,38 @@ impl VM {
                     &[p.clone(), Value::from_float(dt)],
                 )?;
             }
-            if let LegacyValue::Object(rc) = p.to_legacy() {
+            if p.is_object() {
+                let rc = p.as_object();
                 let mut o = rc.borrow_mut();
-                let age = match o.get_field("age").to_legacy() {
-                    Some(LegacyValue::Float(a)) => a + dt,
-                    Some(LegacyValue::Int(a)) => a as f64 + dt,
-                    _ => dt,
-                };
-                let lifetime = match o.get_field("lifetime").to_legacy() {
-                    Some(LegacyValue::Float(l)) => l,
-                    _ => 1.0,
-                };
+                let age = {
+let __opt = o.get_field("age");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_float() {
+let a = __t.as_float();
+a + dt
+} else if __t.is_int_or_boxed_int() {
+let a = __t.as_int();
+a as f64 + dt
+} else {
+dt
+}
+} else {
+dt
+}
+};
+                let lifetime = {
+let __opt = o.get_field("lifetime");
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_float() {
+let l = __t.as_float();
+l
+} else {
+1.0
+}
+} else {
+1.0
+}
+};
                 o.insert_field("age", Value::from_float(age));
                 let ratio = if lifetime > 0.0 {
                     (age / lifetime).clamp(0.0, 1.0)
@@ -1204,15 +1268,20 @@ impl VM {
             }
         }
         // Drop dead particles.
-        particles.borrow_mut().retain(|p| match p.to_legacy() {
-            LegacyValue::Object(rc) => match rc.borrow().get_field("age").to_legacy() {
-                Some(LegacyValue::Float(age)) => match rc.borrow().get_field("lifetime").to_legacy() {
-                    Some(LegacyValue::Float(lt)) => age < lt,
-                    _ => true,
-                },
-                _ => true,
-            },
-            _ => true,
+        particles.borrow_mut().retain(|p| {
+            if p.is_object() {
+                let rc = p.as_object();
+                let age_opt = rc.borrow().get_field("age");
+                let lt_opt = rc.borrow().get_field("lifetime");
+                if let (Some(age_v), Some(lt_v)) = (age_opt, lt_opt) {
+                    if age_v.is_float() && lt_v.is_float() {
+                        return age_v.as_float() < lt_v.as_float();
+                    }
+                }
+                true
+            } else {
+                true
+            }
         });
         if particles.borrow().is_empty() {
             emitter.borrow_mut().despawned = true;
@@ -1518,10 +1587,15 @@ impl VM {
         args: &[Value],
         line: u32,
     ) -> Result<Value, RuntimeError> {
-        let class = match args.first().to_legacy() {
-            Some(LegacyValue::BcClass(c)) => c.clone(),
-            Some(other) => {
-                return Err(RuntimeError {
+        let class = {
+let __opt = args.first();
+if let Some(__t) = (__opt).as_ref() {
+if __t.is_bc_class() {
+let c = __t.as_bc_class();
+c.clone()
+} else {
+let other = __t.clone();
+return Err(RuntimeError {
                     line,
                     col: 0,
                     message: format!(
@@ -1530,16 +1604,16 @@ impl VM {
                     ),
                     help: None,
                 });
-            }
-            None => {
-                return Err(RuntimeError {
+}
+} else {
+return Err(RuntimeError {
                     line,
                     col: 0,
                     message: format!("entities.{name} expected 1 argument, got 0"),
                     help: None,
                 });
-            }
-        };
+}
+};
         if args.len() != 1 {
             return Err(RuntimeError {
                 line,
@@ -1812,9 +1886,9 @@ impl VM {
                 
                 .collect();
             self.stack.pop(); // drop the receiver
-            let result = match field.to_legacy() {
-                LegacyValue::Builtin { name: bname, params: params, func: func } => {
-                    if !params.is_empty() && args.len() != params.len() {
+            let result = if field.is_builtin() {
+let (bname, params, func) = field.as_builtin();
+if !params.is_empty() && args.len() != params.len() {
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -1827,9 +1901,9 @@ impl VM {
                         });
                     }
                     func(&mut self.builtin_env, &args)?
-                }
-                other => {
-                    return Err(RuntimeError {
+} else {
+let other = field.clone();
+return Err(RuntimeError {
                         line,
                         col: 0,
                         message: format!(
@@ -1838,8 +1912,7 @@ impl VM {
                         ),
                         help: None,
                     });
-                }
-            };
+};
             self.push(result);
             return Ok(());
         }
@@ -1895,18 +1968,21 @@ impl VM {
 
     fn unary_neg(&mut self, line: u32) -> Result<(), RuntimeError> {
         let v = self.pop()?;
-        let result = match v.to_legacy() {
-            LegacyValue::Int(n) => Value::from_int(-n),
-            LegacyValue::Float(f) => Value::from_float(-f),
-            other => {
-                return Err(RuntimeError {
+        let result = if v.is_int_or_boxed_int() {
+let n = v.as_int();
+Value::from_int(-n)
+} else if v.is_float() {
+let f = v.as_float();
+Value::from_float(-f)
+} else {
+let other = v.clone();
+return Err(RuntimeError {
                     line,
                     col: 0,
                     message: format!("unary `-` is not defined on {}", other.type_name()),
                     help: None,
                 });
-            }
-        };
+};
         self.push(result);
         Ok(())
     }
@@ -2023,7 +2099,8 @@ fn apply_arith(op: ArithOp, l: &Value, r: &Value, line: u32) -> Result<Value, Ru
         }
     }
     // Tuple * / / scalar.
-    if let LegacyValue::Tuple(elems) = l.to_legacy() {
+    if l.is_tuple() {
+        let elems = l.as_tuple();
         if matches!(op, ArithOp::Mul | ArithOp::Div) && is_scalar(r) {
             let mut out = Vec::with_capacity(elems.len());
             for x in elems.iter() {
@@ -2033,7 +2110,8 @@ fn apply_arith(op: ArithOp, l: &Value, r: &Value, line: u32) -> Result<Value, Ru
         }
     }
     // scalar * Tuple.
-    if let LegacyValue::Tuple(elems) = r.to_legacy() {
+    if r.is_tuple() {
+        let elems = r.as_tuple();
         if matches!(op, ArithOp::Mul) && is_scalar(l) {
             let mut out = Vec::with_capacity(elems.len());
             for y in elems.iter() {
@@ -2130,8 +2208,9 @@ fn index_get(obj: &Value, idx: &Value, line: u32) -> Result<Value, RuntimeError>
 /// reaches: tuples, lists, BcInstances, and Objects (the latter
 /// covers module builtins like `math`, `time`, `key`).
 fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> {
-    match obj.to_legacy() {
-        LegacyValue::Tuple(elems) => match name {
+    if obj.is_tuple() {
+let elems = obj.as_tuple();
+match name {
             "x" if !elems.is_empty() => Ok(elems[0].clone()),
             "y" if elems.len() >= 2 => Ok(elems[1].clone()),
             "z" if elems.len() >= 3 => Ok(elems[2].clone()),
@@ -2144,8 +2223,10 @@ fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> 
                         .to_string(),
                 ),
             }),
-        },
-        LegacyValue::List(rc) => match name {
+        }
+} else if obj.is_list() {
+let rc = obj.as_list();
+match name {
             "length" => Ok(Value::from_int(rc.borrow().len() as i64)),
             _ => Err(RuntimeError {
                 line,
@@ -2157,9 +2238,10 @@ fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> 
                         .to_string(),
                 ),
             }),
-        },
-        LegacyValue::BcInstance(rc) => {
-            let inst = rc.borrow();
+        }
+} else if obj.is_bc_instance() {
+let rc = obj.as_bc_instance();
+let inst = rc.borrow();
             inst.get_field(name).ok_or_else(|| RuntimeError {
                 line,
                 col: 0,
@@ -2169,16 +2251,21 @@ fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> 
                 ),
                 help: None,
             })
-        }
-        LegacyValue::Object(rc) => rc.borrow().get_field(name).ok_or_else(|| {
-            RuntimeError {
-                line,
-                col: 0,
-                message: format!("module `{}` has no field '{name}'", rc.borrow().kind),
-                help: None,
-            }
-        }),
-        other => Err(RuntimeError {
+} else if obj.is_object() {
+    let rc = obj.as_object();
+    let result = {
+        let borrowed = rc.borrow();
+        borrowed.get_field(name).ok_or_else(|| RuntimeError {
+            line,
+            col: 0,
+            message: format!("module `{}` has no field '{name}'", borrowed.kind),
+            help: None,
+        })
+    };
+    result
+} else {
+let other = obj.clone();
+Err(RuntimeError {
             line,
             col: 0,
             message: format!(
@@ -2186,23 +2273,24 @@ fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> 
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 /// `recv.name = value`. BcInstance stores in its fields HashMap;
 /// Object likewise. Other receivers error.
 fn field_set(recv: &Value, name: &str, value: Value, line: u32) -> Result<(), RuntimeError> {
-    match recv.to_legacy() {
-        LegacyValue::BcInstance(rc) => {
-            rc.borrow_mut().insert_field(name.to_string(), value);
+    if recv.is_bc_instance() {
+let rc = recv.as_bc_instance();
+rc.borrow_mut().insert_field(name.to_string(), value);
             Ok(())
-        }
-        LegacyValue::Object(rc) => {
-            rc.borrow_mut().insert_field(name.to_string(), value);
+} else if recv.is_object() {
+let rc = recv.as_object();
+rc.borrow_mut().insert_field(name.to_string(), value);
             Ok(())
-        }
-        other => Err(RuntimeError {
+} else {
+let other = recv.clone();
+Err(RuntimeError {
             line,
             col: 0,
             message: format!(
@@ -2210,8 +2298,8 @@ fn field_set(recv: &Value, name: &str, value: Value, line: u32) -> Result<(), Ru
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 /// Walk the class's defaults to materialise a fresh instance.
@@ -2241,21 +2329,33 @@ fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
 
 /// Mirrors `eval::value_in`. List/Tuple/Range/Str membership.
 fn value_in(needle: &Value, haystack: &Value, line: u32) -> Result<bool, RuntimeError> {
-    match haystack.to_legacy() {
-        LegacyValue::List(rc) => Ok(rc.borrow().iter().any(|v| values_equal(v, needle))),
-        LegacyValue::Tuple(elems) => Ok(elems.iter().any(|v| values_equal(v, needle))),
-        LegacyValue::Range { start: start, end: end, exclusive: exclusive } => match needle.to_legacy() {
-            LegacyValue::Int(n) => {
-                let upper = if exclusive { end } else { end + 1 };
+    if haystack.is_list() {
+        let rc = haystack.as_list();
+        let answer = rc.borrow().iter().any(|v| values_equal(v, needle));
+        Ok(answer)
+} else if haystack.is_tuple() {
+let elems = haystack.as_tuple();
+Ok(elems.iter().any(|v| values_equal(v, needle)))
+} else if haystack.is_range() {
+let (start, end, exclusive) = haystack.as_range();
+if needle.is_int_or_boxed_int() {
+let n = needle.as_int();
+let upper = if exclusive { end } else { end + 1 };
                 Ok(n >= start && n < upper)
-            }
-            _ => Ok(false),
-        },
-        LegacyValue::Str(s) => match needle.to_legacy() {
-            LegacyValue::Str(sub) => Ok(s.contains(sub.as_ref())),
-            _ => Ok(false),
-        },
-        other => Err(RuntimeError {
+} else {
+Ok(false)
+}
+} else if haystack.is_str() {
+let s = haystack.as_string();
+if needle.is_str() {
+let sub = needle.as_string();
+Ok(s.contains(sub.as_str()))
+} else {
+Ok(false)
+}
+} else {
+let other = haystack.clone();
+Err(RuntimeError {
             line,
             col: 0,
             message: format!(
@@ -2263,8 +2363,8 @@ fn value_in(needle: &Value, haystack: &Value, line: u32) -> Result<bool, Runtime
                 other.type_name()
             ),
             help: None,
-        }),
-    }
+        })
+}
 }
 
 fn list_method(
@@ -2380,10 +2480,15 @@ fn range_method(
                 });
             }
             let upper = if exclusive { end } else { end + 1 };
-            let result = match args[0].to_legacy() {
-                LegacyValue::Int(n) => n >= start && n < upper,
-                _ => false,
-            };
+            let result = {
+let __t = &args[0];
+if __t.is_int_or_boxed_int() {
+let n = __t.as_int();
+n >= start && n < upper
+} else {
+false
+}
+};
             Ok(Value::from_bool(result))
         }
         _ => Err(RuntimeError {
@@ -2495,9 +2600,12 @@ mod tests {
     #[test]
     fn vm_concatenates_strings_with_plus() {
         let v = run_expr(r#""hello, " + "world""#).expect("ok");
-        match v.to_legacy() {
-            LegacyValue::Str(s) => assert_eq!(s.as_ref(), "hello, world"),
-            other => panic!("want Str, got {other:?}"),
+        if v.is_str() {
+            let s = v.as_string();
+            assert_eq!(s.as_str(), "hello, world");
+        } else {
+            let other = v.clone();
+            panic!("want Str, got {other:?}");
         }
     }
 
@@ -3607,11 +3715,12 @@ mod tests {
             // Simulate a key being held down each frame; the tree-
             // walker's matching test does the same single-set then
             // ticks repeatedly.
-            if let Some(LegacyValue::Object(rc)) = vm.get_global("key_press").to_legacy() {
+            if let Some(__t) = (vm.get_global("key_press")).as_ref() { if __t.is_object() { let rc = __t.as_object();
                 rc.borrow_mut()
                     .insert_field(key.to_string(), Value::TRUE);
             }
             vm.tick(dt)?;
+        }
         }
         Ok(std::mem::take(&mut vm.out))
     }
@@ -3674,9 +3783,19 @@ mod tests {
         vm.run(&chunk).expect("run");
         assert_eq!(vm.active_entities.len(), 1);
         let inst = vm.active_entities[0].borrow();
-        let n = match inst.get_field("__particles").to_legacy() {
-            Some(LegacyValue::List(rc)) => rc.borrow().len(),
-            _ => panic!("__particles should be a list"),
+        let n = {
+            let __opt = inst.get_field("__particles");
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_list() {
+                    let rc = __t.as_list();
+                    let l = rc.borrow().len();
+                    l
+                } else {
+                    panic!("__particles should be a list")
+                }
+            } else {
+                panic!("__particles should be a list")
+            }
         };
         assert_eq!(n, 4);
     }
@@ -3718,14 +3837,30 @@ mod tests {
         vm.run(&chunk).expect("run");
         vm.tick(0.016).expect("tick");
         let inst = vm.active_entities[0].borrow();
-        let particles = match inst.get_field("__particles").to_legacy() {
-            Some(LegacyValue::List(rc)) => rc.borrow().clone(),
-            _ => panic!("__particles missing"),
+        let particles = {
+            let __opt = inst.get_field("__particles");
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_list() {
+                    let rc = __t.as_list();
+                    let v = rc.borrow().clone();
+                    v
+                } else {
+                    panic!("__particles missing")
+                }
+            } else {
+                panic!("__particles missing")
+            }
         };
         assert_eq!(particles.len(), 1);
-        let size = match &particles[0].to_legacy() {
-            LegacyValue::Object(rc) => rc.borrow().get_field("size"),
-            _ => panic!("particle should be Object"),
+        let size = {
+            let __t = &particles[0];
+            if __t.is_object() {
+                let rc = __t.as_object();
+                let v = rc.borrow().get_field("size");
+                v
+            } else {
+                panic!("particle should be Object")
+            }
         };
         assert!(matches!(size.to_legacy(), Some(LegacyValue::Float(f)) if f == 99.0), "size = {size:?}");
     }
