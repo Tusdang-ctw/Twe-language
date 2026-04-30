@@ -1,0 +1,59 @@
+# v0.2 session 6 — tilemap demo.
+#
+# A small dungeon room rendered tile-by-tile, plus a hero blob
+# that you move with WASD. Walls block movement (queried via
+# `tilemap_solid_at`); water tiles slow you down.
+#
+# Run with `twec play examples/tilemap_demo.twe`.
+#
+# This is the stdlib-builtin form of tilemap support. The
+# language-level `tilemap Name:` block from Example 9 gets a
+# parser pass in a follow-on session — same runtime, nicer
+# syntax.
+
+let layout = "################\n#..............#\n#...~~.........#\n#....~~~.......#\n#..............#\n#..............#\n################"
+
+let map = tilemap(
+    layout: layout,
+    tile_size: 24,
+    tiles: [
+        (".", "floor", ["walkable"]),
+        ("#", "wall", ["solid"]),
+        ("~", "water", ["walkable", "slow"]),
+    ]
+)
+
+var hero_x = 60.0
+var hero_y = 60.0
+let speed = 120.0
+
+on update(dt):
+    var dx = 0.0
+    var dy = 0.0
+    if key.a or key.left:
+        dx = dx - 1.0
+    if key.d or key.right:
+        dx = dx + 1.0
+    if key.w or key.up:
+        dy = dy - 1.0
+    if key.s or key.down:
+        dy = dy + 1.0
+
+    # Slow down on water tiles. Halve speed when standing on a
+    # tile tagged `slow` (the trait the tilemap renderer knows about).
+    var v = speed
+    if tilemap_at(map, hero_x, hero_y) == "water":
+        v = speed * 0.5
+
+    # Try the move on each axis separately so we slide along walls
+    # rather than getting stuck on a corner.
+    var nx = hero_x + dx * v * dt
+    if not tilemap_solid_at(map, nx, hero_y):
+        hero_x = nx
+    var ny = hero_y + dy * v * dt
+    if not tilemap_solid_at(map, hero_x, ny):
+        hero_y = ny
+
+on render():
+    tilemap_render(map, at: (0, 0))
+    circle(at: (hero_x, hero_y), radius: 8, color: color.yellow)

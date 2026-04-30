@@ -337,6 +337,17 @@ note.
       is forward-compatible if a richer backend lands later.
       `examples/audio_demo.twe` exercises the new surface.
       See `docs/changes/2026-04-30-v0.2-session-5-audio-v2.md`.
+- [x] **Session 6 — tilemap (stdlib-builtin form)** (2026-04-30).
+      `tilemap(layout, tile_size, tiles)`, `tilemap_render(map, at)`,
+      `tilemap_at(map, x, y)`, `tilemap_solid_at(map, x, y)`.
+      Returns an Object with `width` / `height` / `tile_size` /
+      `cells` / `tiles` introspection fields. Per-trait colored
+      rect renderer (sprite-atlas form rides Phase 9). Closes the
+      Phase 8 tilemap line item; `tilemap Name:` block syntax
+      from Example 9 still pending — same runtime, follow-on
+      parser pass. `examples/tilemap_demo.twe` demonstrates the
+      slide-along-walls collision pattern via `tilemap_solid_at`.
+      See `docs/changes/2026-04-30-v0.2-session-6-tilemap.md`.
 
 ## Triage backlog
 

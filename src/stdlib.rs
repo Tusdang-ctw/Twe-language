@@ -161,6 +161,7 @@ pub fn install(env: &mut Env) {
     install_time(env);
     install_sound(env);
     install_3d(env);
+    install_tilemap(env);
 }
 
 fn install_sound(env: &mut Env) {
@@ -903,6 +904,534 @@ fn install_screen(env: &mut Env) {
             kind: "module",
         }))),
     );
+}
+
+fn install_tilemap(env: &mut Env) {
+    // v0.2 session 6: tilemap surface as stdlib builtins. The
+    // `tilemap Name:` block syntax from Example 9 needs lexer +
+    // parser hooks; that lands in a follow-on session. The
+    // builtin form is enough to ship rendering + collision
+    // queries today.
+    env.set(
+        "tilemap".to_string(),
+        Value::Builtin {
+            name: "tilemap",
+            params: &["layout", "tile_size", "tiles"],
+            func: tilemap_build,
+        },
+    );
+    env.set(
+        "tilemap_render".to_string(),
+        Value::Builtin {
+            name: "tilemap_render",
+            params: &["map", "at"],
+            func: tilemap_render,
+        },
+    );
+    env.set(
+        "tilemap_at".to_string(),
+        Value::Builtin {
+            name: "tilemap_at",
+            params: &["map", "x", "y"],
+            func: tilemap_at,
+        },
+    );
+    env.set(
+        "tilemap_solid_at".to_string(),
+        Value::Builtin {
+            name: "tilemap_solid_at",
+            params: &["map", "x", "y"],
+            func: tilemap_solid_at,
+        },
+    );
+}
+
+/// `tilemap(layout, tile_size, tiles)` — build a tilemap value
+/// from a multi-line layout string + tile spec list. Returns an
+/// `Object { kind: "tilemap" }` with fields:
+///   - `layout` (string): the original layout for inspection.
+///   - `tile_size` (int): pixels per tile, square.
+///   - `width`, `height` (int): grid dimensions in tiles.
+///   - `cells` (List of List of String): per-row, per-column
+///     tile name. Empty string for chars not in the spec.
+///   - `tiles` (Object): name → spec Object{name, traits: List<String>}.
+///
+/// `tiles` argument is a list of tuples `(char, name, traits)`
+/// where `traits` is a list of trait-name strings. Example:
+///
+/// ```twe
+/// let map = tilemap(
+///     layout: "...\n#.#",
+///     tile_size: 16,
+///     tiles: [
+///         (".", "floor", ["walkable"]),
+///         ("#", "wall", ["solid"]),
+///     ]
+/// )
+/// ```
+///
+/// v0.2 session 6.
+fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "tilemap")?;
+    let layout = match &args[0] {
+        Value::Str(s) => (**s).clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "tilemap.layout expects a string, got {}",
+                    other.type_name()
+                ),
+                help: Some(
+                    "use a triple-quoted multi-line string for the grid".to_string(),
+                ),
+            });
+        }
+    };
+    let tile_size = number(&args[1], "tilemap.tile_size")? as i64;
+    if tile_size <= 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("tilemap.tile_size must be positive, got {tile_size}"),
+            help: None,
+        });
+    }
+
+    // Parse the `tiles` list into a char → spec map. Each entry
+    // is a tuple `(char_str, name_str, traits_list)`.
+    let tiles_arg = match &args[2] {
+        Value::List(rc) => rc.clone(),
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "tilemap.tiles expects a list of (char, name, traits) tuples, got {}",
+                    other.type_name()
+                ),
+                help: None,
+            });
+        }
+    };
+    let mut by_char: HashMap<char, (String, Vec<String>)> = HashMap::new();
+    let mut tile_specs_field: HashMap<String, Value> = HashMap::new();
+    for (i, entry) in tiles_arg.borrow().iter().enumerate() {
+        let elems = match entry {
+            Value::Tuple(elems) => elems.clone(),
+            _ => {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!(
+                        "tilemap.tiles[{i}] must be a tuple of (char, name, traits)"
+                    ),
+                    help: Some(
+                        "e.g. `(\".\", \"floor\", [\"walkable\"])`".to_string(),
+                    ),
+                });
+            }
+        };
+        if elems.len() != 3 {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "tilemap.tiles[{i}] tuple needs exactly 3 fields (char, name, traits), got {}",
+                    elems.len()
+                ),
+                help: None,
+            });
+        }
+        let ch_str = match &elems[0] {
+            Value::Str(s) if s.chars().count() == 1 => s.chars().next().unwrap(),
+            Value::Str(_) => {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!("tilemap.tiles[{i}].char must be a single character"),
+                    help: None,
+                });
+            }
+            other => {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!(
+                        "tilemap.tiles[{i}].char must be a string, got {}",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            }
+        };
+        let name = match &elems[1] {
+            Value::Str(s) => (**s).clone(),
+            other => {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!(
+                        "tilemap.tiles[{i}].name must be a string, got {}",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            }
+        };
+        let traits = match &elems[2] {
+            Value::List(rc) => {
+                let v = rc.borrow();
+                let mut out = Vec::with_capacity(v.len());
+                for (j, t) in v.iter().enumerate() {
+                    match t {
+                        Value::Str(s) => out.push((**s).clone()),
+                        other => {
+                            return Err(RuntimeError {
+                                line: 0,
+                                col: 0,
+                                message: format!(
+                                    "tilemap.tiles[{i}].traits[{j}] must be a string, got {}",
+                                    other.type_name()
+                                ),
+                                help: None,
+                            });
+                        }
+                    }
+                }
+                out
+            }
+            Value::Nil => Vec::new(),
+            other => {
+                return Err(RuntimeError {
+                    line: 0,
+                    col: 0,
+                    message: format!(
+                        "tilemap.tiles[{i}].traits must be a list of strings or nil, got {}",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            }
+        };
+        by_char.insert(ch_str, (name.clone(), traits.clone()));
+
+        // Also expose the spec as a Twe-readable Object on the
+        // tilemap's `tiles` field, keyed by name.
+        let mut spec_fields = HashMap::new();
+        spec_fields.insert("name".to_string(), Value::Str(Rc::new(name.clone())));
+        let trait_values: Vec<Value> = traits
+            .iter()
+            .map(|t| Value::Str(Rc::new(t.clone())))
+            .collect();
+        spec_fields.insert(
+            "traits".to_string(),
+            Value::List(Rc::new(RefCell::new(trait_values))),
+        );
+        tile_specs_field.insert(
+            name,
+            Value::Object(Rc::new(RefCell::new(Object {
+                fields: spec_fields,
+                kind: "tile_spec",
+            }))),
+        );
+    }
+
+    // Walk the layout into a 2D grid. Lines are split on '\n';
+    // leading + trailing whitespace per line is stripped so that
+    // triple-quoted layouts can use indentation freely.
+    let raw_lines: Vec<&str> = layout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let height = raw_lines.len();
+    let width = raw_lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let mut cells: Vec<Value> = Vec::with_capacity(height);
+    for line in &raw_lines {
+        let mut row: Vec<Value> = Vec::with_capacity(width);
+        let mut chars: Vec<char> = line.chars().collect();
+        // Pad short rows so width is uniform.
+        while chars.len() < width {
+            chars.push(' ');
+        }
+        for ch in chars {
+            let name = by_char
+                .get(&ch)
+                .map(|(n, _)| n.clone())
+                .unwrap_or_default();
+            row.push(Value::Str(Rc::new(name)));
+        }
+        cells.push(Value::List(Rc::new(RefCell::new(row))));
+    }
+
+    let mut fields = HashMap::new();
+    fields.insert("layout".to_string(), Value::Str(Rc::new(layout)));
+    fields.insert("tile_size".to_string(), Value::Int(tile_size));
+    fields.insert("width".to_string(), Value::Int(width as i64));
+    fields.insert("height".to_string(), Value::Int(height as i64));
+    fields.insert(
+        "cells".to_string(),
+        Value::List(Rc::new(RefCell::new(cells))),
+    );
+    fields.insert(
+        "tiles".to_string(),
+        Value::Object(Rc::new(RefCell::new(Object {
+            fields: tile_specs_field,
+            kind: "tile_specs",
+        }))),
+    );
+    Ok(Value::Object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "tilemap",
+    }))))
+}
+
+/// `tilemap_render(map, at)` — draw the tilemap as colored
+/// per-tile rects keyed by trait. v0.2 session 6: a rectangle-
+/// based renderer is the v0.2 minimum; sprite-based renderer
+/// (with per-tile texture handles) rides Phase 9's atlas
+/// + `sprite(handle, frame:)` work.
+fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "tilemap_render")?;
+    arity(args, 2, "tilemap_render")?;
+    let map = expect_tilemap(&args[0], "tilemap_render.map")?;
+    let (origin_x, origin_y) = match &args[1] {
+        Value::Tuple(elems) if elems.len() == 2 => {
+            let x = number(&elems[0], "tilemap_render.at.x")? as f32;
+            let y = number(&elems[1], "tilemap_render.at.y")? as f32;
+            (x, y)
+        }
+        other => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "tilemap_render.at expects a 2-tuple (x, y), got {}",
+                    other.type_name()
+                ),
+                help: None,
+            });
+        }
+    };
+    let m = map.borrow();
+    let tile_size = match m.fields.get("tile_size") {
+        Some(Value::Int(n)) => *n as f32,
+        _ => return Err(tilemap_internal_error("tile_size")),
+    };
+    let cells_value = m.fields.get("cells").cloned();
+    let tiles_value = m.fields.get("tiles").cloned();
+    drop(m);
+
+    let cells_rc = match cells_value {
+        Some(Value::List(rc)) => rc,
+        _ => return Err(tilemap_internal_error("cells")),
+    };
+    let tile_specs_rc = match tiles_value {
+        Some(Value::Object(rc)) => rc,
+        _ => return Err(tilemap_internal_error("tiles")),
+    };
+
+    let cells = cells_rc.borrow();
+    let tile_specs = tile_specs_rc.borrow();
+    for (row_idx, row_value) in cells.iter().enumerate() {
+        let row_rc = match row_value {
+            Value::List(rc) => rc,
+            _ => continue,
+        };
+        let row = row_rc.borrow();
+        for (col_idx, cell) in row.iter().enumerate() {
+            let name = match cell {
+                Value::Str(s) => s.as_str(),
+                _ => continue,
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let color = trait_color(&tile_specs.fields, name);
+            let tx = origin_x + col_idx as f32 * tile_size;
+            let ty = origin_y + row_idx as f32 * tile_size;
+            push_rect(env, tx, ty, tile_size, color);
+        }
+    }
+    Ok(Value::Nil)
+}
+
+/// Fixed palette per trait. Keeps v0.2 dependency-free; Phase 9
+/// will let each tile carry an explicit color or sprite handle.
+fn trait_color(tile_specs: &HashMap<String, Value>, tile_name: &str) -> [f32; 4] {
+    let traits = tile_specs
+        .get(tile_name)
+        .and_then(|v| match v {
+            Value::Object(rc) => Some(rc.borrow()),
+            _ => None,
+        })
+        .and_then(|o| match o.fields.get("traits") {
+            Some(Value::List(rc)) => Some(rc.clone()),
+            _ => None,
+        });
+    let traits_vec: Vec<String> = match traits {
+        Some(rc) => rc
+            .borrow()
+            .iter()
+            .filter_map(|v| match v {
+                Value::Str(s) => Some((**s).clone()),
+                _ => None,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    if traits_vec.iter().any(|t| t == "solid") {
+        return [0.45, 0.45, 0.50, 1.0];
+    }
+    if traits_vec.iter().any(|t| t == "trigger") {
+        return [0.95, 0.85, 0.30, 1.0];
+    }
+    if traits_vec.iter().any(|t| t == "slow") {
+        return [0.20, 0.40, 0.75, 1.0];
+    }
+    if traits_vec.iter().any(|t| t == "walkable") {
+        return [0.18, 0.18, 0.20, 1.0];
+    }
+    [0.85, 0.20, 0.85, 1.0] // missing — magenta "missing-tile" indicator
+}
+
+/// Push a single tile rect into the active draw queue. Mirrors
+/// the body of `draw_rect` to avoid going through the kwargs-binding
+/// path for an inner-loop call.
+fn push_rect(env: &mut Env, x: f32, y: f32, size: f32, color: [f32; 4]) {
+    // The 2D draw queue lives on the active scene-or-equivalent;
+    // for v0.2 minimum we go through the same `rect` builtin to
+    // reuse its existing pipe. Build the args inline.
+    let args = vec![
+        Value::Tuple(Rc::new(vec![Value::Float(x as f64), Value::Float(y as f64)])),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(size as f64),
+            Value::Float(size as f64),
+        ])),
+        Value::Tuple(Rc::new(vec![
+            Value::Float(color[0] as f64),
+            Value::Float(color[1] as f64),
+            Value::Float(color[2] as f64),
+            Value::Float(color[3] as f64),
+        ])),
+    ];
+    let _ = draw_rect(env, &args);
+}
+
+/// `tilemap_at(map, x, y)` — return the tile name at world
+/// pixel coords `(x, y)`. Out-of-bounds reads return the empty
+/// string. v0.2 session 6.
+fn tilemap_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "tilemap_at")?;
+    let map = expect_tilemap(&args[0], "tilemap_at.map")?;
+    let x = number(&args[1], "tilemap_at.x")? as f32;
+    let y = number(&args[2], "tilemap_at.y")? as f32;
+    let name = tilemap_name_at(&map, x, y);
+    Ok(Value::Str(Rc::new(name)))
+}
+
+/// `tilemap_solid_at(map, x, y)` — true if the tile at pixel
+/// coords `(x, y)` carries the `solid` trait. Convenience for
+/// the most common collision query. v0.2 session 6.
+fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "tilemap_solid_at")?;
+    let map = expect_tilemap(&args[0], "tilemap_solid_at.map")?;
+    let x = number(&args[1], "tilemap_solid_at.x")? as f32;
+    let y = number(&args[2], "tilemap_solid_at.y")? as f32;
+    let name = tilemap_name_at(&map, x, y);
+    if name.is_empty() {
+        return Ok(Value::Bool(false));
+    }
+    let tile_specs = match map.borrow().fields.get("tiles").cloned() {
+        Some(Value::Object(rc)) => rc,
+        _ => return Ok(Value::Bool(false)),
+    };
+    let specs = tile_specs.borrow();
+    let solid = specs
+        .fields
+        .get(&name)
+        .and_then(|v| match v {
+            Value::Object(rc) => Some(rc.borrow()),
+            _ => None,
+        })
+        .and_then(|o| match o.fields.get("traits") {
+            Some(Value::List(rc)) => Some(rc.clone()),
+            _ => None,
+        })
+        .map(|rc| {
+            rc.borrow().iter().any(|v| match v {
+                Value::Str(s) => &**s == "solid",
+                _ => false,
+            })
+        })
+        .unwrap_or(false);
+    Ok(Value::Bool(solid))
+}
+
+fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
+    let m = map.borrow();
+    let tile_size = match m.fields.get("tile_size") {
+        Some(Value::Int(n)) => *n as f32,
+        _ => return String::new(),
+    };
+    if tile_size <= 0.0 {
+        return String::new();
+    }
+    let col = (x / tile_size).floor() as i64;
+    let row = (y / tile_size).floor() as i64;
+    if col < 0 || row < 0 {
+        return String::new();
+    }
+    let cells = match m.fields.get("cells") {
+        Some(Value::List(rc)) => rc.clone(),
+        _ => return String::new(),
+    };
+    let cells = cells.borrow();
+    let row_idx = row as usize;
+    if row_idx >= cells.len() {
+        return String::new();
+    }
+    let row_rc = match &cells[row_idx] {
+        Value::List(rc) => rc.clone(),
+        _ => return String::new(),
+    };
+    let row = row_rc.borrow();
+    let col_idx = col as usize;
+    if col_idx >= row.len() {
+        return String::new();
+    }
+    match &row[col_idx] {
+        Value::Str(s) => (**s).clone(),
+        _ => String::new(),
+    }
+}
+
+fn expect_tilemap(v: &Value, what: &str) -> Result<Rc<RefCell<Object>>, RuntimeError> {
+    match v {
+        Value::Object(rc) if rc.borrow().kind == "tilemap" => Ok(rc.clone()),
+        other => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what} expects a tilemap value from `tilemap(...)`, got {}",
+                other.type_name()
+            ),
+            help: None,
+        }),
+    }
+}
+
+fn tilemap_internal_error(field: &str) -> RuntimeError {
+    RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("internal: tilemap missing or malformed `{field}` field"),
+        help: Some(
+            "tilemap values are constructed by `tilemap(...)` — don't hand-build them".to_string(),
+        ),
+    }
 }
 
 fn install_draw(env: &mut Env) {

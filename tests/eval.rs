@@ -578,6 +578,87 @@ fn stdlib_installs_audio_v2_surface() {
     }
 }
 
+// --- v0.2 session 6: tilemap ---
+
+#[test]
+fn tilemap_builds_grid_from_layout_and_specs() {
+    let src = r###"
+let layout = "##.\n.~.\n..."
+let map = tilemap(
+    layout: layout,
+    tile_size: 16,
+    tiles: [
+        ("#", "wall", ["solid"]),
+        (".", "floor", ["walkable"]),
+        ("~", "water", ["walkable", "slow"]),
+    ]
+)
+print(map.width)
+print(map.height)
+print(map.tile_size)
+"###;
+    let out = run_program_str(src).expect("should run");
+    assert_eq!(out, "3\n3\n16\n");
+}
+
+#[test]
+fn tilemap_at_reports_tile_name_per_pixel() {
+    // 3x3 map, tile_size = 16. Pixel (0,0) in row 0 col 0 -> '#'.
+    // Pixel (16,0) -> col 1 row 0 -> '#'. Pixel (32,16) -> col 2 row 1 -> '.'.
+    let src = r###"
+let map = tilemap(
+    layout: "##.\n.~.\n...",
+    tile_size: 16,
+    tiles: [
+        ("#", "wall", ["solid"]),
+        (".", "floor", ["walkable"]),
+        ("~", "water", ["walkable", "slow"]),
+    ]
+)
+print(tilemap_at(map, 0, 0))
+print(tilemap_at(map, 16, 0))
+print(tilemap_at(map, 32, 16))
+print(tilemap_at(map, 999, 999))
+"###;
+    let out = run_program_str(src).expect("should run");
+    assert_eq!(out, "wall\nwall\nfloor\n\n");
+}
+
+#[test]
+fn tilemap_solid_at_reflects_solid_trait() {
+    let src = r###"
+let map = tilemap(
+    layout: "#.\n..",
+    tile_size: 8,
+    tiles: [
+        ("#", "wall", ["solid"]),
+        (".", "floor", ["walkable"]),
+    ]
+)
+print(tilemap_solid_at(map, 0, 0))
+print(tilemap_solid_at(map, 8, 0))
+print(tilemap_solid_at(map, 99, 99))
+"###;
+    let out = run_program_str(src).expect("should run");
+    assert_eq!(out, "true\nfalse\nfalse\n");
+}
+
+#[test]
+fn tilemap_rejects_malformed_tiles_arg() {
+    let src = r###"
+let map = tilemap(
+    layout: "...",
+    tile_size: 16,
+    tiles: [(".", "floor")]
+)
+"###;
+    let err = run_program_str(src).expect_err("3-tuple required");
+    assert!(
+        err.contains("3 fields"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn audio_builtins_reject_non_sound_handles() {
     // Each new audio builtin should error clearly when given
