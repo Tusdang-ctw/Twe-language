@@ -317,18 +317,18 @@ Phase 8.5 inherits the runtime perf criteria:
 
 ## Phase 8.5 — NaN tagging + tracing GC
 
-**Status:** designed (`docs/08-nan-tagging.md`); implementation is the next active engineering phase.
+**Status:** in progress. Sessions 8a–8e shipped 2026-04-30 (storage migration done — every value-typed slot in vm/eval/stdlib now lives in `TaggedValue` form). Sessions 8f–8i remain (legacy enum deletion + GC).
 
 **Theme:** rebuild the runtime value representation so the bytecode VM's hot loop isn't dominated by Rc-refcount churn, and so closing cycles (`obj.field = obj`) doesn't leak.
 
 **Components** (each its own session per `docs/08-nan-tagging.md` "Migration sequencing"):
 
-- 8a — `TaggedValue` module + encode/decode + round-trip tests.
-- 8b — `HeapObject` header + body discriminator.
-- 8c — VM migration: stack + dispatch + OP_* handlers.
-- 8d — Tree-walker migration: env + Instance fields.
-- 8e — Stdlib + save migration.
-- 8f — Delete legacy `Value` enum.
+- ✅ 8a — `TaggedValue` module + encode/decode + round-trip tests.
+- ✅ 8b — `HeapObject` header + body discriminator.
+- ✅ 8c — VM migration: `stack: Vec<Value>` → `Vec<TaggedValue>`; `globals` similarly; full-Value shim.
+- ✅ 8d — Tree-walker migration: `Env::bindings` + `Instance::fields` on TaggedValue.
+- ✅ 8e — Stdlib + save migration: `Object::fields` + `BcInstance::fields` on TaggedValue; stdlib bootstrap helpers; save shimmed.
+- 8f — Delete legacy `Value` enum (~917 `Value::` pattern-match sites to rewrite).
 - 8g — Heap allocator + stop-the-world mark + sweep.
 - 8h — Roots wiring (VM + eval + fiber frames).
 - 8i — Bench against pre-migration baseline; tune.
