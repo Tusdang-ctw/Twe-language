@@ -389,8 +389,7 @@ fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
     use twec::value::Value;
     if let Some(Value::Object(rc)) = env.get("key_press") {
         rc.borrow_mut()
-            .fields
-            .insert(key.to_string(), Value::Bool(value));
+            .insert_field(key.to_string(), Value::Bool(value));
     }
 }
 
@@ -407,10 +406,10 @@ fn stdlib_installs_mouse_objects() {
         panic!("mouse object missing after stdlib::install");
     };
     let m = rc.borrow();
-    assert!(matches!(m.fields.get("x"), Some(Value::Float(_))));
-    assert!(matches!(m.fields.get("y"), Some(Value::Float(_))));
-    assert!(matches!(m.fields.get("pos"), Some(Value::Tuple(_))));
-    assert!(matches!(m.fields.get("wheel"), Some(Value::Float(_))));
+    assert!(matches!(m.get_field("x"), Some(Value::Float(_))));
+    assert!(matches!(m.get_field("y"), Some(Value::Float(_))));
+    assert!(matches!(m.get_field("pos"), Some(Value::Tuple(_))));
+    assert!(matches!(m.get_field("wheel"), Some(Value::Float(_))));
 
     // mouse_held / mouse_press: left, middle, right
     for name in ["mouse_held", "mouse_press"] {
@@ -420,7 +419,7 @@ fn stdlib_installs_mouse_objects() {
         let o = rc.borrow();
         for btn in ["left", "middle", "right"] {
             assert!(
-                matches!(o.fields.get(btn), Some(Value::Bool(false))),
+                matches!(o.get_field(btn), Some(Value::Bool(false))),
                 "{name}.{btn} missing or non-bool after install"
             );
         }
@@ -494,9 +493,7 @@ on update(dt):
 fn set_mouse_x(env: &twec::value::Env, x: f64) {
     use twec::value::Value;
     if let Some(Value::Object(rc)) = env.get("mouse") {
-        rc.borrow_mut()
-            .fields
-            .insert("x".to_string(), Value::Float(x));
+        rc.borrow_mut().insert_field("x", Value::Float(x));
     }
 }
 
@@ -504,8 +501,7 @@ fn set_mouse_press(env: &twec::value::Env, button: &str, value: bool) {
     use twec::value::Value;
     if let Some(Value::Object(rc)) = env.get("mouse_press") {
         rc.borrow_mut()
-            .fields
-            .insert(button.to_string(), Value::Bool(value));
+            .insert_field(button.to_string(), Value::Bool(value));
     }
 }
 
@@ -560,7 +556,7 @@ fn stdlib_installs_audio_v2_surface() {
     let s = rc.borrow();
     for name in ["load", "play", "play_at", "stop", "set_volume"] {
         assert!(
-            matches!(s.fields.get(name), Some(Value::Builtin { .. })),
+            matches!(s.get_field(name), Some(Value::Builtin { .. })),
             "sound.{name} missing or not a builtin"
         );
     }
@@ -572,7 +568,7 @@ fn stdlib_installs_audio_v2_surface() {
     let m = rc.borrow();
     for name in ["play", "play_at", "stop"] {
         assert!(
-            matches!(m.fields.get(name), Some(Value::Builtin { .. })),
+            matches!(m.get_field(name), Some(Value::Builtin { .. })),
             "music.{name} missing or not a builtin"
         );
     }
@@ -873,11 +869,7 @@ spawn Spark at (50.0, 60.0)
     twec::eval::run_top_level(&mut env, &program).expect("top-level");
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
-    let particles = inst
-        .fields
-        .get("__particles")
-        .map(|t| t.clone().to_legacy())
-        .expect("__particles");
+    let particles = inst.get_field("__particles").expect("__particles");
     let n = match particles {
         Value::List(rc) => rc.borrow().len(),
         _ => panic!("__particles should be a list"),
@@ -992,11 +984,7 @@ spawn Pin at (12, 34)
     twec::eval::run_top_level(&mut env, &program).expect("top-level");
     assert_eq!(env.active_entities.len(), 1);
     let inst = env.active_entities[0].borrow();
-    let pos = inst
-        .fields
-        .get("pos")
-        .map(|t| t.clone().to_legacy())
-        .expect("pos field");
+    let pos = inst.get_field("pos").expect("pos field");
     let elems = match pos {
         Value::Tuple(elems) => elems.clone(),
         _ => panic!("pos should be a tuple"),
@@ -1030,11 +1018,7 @@ fn snake_advances_right_by_default() {
 
     let scene = env.active_scene.as_ref().expect("scene");
     let inst = scene.borrow();
-    let snake = inst
-        .fields
-        .get("snake")
-        .map(|t| t.clone().to_legacy())
-        .expect("snake field");
+    let snake = inst.get_field("snake").expect("snake field");
     let head = match snake {
         Value::List(rc) => rc.borrow()[0].clone(),
         _ => panic!("snake should be a list"),
@@ -1077,11 +1061,7 @@ fn snake_dies_into_a_wall() {
     // Snake eats the food at (15, 7) on the way, so score is 1 by the
     // time it walks off the east wall at x=20.
     let inst = scene.borrow();
-    let score = inst
-        .fields
-        .get("score")
-        .map(|t| t.clone().to_legacy())
-        .expect("score field");
+    let score = inst.get_field("score").expect("score field");
     assert!(matches!(score, Value::Int(1)), "got: {score:?}");
 }
 

@@ -233,15 +233,13 @@ fn update_vm_input(vm: &crate::vm::VM) {
     if let Some(Value::Object(rc)) = vm.get_global("key") {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(is_key_down(*code)));
+            o.insert_field(*name, Value::Bool(is_key_down(*code)));
         }
     }
     if let Some(Value::Object(rc)) = vm.get_global("key_press") {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(is_key_pressed(*code)));
+            o.insert_field(*name, Value::Bool(is_key_pressed(*code)));
         }
     }
     write_mouse_object(vm.get_global("mouse"));
@@ -251,11 +249,11 @@ fn update_vm_input(vm: &crate::vm::VM) {
         let mut o = rc.borrow_mut();
         let w = screen_width() as f64;
         let h = screen_height() as f64;
-        o.fields.insert(
+        o.insert_field(
             "size".to_string(),
             Value::Tuple(Rc::new(vec![Value::Float(w), Value::Float(h)])),
         );
-        o.fields.insert(
+        o.insert_field(
             "center".to_string(),
             Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
         );
@@ -269,12 +267,10 @@ fn write_mouse_object(mouse: Option<Value>) {
     let (mx, my) = mouse_position();
     let (_wx, wy) = mouse_wheel();
     let mut o = rc.borrow_mut();
-    o.fields
-        .insert("x".to_string(), Value::Float(mx as f64));
-    o.fields
-        .insert("y".to_string(), Value::Float(my as f64));
-    o.fields.insert(
-        "pos".to_string(),
+    o.insert_field("x", Value::Float(mx as f64));
+    o.insert_field("y", Value::Float(my as f64));
+    o.insert_field(
+        "pos",
         Value::Tuple(Rc::new(vec![
             Value::Float(mx as f64),
             Value::Float(my as f64),
@@ -283,8 +279,7 @@ fn write_mouse_object(mouse: Option<Value>) {
     // y-axis wheel delta is the canonical "scroll" reading; macroquad
     // resets `mouse_wheel()` between frames so the value here is the
     // accumulated delta this frame.
-    o.fields
-        .insert("wheel".to_string(), Value::Float(wy as f64));
+    o.insert_field("wheel", Value::Float(wy as f64));
 }
 
 /// Write per-button state into `mouse_held` or `mouse_press`. The
@@ -295,7 +290,7 @@ fn write_mouse_buttons(target: Option<Value>, mut pred: impl FnMut(MouseButton) 
     let Some(Value::Object(rc)) = target else { return; };
     let mut o = rc.borrow_mut();
     for (name, btn) in MOUSE_BUTTONS {
-        o.fields.insert((*name).to_string(), Value::Bool(pred(*btn)));
+        o.insert_field((*name).to_string(), Value::Bool(pred(*btn)));
     }
 }
 
@@ -347,41 +342,39 @@ fn update_key_state(env: &mut Env) {
     if let Some(Value::Object(rc)) = env.get("key") {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(is_key_down(*code)));
+            o.insert_field(*name, Value::Bool(is_key_down(*code)));
         }
     }
     if let Some(Value::Object(rc)) = env.get("key_press") {
         let mut o = rc.borrow_mut();
         for (name, code) in KEYS {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(is_key_pressed(*code)));
+            o.insert_field(*name, Value::Bool(is_key_pressed(*code)));
         }
     } else {
         // Lazily install key_press as a sibling object next to key. The
         // stdlib already installs it but legacy scripts loaded via
         // hot-reload may have a stale env without it.
-        let mut fields = HashMap::new();
+        let mut press = Object {
+            fields: HashMap::new(),
+            kind: "input",
+        };
         for (name, code) in KEYS {
-            fields.insert((*name).to_string(), Value::Bool(is_key_pressed(*code)));
+            press.insert_field(*name, Value::Bool(is_key_pressed(*code)));
         }
         env.set(
             "key_press".to_string(),
-            Value::Object(Rc::new(RefCell::new(Object {
-                fields,
-                kind: "input",
-            }))),
+            Value::Object(Rc::new(RefCell::new(press))),
         );
     }
     if let Some(Value::Object(rc)) = env.get("screen") {
         let mut o = rc.borrow_mut();
         let w = screen_width() as f64;
         let h = screen_height() as f64;
-        o.fields.insert(
+        o.insert_field(
             "size".to_string(),
             Value::Tuple(Rc::new(vec![Value::Float(w), Value::Float(h)])),
         );
-        o.fields.insert(
+        o.insert_field(
             "center".to_string(),
             Value::Tuple(Rc::new(vec![Value::Float(w / 2.0), Value::Float(h / 2.0)])),
         );

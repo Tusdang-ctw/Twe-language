@@ -230,10 +230,15 @@ This is the load-bearing part of the doc. NaN tagging + GC isn't one session; it
 - Object::fields stays on `HashMap<String, Value>` for now — that migrates with stdlib in 8e.
 - All 499 tests still pass; clippy clean.
 
-#### Session 8e — Stdlib + save migration
+#### Session 8e — Stdlib + save migration ✅ shipped 2026-04-30
 
-- `src/stdlib.rs` + `src/save.rs`: every `Value::` in builtins becomes `TaggedValue::*`.
-- This is the biggest churn (200+ sites in stdlib alone).
+- `Object::fields` migrated from `HashMap<String, Value>` to `HashMap<String, TaggedValue>` in `src/value.rs`. `BcInstance::fields` migrated in lockstep in `src/bytecode.rs`. Stdlib's module objects (`math`, `key`, `mouse`, `screen`, `time`, `color`, `random`, `entities`, `tilemap`, `camera`, `sound`, `music`, `key_press`, `mouse_held`, `mouse_press`) all now store `TaggedValue` slots.
+- Added helper methods on `Object` / `Instance` / `BcInstance`: `get_field(&str) -> Option<Value>` and `insert_field(impl Into<String>, Value)`. Most stdlib + eval call sites swept from direct `.fields.get(...)` / `.fields.insert(...)` to the helpers — single mechanical replace per file.
+- Added `legacy_fields_to_tagged(HashMap<String, Value>) -> HashMap<String, TaggedValue>` for the stdlib bootstrap pattern (build a `HashMap` imperatively with `Value` literals, hand off as `TaggedValue` at the `Object { ... }` construction).
+- `src/save.rs` `encode` shims via `to_legacy()` when iterating `o.fields`; `decode` builds a `HashMap<String, Value>` and converts at the `Object { ... }` boundary.
+- Tests in `tests/eval.rs`, `src/save.rs`, `src/tagged_value.rs` swept to use the new helpers.
+- Stdlib's interior pattern matches still operate on legacy `Value` (the rule "every `Value::` in builtins becomes `TaggedValue::*`" lands at 8f when the legacy enum deletes — keeping 8e mechanical kept the regression surface in line with 8c–8d).
+- All 499 tests still pass; clippy clean.
 
 #### Session 8f — Delete legacy Value
 

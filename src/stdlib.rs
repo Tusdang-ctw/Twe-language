@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::value::{Env, Object, RuntimeError, Value};
+use crate::value::{legacy_fields_to_tagged, Env, Object, RuntimeError, Value};
 
 // Texture cache: macroquad's `Texture2D` can only be constructed once
 // the GL context exists, so loading is lazy — the first `sprite(spr, at)`
@@ -92,14 +92,14 @@ pub fn install(env: &mut Env) {
     env.set(
         "key".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: key_fields,
+            fields: legacy_fields_to_tagged(key_fields),
             kind: "input",
         }))),
     );
     env.set(
         "key_press".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: press_fields,
+            fields: legacy_fields_to_tagged(press_fields),
             kind: "input",
         }))),
     );
@@ -121,7 +121,7 @@ pub fn install(env: &mut Env) {
     env.set(
         "mouse".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: mouse_fields,
+            fields: legacy_fields_to_tagged(mouse_fields),
             kind: "input",
         }))),
     );
@@ -135,14 +135,14 @@ pub fn install(env: &mut Env) {
     env.set(
         "mouse_held".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: held,
+            fields: legacy_fields_to_tagged(held),
             kind: "input",
         }))),
     );
     env.set(
         "mouse_press".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: pressed,
+            fields: legacy_fields_to_tagged(pressed),
             kind: "input",
         }))),
     );
@@ -214,7 +214,7 @@ fn install_sound(env: &mut Env) {
     env.set(
         "sound".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: sound,
+            fields: legacy_fields_to_tagged(sound),
             kind: "module",
         }))),
     );
@@ -250,7 +250,7 @@ fn install_sound(env: &mut Env) {
     env.set(
         "music".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: music,
+            fields: legacy_fields_to_tagged(music),
             kind: "module",
         }))),
     );
@@ -286,7 +286,7 @@ fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let mut fields = HashMap::new();
     fields.insert("path".to_string(), Value::Str(Rc::new(path)));
     Ok(Value::Object(Rc::new(RefCell::new(Object {
-        fields,
+        fields: legacy_fields_to_tagged(fields),
         kind: "sound",
     }))))
 }
@@ -373,7 +373,7 @@ fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
                     help: None,
                 });
             }
-            match o.fields.get("path") {
+            match o.get_field("path") {
                 Some(Value::Str(s)) => Ok(s.as_ref().clone()),
                 _ => Err(RuntimeError {
                     line: 0,
@@ -441,7 +441,7 @@ fn install_time(env: &mut Env) {
     env.set(
         "time".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields,
+            fields: legacy_fields_to_tagged(fields),
             kind: "module",
         }))),
     );
@@ -520,7 +520,7 @@ fn install_math(env: &mut Env) {
     env.set(
         "math".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: math,
+            fields: legacy_fields_to_tagged(math),
             kind: "module",
         }))),
     );
@@ -567,7 +567,7 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     fields.insert("x".to_string(), Value::Int(0));
     fields.insert("y".to_string(), Value::Int(0));
     Ok(Value::Object(Rc::new(RefCell::new(Object {
-        fields,
+        fields: legacy_fields_to_tagged(fields),
         kind: "sprite",
     }))))
 }
@@ -761,7 +761,7 @@ fn install_random(env: &mut Env) {
     env.set(
         "random".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: random,
+            fields: legacy_fields_to_tagged(random),
             kind: "module",
         }))),
     );
@@ -880,7 +880,7 @@ fn install_color(env: &mut Env) {
     env.set(
         "color".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields,
+            fields: legacy_fields_to_tagged(fields),
             kind: "module",
         }))),
     );
@@ -900,7 +900,7 @@ fn install_screen(env: &mut Env) {
     env.set(
         "screen".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields,
+            fields: legacy_fields_to_tagged(fields),
             kind: "module",
         }))),
     );
@@ -1132,7 +1132,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
         tile_specs_field.insert(
             name,
             Value::Object(Rc::new(RefCell::new(Object {
-                fields: spec_fields,
+                fields: legacy_fields_to_tagged(spec_fields),
                 kind: "tile_spec",
             }))),
         );
@@ -1178,12 +1178,12 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     fields.insert(
         "tiles".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: tile_specs_field,
+            fields: legacy_fields_to_tagged(tile_specs_field),
             kind: "tile_specs",
         }))),
     );
     Ok(Value::Object(Rc::new(RefCell::new(Object {
-        fields,
+        fields: legacy_fields_to_tagged(fields),
         kind: "tilemap",
     }))))
 }
@@ -1216,12 +1216,12 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
         }
     };
     let m = map.borrow();
-    let tile_size = match m.fields.get("tile_size") {
-        Some(Value::Int(n)) => *n as f32,
+    let tile_size = match m.get_field("tile_size") {
+        Some(Value::Int(n)) => n as f32,
         _ => return Err(tilemap_internal_error("tile_size")),
     };
-    let cells_value = m.fields.get("cells").cloned();
-    let tiles_value = m.fields.get("tiles").cloned();
+    let cells_value = m.get_field("cells");
+    let tiles_value = m.get_field("tiles");
     drop(m);
 
     let cells_rc = match cells_value {
@@ -1260,15 +1260,18 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 
 /// Fixed palette per trait. Keeps v0.2 dependency-free; Phase 9
 /// will let each tile carry an explicit color or sprite handle.
-fn trait_color(tile_specs: &HashMap<String, Value>, tile_name: &str) -> [f32; 4] {
+fn trait_color(
+    tile_specs: &HashMap<String, crate::tagged_value::TaggedValue>,
+    tile_name: &str,
+) -> [f32; 4] {
     let traits = tile_specs
         .get(tile_name)
-        .and_then(|v| match v {
-            Value::Object(rc) => Some(rc.borrow()),
+        .and_then(|v| match v.clone().to_legacy() {
+            Value::Object(rc) => Some(rc),
             _ => None,
         })
-        .and_then(|o| match o.fields.get("traits") {
-            Some(Value::List(rc)) => Some(rc.clone()),
+        .and_then(|rc| match rc.borrow().get_field("traits") {
+            Some(Value::List(list_rc)) => Some(list_rc.clone()),
             _ => None,
         });
     let traits_vec: Vec<String> = match traits {
@@ -1344,20 +1347,19 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     if name.is_empty() {
         return Ok(Value::Bool(false));
     }
-    let tile_specs = match map.borrow().fields.get("tiles").cloned() {
+    let tile_specs = match map.borrow().get_field("tiles") {
         Some(Value::Object(rc)) => rc,
         _ => return Ok(Value::Bool(false)),
     };
     let specs = tile_specs.borrow();
     let solid = specs
-        .fields
-        .get(&name)
+        .get_field(&name)
         .and_then(|v| match v {
-            Value::Object(rc) => Some(rc.borrow()),
+            Value::Object(rc) => Some(rc),
             _ => None,
         })
-        .and_then(|o| match o.fields.get("traits") {
-            Some(Value::List(rc)) => Some(rc.clone()),
+        .and_then(|rc| match rc.borrow().get_field("traits") {
+            Some(Value::List(list_rc)) => Some(list_rc.clone()),
             _ => None,
         })
         .map(|rc| {
@@ -1372,8 +1374,8 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 
 fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     let m = map.borrow();
-    let tile_size = match m.fields.get("tile_size") {
-        Some(Value::Int(n)) => *n as f32,
+    let tile_size = match m.get_field("tile_size") {
+        Some(Value::Int(n)) => n as f32,
         _ => return String::new(),
     };
     if tile_size <= 0.0 {
@@ -1384,7 +1386,7 @@ fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     if col < 0 || row < 0 {
         return String::new();
     }
-    let cells = match m.fields.get("cells") {
+    let cells = match m.get_field("cells") {
         Some(Value::List(rc)) => rc.clone(),
         _ => return String::new(),
     };
@@ -1507,7 +1509,7 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                     help: None,
                 });
             }
-            match o.fields.get("path") {
+            match o.get_field("path") {
                 Some(Value::Str(s)) => s.as_ref().clone(),
                 _ => {
                     return Err(RuntimeError {
@@ -1701,7 +1703,7 @@ fn install_entities(env: &mut Env) {
     env.set(
         "entities".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields: entities,
+            fields: legacy_fields_to_tagged(entities),
             kind: "module",
         }))),
     );
@@ -1869,7 +1871,7 @@ fn install_3d(env: &mut Env) {
     env.set(
         "camera".to_string(),
         Value::Object(Rc::new(RefCell::new(Object {
-            fields,
+            fields: legacy_fields_to_tagged(fields),
             kind: "camera",
         }))),
     );

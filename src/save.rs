@@ -106,7 +106,7 @@ pub fn encode(value: &Value) -> Result<json::Value, String> {
                         "object field name '__twe' is reserved by the save format".to_string(),
                     );
                 }
-                map.insert(k.clone(), encode(v)?);
+                map.insert(k.clone(), encode(&v.clone().to_legacy())?);
             }
             Ok(json::Value::Object(map))
         }
@@ -214,7 +214,7 @@ pub fn decode(value: &json::Value) -> Value {
                 fields.insert(k.clone(), decode(v));
             }
             Value::Object(Rc::new(RefCell::new(Object {
-                fields,
+                fields: crate::value::legacy_fields_to_tagged(fields),
                 kind: "save",
             })))
         }
@@ -398,14 +398,14 @@ mod tests {
         inner.insert("hp".to_string(), Value::Int(100));
         inner.insert("name".to_string(), Value::Str(Rc::new("Hero".to_string())));
         let v = Value::Object(Rc::new(RefCell::new(Object {
-            fields: inner,
+            fields: crate::value::legacy_fields_to_tagged(inner),
             kind: "save",
         })));
         match round_trip(v) {
             Value::Object(rc) => {
                 let o = rc.borrow();
-                assert!(matches!(o.fields.get("hp"), Some(Value::Int(100))));
-                assert!(matches!(o.fields.get("name"), Some(Value::Str(_))));
+                assert!(matches!(o.get_field("hp"), Some(Value::Int(100))));
+                assert!(matches!(o.get_field("name"), Some(Value::Str(_))));
             }
             other => panic!("expected Object, got {other:?}"),
         }
@@ -448,7 +448,7 @@ mod tests {
             Value::Str(Rc::new("Hero".to_string())),
         );
         let v = Value::Object(Rc::new(RefCell::new(Object {
-            fields,
+            fields: crate::value::legacy_fields_to_tagged(fields),
             kind: "save",
         })));
 
@@ -459,7 +459,7 @@ mod tests {
         match loaded {
             Value::Object(rc) => {
                 let o = rc.borrow();
-                assert!(matches!(o.fields.get("hp"), Some(Value::Int(75))));
+                assert!(matches!(o.get_field("hp"), Some(Value::Int(75))));
             }
             other => panic!("expected Object, got {other:?}"),
         }

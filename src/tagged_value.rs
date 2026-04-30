@@ -863,7 +863,7 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert("hp".to_string(), crate::value::Value::Int(100));
         let obj = Rc::new(RefCell::new(crate::value::Object {
-            fields,
+            fields: crate::value::legacy_fields_to_tagged(fields),
             kind: "test",
         }));
         let v = TaggedValue::from_object(obj);
@@ -872,7 +872,10 @@ mod tests {
             HeapBody::Object(rc) => {
                 let o = rc.borrow();
                 assert_eq!(o.kind, "test");
-                assert!(matches!(o.fields.get("hp"), Some(crate::value::Value::Int(100))));
+                assert!(matches!(
+                    o.get_field("hp"),
+                    Some(crate::value::Value::Int(100))
+                ));
             }
             other => panic!("expected Object, got {other:?}"),
         });

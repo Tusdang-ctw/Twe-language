@@ -110,7 +110,7 @@ fn seed_particle_emitter(
 ) -> Result<(), RuntimeError> {
     let (count, lifetime, class) = {
         let inst = emitter.borrow();
-        let count = match inst.fields.get("count").map(|t| t.clone().to_legacy()) {
+        let count = match inst.get_field("count") {
             Some(Value::Int(n)) if n >= 0 => n as usize,
             Some(other) => {
                 return Err(RuntimeError {
@@ -125,7 +125,7 @@ fn seed_particle_emitter(
             }
             None => 16,
         };
-        let lifetime = match inst.fields.get("lifetime").map(|t| t.clone().to_legacy()) {
+        let lifetime = match inst.get_field("lifetime") {
             Some(Value::Float(f)) => f,
             Some(Value::Int(n)) => n as f64,
             Some(Value::Quantity { value, .. }) => value,
@@ -164,22 +164,25 @@ fn seed_particle_emitter(
         }
         particles.push(p);
     }
-    emitter.borrow_mut().fields.insert(
-        "__particles".to_string(),
-        TaggedValue::from_legacy(&Value::List(Rc::new(RefCell::new(particles)))),
+    emitter.borrow_mut().insert_field(
+        "__particles",
+        Value::List(Rc::new(RefCell::new(particles))),
     );
     Ok(())
 }
 
 fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
-    let mut fields = HashMap::new();
-    fields.insert("pos".to_string(), initial_pos.clone());
-    fields.insert(
-        "velocity".to_string(),
+    let mut o = Object {
+        fields: HashMap::new(),
+        kind: "particle",
+    };
+    o.insert_field("pos", initial_pos.clone());
+    o.insert_field(
+        "velocity",
         Value::Tuple(Rc::new(vec![Value::Float(0.0), Value::Float(0.0)])),
     );
-    fields.insert(
-        "color".to_string(),
+    o.insert_field(
+        "color",
         Value::Tuple(Rc::new(vec![
             Value::Float(1.0),
             Value::Float(1.0),
@@ -187,14 +190,11 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
             Value::Float(1.0),
         ])),
     );
-    fields.insert("size".to_string(), Value::Float(4.0));
-    fields.insert("age".to_string(), Value::Float(0.0));
-    fields.insert("age_ratio".to_string(), Value::Float(0.0));
-    fields.insert("lifetime".to_string(), Value::Float(lifetime));
-    Value::Object(Rc::new(RefCell::new(Object {
-        fields,
-        kind: "particle",
-    })))
+    o.insert_field("size", Value::Float(4.0));
+    o.insert_field("age", Value::Float(0.0));
+    o.insert_field("age_ratio", Value::Float(0.0));
+    o.insert_field("lifetime", Value::Float(lifetime));
+    Value::Object(Rc::new(RefCell::new(o)))
 }
 
 fn tick_particle_emitter(
@@ -206,9 +206,7 @@ fn tick_particle_emitter(
     let on_update = find_method(class, "on_update");
     let particles = match emitter
         .borrow()
-        .fields
-        .get("__particles")
-        .map(|t| t.clone().to_legacy())
+        .get_field("__particles")
     {
         Some(Value::List(rc)) => rc,
         _ => return Ok(()),
@@ -228,30 +226,29 @@ fn tick_particle_emitter(
         }
         if let Value::Object(rc) = p {
             let mut o = rc.borrow_mut();
-            let age = match o.fields.get("age") {
-                Some(Value::Float(a)) => *a + dt,
-                Some(Value::Int(a)) => *a as f64 + dt,
+            let age = match o.get_field("age") {
+                Some(Value::Float(a)) => a + dt,
+                Some(Value::Int(a)) => a as f64 + dt,
                 _ => dt,
             };
-            let lifetime = match o.fields.get("lifetime") {
-                Some(Value::Float(l)) => *l,
+            let lifetime = match o.get_field("lifetime") {
+                Some(Value::Float(l)) => l,
                 _ => 1.0,
             };
-            o.fields.insert("age".to_string(), Value::Float(age));
+            o.insert_field("age".to_string(), Value::Float(age));
             let ratio = if lifetime > 0.0 {
                 (age / lifetime).clamp(0.0, 1.0)
             } else {
                 1.0
             };
-            o.fields
-                .insert("age_ratio".to_string(), Value::Float(ratio));
+            o.insert_field("age_ratio", Value::Float(ratio));
         }
     }
     // Drop dead particles.
     particles.borrow_mut().retain(|p| match p {
-        Value::Object(rc) => match rc.borrow().fields.get("age") {
-            Some(Value::Float(age)) => match rc.borrow().fields.get("lifetime") {
-                Some(Value::Float(lt)) => *age < *lt,
+        Value::Object(rc) => match rc.borrow().get_field("age") {
+            Some(Value::Float(age)) => match rc.borrow().get_field("lifetime") {
+                Some(Value::Float(lt)) => age < lt,
                 _ => true,
             },
             _ => true,
@@ -277,9 +274,7 @@ fn render_particle_emitter(
     }
     let particles = match emitter
         .borrow()
-        .fields
-        .get("__particles")
-        .map(|t| t.clone().to_legacy())
+        .get_field("__particles")
     {
         Some(Value::List(rc)) => rc,
         _ => return Ok(()),
@@ -290,19 +285,19 @@ fn render_particle_emitter(
     for p in particles.borrow().iter() {
         if let Value::Object(rc) = p {
             let o = rc.borrow();
-            let (px, py) = match o.fields.get("pos") {
+            let (px, py) = match o.get_field("pos") {
                 Some(Value::Tuple(elems)) if elems.len() >= 2 => (
                     number_or_zero(&elems[0]),
                     number_or_zero(&elems[1]),
                 ),
                 _ => (0.0, 0.0),
             };
-            let radius = match o.fields.get("size") {
-                Some(Value::Float(f)) => *f as f32,
-                Some(Value::Int(n)) => *n as f32,
+            let radius = match o.get_field("size") {
+                Some(Value::Float(f)) => f as f32,
+                Some(Value::Int(n)) => n as f32,
                 _ => 4.0,
             };
-            let color = match o.fields.get("color") {
+            let color = match o.get_field("color") {
                 Some(Value::Tuple(elems)) if elems.len() >= 3 => {
                     let r = number_or_zero(&elems[0]) as f32;
                     let g = number_or_zero(&elems[1]) as f32;
@@ -333,9 +328,7 @@ fn number_or_zero(v: &Value) -> f64 {
 
 fn update_time_ambient(env: &mut Env, dt: f64) {
     if let Some(Value::Object(rc)) = env.get("time") {
-        rc.borrow_mut()
-            .fields
-            .insert("dt".to_string(), Value::Float(dt));
+        rc.borrow_mut().insert_field("dt", Value::Float(dt));
     }
 }
 
@@ -352,7 +345,7 @@ fn dispatch_key_press(
             o.fields
                 .iter()
                 .filter_map(|(k, v)| {
-                    if matches!(v, Value::Bool(true)) {
+                    if matches!(v.clone().to_legacy(), Value::Bool(true)) {
                         Some(k.clone())
                     } else {
                         None
@@ -1392,8 +1385,8 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
 /// explicit `self.x` syntax — verbose and unusual.
 fn lookup_name(env: &Env, name: &str) -> Option<Value> {
     if let Some(Value::Instance(rc)) = &env.self_value {
-        if let Some(v) = rc.borrow().fields.get(name) {
-            return Some(v.clone().to_legacy());
+        if let Some(v) = rc.borrow().get_field(name) {
+            return Some(v);
         }
     }
     env.get(name)
@@ -1595,8 +1588,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             let inst_val = instantiate(class_rc.clone());
             if let (Some(at_value), Value::Instance(rc)) = (&at_value, &inst_val) {
                 rc.borrow_mut()
-                    .fields
-                    .insert("pos".to_string(), TaggedValue::from_legacy(at_value));
+                    .insert_field("pos", at_value.clone());
             }
             if let Value::Instance(rc) = &inst_val {
                 if class_rc.kind == "particles" {
@@ -1756,8 +1748,7 @@ fn eval_assign(
                 if let Some(Value::Instance(rc)) = &env.self_value {
                     let mut inst = rc.borrow_mut();
                     if inst.fields.contains_key(name) {
-                        inst.fields
-                            .insert(name.clone(), TaggedValue::from_legacy(&new_value));
+                        inst.insert_field(name.clone(), new_value);
                         return Ok(());
                     }
                 }
@@ -1774,8 +1765,7 @@ fn eval_assign(
             if let Some(Value::Instance(rc)) = &env.self_value {
                 let mut inst = rc.borrow_mut();
                 if inst.fields.contains_key(name) {
-                    inst.fields
-                        .insert(name.clone(), TaggedValue::from_legacy(&combined));
+                    inst.insert_field(name.clone(), combined);
                     return Ok(());
                 }
             }
@@ -1789,7 +1779,7 @@ fn eval_assign(
                     let final_value = if matches!(op, AssignOp::Set) {
                         new_value
                     } else {
-                        let current = rc.borrow().fields.get(name).cloned().ok_or_else(|| {
+                        let current = rc.borrow().get_field(name).ok_or_else(|| {
                             RuntimeError {
                                 line,
                                 col,
@@ -1806,12 +1796,12 @@ fn eval_assign(
                         if let Value::Tuple(elems) = &final_value {
                             if elems.len() >= 2 {
                                 let mut o = rc.borrow_mut();
-                                o.fields.insert("x".to_string(), elems[0].clone());
-                                o.fields.insert("y".to_string(), elems[1].clone());
+                                o.insert_field("x".to_string(), elems[0].clone());
+                                o.insert_field("y".to_string(), elems[1].clone());
                             }
                         }
                     }
-                    rc.borrow_mut().fields.insert(name.clone(), final_value);
+                    rc.borrow_mut().insert_field(name.clone(), final_value);
                     if name == "x" || name == "y" {
                         refresh_pos(&rc);
                     }
@@ -1823,9 +1813,7 @@ fn eval_assign(
                     } else {
                         let current = rc
                             .borrow()
-                            .fields
-                            .get(name)
-                            .map(|t| t.clone().to_legacy())
+                            .get_field(name)
                             .ok_or_else(|| {
                                 let inst = rc.borrow();
                                 let names: Vec<&String> = inst.fields.keys().collect();
@@ -1849,9 +1837,7 @@ fn eval_assign(
                             })?;
                         compound(op, &current, &new_value, line, col)?
                     };
-                    rc.borrow_mut()
-                        .fields
-                        .insert(name.clone(), TaggedValue::from_legacy(&final_value));
+                    rc.borrow_mut().insert_field(name.clone(), final_value);
                     Ok(())
                 }
                 other => Err(RuntimeError {
@@ -1874,13 +1860,12 @@ fn refresh_pos(rc: &Rc<std::cell::RefCell<crate::value::Object>>) {
     let (x, y) = {
         let o = rc.borrow();
         (
-            o.fields.get("x").cloned().unwrap_or(Value::Nil),
-            o.fields.get("y").cloned().unwrap_or(Value::Nil),
+            o.get_field("x").unwrap_or(Value::Nil),
+            o.get_field("y").unwrap_or(Value::Nil),
         )
     };
     rc.borrow_mut()
-        .fields
-        .insert("pos".to_string(), Value::Tuple(Rc::new(vec![x, y])));
+        .insert_field("pos", Value::Tuple(Rc::new(vec![x, y])));
 }
 
 fn compound(
@@ -2107,7 +2092,7 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 ),
             }),
         },
-        Value::Object(rc) => rc.borrow().fields.get(name).cloned().ok_or_else(|| {
+        Value::Object(rc) => rc.borrow().get_field(name).ok_or_else(|| {
             RuntimeError {
                 line,
                 col,
@@ -2117,8 +2102,8 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
         }),
         Value::Instance(rc) => {
             let inst = rc.borrow();
-            if let Some(v) = inst.fields.get(name) {
-                return Ok(v.clone().to_legacy());
+            if let Some(v) = inst.get_field(name) {
+                return Ok(v);
             }
             // Methods are not values yet — `obj.method` outside a call site is
             // not supported in this commit. The Call path resolves them

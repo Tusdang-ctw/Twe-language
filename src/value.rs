@@ -139,6 +139,19 @@ pub struct Instance {
     pub predicate_last_values: Vec<bool>,
 }
 
+impl Instance {
+    /// Read a field as legacy `Value`. v0.2 Phase 8.5 session 8e:
+    /// convenience wrapper around the `TaggedValue` storage.
+    pub fn get_field(&self, name: &str) -> Option<Value> {
+        self.fields.get(name).map(|t| t.clone().to_legacy())
+    }
+
+    pub fn insert_field(&mut self, name: impl Into<String>, value: Value) {
+        self.fields
+            .insert(name.into(), TaggedValue::from_legacy(&value));
+    }
+}
+
 /// One step on a fiber's resume path. Each step describes one
 /// nesting depth of the suspended body the frame is rooted in.
 /// v0.2 session 2a.
@@ -211,8 +224,43 @@ pub enum FrameKind {
 
 #[derive(Debug, Default)]
 pub struct Object {
-    pub fields: HashMap<String, Value>,
+    /// v0.2 Phase 8.5 session 8e: stored as `TaggedValue`. Every
+    /// stdlib module (`math`, `key`, `screen`, `time`, `color`,
+    /// `sprite`, `entities`, etc.) is an `Object`; the field
+    /// storage migrates here so the GC roots (8h) can scan
+    /// stdlib state via the same path as user-defined values.
+    pub fields: HashMap<String, TaggedValue>,
     pub kind: &'static str,
+}
+
+impl Object {
+    /// Read a field as legacy `Value`. Convenience wrapper around
+    /// the `TaggedValue` storage so existing call sites keep
+    /// working through 8e–8f. v0.2 Phase 8.5 session 8e.
+    pub fn get_field(&self, name: &str) -> Option<Value> {
+        self.fields.get(name).map(|t| t.clone().to_legacy())
+    }
+
+    /// Write a legacy `Value` into a field. Mirror of `get_field`.
+    pub fn insert_field(&mut self, name: impl Into<String>, value: Value) {
+        self.fields
+            .insert(name.into(), TaggedValue::from_legacy(&value));
+    }
+}
+
+/// Convert a legacy `HashMap<String, Value>` to the
+/// `HashMap<String, TaggedValue>` shape used by `Object::fields` /
+/// `Instance::fields` / `BcInstance::fields`. Used by stdlib
+/// bootstrap and save-load to assemble field maps imperatively
+/// (build with `Value`, hand off as `TaggedValue`). v0.2 Phase
+/// 8.5 session 8e.
+pub fn legacy_fields_to_tagged(
+    legacy: HashMap<String, Value>,
+) -> HashMap<String, TaggedValue> {
+    legacy
+        .into_iter()
+        .map(|(k, v)| (k, TaggedValue::from_legacy(&v)))
+        .collect()
 }
 
 pub type BuiltinFn = fn(&mut Env, &[Value]) -> Result<Value, RuntimeError>;

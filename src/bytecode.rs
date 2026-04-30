@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::tagged_value::TaggedValue;
 use crate::value::Value;
 
 /// One instruction in the Twe bytecode. Each variant fits in a u8.
@@ -404,7 +405,11 @@ pub struct BcStateDef {
 #[derive(Debug)]
 pub struct BcInstance {
     pub class: Rc<BcClassDef>,
-    pub fields: HashMap<String, Value>,
+    /// v0.2 Phase 8.5 session 8e: bytecode-VM instance fields on
+    /// `TaggedValue`. Same shim pattern as eval-side `Instance`:
+    /// readers convert via `to_legacy()` at the boundary, writers
+    /// via `TaggedValue::from_legacy(&v)`.
+    pub fields: HashMap<String, TaggedValue>,
     pub current_state: Option<String>,
     pub every_timers: Vec<f64>,
     pub every_intervals_secs: Vec<f64>,
@@ -435,6 +440,19 @@ pub struct BcInstance {
     /// VM can detect false → true transitions for edge-triggered
     /// firing. Reset on state entry.
     pub predicate_last_values: Vec<bool>,
+}
+
+impl BcInstance {
+    /// Read a field as legacy `Value`. v0.2 Phase 8.5 session 8e:
+    /// convenience wrapper around the `TaggedValue` storage.
+    pub fn get_field(&self, name: &str) -> Option<Value> {
+        self.fields.get(name).map(|t| t.clone().to_legacy())
+    }
+
+    pub fn insert_field(&mut self, name: impl Into<String>, value: Value) {
+        self.fields
+            .insert(name.into(), TaggedValue::from_legacy(&value));
+    }
 }
 
 /// One frame on a suspended bytecode-VM fiber. Mirrors the

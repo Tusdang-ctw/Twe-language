@@ -710,30 +710,28 @@ fn update_key_state(
     if let Some(Value::Object(rc)) = env.get("key") {
         let mut o = rc.borrow_mut();
         for (name, _) in KEYS {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(held.contains(name)));
+            o.insert_field(*name, Value::Bool(held.contains(name)));
         }
     }
     if let Some(Value::Object(rc)) = env.get("key_press") {
         let mut o = rc.borrow_mut();
         for (name, _) in KEYS {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(pressed.contains(name)));
+            o.insert_field(*name, Value::Bool(pressed.contains(name)));
         }
     } else {
         // Lazily install `key_press` if a hot-reload-loaded env
         // doesn't have it (legacy programs predating the stdlib
         // entry). Same fallback the macroquad path uses.
-        let mut fields = HashMap::new();
+        let mut press = Object {
+            fields: HashMap::new(),
+            kind: "input",
+        };
         for (name, _) in KEYS {
-            fields.insert((*name).to_string(), Value::Bool(pressed.contains(name)));
+            press.insert_field(*name, Value::Bool(pressed.contains(name)));
         }
         env.set(
             "key_press".to_string(),
-            Value::Object(Rc::new(RefCell::new(Object {
-                fields,
-                kind: "input",
-            }))),
+            Value::Object(Rc::new(RefCell::new(press))),
         );
     }
 }
@@ -751,29 +749,24 @@ fn update_mouse_state(
 ) {
     if let Some(Value::Object(rc)) = env.get("mouse") {
         let mut o = rc.borrow_mut();
-        o.fields
-            .insert("x".to_string(), Value::Float(mouse_x));
-        o.fields
-            .insert("y".to_string(), Value::Float(mouse_y));
-        o.fields.insert(
-            "pos".to_string(),
+        o.insert_field("x", Value::Float(mouse_x));
+        o.insert_field("y", Value::Float(mouse_y));
+        o.insert_field(
+            "pos",
             Value::Tuple(Rc::new(vec![Value::Float(mouse_x), Value::Float(mouse_y)])),
         );
-        o.fields
-            .insert("wheel".to_string(), Value::Float(wheel_y as f64));
+        o.insert_field("wheel", Value::Float(wheel_y as f64));
     }
     if let Some(Value::Object(rc)) = env.get("mouse_held") {
         let mut o = rc.borrow_mut();
         for name in MOUSE_BUTTON_NAMES {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(held.contains(name)));
+            o.insert_field(*name, Value::Bool(held.contains(name)));
         }
     }
     if let Some(Value::Object(rc)) = env.get("mouse_press") {
         let mut o = rc.borrow_mut();
         for name in MOUSE_BUTTON_NAMES {
-            o.fields
-                .insert((*name).to_string(), Value::Bool(pressed.contains(name)));
+            o.insert_field(*name, Value::Bool(pressed.contains(name)));
         }
     }
 }
@@ -1344,18 +1337,18 @@ fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
     };
     let cam = camera.borrow();
     let eye = cam
-        .fields
-        .get("eye")
+        .get_field("eye")
+        .as_ref()
         .and_then(value_as_vec3)
         .unwrap_or(eye_default);
     let target = cam
-        .fields
-        .get("target")
+        .get_field("target")
+        .as_ref()
         .and_then(value_as_vec3)
         .unwrap_or(target_default);
     let up = cam
-        .fields
-        .get("up")
+        .get_field("up")
+        .as_ref()
         .and_then(value_as_vec3)
         .unwrap_or(up_default);
     (eye, target, up)
