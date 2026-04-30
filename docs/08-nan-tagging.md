@@ -240,12 +240,13 @@ This is the load-bearing part of the doc. NaN tagging + GC isn't one session; it
 - Stdlib's interior pattern matches still operate on legacy `Value` (the rule "every `Value::` in builtins becomes `TaggedValue::*`" lands at 8f when the legacy enum deletes — keeping 8e mechanical kept the regression surface in line with 8c–8d).
 - All 499 tests still pass; clippy clean.
 
-#### Session 8f — Delete legacy Value
+#### Session 8f — Delete legacy Value (pending)
 
 - `src/value.rs`: remove `enum Value`. `Value` becomes a type alias for `TaggedValue` (or fully renamed).
 - Delete the `to_legacy` / `from_legacy` shim.
 - Strict-mode inferer uses TaggedValue type names in diagnostics.
 - 100% migration verified by zero `Value::` patterns outside `tagged_value.rs`.
+- **Scope reality:** 917 `Value::` pattern-match sites across the codebase as of post-8e. Each site is mechanical (`match v { Value::Int(n) => ... }` → `if v.is_int() { let n = v.as_int(); ... }` or `match v.to_legacy()` for one-shots), but the volume is genuinely a multi-session sub-phase on its own. Once 8f lands, 8g–8i become straightforward: the GC takes over the (already-replaced) heap allocations, roots wire to known TaggedValue locations, bench measures the post-shim VM.
 
 #### Session 8g — GC heap allocator
 
