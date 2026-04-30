@@ -30,13 +30,13 @@ Not every example ships in v0.1. Some pressure-test features that require runtim
 | 4 — NPC state-machine AI | **v0.1** | States, transitions, `every`, predicate hooks all ship. |
 | 5 — Procedural fire | **v0.3** | `visual` block → WGSL fragment-shader compilation is Phase 9. v0.1 docs claimed this; that was wrong — the Phase 7 honesty pass demoted it. |
 | 6 — Particle burst | **v0.3** | `particles` block parses today but the runtime no-ops. Real runtime is Phase 9. |
-| 7 — Save and load | **v0.2** | `save` block compiler is Phase 8, against the `docs/07-save-system.md` design. |
+| 7 — Save and load | **v0.2** (bottom layer; block syntax v0.3) | `save_to(path, value)` / `load_from(path)` stdlib builtins shipped in v0.2 session 4 against the `docs/07-save-system.md` design. The `save SaveSlot:` block syntax + version migration ride a follow-on session. |
 | 8 — 3D camera follow | **v0.1** (cubes/spheres/`.glb`) | `play3d` runs the surface today. Polish (mouse, mat4/quat, animation) is 3D-maintenance, off the v1.0 critical path. |
-| 9 — Tilemap with collision | **v0.2** | `tilemap` block runtime is Phase 8. |
-| 10 — Boss fight | **v0.3** | Integration test — depends on Examples 4 (states ✅) + 7 (save, v0.2) + 6 (particles, v0.3). Runs end-to-end at v0.3. |
+| 9 — Tilemap with collision | **v0.2** (stdlib form; block syntax follow-on) | `tilemap(layout, tile_size, tiles)` + `tilemap_render` + `tilemap_at` + `tilemap_solid_at` stdlib builtins shipped in v0.2 session 6. The `tilemap Dungeon:` block syntax is a follow-on parser session. |
+| 10 — Boss fight | **v0.3** | Integration test — depends on Examples 4 (states ✅) + 7 (save, v0.2 ✅) + 6 (particles, v0.3). Runs end-to-end at v0.3. |
 | 11 — Snake | **v0.1** | Drove the Phase 6 NPx design pressures; runs today on `twec play`. |
 
-If you're reading this looking for "what can I write today?", the v0.1 column is the answer: Examples 1, 2, 3 (no choices yet), 4, 8 (cubes), and 11. The roadmap to bring the rest online is `docs/05-roadmap.md` Phases 8 and 9.
+If you're reading this looking for "what can I write today?", as of 2026-04-30 the answer is: Examples 1, 2, 3 (no interactive choices yet), 4, **7 (data round-trip via stdlib)**, 8 (cubes), **9 (tilemap via stdlib)**, and 11. Examples 5, 6, 10 wait for v0.3's `visual` block + `particles` runtime. The roadmap to bring the rest online is `docs/05-roadmap.md` Phases 9 onward.
 
 ---
 

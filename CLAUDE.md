@@ -78,7 +78,7 @@ These are unresolved. When you encounter them, flag explicitly and propose; do n
 - List comprehensions (deferred per Snake's NP3).
 - Keyword pruning — the current 50-keyword list is at the high end.
 - The fate of `then` as a sequencing keyword (only used in Example 10).
-- **Save schema design** — `docs/07-save-system.md` is a Phase 7 prerequisite for the v0.2 `save` block compiler. Versioning, Steam Cloud quotas, atomicity story all open until that doc lands.
+- **Save *block* syntax** — `docs/07-save-system.md` design + the `save_to`/`load_from` stdlib bottom layer (v0.2 session 4) shipped. The language-level `save SaveSlot:` block + version migration syntax is still pending; that's a v0.3+ follow-on session per the roadmap.
 - **Input remapping UX** — keyboard / gamepad rebind UI (Phase 10) needs a design pass. Live-rebind vs. rebind-from-menu? Conflict resolution?
 - **Pause-on-focus-loss semantics** — fibers suspend by default on window blur (Phase 10), but per-state opt-out for always-running tasks (e.g., a level-streamer) needs a syntax. `state foo: persistent` flag? `pause: false` field? Deferred until first need.
 - **Visual block runtime** — documented as a v0.1 headline feature in `docs/01-examples.md` Example 5 and `README.md` Pillar 3, but not implemented. Phase 7 docs honesty fix demotes Pillar 3 to v0.3; Phase 9 ships the `visual` → WGSL compiler.
@@ -127,12 +127,14 @@ We are entering **Phase 7** (v0.1 public release) per `docs/05-roadmap.md`. Clos
 
 These are mostly *non-code* sessions — release engineering, writing, packaging. The codebase itself doesn't need new features for v0.1.
 
-**Phase 7 has two pre-release additions** to keep v0.1 honest before tagging:
+**Phase 7 had two pre-release additions** to keep v0.1 honest before tagging — both shipped 2026-04-29 / 04-30:
 
-1. **Demote `visual` and `particles` blocks** in `docs/01-examples.md`, `README.md`, and `docs/06-design-document.md` — they're documented as shipped but the runtimes don't exist (`particles` parses but `eval` no-ops it; `visual` has no parser support at all). Don't ship a v0.1 release that lies about its surface.
-2. **Author `docs/07-save-system.md`** — design doc for save schemas, version migration, Steam Cloud quota model. Required *before* v0.2 implements the `save` compiler. No code, just design.
+1. ~~**Demote `visual` and `particles` blocks**~~ — done. `docs/01-examples.md` got a runtime-delivery status table; `README.md` Pillar 3 softened to "Coming in v0.3"; `docs/05-roadmap.md` Phase 9 owns the `visual` → WGSL compilation runtime.
+2. ~~**Author `docs/07-save-system.md`**~~ — done. Authored alongside the v1.0 roadmap commit. v0.2 session 4's `save_to`/`load_from` stdlib bottom layer ships against that design.
 
-**v0.2 work also runs in parallel** — Phase 8 in the roadmap. Sessions 1 (`.glb`), 2a / 2b / 2c (resumable wait + frame stack + VM nested-block parity) shipped 2026-04-29 / 04-30. Remaining Phase 8 items: tilemap, save compiler, mouse, audio v2, NaN tagging + GC, function-body wait on the VM. See `docs/05-roadmap.md` Phase 8.
+Phase 7's remaining release-engineering items (license, `cargo dist`, VS Code marketplace, website, blog post, CONTRIBUTING.md) are *non-code* and listed above.
+
+**v0.2 work also runs in parallel** — Phase 8 in the roadmap. **Phase 8 is now substantively complete** as of 2026-04-30. Nine feature sessions shipped: 1 (`.glb`), 2a / 2b / 2c (resumable wait + frame stack + VM nested-block parity), 3 (mouse input), 4 (save / load bottom layer), 5 (audio v2), 6 (tilemap), 7 (VM function-body wait via multi-frame fiber save). The remaining line item — **NaN-tagged 64-bit values + tracing GC** — broke out as Phase 8.5 per `docs/08-nan-tagging.md` because the migration is genuinely 9 sub-sessions; sessions 8a (TaggedValue module) and 8b (HeapBody expansion) shipped 2026-04-30, sessions 8c–8i remain. **497 tests pass; clippy + build clean.**
 
 **Post-v0.1 the canonical plan is `docs/05-roadmap.md` Phases 8–16** (v0.2 → v1.0). Theme: "ship a Vampire-Survivors-class commercial 2D game on Twe." 3D is in maintenance mode, off the v1.0 critical path.
 

@@ -47,9 +47,14 @@ Three games Twe must be excellent at:
 - [x] Tooling: LSP, formatter, tree-sitter grammar, VS Code extension (Phases 3 + 6)
 - [x] Type system v1, non-strict + strict modes (Phases 4 + 6)
 - [x] 3D rendering surface — cubes, spheres, `.glb` meshes, hot reload (Phase 5 + v0.2 session 1)
-- [x] Cooperative fibers (`wait` works in nested blocks + functions, Phases 5 + v0.2 sessions 2a/2b/2c)
+- [x] Cooperative fibers (`wait` works in nested blocks + functions, both backends — Phases 5 + v0.2 sessions 2a/2b/2c/7)
+- [x] Mouse input (v0.2 session 3)
+- [x] Save / load bottom layer (`save_to` / `load_from` stdlib builtins; v0.2 session 4)
+- [x] Audio v2 — volume / music looping / stop (v0.2 session 5)
+- [x] Tilemap (stdlib form: `tilemap(...)` + `tilemap_render` + collision queries; v0.2 session 6)
+- [~] NaN-tagged 64-bit values + tracing GC (Phase 8.5 — sessions 8a + 8b shipped, 8c–8i remain; see `docs/08-nan-tagging.md`)
 - [ ] **Phase 7: v0.1 release** — `cargo dist` binaries, VS Code marketplace, website, CONTRIBUTING.md, license decision (currently active)
-- [ ] **v0.2 → v1.0 plan** — Phases 8–16 in `docs/05-roadmap.md`. v1.0 = "ship a Vampire-Survivors-class commercial 2D game on Twe."
+- [ ] **v0.3 → v1.0 plan** — Phases 9–16 in `docs/05-roadmap.md`. v1.0 = "ship a Vampire-Survivors-class commercial 2D game on Twe."
 
 See `docs/05-roadmap.md` for the detailed plan.
 
