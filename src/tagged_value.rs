@@ -232,6 +232,7 @@ impl TaggedValue {
 
 impl TaggedValue {
     /// Encode a `bool` as the matching `TRUE` / `FALSE` constant.
+    #[inline]
     pub fn from_bool(b: bool) -> Self {
         if b {
             Self(QNAN | TAG_TRUE)
@@ -244,6 +245,7 @@ impl TaggedValue {
     /// fast immediate path; values outside box to a
     /// `HeapBody::BoxedInt`. v0.2 Phase 8.5 session 8b
     /// (replaces 8a's silent truncation).
+    #[inline]
     pub fn from_int(n: i64) -> Self {
         const I48_MAX: i64 = (1 << 47) - 1;
         const I48_MIN: i64 = -(1 << 47);
@@ -258,6 +260,7 @@ impl TaggedValue {
     /// Encode an `f64`. Canonicalizes NaN to a single bit pattern
     /// so a payload that happens to look like one of our tags
     /// can't be misread as Nil/Bool/etc.
+    #[inline]
     pub fn from_float(f: f64) -> Self {
         if f.is_nan() {
             // f64::NAN canonical bit pattern is `QNAN` exactly,
@@ -358,40 +361,55 @@ impl TaggedValue {
 }
 
 // ---------- predicates ----------
+//
+// These are dispatched on every bytecode instruction (binary_arith,
+// compare, JumpIfFalse, ...) so they're forced inline. Without
+// `#[inline]`, the optimizer leaves them as separate functions and
+// release-build dispatch slows by ~70% on tight integer loops
+// (measured against pre-NaN-tag baseline; see Phase 8.5 session 8i).
 
 impl TaggedValue {
     /// True for any value that's NOT a regular non-NaN f64.
     /// (Tag 0 — `f64::NAN` itself — passes `is_float`.)
+    #[inline]
     fn is_tagged(&self) -> bool {
         (self.0 & QNAN) == QNAN && (self.0 & TAG_MASK) != 0
     }
 
+    #[inline]
     pub fn is_nil(&self) -> bool {
         self.0 == (QNAN | TAG_NIL)
     }
+    #[inline]
     pub fn is_bool(&self) -> bool {
         let tag = self.0 & TAG_MASK;
         self.is_tagged() && (tag == TAG_FALSE || tag == TAG_TRUE)
     }
+    #[inline]
     pub fn is_int(&self) -> bool {
         self.is_tagged() && (self.0 & TAG_MASK) == TAG_INT
     }
+    #[inline]
     pub fn is_float(&self) -> bool {
         // Either not-tagged at all, OR tag is 0 (canonical NaN).
         !self.is_tagged()
     }
+    #[inline]
     pub fn is_number(&self) -> bool {
         self.is_int() || self.is_float()
     }
+    #[inline]
     pub fn is_str(&self) -> bool {
         self.is_tagged() && (self.0 & TAG_MASK) == TAG_STR
     }
+    #[inline]
     pub fn is_obj(&self) -> bool {
         self.is_tagged() && (self.0 & TAG_MASK) == TAG_OBJ
     }
     /// True for any heap-allocated variant (Str / Obj). Used by
     /// `Clone` / `Drop` to know whether to bump / decrement the
     /// refcount.
+    #[inline]
     fn is_heap(&self) -> bool {
         self.is_str() || self.is_obj()
     }
@@ -404,6 +422,7 @@ impl TaggedValue {
 // `match value { Value::Int(n) => ... }` discipline.
 
 impl TaggedValue {
+    #[inline]
     pub fn as_bool(&self) -> bool {
         debug_assert!(self.is_bool(), "as_bool on non-bool");
         (self.0 & TAG_MASK) == TAG_TRUE
@@ -412,6 +431,7 @@ impl TaggedValue {
     /// Read an int-typed value, whether immediate (i48) or
     /// boxed (i64). Callers should pre-test with
     /// `is_int_or_boxed_int()` to know it's safe.
+    #[inline]
     pub fn as_int(&self) -> i64 {
         if self.is_int() {
             // Sign-extend the 48-bit payload to i64.
@@ -435,6 +455,7 @@ impl TaggedValue {
     /// `HeapBody::BoxedInt` variant. Callers that want "is this
     /// an integer regardless of representation" should use this
     /// rather than `is_int` (which is only the fast path).
+    #[inline]
     pub fn is_int_or_boxed_int(&self) -> bool {
         if self.is_int() {
             return true;
@@ -445,6 +466,7 @@ impl TaggedValue {
         false
     }
 
+    #[inline]
     pub fn as_float(&self) -> f64 {
         debug_assert!(self.is_float(), "as_float on non-float");
         f64::from_bits(self.0)
@@ -484,10 +506,12 @@ impl TaggedValue {
 
     /// Twe truthiness: only `false` is falsy. Per Principle 3 +
     /// `docs/03-runtime.md` pitfall #2.
+    #[inline]
     pub fn is_truthy(&self) -> bool {
         !self.is_bool() || self.as_bool()
     }
 
+    #[inline]
     pub fn is_falsy(&self) -> bool {
         self.is_bool() && !self.as_bool()
     }

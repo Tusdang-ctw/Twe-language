@@ -285,6 +285,10 @@ impl VM {
         // around InitScene / Spawn / Despawn / Transition.
         let mut current_func = Rc::clone(&self.frames.last().unwrap().function);
         let mut ip = self.frames.last().unwrap().ip;
+        // v0.2 Phase 8.5 session 8i: also cache slot_base so OP_GET_LOCAL
+        // / OP_SET_LOCAL dispatch doesn't pay a Vec::last + unwrap on
+        // every iteration. Reload it any time `reload!` runs.
+        let mut slot_base = self.frames.last().unwrap().slot_base;
 
         macro_rules! sync_ip {
             () => {
@@ -296,6 +300,7 @@ impl VM {
                 let top = self.frames.last().unwrap();
                 current_func = Rc::clone(&top.function);
                 ip = top.ip;
+                slot_base = top.slot_base;
             };
         }
         macro_rules! read_byte {
@@ -493,7 +498,7 @@ Err(RuntimeError {
                 }
                 OpCode::GetLocal => {
                     let slot = read_byte!() as usize;
-                    let abs = self.frames.last().unwrap().slot_base + slot;
+                    let abs = slot_base + slot;
                     let v = self.slot_get(abs).ok_or_else(|| RuntimeError {
                         line,
                         col: 0,
@@ -510,7 +515,7 @@ Err(RuntimeError {
                 }
                 OpCode::SetLocal => {
                     let slot = read_byte!() as usize;
-                    let abs = self.frames.last().unwrap().slot_base + slot;
+                    let abs = slot_base + slot;
                     if abs >= self.stack.len() {
                         return Err(RuntimeError {
                             line,

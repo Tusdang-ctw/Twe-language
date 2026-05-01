@@ -223,7 +223,9 @@ pub fn gc_collect_with(scan: impl FnOnce()) {
 
 /// Returns true if the heap's `bytes_allocated` has crossed
 /// `threshold`, meaning the next safepoint should trigger collection.
-/// Cheap to call (single thread-local borrow + two field reads).
+/// Hot path: called from every VM-dispatch / eval-statement safepoint;
+/// must be cheap when over threshold is false.
+#[inline]
 pub fn gc_should_collect() -> bool {
     HEAP.with(|h| {
         let h = h.borrow();
