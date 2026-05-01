@@ -277,12 +277,26 @@ What 8g shipped:
 
 Note: collection is **manual-only** at the end of 8g. No safepoint hooks yet — the VM/eval don't call `gc_collect` anywhere outside the unit tests. Memory still effectively leaks under live programs until 8h wires roots and triggers.
 
-#### Session 8h — Roots wiring
+#### Session 8h — Roots wiring + safepoints (✅ shipped 2026-05-01)
 
-- VM: stack, globals, active_scene, every active_entity, every BcInstance's fiber_frames + fiber_stack.
-- Eval: env bindings, active_scene, active_entities, env.self_value, env.returning, every Instance's fiber_frames.
-- Each is a "scan this" callback registered with the GC.
-- Tests: cycle-detection (`obj.field = obj`) collects after one full GC cycle.
+What 8h shipped:
+
+- `gc_collect_with(scan: impl FnOnce())` — closure-based GC entry. The scan callback walks every live root and calls `mark_value` on each `&TaggedValue`; sweep runs after the closure returns. This replaces the flat-slice `gc_collect(&[&TaggedValue])` for VM/Env safepoint use, where root sets are scattered across nested fields and would be expensive to flatten.
+- `gc_should_collect()` — cheap thread-local check (`bytes_allocated >= threshold`) used by every safepoint to skip the collect when the heap is well under threshold.
+- `gc_set_threshold(n)` — test/bench knob to force aggressive collection.
+- `Env::scan_roots(&self)` — walks `bindings`, `self_value`, `returning`, `active_scene`, `active_entities`. Each instance is walked via the new `value::mark_instance(inst)` which scans `inst.fields` and any `FrameKind::Function` `saved_returning` / `saved_params` on suspended fiber frames.
+- `VM::scan_roots(&self)` — walks the value `stack`, `globals`, `builtin_env` (delegates to `Env::scan_roots`), `active_scene`, `active_entities`, every active `CallFrame`'s `BcFunction` constants pool, and the top-level `on_update`. Each BcInstance is walked via `bytecode::mark_bc_instance(inst)` (fields + `fiber_stack`).
+- `mark_bc_function_constants(f)` — marks every `TaggedValue` in a `BcFunction`'s chunk constants pool. Used both by `mark_body` (when reaching a BcFunction through a TaggedValue) and by `VM::scan_roots` (where active CallFrame functions are held as naked `Rc<BcFunction>` with no TaggedValue path).
+- `mark_body` updates: `BcFunction` now walks chunk constants; `BcClass` walks methods + states' inner BcFunctions (`on_entry`, `every_clocks`, `on_update`, `on_render`, `on_key_press`, `on_predicates`); `BcInstance` additionally walks `fiber_frames`' resumption-function constants. Pre-fix, a string constant reachable only through a function chunk got swept while its function was running.
+- Eval safepoint: `run_block` checks `gc_should_collect()` between statements and calls `gc_collect_with(|| env.scan_roots())` when the threshold is crossed.
+- VM safepoint: `dispatch` loop top checks `gc_should_collect()` between bytecode instructions and calls `gc_collect_with(|| self.scan_roots())`. The active frame's `ip` is sync'd back to `self.frames` first so root-scanning sees a consistent state.
+
+Stress tests (under `gc_set_threshold(0)` — force collect on every safepoint):
+
+- `snake_runs_under_aggressive_gc` — 10 ticks of `examples/snake.twe`'s state-machine + entity logic; verifies the eval-side roots wiring is complete.
+- `vm_entity_tick_runs_under_aggressive_gc` — 50 spawned entities, 10 VM ticks; verifies the bytecode-VM roots wiring (stack / globals / active_entities / active_scene / fiber_stack / CallFrame constants).
+
+**8h shipped in one commit:** `phase-8.5: 8h GC roots wiring + safepoints — auto-collect on cross-threshold`. **502 tests pass; clippy clean under `-D warnings`; release build zero warnings.**
 
 #### Session 8i — Bench + tune
 
