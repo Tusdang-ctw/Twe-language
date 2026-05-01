@@ -259,13 +259,23 @@ What 8f shipped:
 
 This unblocks 8g–8i: every storage location is `TaggedValue`, every heap interior is `Vec<TaggedValue>`, and the value layer has only one representation.
 
-#### Session 8g — GC heap allocator
+#### Session 8g — GC heap allocator (✅ shipped 2026-05-01)
 
-- `src/heap.rs` gains `Heap { all_objects: *mut HeapObject, threshold: usize }`.
-- `Heap::alloc(body) -> *mut HeapObject` replaces `Rc::new`.
-- Linked-list of all heap objects for sweep walk.
-- Stop-the-world mark + sweep `Heap::collect(roots: &[TaggedValue])`.
-- Triggered from VM/eval at safepoints (between bytecode instructions in VM; between statements in eval).
+What 8g shipped:
+
+- New `src/heap.rs` with thread-local `Heap { all_objects: *mut HeapObject, bytes_allocated, threshold }`.
+- `HeapObject` grew GC headers: `mark: Cell<bool>`, `body_kind: HeapBodyKind`, `next: Cell<*mut HeapObject>`. Body interior is `RefCell<HeapBody>` (unchanged from 8a).
+- `Heap::alloc(body) -> *mut HeapObject` replaces `Rc::new` + `Rc::into_raw`. `Box::into_raw` is now the allocation primitive; the heap owns memory.
+- Stop-the-world tri-color mark + sweep `Heap::collect(roots: &[&TaggedValue])` with recursive `HeapBody` scan and cycle detection (mark-bit short-circuit).
+- Linked-list sweep walk frees unmarked `HeapObject`s via `Box::from_raw`. `Heap::Drop` drains the list at thread exit.
+- Free-function API: `gc_alloc(body)`, `gc_collect(roots)`, `mark_value(v)` for the constructors and (later) safepoints.
+- `TaggedValue` lost its `Drop` impl and gained `impl Copy` — values are plain 64-bit bit-patterns again, no refcount. Constructors (`from_string`, `from_heap`) route through `gc_alloc`. `with_heap_object` simplified to a thin pointer deref.
+- Five new heap unit tests (linked-list threading, sweep frees unrooted, mark keeps rooted strings, mark traverses tuple children, cycle in heap doesn't loop forever).
+- 500 tests pass (down 1 from 501 because the obsolete `clone_bumps_refcount_and_drop_balances` test was deleted — refcount semantics no longer exist). Build clean. clippy clean under `-D warnings` (silenced 4 pre-existing `approx_constant` warnings by changing test float literals from `3.14` → `2.5`).
+
+**8g shipped in one commit:** `phase-8.5: 8g GC heap allocator — Heap::alloc/collect, mark+sweep, TaggedValue is Copy`.
+
+Note: collection is **manual-only** at the end of 8g. No safepoint hooks yet — the VM/eval don't call `gc_collect` anywhere outside the unit tests. Memory still effectively leaks under live programs until 8h wires roots and triggers.
 
 #### Session 8h — Roots wiring
 
