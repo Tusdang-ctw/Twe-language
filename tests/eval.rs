@@ -1054,6 +1054,66 @@ fn snake_dies_into_a_wall() {
     assert!(score.is_int_or_boxed_int(), "got: {score:?}");
 }
 
+// v0.2 Phase 8.5 session 8h: stress-test the bytecode VM safepoint
+// and roots wiring. Spawn entities, tick, and force collect on every
+// bytecode-instruction safepoint. If VM::scan_roots misses the
+// stack / globals / active_entities / active_scene / fiber_stack, a
+// still-live TaggedValue gets swept and the tick crashes or produces
+// wrong output.
+#[test]
+fn vm_entity_tick_runs_under_aggressive_gc() {
+    let src = "entity Mob:\n\
+               \x20   var n = 0\n\
+               \x20   update(dt):\n\
+               \x20       n += 1\n\
+               \n\
+               var i = 0\n\
+               while i < 50:\n\
+               \x20   spawn Mob at (0, 0)\n\
+               \x20   i += 1\n";
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let chunk = twec::compiler::compile_program(&program).expect("compile");
+    let mut vm = twec::vm::VM::new();
+    vm.run(&chunk).expect("run");
+
+    // Force collect on every safepoint.
+    twec::heap::gc_set_threshold(0);
+
+    for _ in 0..10 {
+        vm.tick(0.016).expect("tick under aggressive GC");
+    }
+}
+
+// v0.2 Phase 8.5 session 8h: stress-test the safepoint and roots
+// wiring by lowering the GC threshold to 0 so every statement-boundary
+// safepoint actually collects. Snake walking off the east wall is
+// 10 ticks of state-machine + entity logic — exercises
+// Env::scan_roots, active_scene fields, fiber frames, and global
+// stdlib state. If any root is missing, a still-live TaggedValue gets
+// swept and the program crashes or produces wrong output.
+#[test]
+fn snake_runs_under_aggressive_gc() {
+    let src = std::fs::read_to_string("examples/snake.twe").expect("examples/snake.twe must exist");
+    let tokens = twec::lexer::lex(&src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top-level");
+
+    // Force collect on every statement boundary from now on.
+    twec::heap::gc_set_threshold(0);
+
+    for _ in 0..10 {
+        twec::eval::tick_frame(&mut env, 0.150).expect("tick under aggressive GC");
+    }
+
+    // Same observable as `snake_dies_into_a_wall`: 10 ticks → game_over.
+    let scene = env.active_scene.as_ref().expect("scene");
+    let state_name = scene.borrow().current_state.clone().expect("current state");
+    assert_eq!(state_name, "game_over");
+}
+
 #[test]
 fn rect_outside_render_errors() {
     let src = r#"on update(dt):

@@ -391,6 +391,59 @@ impl Env {
     pub fn iter_bindings(&self) -> impl Iterator<Item = (String, TaggedValue)> + '_ {
         self.bindings.iter().map(|(k, v)| (k.clone(), *v))
     }
+
+    /// v0.2 Phase 8.5 session 8h: walk every GC root reachable through
+    /// this env and mark them. Called from a safepoint inside
+    /// `gc_collect_with(|| env.scan_roots())`.
+    ///
+    /// Roots: bindings (every global), self_value, returning, the
+    /// active scene's instance fields + fiber frames, and every
+    /// active entity's instance fields + fiber frames.
+    pub fn scan_roots(&self) {
+        for v in self.bindings.values() {
+            crate::heap::mark_value(v);
+        }
+        if let Some(v) = &self.self_value {
+            crate::heap::mark_value(v);
+        }
+        if let Some(v) = &self.returning {
+            crate::heap::mark_value(v);
+        }
+        if let Some(scene) = &self.active_scene {
+            mark_instance(&scene.borrow());
+        }
+        for ent in &self.active_entities {
+            mark_instance(&ent.borrow());
+        }
+    }
+}
+
+/// Mark every `TaggedValue` reachable through an `Instance` — its
+/// fields plus any saved fiber-frame state. Used by `Env::scan_roots`
+/// (where active_scene/active_entities hold naked `Rc<RefCell<Instance>>`
+/// without a corresponding TaggedValue), and any other site that
+/// roots an instance directly. v0.2 Phase 8.5 session 8h.
+pub fn mark_instance(inst: &Instance) {
+    for v in inst.fields.values() {
+        crate::heap::mark_value(v);
+    }
+    for frame in &inst.fiber_frames {
+        if let FrameKind::Function {
+            saved_returning,
+            saved_params,
+            ..
+        } = &frame.kind
+        {
+            if let Some(v) = saved_returning {
+                crate::heap::mark_value(v);
+            }
+            for (_, slot) in saved_params {
+                if let Some(v) = slot {
+                    crate::heap::mark_value(v);
+                }
+            }
+        }
+    }
 }
 
 impl Default for Env {

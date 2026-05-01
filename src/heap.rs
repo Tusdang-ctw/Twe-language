@@ -101,18 +101,21 @@ impl Heap {
         ptr
     }
 
-    /// Stop-the-world mark + sweep. `roots` is the GC root set —
-    /// each `&TaggedValue` reachable from VM stack, env bindings,
-    /// scene/entity instances, etc. (8h wires the actual root
-    /// scanning). Frees every `HeapObject` not transitively
-    /// reachable from a root.
+    /// Stop-the-world mark + sweep with a flat root slice. Wraps
+    /// the closure-based [`gc_collect_with`] entry point for
+    /// tests / callers that already have a Vec of root refs.
     pub fn collect(&mut self, roots: &[&TaggedValue]) {
-        // ---- Mark phase ----
         for r in roots {
             mark_value(r);
         }
+        self.sweep();
+    }
 
-        // ---- Sweep phase ----
+    /// Sweep half of mark+sweep. Walk the `all_objects` linked list:
+    /// keep marked objects (and reset their mark for the next cycle),
+    /// unlink + free unmarked objects. Adapts the GC threshold based
+    /// on post-sweep live size, per *Crafting Interpreters* §26.4.
+    pub fn sweep(&mut self) {
         let mut prev: *mut HeapObject = std::ptr::null_mut();
         let mut cur = self.all_objects;
         unsafe {
@@ -199,6 +202,39 @@ pub fn gc_alloc(body: HeapBody) -> *mut HeapObject {
 /// reachable from a root are freed.
 pub fn gc_collect(roots: &[&TaggedValue]) {
     HEAP.with(|h| h.borrow_mut().collect(roots));
+}
+
+/// Closure-based GC entry point. The `scan` callback walks the live
+/// root set, calling [`mark_value`] on each `&TaggedValue` it visits.
+/// After scan returns, the heap sweeps unmarked objects.
+///
+/// This is the primary API for VM / eval safepoints (8h): the closure
+/// captures `&self` and visits the VM stack, globals, scenes, etc.
+/// without forcing the caller to flatten roots into a Vec.
+///
+/// Note: the scan callback runs **before** `HEAP` is borrowed for
+/// sweep, so it's safe to allocate (transitively trigger
+/// [`gc_alloc`]) inside scan — though scan should be allocation-free
+/// in practice.
+pub fn gc_collect_with(scan: impl FnOnce()) {
+    scan();
+    HEAP.with(|h| h.borrow_mut().sweep());
+}
+
+/// Returns true if the heap's `bytes_allocated` has crossed
+/// `threshold`, meaning the next safepoint should trigger collection.
+/// Cheap to call (single thread-local borrow + two field reads).
+pub fn gc_should_collect() -> bool {
+    HEAP.with(|h| {
+        let h = h.borrow();
+        h.bytes_allocated >= h.threshold
+    })
+}
+
+/// Test/bench helper: override the GC threshold so safepoints fire
+/// sooner. Production code should not use this.
+pub fn gc_set_threshold(threshold: usize) {
+    HEAP.with(|h| h.borrow_mut().threshold = threshold);
 }
 
 /// Number of objects currently alive on the thread-local heap.
@@ -297,6 +333,15 @@ fn mark_body(body: &HeapBody) {
             for v in c.field_defaults.values() {
                 mark_value(v);
             }
+            // 8h: methods + states own `Rc<BcFunction>`s whose chunks
+            // hold the only path to nested string / function / class
+            // constants. Without walking them every constant gets swept.
+            for f in c.methods.values() {
+                mark_bc_function_constants(f);
+            }
+            for s in c.states.values() {
+                mark_bc_state(s);
+            }
         }
         HeapBody::BcInstance(rc) => {
             let inst = rc.borrow();
@@ -306,17 +351,63 @@ fn mark_body(body: &HeapBody) {
             for v in &inst.fiber_stack {
                 mark_value(v);
             }
+            // 8h: suspended-fiber frames hold their resumption function
+            // — that function's constants must survive across the
+            // suspension boundary.
+            for frame in &inst.fiber_frames {
+                mark_bc_function_constants(&frame.function);
+            }
         }
-        // Function / BcFunction: function bodies don't carry runtime
-        // TaggedValues (only AST / bytecode constants, which are
-        // already heap-allocated and reached via separate roots).
-        HeapBody::Function(_) | HeapBody::BcFunction(_) | HeapBody::Builtin { .. } => {}
+        // 8h: bytecode function chunks carry a constants pool whose
+        // string / function / class entries are TaggedValues. The
+        // constants are reachable only through this BcFunction's
+        // chunk, so mark them now.
+        HeapBody::BcFunction(rc) => {
+            mark_bc_function_constants(rc);
+        }
+        // Tree-walker FunctionDef bodies are AST statements (literals
+        // stored as `ast::Lit`, not `TaggedValue`); nothing to scan.
+        // Builtin captures are pure function pointers + names.
+        HeapBody::Function(_) | HeapBody::Builtin { .. } => {}
         // Leaf bodies — no nested TaggedValues to scan.
         HeapBody::String(_)
         | HeapBody::BoxedInt(_)
         | HeapBody::Percent(_)
         | HeapBody::Quantity { .. }
         | HeapBody::Range { .. } => {}
+    }
+}
+
+/// Walk a `BcFunction`'s chunk constants and mark each `TaggedValue`.
+/// Used by `mark_body` (when reaching a BcFunction through a
+/// TaggedValue) and by `VM::scan_roots` (when walking active
+/// CallFrames whose function is held as a naked `Rc<BcFunction>`).
+/// v0.2 Phase 8.5 session 8h.
+pub fn mark_bc_function_constants(f: &crate::bytecode::BcFunction) {
+    for v in &f.chunk.constants {
+        mark_value(v);
+    }
+}
+
+/// Walk every `Rc<BcFunction>` reachable through a `BcStateDef` and
+/// mark its chunk constants. Called from `mark_body` for BcClass.
+fn mark_bc_state(s: &crate::bytecode::BcStateDef) {
+    mark_bc_function_constants(&s.on_entry);
+    for (_, f) in &s.every_clocks {
+        mark_bc_function_constants(f);
+    }
+    if let Some(f) = &s.on_update {
+        mark_bc_function_constants(f);
+    }
+    if let Some(f) = &s.on_render {
+        mark_bc_function_constants(f);
+    }
+    for f in s.on_key_press.values() {
+        mark_bc_function_constants(f);
+    }
+    for (pred, body) in &s.on_predicates {
+        mark_bc_function_constants(pred);
+        mark_bc_function_constants(body);
     }
 }
 

@@ -203,6 +203,46 @@ impl VM {
         }
     }
 
+    /// v0.2 Phase 8.5 session 8h: walk every GC root reachable from
+    /// the bytecode VM and mark them. Called from a safepoint inside
+    /// `gc_collect_with(|| vm.scan_roots())`.
+    ///
+    /// Roots: the value stack (every live local + temporary), every
+    /// global, the held builtin Env (its bindings + active state),
+    /// the active scene's instance fields + fiber stack, every
+    /// active entity's instance fields + fiber stack, and every
+    /// active CallFrame's compiled function constants pool.
+    ///
+    /// The constants pool of a running function is held as a naked
+    /// `Rc<BcFunction>` in `CallFrame::function` — it isn't otherwise
+    /// reachable through any TaggedValue, so the safepoint must mark
+    /// every constant explicitly or string / function / class
+    /// constants get swept while a function is running.
+    pub fn scan_roots(&self) {
+        for v in &self.stack {
+            crate::heap::mark_value(v);
+        }
+        for v in self.globals.values() {
+            crate::heap::mark_value(v);
+        }
+        // The held builtin Env duplicates some stdlib state from globals
+        // but may also hold bindings the VM never mirrored back. Scan it
+        // so nothing reachable through builtins gets swept.
+        self.builtin_env.scan_roots();
+        if let Some(scene) = &self.active_scene {
+            crate::bytecode::mark_bc_instance(&scene.borrow());
+        }
+        for ent in &self.active_entities {
+            crate::bytecode::mark_bc_instance(&ent.borrow());
+        }
+        for frame in &self.frames {
+            crate::heap::mark_bc_function_constants(&frame.function);
+        }
+        if let Some(f) = &self.on_update {
+            crate::heap::mark_bc_function_constants(f);
+        }
+    }
+
     /// Run a chunk to completion. The chunk is wrapped in a synthetic
     /// `<script>` function for uniform frame dispatch. Returns the
     /// value left on top of the stack at the script's `OP_RETURN`
@@ -304,6 +344,14 @@ Err(RuntimeError {
                 // this is a fallthrough only on a malformed chunk.
                 sync_ip!();
                 return Ok(self.stack.pop().unwrap_or(Value::NIL));
+            }
+            // v0.2 Phase 8.5 session 8h: GC safepoint between bytecode
+            // instructions. Threshold-gated so non-allocating dispatch
+            // pays only the cheap `bytes_allocated >= threshold` check;
+            // a real collect fires only once per ~2× live-set growth.
+            if crate::heap::gc_should_collect() {
+                sync_ip!();
+                crate::heap::gc_collect_with(|| self.scan_roots());
             }
             let line = current_func.chunk.lines[ip];
             let op = OpCode::from_u8(current_func.chunk.code[ip]);

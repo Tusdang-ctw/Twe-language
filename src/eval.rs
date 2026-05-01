@@ -1532,6 +1532,16 @@ fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeErr
 
 fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
     for stmt in stmts {
+        // v0.2 Phase 8.5 session 8h: GC safepoint between statements.
+        // Threshold-gated; non-allocating runs pay only the cheap
+        // `bytes_allocated >= threshold` thread-local check. Statement
+        // boundaries are safe because every TaggedValue is rooted in
+        // env.bindings, env.self_value/returning, or an instance's
+        // fields between statements (no Rust-stack-only intermediate
+        // values like there would be mid-expression).
+        if crate::heap::gc_should_collect() {
+            crate::heap::gc_collect_with(|| env.scan_roots());
+        }
         eval_stmt(env, stmt)?;
         if env.returning.is_some() || env.breaking || env.continuing || env.transitioning.is_some()
         {

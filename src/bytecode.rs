@@ -449,6 +449,20 @@ impl BcInstance {
     }
 }
 
+/// Mark every `TaggedValue` reachable through a `BcInstance` — its
+/// fields plus the saved fiber-stack snapshot. Used by `VM::scan_roots`
+/// (where active_scene / active_entities hold naked
+/// `Rc<RefCell<BcInstance>>` without a corresponding TaggedValue).
+/// v0.2 Phase 8.5 session 8h.
+pub fn mark_bc_instance(inst: &BcInstance) {
+    for v in inst.fields.values() {
+        crate::heap::mark_value(v);
+    }
+    for v in &inst.fiber_stack {
+        crate::heap::mark_value(v);
+    }
+}
+
 /// One frame on a suspended bytecode-VM fiber. Mirrors the
 /// shape of `VM::CallFrame` but with a relative slot_base so
 /// the saved frames can be replayed at any later stack offset.
