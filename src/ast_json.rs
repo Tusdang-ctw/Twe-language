@@ -17,7 +17,13 @@ pub fn to_json(program: &Program) -> String {
 
 fn write_stmt(s: &mut String, stmt: &Stmt) {
     match stmt {
-        Stmt::Let { name, value, ty, line, col } => {
+        Stmt::Let {
+            name,
+            value,
+            ty,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Let\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"value\":");
@@ -30,7 +36,13 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::Assign { target, op, value, line, col } => {
+        Stmt::Assign {
+            target,
+            op,
+            value,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Assign\",\"op\":");
             write_str_value(s, assign_op_str(*op));
             s.push_str(",\"target\":");
@@ -40,7 +52,14 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::If { cond, then_body, elifs, else_body, line, col } => {
+        Stmt::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"If\",\"cond\":");
             write_expr(s, cond);
             s.push_str(",\"then\":");
@@ -66,7 +85,12 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::OnUpdate { param, body, line, col } => {
+        Stmt::OnUpdate {
+            param,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"OnUpdate\",\"param\":");
             write_str_value(s, param);
             s.push_str(",\"body\":");
@@ -80,7 +104,14 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::Decl { kind, name, parent, members, line, col } => {
+        Stmt::Decl {
+            kind,
+            name,
+            parent,
+            members,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Decl\",\"declKind\":");
             write_str_value(s, decl_kind_str(*kind));
             s.push_str(",\"name\":");
@@ -101,7 +132,14 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::FunctionDecl { name, params, ret, body, line, col } => {
+        Stmt::FunctionDecl {
+            name,
+            params,
+            ret,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"FunctionDecl\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"params\":[");
@@ -137,7 +175,12 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::While { cond, body, line, col } => {
+        Stmt::While {
+            cond,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"While\",\"cond\":");
             write_expr(s, cond);
             s.push_str(",\"body\":");
@@ -145,7 +188,13 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::For { var, iter, body, line, col } => {
+        Stmt::For {
+            var,
+            iter,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"For\",\"var\":");
             write_str_value(s, var);
             s.push_str(",\"iter\":");
@@ -171,7 +220,12 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::Spawn { class, at, line, col } => {
+        Stmt::Spawn {
+            class,
+            at,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Spawn\",\"class\":");
             write_str_value(s, class);
             s.push_str(",\"at\":");
@@ -188,13 +242,22 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::Wait { duration, line, col } => {
+        Stmt::Wait {
+            duration,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Wait\",\"duration\":");
             write_expr(s, duration);
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::DialogueDecl { name, body, line, col } => {
+        Stmt::DialogueDecl {
+            name,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"DialogueDecl\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"body\":[");
@@ -208,7 +271,12 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::Say { actor, text, line, col } => {
+        Stmt::Say {
+            actor,
+            text,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Say\",\"actor\":");
             match actor {
                 Some(a) => write_expr(s, a),
@@ -219,7 +287,11 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Stmt::Choice { branches, line, col } => {
+        Stmt::Choice {
+            branches,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Choice\",\"branches\":[");
             for (i, (label, body)) in branches.iter().enumerate() {
                 if i > 0 {
@@ -250,7 +322,13 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
 
 fn write_member(s: &mut String, m: &DeclMember) {
     match m {
-        DeclMember::Field { name, value, ty, line, col } => {
+        DeclMember::Field {
+            name,
+            value,
+            ty,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Field\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"value\":");
@@ -263,7 +341,14 @@ fn write_member(s: &mut String, m: &DeclMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        DeclMember::Method { name, params, ret, body, line, col } => {
+        DeclMember::Method {
+            name,
+            params,
+            ret,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Method\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"params\":[");
@@ -296,7 +381,12 @@ fn write_member(s: &mut String, m: &DeclMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        DeclMember::State { name, members, line, col } => {
+        DeclMember::State {
+            name,
+            members,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"State\",\"name\":");
             write_str_value(s, name);
             s.push_str(",\"members\":[");
@@ -320,7 +410,12 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_stmt(s, st);
             s.push('}');
         }
-        StateMember::Every { interval, body, line, col } => {
+        StateMember::Every {
+            interval,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Every\",\"interval\":");
             write_expr(s, interval);
             s.push_str(",\"body\":");
@@ -334,7 +429,12 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        StateMember::OnKeyPress { key, body, line, col } => {
+        StateMember::OnKeyPress {
+            key,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"OnKeyPress\",\"key\":");
             write_str_value(s, key);
             s.push_str(",\"body\":");
@@ -342,7 +442,12 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        StateMember::OnUpdate { param, body, line, col } => {
+        StateMember::OnUpdate {
+            param,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"OnUpdate\",\"param\":");
             write_str_value(s, param);
             s.push_str(",\"body\":");
@@ -350,7 +455,12 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        StateMember::OnPredicate { predicate, body, line, col } => {
+        StateMember::OnPredicate {
+            predicate,
+            body,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"OnPredicate\",\"predicate\":");
             write_expr(s, predicate);
             s.push_str(",\"body\":");
@@ -386,7 +496,12 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Interp { parts, exprs, line, col } => {
+        Expr::Interp {
+            parts,
+            exprs,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Interp\",\"parts\":");
             write_str_array(s, parts);
             s.push_str(",\"exprs\":");
@@ -418,7 +533,12 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Quantity { value, unit, line, col } => {
+        Expr::Quantity {
+            value,
+            unit,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Quantity\",\"value\":");
             write_float_lit(s, *value);
             s.push_str(",\"unit\":");
@@ -449,7 +569,12 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Index { object, index, line, col } => {
+        Expr::Index {
+            object,
+            index,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Index\",\"object\":");
             write_expr(s, object);
             s.push_str(",\"index\":");
@@ -457,7 +582,13 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Range { start, end, exclusive, line, col } => {
+        Expr::Range {
+            start,
+            end,
+            exclusive,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Range\",\"start\":");
             write_expr(s, start);
             s.push_str(",\"end\":");
@@ -467,7 +598,12 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Field { object, name, line, col } => {
+        Expr::Field {
+            object,
+            name,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Field\",\"object\":");
             write_expr(s, object);
             s.push_str(",\"name\":");
@@ -475,7 +611,13 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Call { callee, args, kwargs, line, col } => {
+        Expr::Call {
+            callee,
+            args,
+            kwargs,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Call\",\"callee\":");
             write_expr(s, callee);
             s.push_str(",\"args\":");
@@ -495,7 +637,12 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Unary { op, operand, line, col } => {
+        Expr::Unary {
+            op,
+            operand,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Unary\",\"op\":");
             write_str_value(s, un_op_str(*op));
             s.push_str(",\"operand\":");
@@ -503,7 +650,13 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Binary { op, left, right, line, col } => {
+        Expr::Binary {
+            op,
+            left,
+            right,
+            line,
+            col,
+        } => {
             s.push_str("{\"kind\":\"Binary\",\"op\":");
             write_str_value(s, bin_op_str(*op));
             s.push_str(",\"left\":");

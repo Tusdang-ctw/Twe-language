@@ -40,10 +40,7 @@ fn undefined_name_errors() {
 #[test]
 fn runs_arithmetic() {
     let out = run_program("tests/programs/arithmetic.twe").expect("program should run");
-    assert_eq!(
-        out,
-        "14\n20\n4\n4\n-7\ntrue\ntrue\n42\n"
-    );
+    assert_eq!(out, "14\n20\n4\n4\n-7\ntrue\ntrue\n42\n");
 }
 
 #[test]
@@ -71,10 +68,7 @@ fn type_mismatch_in_arithmetic_errors() {
 #[test]
 fn runs_tuples_and_fields() {
     let out = run_program("tests/programs/tuples_and_fields.twe").expect("program should run");
-    assert_eq!(
-        out,
-        "(3, 4)\n3\n4\n200\n150\n(200, 150)\n(250, 130)\n"
-    );
+    assert_eq!(out, "(3, 4)\n3\n4\n200\n150\n(200, 150)\n(250, 130)\n");
 }
 
 #[test]
@@ -85,10 +79,8 @@ fn invalid_assignment_target_errors() {
 
 #[test]
 fn missing_field_errors() {
-    let err = run_program_str(
-        "let h = load(\"tests/assets/hero.png\")\nprint(h.glubjorm)\n",
-    )
-    .expect_err("should fail");
+    let err = run_program_str("let h = load(\"tests/assets/hero.png\")\nprint(h.glubjorm)\n")
+        .expect_err("should fail");
     assert!(err.contains("'glubjorm'"), "got: {err}");
 }
 
@@ -122,12 +114,9 @@ fn runs_single_line_if() {
 
 #[test]
 fn runs_example_1_three_frames() {
-    let out = run_program_frames("tests/programs/example_1.twe", 3, 0.1)
-        .expect("program should run");
-    assert_eq!(
-        out,
-        "(220.0, 150)\n(240.0, 150)\n(260.0, 150)\n"
-    );
+    let out =
+        run_program_frames("tests/programs/example_1.twe", 3, 0.1).expect("program should run");
+    assert_eq!(out, "(220.0, 150)\n(240.0, 150)\n(260.0, 150)\n");
 }
 
 #[test]
@@ -136,10 +125,7 @@ fn on_update_outside_v01_event_set_errors() {
     // level; anything else (named events, predicates) is reserved
     // for state bodies.
     let err = run_program_str("on click(e):\n    print(e)\n").expect_err("should fail");
-    assert!(
-        err.contains("`on click` is not supported"),
-        "got: {err}"
-    );
+    assert!(err.contains("`on click` is not supported"), "got: {err}");
 }
 
 #[test]
@@ -150,8 +136,7 @@ fn runs_literals() {
 
 #[test]
 fn runs_example_2_simplified() {
-    let out = run_program("tests/programs/example_2_simplified.twe")
-        .expect("program should run");
+    let out = run_program("tests/programs/example_2_simplified.twe").expect("program should run");
     assert_eq!(out, "20..30\n5%\n3kg\nrare\n");
 }
 
@@ -163,16 +148,14 @@ fn runs_methods_and_self() {
 
 #[test]
 fn extending_undefined_parent_errors() {
-    let err = run_program_str("item Foo extends Missing:\n    x: 1\n")
-        .expect_err("should fail");
+    let err = run_program_str("item Foo extends Missing:\n    x: 1\n").expect_err("should fail");
     assert!(err.contains("Missing"), "got: {err}");
     assert!(err.contains("not defined"), "got: {err}");
 }
 
 #[test]
 fn calling_class_with_args_errors_in_v01() {
-    let err = run_program_str("item Foo:\n    x: 1\nlet a = Foo(1, 2)\n")
-        .expect_err("should fail");
+    let err = run_program_str("item Foo:\n    x: 1\nlet a = Foo(1, 2)\n").expect_err("should fail");
     assert!(err.contains("constructor"), "got: {err}");
 }
 
@@ -213,18 +196,14 @@ fn continue_at_top_level_errors() {
 
 #[test]
 fn runs_type_annotations() {
-    let out = run_program("tests/programs/type_annotations.twe")
-        .expect("program should run");
+    let out = run_program("tests/programs/type_annotations.twe").expect("program should run");
     assert_eq!(out, "12\nhi\n");
 }
 
 #[test]
 fn runs_math_stdlib() {
     let out = run_program("tests/programs/math.twe").expect("program should run");
-    assert_eq!(
-        out,
-        "7\n3.14\n3.0\n1.4142135623730951\n2\n3\n1\n3\n0.5\n"
-    );
+    assert_eq!(out, "7\n3.14\n3.0\n1.4142135623730951\n2\n3\n1\n3\n0.5\n");
 }
 
 #[test]
@@ -289,7 +268,10 @@ fn runs_interpolation() {
 #[test]
 fn unterminated_interpolation_errors() {
     let err = run_program_str("print(\"{x\")\n").expect_err("should fail");
-    assert!(err.contains("interpolation") || err.contains("unterminated"), "got: {err}");
+    assert!(
+        err.contains("interpolation") || err.contains("unterminated"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -389,7 +371,8 @@ fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
     use twec::value::Value;
     if let Some(t) = env.get("key_press") {
         if t.is_object() {
-            t.as_object().borrow_mut()
+            t.as_object()
+                .borrow_mut()
                 .insert_field(key.to_string(), Value::from_bool(value));
         }
     }
@@ -399,12 +382,14 @@ fn set_key_press(env: &twec::value::Env, key: &str, value: bool) {
 
 #[test]
 fn stdlib_installs_mouse_objects() {
-    
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
 
     // mouse: x, y, pos, wheel
-    let rc = match env.get("mouse") { Some(t) if t.is_object() => t.as_object(), _ => panic!("mouse object missing after stdlib::install") };
+    let rc = match env.get("mouse") {
+        Some(t) if t.is_object() => t.as_object(),
+        _ => panic!("mouse object missing after stdlib::install"),
+    };
     let m = rc.borrow();
     assert!(m.get_field("x").as_ref().is_some_and(|t| t.is_float()));
     assert!(m.get_field("y").as_ref().is_some_and(|t| t.is_float()));
@@ -413,7 +398,10 @@ fn stdlib_installs_mouse_objects() {
 
     // mouse_held / mouse_press: left, middle, right
     for name in ["mouse_held", "mouse_press"] {
-        let rc = match env.get(name) { Some(t) if t.is_object() => t.as_object(), _ => panic!("{name} object missing after stdlib::install") };
+        let rc = match env.get(name) {
+            Some(t) if t.is_object() => t.as_object(),
+            _ => panic!("{name} object missing after stdlib::install"),
+        };
         let o = rc.borrow();
         for btn in ["left", "middle", "right"] {
             assert!(
@@ -431,7 +419,7 @@ fn mouse_position_drives_on_update_logic() {
     // and react. Here the script accumulates `mouse.x` into a
     // running total via on_update — proves the field is reachable
     // from the frame loop the same way `key.right` is.
-    
+
     let src = r#"
 var total = 0.0
 on update(dt):
@@ -461,7 +449,7 @@ on update(dt):
 fn mouse_press_left_drives_branching() {
     // Edge-triggered mouse_press.left fires the body once per
     // press. Three frames: press, no-press, press again.
-    
+
     let src = r#"
 var clicks = 0
 on update(dt):
@@ -492,7 +480,9 @@ fn set_mouse_x(env: &twec::value::Env, x: f64) {
     use twec::value::Value;
     if let Some(t) = env.get("mouse") {
         if t.is_object() {
-            t.as_object().borrow_mut().insert_field("x", Value::from_float(x));
+            t.as_object()
+                .borrow_mut()
+                .insert_field("x", Value::from_float(x));
         }
     }
 }
@@ -501,7 +491,8 @@ fn set_mouse_press(env: &twec::value::Env, button: &str, value: bool) {
     use twec::value::Value;
     if let Some(t) = env.get("mouse_press") {
         if t.is_object() {
-            t.as_object().borrow_mut()
+            t.as_object()
+                .borrow_mut()
                 .insert_field(button.to_string(), Value::from_bool(value));
         }
     }
@@ -546,13 +537,15 @@ fn load_from_missing_file_errors_at_runtime() {
 
 #[test]
 fn stdlib_installs_audio_v2_surface() {
-    
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
 
     // sound module: load + play (v0.1) + play_at + stop +
     // set_volume (v0.2 session 5).
-    let rc = match env.get("sound") { Some(t) if t.is_object() => t.as_object(), _ => panic!("sound object missing after stdlib::install") };
+    let rc = match env.get("sound") {
+        Some(t) if t.is_object() => t.as_object(),
+        _ => panic!("sound object missing after stdlib::install"),
+    };
     let s = rc.borrow();
     for name in ["load", "play", "play_at", "stop", "set_volume"] {
         assert!(
@@ -562,7 +555,10 @@ fn stdlib_installs_audio_v2_surface() {
     }
 
     // music module: play, play_at, stop. New in v0.2 session 5.
-    let rc = match env.get("music") { Some(t) if t.is_object() => t.as_object(), _ => panic!("music object missing after stdlib::install") };
+    let rc = match env.get("music") {
+        Some(t) if t.is_object() => t.as_object(),
+        _ => panic!("music object missing after stdlib::install"),
+    };
     let m = rc.borrow();
     for name in ["play", "play_at", "stop"] {
         assert!(
@@ -647,10 +643,7 @@ let map = tilemap(
 )
 "###;
     let err = run_program_str(src).expect_err("3-tuple required");
-    assert!(
-        err.contains("3 fields"),
-        "got: {err}"
-    );
+    assert!(err.contains("3 fields"), "got: {err}");
 }
 
 #[test]
@@ -695,8 +688,8 @@ fn survive_parses_and_ticks() {
     // After ~2 seconds of 16ms frames the spawn_timer (which the
     // scene increments by 0.016 per tick) crosses 0.8 and a monster
     // gets spawned.
-    let src = std::fs::read_to_string("examples/survive.twe")
-        .expect("examples/survive.twe must exist");
+    let src =
+        std::fs::read_to_string("examples/survive.twe").expect("examples/survive.twe must exist");
     let tokens = twec::lexer::lex(&src).expect("lex");
     let program = twec::parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();
@@ -713,8 +706,8 @@ fn survive_parses_and_ticks() {
 
 #[test]
 fn load_fails_fast_on_missing_asset() {
-    let err = run_program_str("let h = load(\"nope-not-a-real-path.png\")\n")
-        .expect_err("should fail");
+    let err =
+        run_program_str("let h = load(\"nope-not-a-real-path.png\")\n").expect_err("should fail");
     assert!(err.contains("cannot find asset"), "got: {err}");
     assert!(err.contains("nope-not-a-real-path.png"), "got: {err}");
 }
@@ -745,8 +738,7 @@ print(s.path)
 
 #[test]
 fn sound_load_fails_fast_on_missing_asset() {
-    let err = run_program_str("let s = sound.load(\"nope.wav\")\n")
-        .expect_err("should fail");
+    let err = run_program_str("let s = sound.load(\"nope.wav\")\n").expect_err("should fail");
     assert!(err.contains("cannot find asset"), "got: {err}");
 }
 
@@ -787,10 +779,7 @@ print(not false)
 print(not 0)
 "#;
     let out = run_program_str(src).expect("program should run");
-    assert_eq!(
-        out,
-        "42\nfalse\ntrue\n99\n0\ndefault\nfalse\ntrue\nfalse\n"
-    );
+    assert_eq!(out, "42\nfalse\ntrue\n99\n0\ndefault\nfalse\ntrue\nfalse\n");
 }
 
 #[test]
@@ -811,10 +800,12 @@ fn state_scoped_on_update_fires_per_frame_with_dt() {
 fn every_clock_catches_up_when_dt_covers_multiple_intervals() {
     // dt=0.5, interval=100ms: each frame deserves 5 fires. Two frames
     // → counter reaches 10. (Was 2 with the F4 bug.)
-    let out = run_program_frames("tests/programs/catchup.twe", 2, 0.5)
-        .expect("program should run");
+    let out = run_program_frames("tests/programs/catchup.twe", 2, 0.5).expect("program should run");
     let lines: Vec<&str> = out.trim_end().split('\n').collect();
-    assert_eq!(lines, vec!["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+    assert_eq!(
+        lines,
+        vec!["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+    );
 }
 
 #[test]
@@ -833,8 +824,8 @@ fn every_clock_catchup_caps_at_eight_per_frame() {
 fn time_dt_reflects_real_frame_delta() {
     // 3 frames of dt = 0.05s. Every-clock fires every 16ms, so it
     // fires once per frame and `time.dt` returns the frame's dt.
-    let out = run_program_frames("tests/programs/time_dt.twe", 3, 0.05)
-        .expect("program should run");
+    let out =
+        run_program_frames("tests/programs/time_dt.twe", 3, 0.05).expect("program should run");
     assert_eq!(out, "0.05\n0.1\n0.15000000000000002\n");
 }
 
@@ -852,7 +843,6 @@ fn particles_emitter_ages_and_despawns() {
 
 #[test]
 fn particles_block_creates_count_particles_with_defaults() {
-    
     let src = r#"
 particles Spark:
     count: 4
@@ -935,8 +925,7 @@ fn positional_after_keyword_is_a_parse_error() {
 
 #[test]
 fn keyword_args_on_variadic_builtin_errors() {
-    let err =
-        run_program_str("print(label: \"hi\")\n").expect_err("should fail");
+    let err = run_program_str("print(label: \"hi\")\n").expect_err("should fail");
     assert!(
         err.contains("doesn't accept keyword arguments"),
         "got: {err}"
@@ -970,7 +959,6 @@ fn entities_of_with_non_class_errors() {
 
 #[test]
 fn spawn_at_sets_pos_field() {
-    
     let src = r#"
 entity Pin:
     var pos = (0, 0)
@@ -987,11 +975,11 @@ spawn Pin at (12, 34)
     let inst = env.active_entities[0].borrow();
     let pos = inst.get_field("pos").expect("pos field");
     let elems = if pos.is_tuple() {
-let elems = pos.as_tuple();
-elems.clone()
-} else {
-panic!("pos should be a tuple")
-};
+        let elems = pos.as_tuple();
+        elems.clone()
+    } else {
+        panic!("pos should be a tuple")
+    };
     assert!(elems[0].is_int_or_boxed_int());
     assert!(elems[1].is_int_or_boxed_int());
 }
@@ -1007,9 +995,7 @@ fn scene_methods_callable_by_bare_name() {
 
 #[test]
 fn snake_advances_right_by_default() {
-    
-    let src = std::fs::read_to_string("examples/snake.twe")
-        .expect("examples/snake.twe must exist");
+    let src = std::fs::read_to_string("examples/snake.twe").expect("examples/snake.twe must exist");
     let tokens = twec::lexer::lex(&src).expect("lex");
     let program = twec::parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();
@@ -1036,9 +1022,9 @@ fn snake_advances_right_by_default() {
         } else {
             panic!("head should be (Int, Int)")
         }
-} else {
-panic!("head should be a tuple")
-};
+    } else {
+        panic!("head should be a tuple")
+    };
     // Snake starts at (10, 7) heading right; after one 150ms tick the
     // head should be at (11, 7).
     assert_eq!((hx, hy), (11, 7));
@@ -1046,9 +1032,7 @@ panic!("head should be a tuple")
 
 #[test]
 fn snake_dies_into_a_wall() {
-    
-    let src = std::fs::read_to_string("examples/snake.twe")
-        .expect("examples/snake.twe must exist");
+    let src = std::fs::read_to_string("examples/snake.twe").expect("examples/snake.twe must exist");
     let tokens = twec::lexer::lex(&src).expect("lex");
     let program = twec::parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();
@@ -1061,11 +1045,7 @@ fn snake_dies_into_a_wall() {
         twec::eval::tick_frame(&mut env, 0.150).expect("tick");
     }
     let scene = env.active_scene.as_ref().expect("scene");
-    let state_name = scene
-        .borrow()
-        .current_state
-        .clone()
-        .expect("current state");
+    let state_name = scene.borrow().current_state.clone().expect("current state");
     assert_eq!(state_name, "game_over");
     // Snake eats the food at (15, 7) on the way, so score is 1 by the
     // time it walks off the east wall at x=20.
@@ -1145,8 +1125,8 @@ fn wait_resumes_in_one_frame_when_dt_covers_duration() {
     // Same program, but a single frame with dt = 1.0 covers the
     // full 0.5s wait — the resume runs in the same frame and
     // produces all three lines back-to-back.
-    let out = run_program_frames("tests/programs/wait_in_state.twe", 1, 1.0)
-        .expect("program should run");
+    let out =
+        run_program_frames("tests/programs/wait_in_state.twe", 1, 1.0).expect("program should run");
     assert_eq!(out, "alert enter\nalert resume\ndone enter\n");
 }
 
@@ -1346,10 +1326,7 @@ scene Demo:
         print("done")
 "#;
     let out = run_program_frames_str(src, 2, 0.1).expect("should run");
-    assert_eq!(
-        out,
-        "inside-if\nnapping\nnapping\ndone\n"
-    );
+    assert_eq!(out, "inside-if\nnapping\nnapping\ndone\n");
 }
 
 #[test]
@@ -1373,10 +1350,7 @@ scene Demo:
         print("done")
 "#;
     let out = run_program_frames_str(src, 3, 0.1).expect("should run");
-    assert_eq!(
-        out,
-        "first\nfirst\nsecond\nsecond\ndone\n"
-    );
+    assert_eq!(out, "first\nfirst\nsecond\nsecond\ndone\n");
 }
 
 #[test]
@@ -1403,10 +1377,7 @@ scene Demo:
         print("done")
 "#;
     let out = run_program_frames_str(src, 2, 0.1).expect("should run");
-    assert_eq!(
-        out,
-        "outer-pre\ninner-pre\ninner-post\nouter-post\ndone\n"
-    );
+    assert_eq!(out, "outer-pre\ninner-pre\ninner-post\nouter-post\ndone\n");
 }
 
 #[test]
@@ -1482,7 +1453,7 @@ on update(dt):
     // assignment. Run several frames and verify the predicate fired
     // exactly once.
     let _ = src; // The above program won't compile (`pass_var = 0` requires var declaration).
-    // Use a simpler shape:
+                 // Use a simpler shape:
     let src = r#"
 scene S:
     var fired: int = 0
@@ -1501,8 +1472,7 @@ scene S:
 
 #[test]
 fn dialogue_minimal_runs_say_choice_and_first_branch() {
-    let out = run_program("tests/programs/dialogue_minimal.twe")
-        .expect("program should run");
+    let out = run_program("tests/programs/dialogue_minimal.twe").expect("program should run");
     // Bare `say "..."` prints just the text.
     // `say <actor>: "..."` prints `Actor: text`.
     // `choice:` prints the labels (numbered) and runs the first branch.

@@ -23,7 +23,13 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
-    Assign { target: AssignTarget, op: AssignOp, value: Expr, line: u32, col: u32 },
+    Assign {
+        target: AssignTarget,
+        op: AssignOp,
+        value: Expr,
+        line: u32,
+        col: u32,
+    },
     If {
         cond: Expr,
         then_body: Vec<Stmt>,
@@ -273,20 +279,81 @@ pub enum AssignOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Str { value: String, line: u32, col: u32 },
-    Interp { parts: Vec<String>, exprs: Vec<Expr>, line: u32, col: u32 },
-    Int { value: i64, line: u32, col: u32 },
-    Float { value: f64, line: u32, col: u32 },
-    Bool { value: bool, line: u32, col: u32 },
-    Percent { value: f64, line: u32, col: u32 },
-    Quantity { value: f64, unit: String, line: u32, col: u32 },
-    Ident { name: String, line: u32, col: u32 },
-    SelfRef { line: u32, col: u32 },
-    Tuple { elems: Vec<Expr>, line: u32, col: u32 },
-    List { elems: Vec<Expr>, line: u32, col: u32 },
-    Range { start: Box<Expr>, end: Box<Expr>, exclusive: bool, line: u32, col: u32 },
-    Index { object: Box<Expr>, index: Box<Expr>, line: u32, col: u32 },
-    Field { object: Box<Expr>, name: String, line: u32, col: u32 },
+    Str {
+        value: String,
+        line: u32,
+        col: u32,
+    },
+    Interp {
+        parts: Vec<String>,
+        exprs: Vec<Expr>,
+        line: u32,
+        col: u32,
+    },
+    Int {
+        value: i64,
+        line: u32,
+        col: u32,
+    },
+    Float {
+        value: f64,
+        line: u32,
+        col: u32,
+    },
+    Bool {
+        value: bool,
+        line: u32,
+        col: u32,
+    },
+    Percent {
+        value: f64,
+        line: u32,
+        col: u32,
+    },
+    Quantity {
+        value: f64,
+        unit: String,
+        line: u32,
+        col: u32,
+    },
+    Ident {
+        name: String,
+        line: u32,
+        col: u32,
+    },
+    SelfRef {
+        line: u32,
+        col: u32,
+    },
+    Tuple {
+        elems: Vec<Expr>,
+        line: u32,
+        col: u32,
+    },
+    List {
+        elems: Vec<Expr>,
+        line: u32,
+        col: u32,
+    },
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        exclusive: bool,
+        line: u32,
+        col: u32,
+    },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+        line: u32,
+        col: u32,
+    },
+    Field {
+        object: Box<Expr>,
+        name: String,
+        line: u32,
+        col: u32,
+    },
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
@@ -294,8 +361,19 @@ pub enum Expr {
         line: u32,
         col: u32,
     },
-    Unary { op: UnOp, operand: Box<Expr>, line: u32, col: u32 },
-    Binary { op: BinOp, left: Box<Expr>, right: Box<Expr>, line: u32, col: u32 },
+    Unary {
+        op: UnOp,
+        operand: Box<Expr>,
+        line: u32,
+        col: u32,
+    },
+    Binary {
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        line: u32,
+        col: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

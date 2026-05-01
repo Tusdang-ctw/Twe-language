@@ -7,18 +7,16 @@ use crate::ast::{
 };
 use crate::stdlib;
 use crate::tagged_value::TaggedValue;
-use crate::value::{Branch, ClassDef, Env, EveryClockDef, Frame, FrameKind, FunctionDef, Instance, MethodDef,
-    Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value};
+use crate::value::{
+    Branch, ClassDef, Env, EveryClockDef, Frame, FrameKind, FunctionDef, Instance, MethodDef,
+    Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value,
+};
 
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
     run_with_frames(program, 0, 1.0 / 60.0)
 }
 
-pub fn run_with_frames(
-    program: &Program,
-    frames: u32,
-    dt: f64,
-) -> Result<String, RuntimeError> {
+pub fn run_with_frames(program: &Program, frames: u32, dt: f64) -> Result<String, RuntimeError> {
     let mut env = Env::new();
     stdlib::install(&mut env);
     run_top_level(&mut env, program)?;
@@ -124,39 +122,42 @@ fn seed_particle_emitter(
             None => 16,
         };
         let lifetime = {
-let __opt = inst.get_field("lifetime");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_float() {
-__t.as_float()
-} else if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-n as f64
-} else if __t.is_quantity() {
-let (value, _) = __t.as_quantity();
-value
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
-                    line,
-                    col,
-                    message: format!(
-                        "particles `lifetime` must be a number or duration, got {}",
-                        other.type_name()
-                    ),
-                    help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
-                });
-}
-} else {
-1.0
-}
-};
+            let __opt = inst.get_field("lifetime");
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_float() {
+                    __t.as_float()
+                } else if __t.is_int_or_boxed_int() {
+                    let n = __t.as_int();
+                    n as f64
+                } else if __t.is_quantity() {
+                    let (value, _) = __t.as_quantity();
+                    value
+                } else {
+                    let other = __t.clone();
+                    return Err(RuntimeError {
+                        line,
+                        col,
+                        message: format!(
+                            "particles `lifetime` must be a number or duration, got {}",
+                            other.type_name()
+                        ),
+                        help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
+                    });
+                }
+            } else {
+                1.0
+            }
+        };
         (count, lifetime, inst.class.clone())
     };
     let on_spawn = find_method(&class, "on_spawn");
     let mut particles: Vec<Value> = Vec::with_capacity(count);
-    let initial_pos = at
-        .cloned()
-        .unwrap_or_else(|| Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)])));
+    let initial_pos = at.cloned().unwrap_or_else(|| {
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(0.0),
+        ]))
+    });
     for _ in 0..count {
         let p = make_particle(&initial_pos, lifetime);
         if let Some(method) = on_spawn.clone() {
@@ -187,7 +188,10 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
     o.insert_field("pos", initial_pos.clone());
     o.insert_field(
         "velocity",
-        Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)])),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(0.0),
+        ])),
     );
     o.insert_field(
         "color",
@@ -213,19 +217,17 @@ fn tick_particle_emitter(
 ) -> Result<(), RuntimeError> {
     let on_update = find_method(class, "on_update");
     let particles = {
-let __opt = emitter
-        .borrow()
-        .get_field("__particles");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_list() {
-__t.as_list()
-} else {
-return Ok(())
-}
-} else {
-return Ok(())
-}
-};
+        let __opt = emitter.borrow().get_field("__particles");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_list() {
+                __t.as_list()
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    };
     let snapshot: Vec<Value> = particles.borrow().clone();
     for p in &snapshot {
         if let Some(method) = on_update.clone() {
@@ -243,33 +245,33 @@ return Ok(())
             let rc = p.as_object();
             let mut o = rc.borrow_mut();
             let age = {
-let __opt = o.get_field("age");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_float() {
-let a = __t.as_float();
-a + dt
-} else if __t.is_int_or_boxed_int() {
-let a = __t.as_int();
-a as f64 + dt
-} else {
-dt
-}
-} else {
-dt
-}
-};
+                let __opt = o.get_field("age");
+                if let Some(__t) = (__opt).as_ref() {
+                    if __t.is_float() {
+                        let a = __t.as_float();
+                        a + dt
+                    } else if __t.is_int_or_boxed_int() {
+                        let a = __t.as_int();
+                        a as f64 + dt
+                    } else {
+                        dt
+                    }
+                } else {
+                    dt
+                }
+            };
             let lifetime = {
-let __opt = o.get_field("lifetime");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_float() {
-__t.as_float()
-} else {
-1.0
-}
-} else {
-1.0
-}
-};
+                let __opt = o.get_field("lifetime");
+                if let Some(__t) = (__opt).as_ref() {
+                    if __t.is_float() {
+                        __t.as_float()
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                }
+            };
             o.insert_field("age".to_string(), Value::from_float(age));
             let ratio = if lifetime > 0.0 {
                 (age / lifetime).clamp(0.0, 1.0)
@@ -309,23 +311,29 @@ fn render_particle_emitter(
     // If the user defined a custom `render()`, defer to it and skip the
     // built-in circle-per-particle path.
     if let Some(method) = find_method(class, "render") {
-        return call_method(env, Value::from_instance(emitter.clone()), &method, &[], &[], 0, 0)
-            .map(|_| ());
+        return call_method(
+            env,
+            Value::from_instance(emitter.clone()),
+            &method,
+            &[],
+            &[],
+            0,
+            0,
+        )
+        .map(|_| ());
     }
     let particles = {
-let __opt = emitter
-        .borrow()
-        .get_field("__particles");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_list() {
-__t.as_list()
-} else {
-return Ok(())
-}
-} else {
-return Ok(())
-}
-};
+        let __opt = emitter.borrow().get_field("__particles");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_list() {
+                __t.as_list()
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    };
     if !env.in_render {
         return Ok(());
     }
@@ -345,21 +353,21 @@ return Ok(())
                 _ => (0.0, 0.0),
             };
             let radius = {
-let __opt = o.get_field("size");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_float() {
-let f = __t.as_float();
-f as f32
-} else if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-n as f32
-} else {
-4.0
-}
-} else {
-4.0
-}
-};
+                let __opt = o.get_field("size");
+                if let Some(__t) = (__opt).as_ref() {
+                    if __t.is_float() {
+                        let f = __t.as_float();
+                        f as f32
+                    } else if __t.is_int_or_boxed_int() {
+                        let n = __t.as_int();
+                        n as f32
+                    } else {
+                        4.0
+                    }
+                } else {
+                    4.0
+                }
+            };
             let color = match o.get_field("color") {
                 Some(t) if t.is_tuple() => {
                     let elems = t.as_tuple();
@@ -387,55 +395,54 @@ n as f32
 
 fn number_or_zero(v: &Value) -> f64 {
     if v.is_int_or_boxed_int() {
-let n = v.as_int();
-n as f64
-} else if v.is_float() {
-v.as_float()
-} else if v.is_quantity() {
-let (value, _) = v.as_quantity();
-value
-} else {
-0.0
-}
+        let n = v.as_int();
+        n as f64
+    } else if v.is_float() {
+        v.as_float()
+    } else if v.is_quantity() {
+        let (value, _) = v.as_quantity();
+        value
+    } else {
+        0.0
+    }
 }
 
 fn update_time_ambient(env: &mut Env, dt: f64) {
-    if let Some(__t) = (env.get("time")).as_ref() { if __t.is_object() { let rc = __t.as_object();
-        rc.borrow_mut().insert_field("dt", Value::from_float(dt));
+    if let Some(__t) = (env.get("time")).as_ref() {
+        if __t.is_object() {
+            let rc = __t.as_object();
+            rc.borrow_mut().insert_field("dt", Value::from_float(dt));
+        }
     }
-}
 }
 
 /// Look at `env.key_press` (an Object whose fields are bool flags set
 /// each frame by the host) and fire the active scene's matching
 /// on_key_press handlers.
-fn dispatch_key_press(
-    env: &mut Env,
-    scene: &Rc<RefCell<Instance>>,
-) -> Result<(), RuntimeError> {
+fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<(), RuntimeError> {
     let pressed = {
-let __opt = env.get("key_press");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_object() {
-let rc = __t.as_object();
-let o = rc.borrow();
-            o.fields
-                .iter()
-                .filter_map(|(k, v)| {
-                    if v.is_bool() && v.as_bool() {
-                        Some(k.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-} else {
-return Ok(())
-}
-} else {
-return Ok(())
-}
-};
+        let __opt = env.get("key_press");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_object() {
+                let rc = __t.as_object();
+                let o = rc.borrow();
+                o.fields
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        if v.is_bool() && v.as_bool() {
+                            Some(k.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    };
     if pressed.is_empty() {
         return Ok(());
     }
@@ -531,24 +538,18 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn tick_scene(
-    env: &mut Env,
-    scene: &Rc<RefCell<Instance>>,
-    dt: f64,
-) -> Result<(), RuntimeError> {
+fn tick_scene(env: &mut Env, scene: &Rc<RefCell<Instance>>, dt: f64) -> Result<(), RuntimeError> {
     // Snapshot the state name + clock bodies before running, so a
     // transition during a clock body doesn't fire the wrong clock list.
     let (state_name, clocks): (Option<String>, Vec<(f64, Vec<Stmt>)>) = {
         let inst = scene.borrow();
         let name = inst.current_state.clone();
-        let bodies: Vec<Vec<Stmt>> = if let Some(state) = name
-            .as_ref()
-            .and_then(|n| inst.class.states.get(n))
-        {
-            state.every_clocks.iter().map(|c| c.body.clone()).collect()
-        } else {
-            Vec::new()
-        };
+        let bodies: Vec<Vec<Stmt>> =
+            if let Some(state) = name.as_ref().and_then(|n| inst.class.states.get(n)) {
+                state.every_clocks.iter().map(|c| c.body.clone()).collect()
+            } else {
+                Vec::new()
+            };
         let clocks: Vec<(f64, Vec<Stmt>)> = inst
             .every_intervals_secs
             .iter()
@@ -684,11 +685,7 @@ fn tick_scene(
         while fires < MAX_CATCHUP_FIRES_PER_FRAME {
             let should_fire = {
                 let inst = scene.borrow();
-                inst.every_timers
-                    .get(clock_idx)
-                    .copied()
-                    .unwrap_or(0.0)
-                    >= interval
+                inst.every_timers.get(clock_idx).copied().unwrap_or(0.0) >= interval
             };
             if !should_fire {
                 break;
@@ -739,8 +736,10 @@ fn enter_state(
                     message: format!("no state named '{state_name}'"),
                     help: Some(match suggestion {
                         Some(s) => format!("did you mean `-> {s}`?"),
-                        None => "transitions must target a `state <name>:` declared in the same scene"
-                            .to_string(),
+                        None => {
+                            "transitions must target a `state <name>:` declared in the same scene"
+                                .to_string()
+                        }
                     }),
                 });
             }
@@ -765,7 +764,11 @@ fn enter_state(
     let mut intervals = Vec::with_capacity(state.every_clocks.len());
     for clock in &state.every_clocks {
         let v = eval_expr(env, &clock.interval)?;
-        intervals.push(quantity_to_seconds(&v, clock.interval.line(), clock.interval.col())?);
+        intervals.push(quantity_to_seconds(
+            &v,
+            clock.interval.line(),
+            clock.interval.col(),
+        )?);
     }
     scene.borrow_mut().every_intervals_secs = intervals;
     // Reset suspension state — entering a new state restarts the
@@ -992,7 +995,11 @@ fn run_block_resumable(
         first_iter = false;
 
         match stmt {
-            Stmt::Wait { duration, line, col } => {
+            Stmt::Wait {
+                duration,
+                line,
+                col,
+            } => {
                 if drilling {
                     return Err(RuntimeError {
                         line: *line,
@@ -1032,10 +1039,7 @@ fn run_block_resumable(
                             .get(arm)
                             .map(|(_, body)| body.as_slice())
                             .unwrap_or(&[]),
-                        Branch::IfElse => else_body
-                            .as_ref()
-                            .map(|v| v.as_slice())
-                            .unwrap_or(&[]),
+                        Branch::IfElse => else_body.as_ref().map(|v| v.as_slice()).unwrap_or(&[]),
                         Branch::While => {
                             return Err(RuntimeError {
                                 line: 0,
@@ -1075,8 +1079,7 @@ fn run_block_resumable(
                 };
 
                 let inner = if drilling { inner_incoming } else { &[] };
-                let inner_outcome =
-                    run_block_resumable(env, scene, target_body, inner, out_path)?;
+                let inner_outcome = run_block_resumable(env, scene, target_body, inner, out_path)?;
                 match inner_outcome {
                     FiberOutcome::Suspended => {
                         out_path.push(PathEntry {
@@ -1136,8 +1139,9 @@ fn run_block_resumable(
                     return Err(RuntimeError {
                         line: 0,
                         col: 0,
-                        message: "internal: corrupted resume path (drilling into expression statement)"
-                            .to_string(),
+                        message:
+                            "internal: corrupted resume path (drilling into expression statement)"
+                                .to_string(),
                         help: None,
                     });
                 }
@@ -1267,12 +1271,15 @@ fn is_top_level_user_call(env: &Env, expr: &Expr) -> bool {
     };
     // Self-method takes precedence — those don't suspend in
     // session 2b (method-body wait deferred to a follow-on).
-    if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
-        let class = rc.borrow().class.clone();
-        if find_method(&class, name).is_some() {
-            return false;
+    if let Some(__t) = (env.self_value).as_ref() {
+        if __t.is_instance() {
+            let rc = __t.as_instance();
+            let class = rc.borrow().class.clone();
+            if find_method(&class, name).is_some() {
+                return false;
+            }
         }
-    } }
+    }
     env.get(name).as_ref().is_some_and(|t| t.is_function())
 }
 
@@ -1306,18 +1313,18 @@ fn run_user_call_resumable(
         _ => unreachable!("guarded by is_top_level_user_call"),
     };
     let def: Rc<FunctionDef> = {
-let __opt = env.get(&name);
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_function() {
-let d = __t.as_function();
-d.clone()
-} else {
-unreachable!("guarded by is_top_level_user_call")
-}
-} else {
-unreachable!("guarded by is_top_level_user_call")
-}
-};
+        let __opt = env.get(&name);
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_function() {
+                let d = __t.as_function();
+                d.clone()
+            } else {
+                unreachable!("guarded by is_top_level_user_call")
+            }
+        } else {
+            unreachable!("guarded by is_top_level_user_call")
+        }
+    };
 
     // Argument evaluation runs in the caller's scope before any
     // params are shadowed.
@@ -1347,11 +1354,8 @@ unreachable!("guarded by is_top_level_user_call")
     };
 
     let saved_returning = env.returning.take();
-    let saved_params: Vec<(String, Option<Value>)> = def
-        .params
-        .iter()
-        .map(|p| (p.clone(), env.get(p)))
-        .collect();
+    let saved_params: Vec<(String, Option<Value>)> =
+        def.params.iter().map(|p| (p.clone(), env.get(p))).collect();
     for (param, arg) in def.params.iter().zip(bound.iter()) {
         env.set(param.clone(), arg.clone());
     }
@@ -1488,8 +1492,8 @@ fn lookup_name(env: &Env, name: &str) -> Option<Value> {
 
 fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
     if v.is_quantity() {
-let (value, unit) = v.as_quantity();
-match unit.as_str() {
+        let (value, unit) = v.as_quantity();
+        match unit.as_str() {
             "s" => Ok(value),
             "ms" => Ok(value / 1000.0),
             "min" => Ok(value * 60.0),
@@ -1506,15 +1510,15 @@ match unit.as_str() {
                 ),
             }),
         }
-} else if v.is_float() {
-let f = v.as_float();
-Ok(f)
-} else if v.is_int_or_boxed_int() {
-let n = v.as_int();
-Ok(n as f64)
-} else {
-let other = v.clone();
-Err(RuntimeError {
+    } else if v.is_float() {
+        let f = v.as_float();
+        Ok(f)
+    } else if v.is_int_or_boxed_int() {
+        let n = v.as_int();
+        Ok(n as f64)
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line,
             col,
             message: format!(
@@ -1523,16 +1527,13 @@ Err(RuntimeError {
             ),
             help: Some("e.g. `every 100ms:` or `every 0.5s:`".to_string()),
         })
-}
+    }
 }
 
 fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
     for stmt in stmts {
         eval_stmt(env, stmt)?;
-        if env.returning.is_some()
-            || env.breaking
-            || env.continuing
-            || env.transitioning.is_some()
+        if env.returning.is_some() || env.breaking || env.continuing || env.transitioning.is_some()
         {
             return Ok(());
         }
@@ -1576,7 +1577,9 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             }
             Ok(())
         }
-        Stmt::FunctionDecl { name, params, body, .. } => {
+        Stmt::FunctionDecl {
+            name, params, body, ..
+        } => {
             // Annotations don't affect runtime semantics; the
             // tree-walker still binds bare-name params. Strict
             // mode (Phase 6 session 2) uses the annotations
@@ -1597,8 +1600,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 return Err(RuntimeError {
                     line: *line,
                     col: *col,
-                    message: "`return` is only valid inside a function or method body"
-                        .to_string(),
+                    message: "`return` is only valid inside a function or method body".to_string(),
                     help: Some(
                         "to exit early from a state body, use `-> <state>` to transition; \
                          to exit a dialogue, the dialogue's body ends naturally"
@@ -1620,7 +1622,11 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             result
         }
         Stmt::For {
-            var, iter, body, line, col,
+            var,
+            iter,
+            body,
+            line,
+            col,
         } => {
             env.loop_depth += 1;
             let result = run_for(env, var, iter, body, *line, *col);
@@ -1661,7 +1667,12 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             env.transitioning = Some(target.clone());
             Ok(())
         }
-        Stmt::Spawn { class, at, line, col } => {
+        Stmt::Spawn {
+            class,
+            at,
+            line,
+            col,
+        } => {
             let class_val = env.get(class).ok_or_else(|| RuntimeError {
                 line: *line,
                 col: *col,
@@ -1669,19 +1680,19 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 help: Some(format!("declare it with `entity {class}:` first")),
             })?;
             let class_rc = if class_val.is_class() {
-class_val.as_class()
-} else {
-let other = class_val.clone();
-return Err(RuntimeError {
-                        line: *line,
-                        col: *col,
-                        message: format!(
-                            "`spawn {class}` expects a class, but {class} is a {}",
-                            other.type_name()
-                        ),
-                        help: None,
-                    });
-};
+                class_val.as_class()
+            } else {
+                let other = class_val.clone();
+                return Err(RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: format!(
+                        "`spawn {class}` expects a class, but {class} is a {}",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            };
             let at_value = match at {
                 Some(expr) => Some(eval_expr(env, expr)?),
                 None => None,
@@ -1705,21 +1716,18 @@ return Err(RuntimeError {
         Stmt::Despawn { target, line, col } => {
             let v = eval_expr(env, target)?;
             if v.is_instance() {
-let rc = v.as_instance();
-rc.borrow_mut().despawned = true;
-                    Ok(())
-} else {
-let other = v.clone();
-Err(RuntimeError {
+                let rc = v.as_instance();
+                rc.borrow_mut().despawned = true;
+                Ok(())
+            } else {
+                let other = v.clone();
+                Err(RuntimeError {
                     line: *line,
                     col: *col,
-                    message: format!(
-                        "`despawn` expects an instance, got {}",
-                        other.type_name()
-                    ),
+                    message: format!("`despawn` expects an instance, got {}", other.type_name()),
                     help: None,
                 })
-}
+            }
         }
         Stmt::DialogueDecl { name, body, .. } => {
             // Register the dialogue as a parameterless callable. We
@@ -1739,7 +1747,12 @@ Err(RuntimeError {
             env.set(name.clone(), dialogue);
             Ok(())
         }
-        Stmt::Say { actor, text, line, col } => {
+        Stmt::Say {
+            actor,
+            text,
+            line,
+            col,
+        } => {
             let text_value = eval_expr(env, text)?;
             let text_str = text_value.display();
             let actor_str = match actor {
@@ -1775,18 +1788,19 @@ Err(RuntimeError {
             let _ = (*line, *col);
             Ok(())
         }
-        Stmt::Choice { branches, line, col } => {
+        Stmt::Choice {
+            branches,
+            line,
+            col,
+        } => {
             // Print each label so a transcript shows the user what
             // was on offer. v0.1 always picks the first branch — the
             // deterministic surface is enough to ship dialogue;
             // interactive selection is a Phase 5 task 3 follow-on.
             for (i, (label, _)) in branches.iter().enumerate() {
                 let label_value = eval_expr(env, label)?;
-                env.out.push_str(&format!(
-                    "  [{}] {}\n",
-                    i + 1,
-                    label_value.display()
-                ));
+                env.out
+                    .push_str(&format!("  [{}] {}\n", i + 1, label_value.display()));
             }
             // Pick branch 0. Empty branches list was rejected at
             // parse time, so unwrap is safe.
@@ -1854,13 +1868,16 @@ fn eval_assign(
                 // Mutate the instance field if `name` is one (scope chain),
                 // else fall back to env. New `let` bindings are introduced
                 // by Stmt::Let, not by plain `name = value`.
-                if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
-                    let mut inst = rc.borrow_mut();
-                    if inst.fields.contains_key(name) {
-                        inst.insert_field(name.clone(), new_value);
-                        return Ok(());
+                if let Some(__t) = (env.self_value).as_ref() {
+                    if __t.is_instance() {
+                        let rc = __t.as_instance();
+                        let mut inst = rc.borrow_mut();
+                        if inst.fields.contains_key(name) {
+                            inst.insert_field(name.clone(), new_value);
+                            return Ok(());
+                        }
                     }
-                } }
+                }
                 env.set(name.clone(), new_value);
                 return Ok(());
             }
@@ -1871,56 +1888,56 @@ fn eval_assign(
                 help: Some(format!("declare it with `let {name} = ...` before use")),
             })?;
             let combined = compound(op, &current, &new_value, line, col)?;
-            if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
-                let mut inst = rc.borrow_mut();
-                if inst.fields.contains_key(name) {
-                    inst.insert_field(name.clone(), combined);
-                    return Ok(());
+            if let Some(__t) = (env.self_value).as_ref() {
+                if __t.is_instance() {
+                    let rc = __t.as_instance();
+                    let mut inst = rc.borrow_mut();
+                    if inst.fields.contains_key(name) {
+                        inst.insert_field(name.clone(), combined);
+                        return Ok(());
+                    }
                 }
-            } }
+            }
             env.set(name.clone(), combined);
             Ok(())
         }
         AssignTarget::Field { object, name } => {
             let obj_val = eval_expr(env, object)?;
             if obj_val.is_object() {
-let rc = obj_val.as_object();
-let final_value = if matches!(op, AssignOp::Set) {
-                        new_value
-                    } else {
-                        let current = rc.borrow().get_field(name).ok_or_else(|| {
-                            RuntimeError {
-                                line,
-                                col,
-                                message: format!("field '{name}' is not defined on this object"),
-                                help: Some(format!("set it first with `obj.{name} = ...`")),
-                            }
-                        })?;
-                        compound(op, &current, &new_value, line, col)?
-                    };
-                    // Special case: `.pos = (x, y)` on a sprite-shaped object
-                    // also updates `.x` and `.y`. Mirrors Example 1's
-                    // tuple-as-Vector2 behavior.
-                    if name == "pos"
-                        && final_value.is_tuple() {
-                            let elems = &final_value.as_tuple();
-                            if elems.len() >= 2 {
-                                let mut o = rc.borrow_mut();
-                                o.insert_field("x".to_string(), elems[0].clone());
-                                o.insert_field("y".to_string(), elems[1].clone());
-                            }
-                        }
-                    rc.borrow_mut().insert_field(name.clone(), final_value);
-                    if name == "x" || name == "y" {
-                        refresh_pos(&rc);
+                let rc = obj_val.as_object();
+                let final_value = if matches!(op, AssignOp::Set) {
+                    new_value
+                } else {
+                    let current = rc.borrow().get_field(name).ok_or_else(|| RuntimeError {
+                        line,
+                        col,
+                        message: format!("field '{name}' is not defined on this object"),
+                        help: Some(format!("set it first with `obj.{name} = ...`")),
+                    })?;
+                    compound(op, &current, &new_value, line, col)?
+                };
+                // Special case: `.pos = (x, y)` on a sprite-shaped object
+                // also updates `.x` and `.y`. Mirrors Example 1's
+                // tuple-as-Vector2 behavior.
+                if name == "pos" && final_value.is_tuple() {
+                    let elems = &final_value.as_tuple();
+                    if elems.len() >= 2 {
+                        let mut o = rc.borrow_mut();
+                        o.insert_field("x".to_string(), elems[0].clone());
+                        o.insert_field("y".to_string(), elems[1].clone());
                     }
-                    Ok(())
-} else if obj_val.is_instance() {
-let rc = obj_val.as_instance();
-let final_value = if matches!(op, AssignOp::Set) {
-                        new_value
-                    } else {
-                        let current = rc
+                }
+                rc.borrow_mut().insert_field(name.clone(), final_value);
+                if name == "x" || name == "y" {
+                    refresh_pos(&rc);
+                }
+                Ok(())
+            } else if obj_val.is_instance() {
+                let rc = obj_val.as_instance();
+                let final_value = if matches!(op, AssignOp::Set) {
+                    new_value
+                } else {
+                    let current = rc
                             .borrow()
                             .get_field(name)
                             .ok_or_else(|| {
@@ -1944,24 +1961,21 @@ let final_value = if matches!(op, AssignOp::Set) {
                                     },
                                 }
                             })?;
-                        compound(op, &current, &new_value, line, col)?
-                    };
-                    rc.borrow_mut().insert_field(name.clone(), final_value);
-                    Ok(())
-} else {
-let other = obj_val.clone();
-Err(RuntimeError {
+                    compound(op, &current, &new_value, line, col)?
+                };
+                rc.borrow_mut().insert_field(name.clone(), final_value);
+                Ok(())
+            } else {
+                let other = obj_val.clone();
+                Err(RuntimeError {
                     line,
                     col,
-                    message: format!(
-                        "cannot assign field on value of type {}",
-                        other.type_name()
-                    ),
+                    message: format!("cannot assign field on value of type {}", other.type_name()),
                     help: Some(
                         "only objects and class instances support field assignment".to_string(),
                     ),
                 })
-}
+            }
         }
     }
 }
@@ -2144,9 +2158,7 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
                 line,
                 col,
                 message: format!("list index {i} out of bounds (length {len})"),
-                help: Some(
-                    "lists are 0-indexed; negative indices count from the end".to_string(),
-                ),
+                help: Some("lists are 0-indexed; negative indices count from the end".to_string()),
             });
         }
         Ok(v[actual as usize].clone())
@@ -2187,8 +2199,8 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
 
 fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, RuntimeError> {
     if obj.is_tuple() {
-let elems = obj.as_tuple();
-match name {
+        let elems = obj.as_tuple();
+        match name {
             "x" if !elems.is_empty() => Ok(elems[0].clone()),
             "y" if elems.len() >= 2 => Ok(elems[1].clone()),
             "z" if elems.len() >= 3 => Ok(elems[2].clone()),
@@ -2202,9 +2214,9 @@ match name {
                 ),
             }),
         }
-} else if obj.is_list() {
-let rc = obj.as_list();
-match name {
+    } else if obj.is_list() {
+        let rc = obj.as_list();
+        match name {
             "length" => Ok(Value::from_int(rc.borrow().len() as i64)),
             _ => Err(RuntimeError {
                 line,
@@ -2217,41 +2229,41 @@ match name {
                 ),
             }),
         }
-} else if obj.is_object() {
-    let rc = obj.as_object();
-    let result = rc.borrow().get_field(name).ok_or_else(|| RuntimeError {
-        line,
-        col,
-        message: format!("field '{name}' is not defined on this object"),
-        help: Some(format!("set it first with `obj.{name} = ...`")),
-    });
-    result
-} else if obj.is_instance() {
-let rc = obj.as_instance();
-let inst = rc.borrow();
-            if let Some(v) = inst.get_field(name) {
-                return Ok(v);
-            }
-            // Methods are not values yet — `obj.method` outside a call site is
-            // not supported in this commit. The Call path resolves them
-            // directly. Falling through to "field not defined" is correct.
-            Err(RuntimeError {
-                line,
-                col,
-                message: format!(
-                    "field '{name}' is not defined on instance of {}",
-                    inst.class.name
-                ),
-                help: None,
-            })
-} else {
-Err(RuntimeError {
+    } else if obj.is_object() {
+        let rc = obj.as_object();
+        let result = rc.borrow().get_field(name).ok_or_else(|| RuntimeError {
+            line,
+            col,
+            message: format!("field '{name}' is not defined on this object"),
+            help: Some(format!("set it first with `obj.{name} = ...`")),
+        });
+        result
+    } else if obj.is_instance() {
+        let rc = obj.as_instance();
+        let inst = rc.borrow();
+        if let Some(v) = inst.get_field(name) {
+            return Ok(v);
+        }
+        // Methods are not values yet — `obj.method` outside a call site is
+        // not supported in this commit. The Call path resolves them
+        // directly. Falling through to "field not defined" is correct.
+        Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "field '{name}' is not defined on instance of {}",
+                inst.class.name
+            ),
+            help: None,
+        })
+    } else {
+        Err(RuntimeError {
             line,
             col,
             message: format!("cannot read field on value of type {}", obj.type_name()),
             help: None,
         })
-}
+    }
 }
 
 fn eval_call(
@@ -2268,22 +2280,25 @@ fn eval_call(
     // this, scene methods would only be reachable via `self.method()`
     // — verbose, and Snake-style code uses bare calls.
     if let Expr::Ident { name, .. } = callee {
-        if let Some(__t) = (env.self_value).as_ref() { if __t.is_instance() { let rc = __t.as_instance();
-            let class = rc.borrow().class.clone();
-            if let Some(method) = find_method(&class, name) {
-                let arg_vals = eval_args(env, args)?;
-                let kwarg_vals = eval_kwargs(env, kwargs)?;
-                return call_method(
-                    env,
-                    Value::from_instance(rc),
-                    &method,
-                    &arg_vals,
-                    &kwarg_vals,
-                    line,
-                    col,
-                );
+        if let Some(__t) = (env.self_value).as_ref() {
+            if __t.is_instance() {
+                let rc = __t.as_instance();
+                let class = rc.borrow().class.clone();
+                if let Some(method) = find_method(&class, name) {
+                    let arg_vals = eval_args(env, args)?;
+                    let kwarg_vals = eval_kwargs(env, kwargs)?;
+                    return call_method(
+                        env,
+                        Value::from_instance(rc),
+                        &method,
+                        &arg_vals,
+                        &kwarg_vals,
+                        line,
+                        col,
+                    );
+                }
             }
-        } }
+        }
     }
     // Method call: `recv.method(args)`. Resolved here (not via field_get)
     // because methods aren't first-class values yet.
@@ -2304,16 +2319,9 @@ fn eval_call(
             if !kwargs.is_empty() {
                 return Err(no_kwargs_error(&format!("range.{name}"), line, col));
             }
-            if let Some(v) = range_method_call(
-                env,
-                *start,
-                *end,
-                *exclusive,
-                name,
-                args,
-                line,
-                col,
-            )? {
+            if let Some(v) =
+                range_method_call(env, *start, *end, *exclusive, name, args, line, col)?
+            {
                 return Ok(v);
             }
         }
@@ -2406,13 +2414,8 @@ fn bind_kwargs(
                 return Err(RuntimeError {
                     line,
                     col,
-                    message: format!(
-                        "{callee} has no parameter named `{kname}`"
-                    ),
-                    help: Some(format!(
-                        "expected parameters: {}",
-                        params.join(", ")
-                    )),
+                    message: format!("{callee} has no parameter named `{kname}`"),
+                    help: Some(format!("expected parameters: {}", params.join(", "))),
                 });
             }
         };
@@ -2436,10 +2439,7 @@ fn bind_kwargs(
                 return Err(RuntimeError {
                     line,
                     col,
-                    message: format!(
-                        "{callee}: missing argument for parameter `{}`",
-                        params[i]
-                    ),
+                    message: format!("{callee}: missing argument for parameter `{}`", params[i]),
                     help: None,
                 });
             }
@@ -2488,12 +2488,15 @@ fn list_method_call(
         }
         "pop_back" => {
             arity_check(0)?;
-            rc.borrow_mut().pop().ok_or_else(|| RuntimeError {
-                line,
-                col,
-                message: "pop_back on an empty list".to_string(),
-                help: Some("guard with `if list.length > 0:` before popping".to_string()),
-            }).map(Some)
+            rc.borrow_mut()
+                .pop()
+                .ok_or_else(|| RuntimeError {
+                    line,
+                    col,
+                    message: "pop_back on an empty list".to_string(),
+                    help: Some("guard with `if list.length > 0:` before popping".to_string()),
+                })
+                .map(Some)
         }
         "pop_front" => {
             arity_check(0)?;
@@ -2564,11 +2567,11 @@ fn range_method_call(
             let v = eval_expr(env, &args[0])?;
             let upper = if exclusive { end } else { end + 1 };
             let result = if v.is_int_or_boxed_int() {
-let n = v.as_int();
-n >= start && n < upper
-} else {
-false
-};
+                let n = v.as_int();
+                n >= start && n < upper
+            } else {
+                false
+            };
             Ok(Some(Value::from_bool(result)))
         }
         _ => Ok(None),
@@ -2584,56 +2587,47 @@ fn apply_call(
     col: u32,
 ) -> Result<Value, RuntimeError> {
     if f.is_builtin() {
-let (name, params, func) = f.as_builtin();
-if params.is_empty() {
-                if !kwargs.is_empty() {
-                    return Err(no_kwargs_error(name, line, col));
-                }
-                func(env, args)
-            } else {
-                let bound = bind_kwargs(
-                    params,
-                    name,
-                    args.to_vec(),
-                    kwargs.to_vec(),
-                    line,
-                    col,
-                )?;
-                func(env, &bound)
+        let (name, params, func) = f.as_builtin();
+        if params.is_empty() {
+            if !kwargs.is_empty() {
+                return Err(no_kwargs_error(name, line, col));
             }
-} else if f.is_function() {
-let def = f.as_function();
-call_function(env, &def, args, kwargs, line, col)
-} else if f.is_class() {
-let class = f.as_class();
-if !args.is_empty() || !kwargs.is_empty() {
-                return Err(RuntimeError {
-                    line,
-                    col,
-                    message: format!(
-                        "constructor for {} takes no arguments yet (got {})",
-                        class.name,
-                        args.len() + kwargs.len()
-                    ),
-                    help: Some(
-                        "v0.1 constructors initialise from field defaults; \
+            func(env, args)
+        } else {
+            let bound = bind_kwargs(params, name, args.to_vec(), kwargs.to_vec(), line, col)?;
+            func(env, &bound)
+        }
+    } else if f.is_function() {
+        let def = f.as_function();
+        call_function(env, &def, args, kwargs, line, col)
+    } else if f.is_class() {
+        let class = f.as_class();
+        if !args.is_empty() || !kwargs.is_empty() {
+            return Err(RuntimeError {
+                line,
+                col,
+                message: format!(
+                    "constructor for {} takes no arguments yet (got {})",
+                    class.name,
+                    args.len() + kwargs.len()
+                ),
+                help: Some(
+                    "v0.1 constructors initialise from field defaults; \
                          positional/keyword args ship later"
-                            .to_string(),
-                    ),
-                });
-            }
-            Ok(instantiate(class))
-} else {
-let other = f.clone();
-Err(RuntimeError {
+                        .to_string(),
+                ),
+            });
+        }
+        Ok(instantiate(class))
+    } else {
+        let other = f.clone();
+        Err(RuntimeError {
             line,
             col,
             message: format!("cannot call value of type {}", other.type_name()),
-            help: Some(
-                "only functions, builtins, and class constructors are callable".to_string(),
-            ),
+            help: Some("only functions, builtins, and class constructors are callable".to_string()),
         })
-}
+    }
 }
 
 fn call_function(
@@ -2672,11 +2666,8 @@ fn call_function(
     };
     let args = &bound;
     let saved_returning = env.returning.take();
-    let saved_params: Vec<(String, Option<Value>)> = def
-        .params
-        .iter()
-        .map(|p| (p.clone(), env.get(p)))
-        .collect();
+    let saved_params: Vec<(String, Option<Value>)> =
+        def.params.iter().map(|p| (p.clone(), env.get(p))).collect();
     for (param, arg) in def.params.iter().zip(args.iter()) {
         env.set(param.clone(), arg.clone());
     }
@@ -2822,20 +2813,20 @@ fn run_for(
     let iter_val = eval_expr(env, iter)?;
     let saved = env.get(var);
     let result = if iter_val.is_range() {
-let (start, end, exclusive) = iter_val.as_range();
-let limit = if exclusive { end } else { end + 1 };
-            run_for_iter(env, var, body, (start..limit).map(Value::from_int))
-} else if iter_val.is_list() {
-let rc = iter_val.as_list();
-let snapshot: Vec<Value> = rc.borrow().clone();
-            run_for_iter(env, var, body, snapshot.into_iter())
-} else if iter_val.is_tuple() {
-let elems = iter_val.as_tuple();
-let snapshot: Vec<Value> = elems.iter().cloned().collect();
-            run_for_iter(env, var, body, snapshot.into_iter())
-} else {
-let other = iter_val.clone();
-Err(RuntimeError {
+        let (start, end, exclusive) = iter_val.as_range();
+        let limit = if exclusive { end } else { end + 1 };
+        run_for_iter(env, var, body, (start..limit).map(Value::from_int))
+    } else if iter_val.is_list() {
+        let rc = iter_val.as_list();
+        let snapshot: Vec<Value> = rc.borrow().clone();
+        run_for_iter(env, var, body, snapshot.into_iter())
+    } else if iter_val.is_tuple() {
+        let elems = iter_val.as_tuple();
+        let snapshot: Vec<Value> = elems.iter().cloned().collect();
+        run_for_iter(env, var, body, snapshot.into_iter())
+    } else {
+        let other = iter_val.clone();
+        Err(RuntimeError {
             line,
             col,
             message: format!(
@@ -2844,7 +2835,7 @@ Err(RuntimeError {
             ),
             help: None,
         })
-};
+    };
     match saved {
         Some(v) => env.set(var.to_string(), v),
         None => env.remove(var),
@@ -2886,25 +2877,25 @@ fn eval_decl(
 ) -> Result<(), RuntimeError> {
     let parent_class = if let Some(p) = parent {
         {
-let __opt = env.get(p);
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_class() {
-let c = __t.as_class();
-Some(c.clone())
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
-                    line,
-                    col,
-                    message: format!(
-                        "cannot extend `{p}`: it is a {}, not a class",
-                        other.type_name()
-                    ),
-                    help: None,
-                });
-}
-} else {
-return Err(RuntimeError {
+            let __opt = env.get(p);
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_class() {
+                    let c = __t.as_class();
+                    Some(c.clone())
+                } else {
+                    let other = __t.clone();
+                    return Err(RuntimeError {
+                        line,
+                        col,
+                        message: format!(
+                            "cannot extend `{p}`: it is a {}, not a class",
+                            other.type_name()
+                        ),
+                        help: None,
+                    });
+                }
+            } else {
+                return Err(RuntimeError {
                     line,
                     col,
                     message: format!("parent `{p}` is not defined"),
@@ -2912,8 +2903,8 @@ return Err(RuntimeError {
                         "declare `{p}` with `entity {p}:` or `item {p}:` before extending it"
                     )),
                 });
-}
-}
+            }
+        }
     } else {
         None
     };
@@ -2924,7 +2915,9 @@ return Err(RuntimeError {
     let mut initial_state: Option<String> = None;
     for member in members {
         match member {
-            DeclMember::Field { name: fname, value, .. } => {
+            DeclMember::Field {
+                name: fname, value, ..
+            } => {
                 let v = eval_expr(env, value)?;
                 field_defaults.insert(fname.clone(), v);
             }
@@ -2950,7 +2943,11 @@ return Err(RuntimeError {
             DeclMember::InitialState { name: sname, .. } => {
                 initial_state = Some(sname.clone());
             }
-            DeclMember::State { name: sname, members: smembers, .. } => {
+            DeclMember::State {
+                name: sname,
+                members: smembers,
+                ..
+            } => {
                 let mut on_entry = Vec::new();
                 let mut every_clocks = Vec::new();
                 let mut on_render: Option<Vec<Stmt>> = None;
@@ -2978,7 +2975,9 @@ return Err(RuntimeError {
                                 body: body.clone(),
                             });
                         }
-                        StateMember::OnPredicate { predicate, body, .. } => {
+                        StateMember::OnPredicate {
+                            predicate, body, ..
+                        } => {
                             on_predicates.push(crate::value::PredicateHandlerDef {
                                 predicate: predicate.clone(),
                                 body: body.clone(),
@@ -3017,13 +3016,13 @@ return Err(RuntimeError {
     // scene. There's only one active scene per program in v0.1.
     if matches!(kind, DeclKind::Scene) {
         let inst = {
-let __t = instantiate(class.clone());
-if __t.is_instance() {
-__t.as_instance()
-} else {
-unreachable!("instantiate always returns Instance")
-}
-};
+            let __t = instantiate(class.clone());
+            if __t.is_instance() {
+                __t.as_instance()
+            } else {
+                unreachable!("instantiate always returns Instance")
+            }
+        };
         env.active_scene = Some(inst.clone());
         if let Some(start) = class.initial_state.clone() {
             enter_state(env, &inst, &start)?;
@@ -3042,11 +3041,19 @@ fn eval_binary(
 ) -> Result<Value, RuntimeError> {
     if matches!(op, BinOp::And) {
         let l = eval_expr(env, left)?;
-        return if is_truthy(&l) { eval_expr(env, right) } else { Ok(l) };
+        return if is_truthy(&l) {
+            eval_expr(env, right)
+        } else {
+            Ok(l)
+        };
     }
     if matches!(op, BinOp::Or) {
         let l = eval_expr(env, left)?;
-        return if is_truthy(&l) { Ok(l) } else { eval_expr(env, right) };
+        return if is_truthy(&l) {
+            Ok(l)
+        } else {
+            eval_expr(env, right)
+        };
     }
     let l = eval_expr(env, left)?;
     let r = eval_expr(env, right)?;
@@ -3064,39 +3071,34 @@ fn eval_binary(
     }
 }
 
-fn value_in(
-    needle: &Value,
-    haystack: &Value,
-    line: u32,
-    col: u32,
-) -> Result<bool, RuntimeError> {
+fn value_in(needle: &Value, haystack: &Value, line: u32, col: u32) -> Result<bool, RuntimeError> {
     if haystack.is_list() {
         let rc = haystack.as_list();
         let answer = rc.borrow().iter().any(|v| values_equal(v, needle));
         Ok(answer)
-} else if haystack.is_tuple() {
-let elems = haystack.as_tuple();
-Ok(elems.iter().any(|v| values_equal(v, needle)))
-} else if haystack.is_range() {
-let (start, end, exclusive) = haystack.as_range();
-if needle.is_int_or_boxed_int() {
-let n = needle.as_int();
-let upper = if exclusive { end } else { end + 1 };
-                Ok(n >= start && n < upper)
-} else {
-Ok(false)
-}
-} else if haystack.is_str() {
-let s = haystack.as_string();
-if needle.is_str() {
-let sub = needle.as_string();
-Ok(s.contains(sub.as_str()))
-} else {
-Ok(false)
-}
-} else {
-let other = haystack.clone();
-Err(RuntimeError {
+    } else if haystack.is_tuple() {
+        let elems = haystack.as_tuple();
+        Ok(elems.iter().any(|v| values_equal(v, needle)))
+    } else if haystack.is_range() {
+        let (start, end, exclusive) = haystack.as_range();
+        if needle.is_int_or_boxed_int() {
+            let n = needle.as_int();
+            let upper = if exclusive { end } else { end + 1 };
+            Ok(n >= start && n < upper)
+        } else {
+            Ok(false)
+        }
+    } else if haystack.is_str() {
+        let s = haystack.as_string();
+        if needle.is_str() {
+            let sub = needle.as_string();
+            Ok(s.contains(sub.as_str()))
+        } else {
+            Ok(false)
+        }
+    } else {
+        let other = haystack.clone();
+        Err(RuntimeError {
             line,
             col,
             message: format!(
@@ -3105,7 +3107,7 @@ Err(RuntimeError {
             ),
             help: None,
         })
-}
+    }
 }
 
 fn apply_arith(
@@ -3123,15 +3125,14 @@ fn apply_arith(
         _ => unreachable!(),
     };
     // String concatenation via `+`.
-    if matches!(op, BinOp::Add)
-        && l.is_str() && r.is_str() {
-            let a = l.as_string();
-            let b = r.as_string();
-            let mut s = String::with_capacity(a.len() + b.len());
-            s.push_str(a.as_str());
-            s.push_str(b.as_str());
-            return Ok(Value::from_string(s));
-        }
+    if matches!(op, BinOp::Add) && l.is_str() && r.is_str() {
+        let a = l.as_string();
+        let b = r.as_string();
+        let mut s = String::with_capacity(a.len() + b.len());
+        s.push_str(a.as_str());
+        s.push_str(b.as_str());
+        return Ok(Value::from_string(s));
+    }
     // Tuple arithmetic — element-wise add/sub between same-length tuples
     // (Snake's `snake[0] + direction` shape) and tuple * scalar (Snake's
     // `cell * cell_size`).

@@ -68,7 +68,10 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn err(&self, msg: impl Into<String>) -> ParseError {
-        ParseError { offset: self.pos, message: msg.into() }
+        ParseError {
+            offset: self.pos,
+            message: msg.into(),
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -171,9 +174,7 @@ impl<'a> Parser<'a> {
         self.expect_byte(b'"')?;
         let mut out = String::new();
         loop {
-            let b = self
-                .peek()
-                .ok_or_else(|| self.err("unterminated string"))?;
+            let b = self.peek().ok_or_else(|| self.err("unterminated string"))?;
             match b {
                 b'"' => {
                     self.pos += 1;
@@ -181,9 +182,7 @@ impl<'a> Parser<'a> {
                 }
                 b'\\' => {
                     self.pos += 1;
-                    let esc = self
-                        .peek()
-                        .ok_or_else(|| self.err("unterminated escape"))?;
+                    let esc = self.peek().ok_or_else(|| self.err("unterminated escape"))?;
                     self.pos += 1;
                     match esc {
                         b'"' => out.push('"'),
@@ -220,10 +219,7 @@ impl<'a> Parser<'a> {
                             }
                         }
                         other => {
-                            return Err(self.err(format!(
-                                "unknown escape '\\{}'",
-                                other as char
-                            )));
+                            return Err(self.err(format!("unknown escape '\\{}'", other as char)));
                         }
                     }
                 }
@@ -458,7 +454,10 @@ mod tests {
     #[test]
     fn parses_arrays_and_objects() {
         assert_eq!(parse("[]").unwrap(), Value::Array(vec![]));
-        assert_eq!(parse("[1, 2, 3]").unwrap(), Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(
+            parse("[1, 2, 3]").unwrap(),
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
         let obj_v = parse(r#"{"a": 1, "b": "hi"}"#).unwrap();
         assert_eq!(obj_v.get("a"), Some(&Value::Int(1)));
         assert_eq!(obj_v.get("b").and_then(|v| v.as_str()), Some("hi"));
@@ -466,7 +465,9 @@ mod tests {
 
     #[test]
     fn round_trips_nested() {
-        round_trip(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#);
+        round_trip(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#,
+        );
         round_trip(r#"{"a":[1,2,{"b":null}]}"#);
         round_trip(r#""line\nbreak\twith\\backslash""#);
     }
@@ -483,10 +484,7 @@ mod tests {
 
     #[test]
     fn obj_helper_builds_objects() {
-        let v = obj([
-            ("a", Value::Int(1)),
-            ("b", Value::Bool(true)),
-        ]);
+        let v = obj([("a", Value::Int(1)), ("b", Value::Bool(true))]);
         let s = to_string(&v);
         // BTreeMap orders alphabetically.
         assert_eq!(s, r#"{"a":1,"b":true}"#);

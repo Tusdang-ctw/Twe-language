@@ -122,8 +122,7 @@ impl<'a> Parser<'a> {
                 col: expr.col(),
                 message: "invalid assignment target".to_string(),
                 help: Some(
-                    "the left side of `=` must be a name or a field like `obj.field`"
-                        .to_string(),
+                    "the left side of `=` must be a name or a field like `obj.field`".to_string(),
                 ),
             })?;
             Ok(Stmt::Assign {
@@ -365,9 +364,7 @@ impl<'a> Parser<'a> {
                 line: kw.line,
                 col: kw.col,
                 message: "`choice:` requires at least one indented branch".to_string(),
-                help: Some(
-                    "indent under `choice:` and add `\"<label>\":` branches".to_string(),
-                ),
+                help: Some("indent under `choice:` and add `\"<label>\":` branches".to_string()),
             });
         }
         self.bump();
@@ -517,13 +514,9 @@ impl<'a> Parser<'a> {
                 return Err(ParseError {
                     line: name_tok.line,
                     col: name_tok.col,
-                    message: format!(
-                        "expected name after `{}`, got {other:?}",
-                        kind.as_str()
-                    ),
+                    message: format!("expected name after `{}`, got {other:?}", kind.as_str()),
                     help: Some(
-                        "declarative block names use PascalCase, e.g. `item Sword:`"
-                            .to_string(),
+                        "declarative block names use PascalCase, e.g. `item Sword:`".to_string(),
                     ),
                 })
             }
@@ -816,7 +809,8 @@ impl<'a> Parser<'a> {
             let kw = self.bump().clone();
             self.bump(); // ident "update"
             self.expect(TokenKind::LParen, "expected '(' after `on update`")?;
-            let param = self.expect_ident("expected param name (usually `dt`) after `on update(`")?;
+            let param =
+                self.expect_ident("expected param name (usually `dt`) after `on update(`")?;
             self.expect(TokenKind::RParen, "expected ')' after `on update(<param>`")?;
             self.expect(TokenKind::Colon, "expected ':' after `on update(<param>)`")?;
             let body = self.parse_block()?;
@@ -870,10 +864,7 @@ impl<'a> Parser<'a> {
         if matches!(self.peek().kind, TokenKind::On) {
             let kw = self.bump().clone();
             let predicate = self.parse_expr()?;
-            self.expect(
-                TokenKind::Colon,
-                "expected ':' after `on <predicate>`",
-            )?;
+            self.expect(TokenKind::Colon, "expected ':' after `on <predicate>`")?;
             let body = self.parse_block()?;
             return Ok(StateMember::OnPredicate {
                 predicate,
@@ -1235,8 +1226,7 @@ impl<'a> Parser<'a> {
                                         "expected field name after '.', got {other:?}"
                                     ),
                                     help: Some(
-                                        "field names must be identifiers or keywords"
-                                            .to_string(),
+                                        "field names must be identifiers or keywords".to_string(),
                                     ),
                                 });
                             }
@@ -1289,9 +1279,7 @@ impl<'a> Parser<'a> {
                         line: name_tok.line,
                         col: name_tok.col,
                         message: format!("duplicate keyword argument `{name}:`"),
-                        help: Some(
-                            "each keyword argument may appear at most once".to_string(),
-                        ),
+                        help: Some("each keyword argument may appear at most once".to_string()),
                     });
                 }
                 kwargs.push((name, value));
@@ -1301,8 +1289,7 @@ impl<'a> Parser<'a> {
                     return Err(ParseError {
                         line: tok.line,
                         col: tok.col,
-                        message: "positional argument cannot follow keyword arguments"
-                            .to_string(),
+                        message: "positional argument cannot follow keyword arguments".to_string(),
                         help: Some(
                             "put all positional args before any `name: value` args, \
                              same as Python"
@@ -1428,8 +1415,7 @@ impl<'a> Parser<'a> {
                 col: tok.col,
                 message: "empty parens '()' have no value".to_string(),
                 help: Some(
-                    "use `nil` for an absent value, or put an expression inside"
-                        .to_string(),
+                    "use `nil` for an absent value, or put an expression inside".to_string(),
                 ),
             });
         }
@@ -1499,9 +1485,7 @@ impl<'a> Parser<'a> {
                     message: format!(
                         "expected end of statement (newline or end of file), got {other:?}"
                     ),
-                    help: Some(
-                        "twe ends each statement at a newline; no semicolons".to_string(),
-                    ),
+                    help: Some("twe ends each statement at a newline; no semicolons".to_string()),
                 })
             }
         }
@@ -1525,25 +1509,46 @@ fn parse_embedded_expr(src: &str, line: u32, col: u32) -> Result<Expr, ParseErro
 fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
     match expr {
         Expr::Str { value, .. } => Expr::Str { value, line, col },
-        Expr::Interp { parts, exprs, .. } => Expr::Interp { parts, exprs, line, col },
+        Expr::Interp { parts, exprs, .. } => Expr::Interp {
+            parts,
+            exprs,
+            line,
+            col,
+        },
         Expr::Int { value, .. } => Expr::Int { value, line, col },
         Expr::Float { value, .. } => Expr::Float { value, line, col },
         Expr::Bool { value, .. } => Expr::Bool { value, line, col },
         Expr::Percent { value, .. } => Expr::Percent { value, line, col },
-        Expr::Quantity { value, unit, .. } => Expr::Quantity { value, unit, line, col },
+        Expr::Quantity { value, unit, .. } => Expr::Quantity {
+            value,
+            unit,
+            line,
+            col,
+        },
         Expr::Ident { name, .. } => Expr::Ident { name, line, col },
         Expr::SelfRef { .. } => Expr::SelfRef { line, col },
         Expr::Tuple { elems, .. } => Expr::Tuple {
-            elems: elems.into_iter().map(|e| shift_expr(e, line, col)).collect(),
+            elems: elems
+                .into_iter()
+                .map(|e| shift_expr(e, line, col))
+                .collect(),
             line,
             col,
         },
         Expr::List { elems, .. } => Expr::List {
-            elems: elems.into_iter().map(|e| shift_expr(e, line, col)).collect(),
+            elems: elems
+                .into_iter()
+                .map(|e| shift_expr(e, line, col))
+                .collect(),
             line,
             col,
         },
-        Expr::Range { start, end, exclusive, .. } => Expr::Range {
+        Expr::Range {
+            start,
+            end,
+            exclusive,
+            ..
+        } => Expr::Range {
             start: Box::new(shift_expr(*start, line, col)),
             end: Box::new(shift_expr(*end, line, col)),
             exclusive,
@@ -1562,7 +1567,12 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             line,
             col,
         },
-        Expr::Call { callee, args, kwargs, .. } => Expr::Call {
+        Expr::Call {
+            callee,
+            args,
+            kwargs,
+            ..
+        } => Expr::Call {
             callee: Box::new(shift_expr(*callee, line, col)),
             args: args.into_iter().map(|e| shift_expr(e, line, col)).collect(),
             kwargs: kwargs
@@ -1578,7 +1588,9 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             line,
             col,
         },
-        Expr::Binary { op, left, right, .. } => Expr::Binary {
+        Expr::Binary {
+            op, left, right, ..
+        } => Expr::Binary {
             op,
             left: Box::new(shift_expr(*left, line, col)),
             right: Box::new(shift_expr(*right, line, col)),

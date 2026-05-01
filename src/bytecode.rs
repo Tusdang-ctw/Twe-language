@@ -71,7 +71,6 @@ pub enum OpCode {
     Return,
 
     // --- Session 8: locals + control flow ---
-
     /// Push the local at stack slot N (1-byte operand). Locals live
     /// at the bottom of the stack; the compiler tracks names → slots
     /// at compile time.
@@ -100,7 +99,6 @@ pub enum OpCode {
     Loop,
 
     // --- Session 9: globals + functions + calls ---
-
     /// Pop top of stack and bind it to the global named by the
     /// constant-pool string at the 1-byte operand index. Used by
     /// top-level `let` / `var` and by function declarations.
@@ -123,7 +121,6 @@ pub enum OpCode {
     Call,
 
     // --- Session 10: heap types + for-loops ---
-
     /// Pop `n` values and push them as a `Value::Tuple`. 1-byte
     /// operand is `n`. The first popped value is the *last*
     /// element; the compiler emits values left-to-right so the
@@ -176,7 +173,6 @@ pub enum OpCode {
     ForNext,
 
     // --- Session 11: classes + instances + module builtins ---
-
     /// Set a field by name (constant-pool index, 1 byte) on the
     /// instance / object two-down on the stack to the value on
     /// top. Stack on entry: `[..., recv, value]`. Stack after:
@@ -186,7 +182,6 @@ pub enum OpCode {
     SetField,
 
     // --- Session 12: scenes + states + play loop ---
-
     /// Auto-instantiate a scene. Stack on entry: `[..., class]`.
     /// VM pops the class, instantiates with default fields, marks
     /// the instance as the active scene, and runs the class's
@@ -450,8 +445,7 @@ impl BcInstance {
     }
 
     pub fn insert_field(&mut self, name: impl Into<String>, value: TaggedValue) {
-        self.fields
-            .insert(name.into(), value);
+        self.fields.insert(name.into(), value);
     }
 }
 
@@ -522,12 +516,8 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         OpCode::GetLocal => byte_instruction(out, "OP_GET_LOCAL", chunk, offset),
         OpCode::SetLocal => byte_instruction(out, "OP_SET_LOCAL", chunk, offset),
         OpCode::JumpIfFalse => jump_instruction(out, "OP_JUMP_IF_FALSE", 1, chunk, offset),
-        OpCode::JumpIfFalsePeek => {
-            jump_instruction(out, "OP_JUMP_IF_FALSE_PEEK", 1, chunk, offset)
-        }
-        OpCode::JumpIfTruePeek => {
-            jump_instruction(out, "OP_JUMP_IF_TRUE_PEEK", 1, chunk, offset)
-        }
+        OpCode::JumpIfFalsePeek => jump_instruction(out, "OP_JUMP_IF_FALSE_PEEK", 1, chunk, offset),
+        OpCode::JumpIfTruePeek => jump_instruction(out, "OP_JUMP_IF_TRUE_PEEK", 1, chunk, offset),
         OpCode::Jump => jump_instruction(out, "OP_JUMP", 1, chunk, offset),
         OpCode::Loop => jump_instruction(out, "OP_LOOP", -1, chunk, offset),
         OpCode::DefineGlobal => constant_instruction(out, "OP_DEFINE_GLOBAL", chunk, offset),
@@ -563,7 +553,10 @@ fn invoke_instruction(out: &mut String, name: &str, chunk: &Chunk, offset: usize
         .get(name_idx as usize)
         .map(Value::display)
         .unwrap_or_else(|| "<missing>".to_string());
-    let _ = writeln!(out, "{name:<16} {name_idx:>4} '{method}' ({arg_count} args)");
+    let _ = writeln!(
+        out,
+        "{name:<16} {name_idx:>4} '{method}' ({arg_count} args)"
+    );
     offset + 3
 }
 

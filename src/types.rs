@@ -91,18 +91,14 @@ pub fn apply_subst(subst: &Substitution, t: &Type) -> Type {
             Some(resolved) => apply_subst(subst, resolved),
             None => Type::Var(*id),
         },
-        Type::Tuple(elems) => {
-            Type::Tuple(elems.iter().map(|e| apply_subst(subst, e)).collect())
-        }
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| apply_subst(subst, e)).collect()),
         Type::List(elem) => Type::List(Rc::new(apply_subst(subst, elem))),
         Type::Function { params, ret } => Type::Function {
             params: params.iter().map(|p| apply_subst(subst, p)).collect(),
             ret: Rc::new(apply_subst(subst, ret)),
         },
         Type::Optional(inner) => Type::Optional(Rc::new(apply_subst(subst, inner))),
-        Type::Union(parts) => {
-            Type::Union(parts.iter().map(|p| apply_subst(subst, p)).collect())
-        }
+        Type::Union(parts) => Type::Union(parts.iter().map(|p| apply_subst(subst, p)).collect()),
         // Scalar / nominal types have nothing to substitute.
         _ => t.clone(),
     }
@@ -242,8 +238,14 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution) -> Result<(), UnifyEr
             Err(mismatch(&Type::Union(parts.clone()), other))
         }
         (
-            Type::Function { params: ap, ret: ar },
-            Type::Function { params: bp, ret: br },
+            Type::Function {
+                params: ap,
+                ret: ar,
+            },
+            Type::Function {
+                params: bp,
+                ret: br,
+            },
         ) => {
             if ap.len() != bp.len() {
                 return Err(mismatch(&a, &b));
@@ -324,10 +326,7 @@ pub enum Type {
     /// Function type with parameter types + return type. Param
     /// names are deliberately not part of the type — keyword
     /// arguments are bound at call time, not in the type.
-    Function {
-        params: Vec<Type>,
-        ret: Rc<Type>,
-    },
+    Function { params: Vec<Type>, ret: Rc<Type> },
     /// Class instance type — carries the class name. Field types
     /// arrive in Phase 4d when structural records land; for now
     /// we just record which class and let field access return
@@ -360,7 +359,10 @@ pub enum Type {
 impl Type {
     /// Convenience constructor for a function type.
     pub fn func(params: Vec<Type>, ret: Type) -> Type {
-        Type::Function { params, ret: Rc::new(ret) }
+        Type::Function {
+            params,
+            ret: Rc::new(ret),
+        }
     }
 
     /// Convenience constructor for a list type.
@@ -461,16 +463,24 @@ impl Type {
             | (Type::Range, Type::Range) => true,
             (Type::Quantity(a), Type::Quantity(b)) => a == b,
             (Type::Tuple(a), Type::Tuple(b)) => {
-                a.len() == b.len()
-                    && a.iter().zip(b.iter()).all(|(x, y)| x.is_compatible_with(y))
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.is_compatible_with(y))
             }
             (Type::List(a), Type::List(b)) => a.is_compatible_with(b),
             (
-                Type::Function { params: ap, ret: ar },
-                Type::Function { params: bp, ret: br },
+                Type::Function {
+                    params: ap,
+                    ret: ar,
+                },
+                Type::Function {
+                    params: bp,
+                    ret: br,
+                },
             ) => {
                 ap.len() == bp.len()
-                    && ap.iter().zip(bp.iter()).all(|(x, y)| x.is_compatible_with(y))
+                    && ap
+                        .iter()
+                        .zip(bp.iter())
+                        .all(|(x, y)| x.is_compatible_with(y))
                     && ar.is_compatible_with(br)
             }
             (Type::Instance(a), Type::Instance(b)) => a == b,
@@ -485,9 +495,10 @@ impl Type {
             // matches any variant. Two unions compatible if every
             // variant of one is compatible with some variant of
             // the other.
-            (Type::Union(a), Type::Union(b)) => a.iter().all(|x| {
-                b.iter().any(|y| x.is_compatible_with(y))
-            }) && b.iter().all(|y| a.iter().any(|x| y.is_compatible_with(x))),
+            (Type::Union(a), Type::Union(b)) => {
+                a.iter().all(|x| b.iter().any(|y| x.is_compatible_with(y)))
+                    && b.iter().all(|y| a.iter().any(|x| y.is_compatible_with(x)))
+            }
             (Type::Union(parts), other) | (other, Type::Union(parts)) => {
                 parts.iter().any(|p| p.is_compatible_with(other))
             }
@@ -588,8 +599,14 @@ mod tests {
 
     #[test]
     fn display_quantity_carries_unit() {
-        assert_eq!(Type::Quantity(Rc::new("ms".into())).to_string(), "quantity<ms>");
-        assert_eq!(Type::Quantity(Rc::new("kg".into())).to_string(), "quantity<kg>");
+        assert_eq!(
+            Type::Quantity(Rc::new("ms".into())).to_string(),
+            "quantity<ms>"
+        );
+        assert_eq!(
+            Type::Quantity(Rc::new("kg".into())).to_string(),
+            "quantity<kg>"
+        );
     }
 
     #[test]
@@ -620,7 +637,10 @@ mod tests {
     #[test]
     fn display_instance_and_class() {
         assert_eq!(Type::Instance(Rc::new("Hero".into())).to_string(), "Hero");
-        assert_eq!(Type::Class(Rc::new("Hero".into())).to_string(), "<class Hero>");
+        assert_eq!(
+            Type::Class(Rc::new("Hero".into())).to_string(),
+            "<class Hero>"
+        );
     }
 
     #[test]
@@ -723,7 +743,10 @@ mod tests {
         let t = Type::list(Type::Var(a));
         assert_eq!(apply_subst(&s, &t), Type::list(Type::Int));
         let t = Type::Tuple(vec![Type::Var(a), Type::Bool]);
-        assert_eq!(apply_subst(&s, &t), Type::Tuple(vec![Type::Int, Type::Bool]));
+        assert_eq!(
+            apply_subst(&s, &t),
+            Type::Tuple(vec![Type::Int, Type::Bool])
+        );
     }
 
     #[test]
@@ -835,12 +858,7 @@ mod tests {
         // α = list of α — would create an infinite type.
         let mut s = Substitution::new();
         let a = TypeVarId(0);
-        let err = unify(
-            &Type::Var(a),
-            &Type::list(Type::Var(a)),
-            &mut s,
-        )
-        .expect_err("should fail");
+        let err = unify(&Type::Var(a), &Type::list(Type::Var(a)), &mut s).expect_err("should fail");
         match err {
             UnifyError::OccursCheck { var, .. } => assert_eq!(var, a),
             _ => panic!("wrong variant: {err:?}"),

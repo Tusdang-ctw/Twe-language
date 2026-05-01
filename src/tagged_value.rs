@@ -289,7 +289,11 @@ impl TaggedValue {
     }
 
     pub fn from_range(start: i64, end: i64, exclusive: bool) -> Self {
-        Self::from_heap(HeapBody::Range { start, end, exclusive })
+        Self::from_heap(HeapBody::Range {
+            start,
+            end,
+            exclusive,
+        })
     }
 
     pub fn from_tuple(elems: Rc<Vec<TaggedValue>>) -> Self {
@@ -530,7 +534,11 @@ impl TaggedValue {
             return self.with_obj_body(|b| match b {
                 HeapBody::Percent(p) => format!("{p}%"),
                 HeapBody::Quantity { value, unit } => format!("{value}{unit}"),
-                HeapBody::Range { start, end, exclusive } => {
+                HeapBody::Range {
+                    start,
+                    end,
+                    exclusive,
+                } => {
                     let op = if *exclusive { "..<" } else { ".." };
                     format!("{start}{op}{end}")
                 }
@@ -586,22 +594,34 @@ impl TaggedValue {
                 other.with_obj_body(|b| match (a, b) {
                     (HeapBody::Percent(x), HeapBody::Percent(y)) => x == y,
                     (
-                        HeapBody::Quantity { value: vx, unit: ux },
-                        HeapBody::Quantity { value: vy, unit: uy },
+                        HeapBody::Quantity {
+                            value: vx,
+                            unit: ux,
+                        },
+                        HeapBody::Quantity {
+                            value: vy,
+                            unit: uy,
+                        },
                     ) => vx == vy && ux == uy,
                     (
-                        HeapBody::Range { start: sa, end: ea, exclusive: xa },
-                        HeapBody::Range { start: sb, end: eb, exclusive: xb },
+                        HeapBody::Range {
+                            start: sa,
+                            end: ea,
+                            exclusive: xa,
+                        },
+                        HeapBody::Range {
+                            start: sb,
+                            end: eb,
+                            exclusive: xb,
+                        },
                     ) => sa == sb && ea == eb && xa == xb,
                     (HeapBody::Tuple(ra), HeapBody::Tuple(rb)) => {
-                        ra.len() == rb.len()
-                            && ra.iter().zip(rb.iter()).all(|(x, y)| x.equals(y))
+                        ra.len() == rb.len() && ra.iter().zip(rb.iter()).all(|(x, y)| x.equals(y))
                     }
                     (HeapBody::List(ra), HeapBody::List(rb)) => {
                         let a = ra.borrow();
                         let b = rb.borrow();
-                        a.len() == b.len()
-                            && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
+                        a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
                     }
                     (HeapBody::Object(ra), HeapBody::Object(rb)) => Rc::ptr_eq(ra, rb),
                     (HeapBody::Class(ra), HeapBody::Class(rb)) => Rc::ptr_eq(ra, rb),
@@ -610,10 +630,9 @@ impl TaggedValue {
                     (HeapBody::BcFunction(ra), HeapBody::BcFunction(rb)) => Rc::ptr_eq(ra, rb),
                     (HeapBody::BcClass(ra), HeapBody::BcClass(rb)) => Rc::ptr_eq(ra, rb),
                     (HeapBody::BcInstance(ra), HeapBody::BcInstance(rb)) => Rc::ptr_eq(ra, rb),
-                    (
-                        HeapBody::Builtin { func: fa, .. },
-                        HeapBody::Builtin { func: fb, .. },
-                    ) => std::ptr::eq(*fa as *const (), *fb as *const ()),
+                    (HeapBody::Builtin { func: fa, .. }, HeapBody::Builtin { func: fb, .. }) => {
+                        std::ptr::eq(*fa as *const (), *fb as *const ())
+                    }
                     _ => false,
                 })
             });
@@ -682,7 +701,11 @@ impl TaggedValue {
 
     pub fn as_range(&self) -> (i64, i64, bool) {
         self.with_obj_body(|b| match b {
-            HeapBody::Range { start, end, exclusive } => (*start, *end, *exclusive),
+            HeapBody::Range {
+                start,
+                end,
+                exclusive,
+            } => (*start, *end, *exclusive),
             other => panic!("as_range: not a range: {other:?}"),
         })
     }
@@ -888,7 +911,16 @@ mod tests {
 
     #[test]
     fn float_round_trip() {
-        for f in [0.0_f64, 1.0, -1.0, 3.14, 1e100, -1e-100, f64::INFINITY, f64::NEG_INFINITY] {
+        for f in [
+            0.0_f64,
+            1.0,
+            -1.0,
+            3.14,
+            1e100,
+            -1e-100,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             let v = TaggedValue::from_float(f);
             assert!(v.is_float(), "is_float failed for {f}");
             assert_eq!(v.as_float(), f, "round-trip failed for {f}");
@@ -1028,7 +1060,11 @@ mod tests {
         let v = TaggedValue::from_range(0, 10, true);
         assert!(v.is_obj_body_kind(HeapBodyKind::Range));
         v.with_obj_body(|b| match b {
-            HeapBody::Range { start, end, exclusive } => {
+            HeapBody::Range {
+                start,
+                end,
+                exclusive,
+            } => {
                 assert_eq!(*start, 0);
                 assert_eq!(*end, 10);
                 assert!(*exclusive);

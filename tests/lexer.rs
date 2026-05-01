@@ -64,9 +64,9 @@ fn newlines_inside_brackets_and_braces_are_suppressed() {
 fn comments_are_skipped() {
     let tokens = lex("let x = 1 # tail comment\n# whole-line comment\nlet y = 2\n")
         .expect("lex should succeed");
-    let comment_token_present = tokens.iter().any(|t| {
-        matches!(&t.kind, TokenKind::Ident(s) if s == "tail" || s == "whole")
-    });
+    let comment_token_present = tokens
+        .iter()
+        .any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "tail" || s == "whole"));
     assert!(!comment_token_present, "comment text leaked into tokens");
     let lets = tokens
         .iter()
@@ -77,8 +77,7 @@ fn comments_are_skipped() {
 
 #[test]
 fn comparison_and_logical_operators_lex() {
-    let tokens =
-        lex("not a == b != c < d > e <= f >= g and h or i").expect("lex should succeed");
+    let tokens = lex("not a == b != c < d > e <= f >= g and h or i").expect("lex should succeed");
     let kinds: Vec<_> = tokens.iter().map(|t| t.kind.clone()).collect();
     for expected in [
         TokenKind::Not,
@@ -188,8 +187,7 @@ fn digit_separators_lex() {
 
 #[test]
 fn string_escape_sequences_lex() {
-    let tokens =
-        lex(r#""line one\nline two\ttab\\back\"q""#).expect("lex should succeed");
+    let tokens = lex(r#""line one\nline two\ttab\\back\"q""#).expect("lex should succeed");
     let s = match &tokens[0].kind {
         TokenKind::Str(s) => s,
         other => panic!("expected Str, got {other:?}"),
@@ -243,8 +241,7 @@ fn mixed_tabs_and_spaces_in_indent_errors() {
 
 #[test]
 fn dedent_to_unknown_level_errors() {
-    let err = lex("if a:\n    if b:\n        x = 1\n      y = 2\n")
-        .expect_err("should fail");
+    let err = lex("if a:\n    if b:\n        x = 1\n      y = 2\n").expect_err("should fail");
     assert_eq!(
         err.message,
         "dedent does not match any outer indentation level"

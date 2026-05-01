@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::value::{legacy_fields_to_tagged, Env, Object, RuntimeError, Value};
+use crate::value::{Env, Object, RuntimeError, Value};
 
 // Texture cache: macroquad's `Texture2D` can only be constructed once
 // the GL context exists, so loading is lazy — the first `sprite(spr, at)`
@@ -76,14 +76,14 @@ pub fn install(env: &mut Env) {
     env.set(
         "key".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(key_fields),
+            fields: key_fields,
             kind: "input",
         }))),
     );
     env.set(
         "key_press".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(press_fields),
+            fields: press_fields,
             kind: "input",
         }))),
     );
@@ -99,13 +99,16 @@ pub fn install(env: &mut Env) {
     mouse_fields.insert("y".to_string(), Value::from_float(0.0));
     mouse_fields.insert(
         "pos".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)])),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(0.0),
+        ])),
     );
     mouse_fields.insert("wheel".to_string(), Value::from_float(0.0));
     env.set(
         "mouse".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(mouse_fields),
+            fields: mouse_fields,
             kind: "input",
         }))),
     );
@@ -119,14 +122,14 @@ pub fn install(env: &mut Env) {
     env.set(
         "mouse_held".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(held),
+            fields: held,
             kind: "input",
         }))),
     );
     env.set(
         "mouse_press".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(pressed),
+            fields: pressed,
             kind: "input",
         }))),
     );
@@ -178,7 +181,7 @@ fn install_sound(env: &mut Env) {
     env.set(
         "sound".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(sound),
+            fields: sound,
             kind: "module",
         }))),
     );
@@ -202,7 +205,7 @@ fn install_sound(env: &mut Env) {
     env.set(
         "music".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(music),
+            fields: music,
             kind: "module",
         }))),
     );
@@ -211,13 +214,13 @@ fn install_sound(env: &mut Env) {
 fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.load")?;
     let path = {
-let __t = &args[0];
-if __t.is_str() {
-let s = __t.as_string();
-s.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_str() {
+            let s = __t.as_string();
+            s.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -226,8 +229,8 @@ return Err(RuntimeError {
                 ),
                 help: Some("e.g. `sound.load(\"shot.wav\")`".to_string()),
             });
-}
-};
+        }
+    };
     if std::fs::metadata(&path).is_err() {
         return Err(RuntimeError {
             line: 0,
@@ -242,7 +245,7 @@ return Err(RuntimeError {
     let mut fields = HashMap::new();
     fields.insert("path".to_string(), Value::from_string(path));
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
-        fields: legacy_fields_to_tagged(fields),
+        fields,
         kind: "sound",
     }))))
 }
@@ -316,45 +319,45 @@ fn music_play_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 /// `kind` and the `path` field. Shared by every audio builtin.
 fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
     if v.is_object() {
-let rc = v.as_object();
-let o = rc.borrow();
-            if o.kind != "sound" {
-                return Err(RuntimeError {
+        let rc = v.as_object();
+        let o = rc.borrow();
+        if o.kind != "sound" {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "{callee} expects a sound handle from `sound.load(...)`, got {}",
+                    o.kind
+                ),
+                help: None,
+            });
+        }
+        {
+            let __opt = o.get_field("path");
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_str() {
+                    let s = __t.as_string();
+                    Ok(s.clone())
+                } else {
+                    Err(RuntimeError {
+                        line: 0,
+                        col: 0,
+                        message: "sound handle is missing a `path` field".to_string(),
+                        help: None,
+                    })
+                }
+            } else {
+                Err(RuntimeError {
                     line: 0,
                     col: 0,
-                    message: format!(
-                        "{callee} expects a sound handle from `sound.load(...)`, got {}",
-                        o.kind
-                    ),
+                    message: "sound handle is missing a `path` field".to_string(),
                     help: None,
-                });
+                })
             }
-            {
-let __opt = o.get_field("path");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_str() {
-let s = __t.as_string();
-Ok(s.clone())
-} else {
-Err(RuntimeError {
-                    line: 0,
-                    col: 0,
-                    message: "sound handle is missing a `path` field".to_string(),
-                    help: None,
-                })
-}
-} else {
-Err(RuntimeError {
-                    line: 0,
-                    col: 0,
-                    message: "sound handle is missing a `path` field".to_string(),
-                    help: None,
-                })
-}
-}
-} else {
-let other = v.clone();
-Err(RuntimeError {
+        }
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -363,7 +366,7 @@ Err(RuntimeError {
             ),
             help: None,
         })
-}
+    }
 }
 
 /// Decode-then-play helper. Caches decoded `Sound` values per
@@ -384,20 +387,18 @@ fn play_sound_path(
                 message: format!("{callee}: cannot read '{path}': {e}"),
                 help: None,
             })?;
-            let snd = block_on(macroquad::audio::load_sound_from_bytes(&bytes))
-                .map_err(|e| RuntimeError {
+            let snd = block_on(macroquad::audio::load_sound_from_bytes(&bytes)).map_err(|e| {
+                RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!("{callee}: failed to decode '{path}': {e}"),
                     help: Some("supported formats: WAV, Ogg Vorbis".to_string()),
-                })?;
+                }
+            })?;
             c.insert(path.to_string(), snd);
         }
         let snd = &c[path];
-        macroquad::audio::play_sound(
-            snd,
-            macroquad::audio::PlaySoundParams { looped, volume },
-        );
+        macroquad::audio::play_sound(snd, macroquad::audio::PlaySoundParams { looped, volume });
         Ok(())
     })
 }
@@ -412,7 +413,7 @@ fn install_time(env: &mut Env) {
     env.set(
         "time".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(fields),
+            fields,
             kind: "module",
         }))),
     );
@@ -452,14 +453,11 @@ fn install_math(env: &mut Env) {
         "cos".to_string(),
         Value::from_builtin("math.cos", &["x"], math_cos),
     );
-    math.insert(
-        "pi".to_string(),
-        Value::from_float(std::f64::consts::PI),
-    );
+    math.insert("pi".to_string(), Value::from_float(std::f64::consts::PI));
     env.set(
         "math".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(math),
+            fields: math,
             kind: "module",
         }))),
     );
@@ -480,20 +478,20 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     // checked here so typos fail fast.
     arity(args, 1, "load")?;
     let path = {
-let __t = &args[0];
-if __t.is_str() {
-let s = __t.as_string();
-s.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_str() {
+            let s = __t.as_string();
+            s.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!("load expected a string path, got {}", other.type_name()),
                 help: Some("e.g. `load(\"hero.png\")`".to_string()),
             });
-}
-};
+        }
+    };
     if std::fs::metadata(&path).is_err() {
         return Err(RuntimeError {
             line: 0,
@@ -510,7 +508,7 @@ return Err(RuntimeError {
     fields.insert("x".to_string(), Value::from_int(0));
     fields.insert("y".to_string(), Value::from_int(0));
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
-        fields: legacy_fields_to_tagged(fields),
+        fields,
         kind: "sprite",
     }))))
 }
@@ -522,23 +520,20 @@ return Err(RuntimeError {
 fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "save_to")?;
     let path = {
-let __t = &args[0];
-if __t.is_str() {
-let s = __t.as_string();
-s.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_str() {
+            let s = __t.as_string();
+            s.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
-                message: format!(
-                    "save_to expects a string path, got {}",
-                    other.type_name()
-                ),
+                message: format!("save_to expects a string path, got {}", other.type_name()),
                 help: Some("e.g. `save_to(\"slot1.save\", { hp: 100 })`".to_string()),
             });
-}
-};
+        }
+    };
     crate::save::save_to_path(std::path::Path::new(&path), &args[1])
         .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
     Ok(Value::NIL)
@@ -550,23 +545,20 @@ return Err(RuntimeError {
 fn load_from_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "load_from")?;
     let path = {
-let __t = &args[0];
-if __t.is_str() {
-let s = __t.as_string();
-s.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_str() {
+            let s = __t.as_string();
+            s.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
-                message: format!(
-                    "load_from expects a string path, got {}",
-                    other.type_name()
-                ),
+                message: format!("load_from expects a string path, got {}", other.type_name()),
                 help: Some("e.g. `let state = load_from(\"slot1.save\")`".to_string()),
             });
-}
-};
+        }
+    };
     let v = crate::save::load_from_path(std::path::Path::new(&path))
         .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
     Ok(v)
@@ -590,42 +582,45 @@ fn arity(args: &[Value], expected: usize, name: &str) -> Result<(), RuntimeError
 
 fn as_f64(v: &Value, op: &str) -> Result<f64, RuntimeError> {
     if v.is_int_or_boxed_int() {
-let n = v.as_int();
-Ok(n as f64)
-} else if v.is_float() {
-let f = v.as_float();
-Ok(f)
-} else {
-let other = v.clone();
-Err(RuntimeError {
+        let n = v.as_int();
+        Ok(n as f64)
+    } else if v.is_float() {
+        let f = v.as_float();
+        Ok(f)
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("{op} expected a numeric argument, got {}", other.type_name()),
+            message: format!(
+                "{op} expected a numeric argument, got {}",
+                other.type_name()
+            ),
             help: None,
         })
-}
+    }
 }
 
 fn math_abs(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.abs")?;
     {
-let __t = &args[0];
-if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-Ok(Value::from_int(n.abs()))
-} else if __t.is_float() {
-let f = __t.as_float();
-Ok(Value::from_float(f.abs()))
-} else {
-let other = __t.clone();
-Err(RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!("math.abs expected int or float, got {}", other.type_name()),
-            help: None,
-        })
-}
-}
+        let __t = &args[0];
+        if __t.is_int_or_boxed_int() {
+            let n = __t.as_int();
+            Ok(Value::from_int(n.abs()))
+        } else if __t.is_float() {
+            let f = __t.as_float();
+            Ok(Value::from_float(f.abs()))
+        } else {
+            let other = __t.clone();
+            Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("math.abs expected int or float, got {}", other.type_name()),
+                help: None,
+            })
+        }
+    }
 }
 
 fn math_sqrt(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -705,7 +700,7 @@ fn install_random(env: &mut Env) {
     env.set(
         "random".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(random),
+            fields: random,
             kind: "module",
         }))),
     );
@@ -719,10 +714,7 @@ fn random_int(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "random.int expected a range, got {}",
-                args[0].type_name()
-            ),
+            message: format!("random.int expected a range, got {}", args[0].type_name()),
             help: Some("e.g. `random.int(1..6)` rolls a six-sided die".to_string()),
         });
     };
@@ -751,10 +743,10 @@ fn random_float(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "random.choice")?;
     {
-let __t = &args[0];
-if __t.is_list() {
-let rc = __t.as_list();
-let v = rc.borrow();
+        let __t = &args[0];
+        if __t.is_list() {
+            let rc = __t.as_list();
+            let v = rc.borrow();
             if v.is_empty() {
                 return Err(RuntimeError {
                     line: 0,
@@ -765,42 +757,36 @@ let v = rc.borrow();
             }
             let idx = (env.next_random_u64() as usize) % v.len();
             Ok(v[idx].clone())
-} else {
-let other = __t.clone();
-Err(RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!(
-                "random.choice expected a list, got {}",
-                other.type_name()
-            ),
-            help: None,
-        })
-}
-}
+        } else {
+            let other = __t.clone();
+            Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("random.choice expected a list, got {}", other.type_name()),
+                help: None,
+            })
+        }
+    }
 }
 
 fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "random.seed")?;
     {
-let __t = &args[0];
-if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-env.seed_rng(n as u64);
+        let __t = &args[0];
+        if __t.is_int_or_boxed_int() {
+            let n = __t.as_int();
+            env.seed_rng(n as u64);
             Ok(Value::NIL)
-} else {
-let other = __t.clone();
-Err(RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!(
-                "random.seed expected an int, got {}",
-                other.type_name()
-            ),
-            help: None,
-        })
-}
-}
+        } else {
+            let other = __t.clone();
+            Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("random.seed expected an int, got {}", other.type_name()),
+                help: None,
+            })
+        }
+    }
 }
 
 fn install_color(env: &mut Env) {
@@ -831,7 +817,7 @@ fn install_color(env: &mut Env) {
     env.set(
         "color".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(fields),
+            fields,
             kind: "module",
         }))),
     );
@@ -842,16 +828,22 @@ fn install_screen(env: &mut Env) {
     let mut fields = HashMap::new();
     fields.insert(
         "size".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_float(640.0), Value::from_float(480.0)])),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(640.0),
+            Value::from_float(480.0),
+        ])),
     );
     fields.insert(
         "center".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_float(320.0), Value::from_float(240.0)])),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(320.0),
+            Value::from_float(240.0),
+        ])),
     );
     env.set(
         "screen".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(fields),
+            fields,
             kind: "module",
         }))),
     );
@@ -909,24 +901,19 @@ fn install_tilemap(env: &mut Env) {
 fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "tilemap")?;
     let layout = {
-let __t = &args[0];
-if __t.is_str() {
-__t.as_string()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_str() {
+            __t.as_string()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
-                message: format!(
-                    "tilemap.layout expects a string, got {}",
-                    other.type_name()
-                ),
-                help: Some(
-                    "use a triple-quoted multi-line string for the grid".to_string(),
-                ),
+                message: format!("tilemap.layout expects a string, got {}", other.type_name()),
+                help: Some("use a triple-quoted multi-line string for the grid".to_string()),
             });
-}
-};
+        }
+    };
     let tile_size = number(&args[1], "tilemap.tile_size")? as i64;
     if tile_size <= 0 {
         return Err(RuntimeError {
@@ -940,13 +927,13 @@ return Err(RuntimeError {
     // Parse the `tiles` list into a char → spec map. Each entry
     // is a tuple `(char_str, name_str, traits_list)`.
     let tiles_arg = {
-let __t = &args[2];
-if __t.is_list() {
-let rc = __t.as_list();
-rc.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[2];
+        if __t.is_list() {
+            let rc = __t.as_list();
+            rc.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -955,26 +942,22 @@ return Err(RuntimeError {
                 ),
                 help: None,
             });
-}
-};
+        }
+    };
     let mut by_char: HashMap<char, (String, Vec<String>)> = HashMap::new();
     let mut tile_specs_field: HashMap<String, Value> = HashMap::new();
     for (i, entry) in tiles_arg.borrow().iter().enumerate() {
         let elems = if entry.is_tuple() {
-let elems = entry.as_tuple();
-elems.clone()
-} else {
-return Err(RuntimeError {
-                    line: 0,
-                    col: 0,
-                    message: format!(
-                        "tilemap.tiles[{i}] must be a tuple of (char, name, traits)"
-                    ),
-                    help: Some(
-                        "e.g. `(\".\", \"floor\", [\"walkable\"])`".to_string(),
-                    ),
-                });
-};
+            let elems = entry.as_tuple();
+            elems.clone()
+        } else {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("tilemap.tiles[{i}] must be a tuple of (char, name, traits)"),
+                help: Some("e.g. `(\".\", \"floor\", [\"walkable\"])`".to_string()),
+            });
+        };
         if elems.len() != 3 {
             return Err(RuntimeError {
                 line: 0,
@@ -987,21 +970,23 @@ return Err(RuntimeError {
             });
         }
         let ch_str = {
-let __t = &elems[0];
-if __t.is_str() && { let s = __t.as_string();
-s.chars().count() == 1 } {
-let s = __t.as_string();
-s.chars().next().unwrap()
-} else if __t.is_str() {
-return Err(RuntimeError {
+            let __t = &elems[0];
+            if __t.is_str() && {
+                let s = __t.as_string();
+                s.chars().count() == 1
+            } {
+                let s = __t.as_string();
+                s.chars().next().unwrap()
+            } else if __t.is_str() {
+                return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!("tilemap.tiles[{i}].char must be a single character"),
                     help: None,
                 });
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+            } else {
+                let other = __t.clone();
+                return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!(
@@ -1010,15 +995,15 @@ return Err(RuntimeError {
                     ),
                     help: None,
                 });
-}
-};
+            }
+        };
         let name: String = {
-let __t = &elems[1];
-if __t.is_str() {
-__t.as_string()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+            let __t = &elems[1];
+            if __t.is_str() {
+                __t.as_string()
+            } else {
+                let other = __t.clone();
+                return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!(
@@ -1027,37 +1012,37 @@ return Err(RuntimeError {
                     ),
                     help: None,
                 });
-}
-};
+            }
+        };
         let traits: Vec<String> = {
-let __t = &elems[2];
-if __t.is_list() {
-let rc = __t.as_list();
-let v = rc.borrow();
+            let __t = &elems[2];
+            if __t.is_list() {
+                let rc = __t.as_list();
+                let v = rc.borrow();
                 let mut out: Vec<String> = Vec::with_capacity(v.len());
                 for (j, t) in v.iter().enumerate() {
                     if t.is_str() {
-let s = t.as_string();
-out.push(s)
-} else {
-let other = t.clone();
-return Err(RuntimeError {
-                                line: 0,
-                                col: 0,
-                                message: format!(
-                                    "tilemap.tiles[{i}].traits[{j}] must be a string, got {}",
-                                    other.type_name()
-                                ),
-                                help: None,
-                            });
-}
+                        let s = t.as_string();
+                        out.push(s)
+                    } else {
+                        let other = t.clone();
+                        return Err(RuntimeError {
+                            line: 0,
+                            col: 0,
+                            message: format!(
+                                "tilemap.tiles[{i}].traits[{j}] must be a string, got {}",
+                                other.type_name()
+                            ),
+                            help: None,
+                        });
+                    }
                 }
                 out
-} else if __t.is_nil() {
-Vec::new()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+            } else if __t.is_nil() {
+                Vec::new()
+            } else {
+                let other = __t.clone();
+                return Err(RuntimeError {
                     line: 0,
                     col: 0,
                     message: format!(
@@ -1066,8 +1051,8 @@ return Err(RuntimeError {
                     ),
                     help: None,
                 });
-}
-};
+            }
+        };
         by_char.insert(ch_str, (name.clone(), traits.clone()));
 
         // Also expose the spec as a Twe-readable Object on the
@@ -1085,7 +1070,7 @@ return Err(RuntimeError {
         tile_specs_field.insert(
             name,
             Value::from_object(Rc::new(RefCell::new(Object {
-                fields: legacy_fields_to_tagged(spec_fields),
+                fields: spec_fields,
                 kind: "tile_spec",
             }))),
         );
@@ -1100,7 +1085,11 @@ return Err(RuntimeError {
         .filter(|l| !l.is_empty())
         .collect();
     let height = raw_lines.len();
-    let width = raw_lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let width = raw_lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
     let mut cells: Vec<Value> = Vec::with_capacity(height);
     for line in &raw_lines {
         let mut row: Vec<Value> = Vec::with_capacity(width);
@@ -1110,10 +1099,7 @@ return Err(RuntimeError {
             chars.push(' ');
         }
         for ch in chars {
-            let name = by_char
-                .get(&ch)
-                .map(|(n, _)| n.clone())
-                .unwrap_or_default();
+            let name = by_char.get(&ch).map(|(n, _)| n.clone()).unwrap_or_default();
             row.push(Value::from_string(name));
         }
         cells.push(Value::from_list(Rc::new(RefCell::new(row))));
@@ -1131,12 +1117,12 @@ return Err(RuntimeError {
     fields.insert(
         "tiles".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(tile_specs_field),
+            fields: tile_specs_field,
             kind: "tile_specs",
         }))),
     );
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
-        fields: legacy_fields_to_tagged(fields),
+        fields,
         kind: "tilemap",
     }))))
 }
@@ -1151,16 +1137,18 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     arity(args, 2, "tilemap_render")?;
     let map = expect_tilemap(&args[0], "tilemap_render.map")?;
     let (origin_x, origin_y) = {
-let __t = &args[1];
-if __t.is_tuple() && { let elems = __t.as_tuple();
-elems.len() == 2 } {
-let elems = __t.as_tuple();
-let x = number(&elems[0], "tilemap_render.at.x")? as f32;
+        let __t = &args[1];
+        if __t.is_tuple() && {
+            let elems = __t.as_tuple();
+            elems.len() == 2
+        } {
+            let elems = __t.as_tuple();
+            let x = number(&elems[0], "tilemap_render.at.x")? as f32;
             let y = number(&elems[1], "tilemap_render.at.y")? as f32;
             (x, y)
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1169,60 +1157,60 @@ return Err(RuntimeError {
                 ),
                 help: None,
             });
-}
-};
+        }
+    };
     let m = map.borrow();
     let tile_size = {
-let __opt = m.get_field("tile_size");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-n as f32
-} else {
-return Err(tilemap_internal_error("tile_size"))
-}
-} else {
-return Err(tilemap_internal_error("tile_size"))
-}
-};
+        let __opt = m.get_field("tile_size");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_int_or_boxed_int() {
+                let n = __t.as_int();
+                n as f32
+            } else {
+                return Err(tilemap_internal_error("tile_size"));
+            }
+        } else {
+            return Err(tilemap_internal_error("tile_size"));
+        }
+    };
     let cells_value = m.get_field("cells");
     let tiles_value = m.get_field("tiles");
     drop(m);
 
     let cells_rc = if let Some(__t) = (cells_value).as_ref() {
-if __t.is_list() {
-__t.as_list()
-} else {
-return Err(tilemap_internal_error("cells"))
-}
-} else {
-return Err(tilemap_internal_error("cells"))
-};
+        if __t.is_list() {
+            __t.as_list()
+        } else {
+            return Err(tilemap_internal_error("cells"));
+        }
+    } else {
+        return Err(tilemap_internal_error("cells"));
+    };
     let tile_specs_rc = if let Some(__t) = (tiles_value).as_ref() {
-if __t.is_object() {
-__t.as_object()
-} else {
-return Err(tilemap_internal_error("tiles"))
-}
-} else {
-return Err(tilemap_internal_error("tiles"))
-};
+        if __t.is_object() {
+            __t.as_object()
+        } else {
+            return Err(tilemap_internal_error("tiles"));
+        }
+    } else {
+        return Err(tilemap_internal_error("tiles"));
+    };
 
     let cells = cells_rc.borrow();
     let tile_specs = tile_specs_rc.borrow();
     for (row_idx, row_value) in cells.iter().enumerate() {
         let row_rc = if row_value.is_list() {
-row_value.as_list()
-} else {
-continue
-};
+            row_value.as_list()
+        } else {
+            continue;
+        };
         let row = row_rc.borrow();
         for (col_idx, cell) in row.iter().enumerate() {
             let name_string: String = if cell.is_str() {
-cell.as_string()
-} else {
-continue
-};
+                cell.as_string()
+            } else {
+                continue;
+            };
             let name = name_string.as_str();
             if name.is_empty() {
                 continue;
@@ -1245,37 +1233,39 @@ fn trait_color(
     let traits = tile_specs
         .get(tile_name)
         .and_then(|v| {
-let __t = v.clone();
-if __t.is_object() {
-let rc = __t.as_object();
-Some(rc)
-} else {
-None
-}
-})
+            let __t = v.clone();
+            if __t.is_object() {
+                let rc = __t.as_object();
+                Some(rc)
+            } else {
+                None
+            }
+        })
         .and_then(|rc| {
-let __opt = rc.borrow().get_field("traits");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_list() {
-let list_rc = __t.as_list();
-Some(list_rc.clone())
-} else {
-None
-}
-} else {
-None
-}
-});
+            let __opt = rc.borrow().get_field("traits");
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_list() {
+                    let list_rc = __t.as_list();
+                    Some(list_rc.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
     let traits_vec: Vec<String> = match traits {
         Some(rc) => rc
             .borrow()
             .iter()
-            .filter_map(|v| if v.is_str() {
-let s = v.as_string();
-Some(s)
-} else {
-None
-})
+            .filter_map(|v| {
+                if v.is_str() {
+                    let s = v.as_string();
+                    Some(s)
+                } else {
+                    None
+                }
+            })
             .collect(),
         None => Vec::new(),
     };
@@ -1302,7 +1292,10 @@ fn push_rect(env: &mut Env, x: f32, y: f32, size: f32, color: [f32; 4]) {
     // for v0.2 minimum we go through the same `rect` builtin to
     // reuse its existing pipe. Build the args inline.
     let args = vec![
-        Value::from_tuple(Rc::new(vec![Value::from_float(x as f64), Value::from_float(y as f64)])),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(x as f64),
+            Value::from_float(y as f64),
+        ])),
         Value::from_tuple(Rc::new(vec![
             Value::from_float(size as f64),
             Value::from_float(size as f64),
@@ -1342,46 +1335,50 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
         return Ok(Value::FALSE);
     }
     let tile_specs = {
-let __opt = map.borrow().get_field("tiles");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_object() {
-__t.as_object()
-} else {
-return Ok(Value::FALSE)
-}
-} else {
-return Ok(Value::FALSE)
-}
-};
+        let __opt = map.borrow().get_field("tiles");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_object() {
+                __t.as_object()
+            } else {
+                return Ok(Value::FALSE);
+            }
+        } else {
+            return Ok(Value::FALSE);
+        }
+    };
     let specs = tile_specs.borrow();
     let solid = specs
         .get_field(&name)
-        .and_then(|v| if v.is_object() {
-let rc = v.as_object();
-Some(rc)
-} else {
-None
-})
+        .and_then(|v| {
+            if v.is_object() {
+                let rc = v.as_object();
+                Some(rc)
+            } else {
+                None
+            }
+        })
         .and_then(|rc| {
-let __opt = rc.borrow().get_field("traits");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_list() {
-let list_rc = __t.as_list();
-Some(list_rc.clone())
-} else {
-None
-}
-} else {
-None
-}
-})
+            let __opt = rc.borrow().get_field("traits");
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_list() {
+                    let list_rc = __t.as_list();
+                    Some(list_rc.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
         .map(|rc| {
-            rc.borrow().iter().any(|v| if v.is_str() {
-let s = v.as_string();
-s == "solid"
-} else {
-false
-})
+            rc.borrow().iter().any(|v| {
+                if v.is_str() {
+                    let s = v.as_string();
+                    s == "solid"
+                } else {
+                    false
+                }
+            })
         })
         .unwrap_or(false);
     Ok(Value::from_bool(solid))
@@ -1390,18 +1387,18 @@ false
 fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
     let m = map.borrow();
     let tile_size = {
-let __opt = m.get_field("tile_size");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-n as f32
-} else {
-return String::new()
-}
-} else {
-return String::new()
-}
-};
+        let __opt = m.get_field("tile_size");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_int_or_boxed_int() {
+                let n = __t.as_int();
+                n as f32
+            } else {
+                return String::new();
+            }
+        } else {
+            return String::new();
+        }
+    };
     if tile_size <= 0.0 {
         return String::new();
     }
@@ -1411,45 +1408,45 @@ return String::new()
         return String::new();
     }
     let cells = {
-let __opt = m.get_field("cells");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_list() {
-let rc = __t.as_list();
-rc.clone()
-} else {
-return String::new()
-}
-} else {
-return String::new()
-}
-};
+        let __opt = m.get_field("cells");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_list() {
+                let rc = __t.as_list();
+                rc.clone()
+            } else {
+                return String::new();
+            }
+        } else {
+            return String::new();
+        }
+    };
     let cells = cells.borrow();
     let row_idx = row as usize;
     if row_idx >= cells.len() {
         return String::new();
     }
     let row_rc = {
-let __t = &cells[row_idx];
-if __t.is_list() {
-let rc = __t.as_list();
-rc.clone()
-} else {
-return String::new()
-}
-};
+        let __t = &cells[row_idx];
+        if __t.is_list() {
+            let rc = __t.as_list();
+            rc.clone()
+        } else {
+            return String::new();
+        }
+    };
     let row = row_rc.borrow();
     let col_idx = col as usize;
     if col_idx >= row.len() {
         return String::new();
     }
     {
-let __t = &row[col_idx];
-if __t.is_str() {
-__t.as_string()
-} else {
-String::new()
-}
-}
+        let __t = &row[col_idx];
+        if __t.is_str() {
+            __t.as_string()
+        } else {
+            String::new()
+        }
+    }
 }
 
 fn expect_tilemap(v: &Value, what: &str) -> Result<Rc<RefCell<Object>>, RuntimeError> {
@@ -1523,10 +1520,10 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     let path = {
-let __t = &args[0];
-if __t.is_object() {
-let rc = __t.as_object();
-let o = rc.borrow();
+        let __t = &args[0];
+        if __t.is_object() {
+            let rc = __t.as_object();
+            let o = rc.borrow();
             if o.kind != "sprite" {
                 return Err(RuntimeError {
                     line: 0,
@@ -1539,13 +1536,25 @@ let o = rc.borrow();
                 });
             }
             {
-let __opt = o.get_field("path");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_str() {
-let s = __t.as_string();
-s.clone()
-} else {
-return Err(RuntimeError {
+                let __opt = o.get_field("path");
+                if let Some(__t) = (__opt).as_ref() {
+                    if __t.is_str() {
+                        let s = __t.as_string();
+                        s.clone()
+                    } else {
+                        return Err(RuntimeError {
+                            line: 0,
+                            col: 0,
+                            message: "sprite handle is missing a `path` field".to_string(),
+                            help: Some(
+                                "build the handle with `load(\"file.png\")` rather than \
+                             constructing one by hand"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                } else {
+                    return Err(RuntimeError {
                         line: 0,
                         col: 0,
                         message: "sprite handle is missing a `path` field".to_string(),
@@ -1555,23 +1564,11 @@ return Err(RuntimeError {
                                 .to_string(),
                         ),
                     });
-}
-} else {
-return Err(RuntimeError {
-                        line: 0,
-                        col: 0,
-                        message: "sprite handle is missing a `path` field".to_string(),
-                        help: Some(
-                            "build the handle with `load(\"file.png\")` rather than \
-                             constructing one by hand"
-                                .to_string(),
-                        ),
-                    });
-}
-}
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+                }
+            }
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1580,8 +1577,8 @@ return Err(RuntimeError {
                 ),
                 help: None,
             });
-}
-};
+        }
+    };
     let (x, y) = xy_of(&args[1], "sprite.at")?;
     let size = if args.len() == 3 {
         Some(xy_of(&args[2], "sprite.size")?)
@@ -1603,12 +1600,9 @@ return Err(RuntimeError {
         }
         let tex = &c[&path];
         match size {
-            None => macroquad::texture::draw_texture(
-                tex,
-                x as f32,
-                y as f32,
-                macroquad::color::WHITE,
-            ),
+            None => {
+                macroquad::texture::draw_texture(tex, x as f32, y as f32, macroquad::color::WHITE)
+            }
             Some((w, h)) => macroquad::texture::draw_texture_ex(
                 tex,
                 x as f32,
@@ -1642,13 +1636,15 @@ fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
 }
 
 fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
-    if v.is_tuple() && { let elems = v.as_tuple();
-elems.len() >= 2 } {
-let elems = v.as_tuple();
-Ok((number(&elems[0], what)?, number(&elems[1], what)?))
-} else {
-let other = v.clone();
-Err(RuntimeError {
+    if v.is_tuple() && {
+        let elems = v.as_tuple();
+        elems.len() >= 2
+    } {
+        let elems = v.as_tuple();
+        Ok((number(&elems[0], what)?, number(&elems[1], what)?))
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -1657,52 +1653,59 @@ Err(RuntimeError {
             ),
             help: None,
         })
-}
+    }
 }
 
 fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeError> {
-    if v.is_tuple() && { let elems = v.as_tuple();
-elems.len() >= 3 } {
-let elems = v.as_tuple();
-let r = number(&elems[0], what)? as f32;
-            let g = number(&elems[1], what)? as f32;
-            let b = number(&elems[2], what)? as f32;
-            let a = if elems.len() >= 4 {
-                number(&elems[3], what)? as f32
-            } else {
-                1.0
-            };
-            Ok(macroquad::color::Color::new(r, g, b, a))
-} else {
-let other = v.clone();
-Err(RuntimeError {
+    if v.is_tuple() && {
+        let elems = v.as_tuple();
+        elems.len() >= 3
+    } {
+        let elems = v.as_tuple();
+        let r = number(&elems[0], what)? as f32;
+        let g = number(&elems[1], what)? as f32;
+        let b = number(&elems[2], what)? as f32;
+        let a = if elems.len() >= 4 {
+            number(&elems[3], what)? as f32
+        } else {
+            1.0
+        };
+        Ok(macroquad::color::Color::new(r, g, b, a))
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("{what} expects an (r, g, b[, a]) tuple, got {}", other.type_name()),
-            help: Some("use color.red, color.green, … or build with `(0.5, 0.0, 0.0, 1.0)`".to_string()),
+            message: format!(
+                "{what} expects an (r, g, b[, a]) tuple, got {}",
+                other.type_name()
+            ),
+            help: Some(
+                "use color.red, color.green, … or build with `(0.5, 0.0, 0.0, 1.0)`".to_string(),
+            ),
         })
-}
+    }
 }
 
 fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
     if v.is_int_or_boxed_int() {
-let n = v.as_int();
-Ok(n as f64)
-} else if v.is_float() {
-let f = v.as_float();
-Ok(f)
-} else if v.is_quantity() {
-let (value, _) = v.as_quantity();
-Ok(value)
-} else {
-let other = v.clone();
-Err(RuntimeError {
+        let n = v.as_int();
+        Ok(n as f64)
+    } else if v.is_float() {
+        let f = v.as_float();
+        Ok(f)
+    } else if v.is_quantity() {
+        let (value, _) = v.as_quantity();
+        Ok(value)
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("{what} expects a number, got {}", other.type_name()),
             help: None,
         })
-}
+    }
 }
 
 fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1732,9 +1735,7 @@ fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (x2, y2) = xy_of(&args[1], "line.to")?;
     let thickness = number(&args[2], "line.width")? as f32;
     let color = color_of(&args[3], "line.color")?;
-    macroquad::shapes::draw_line(
-        x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color,
-    );
+    macroquad::shapes::draw_line(x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color);
     Ok(Value::NIL)
 }
 
@@ -1751,7 +1752,7 @@ fn install_entities(env: &mut Env) {
     env.set(
         "entities".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(entities),
+            fields: entities,
             kind: "module",
         }))),
     );
@@ -1760,25 +1761,23 @@ fn install_entities(env: &mut Env) {
 fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "entities.of")?;
     let class = {
-let __t = &args[0];
-if __t.is_class() {
-let c = __t.as_class();
-c.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_class() {
+            let c = __t.as_class();
+            c.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
                     "entities.of expects a class (e.g. `entities.of(Monster)`), got {}",
                     other.type_name()
                 ),
-                help: Some(
-                    "pass the entity class itself, not an instance".to_string(),
-                ),
+                help: Some("pass the entity class itself, not an instance".to_string()),
             });
-}
-};
+        }
+    };
     let mut result = Vec::new();
     for inst in &env.active_entities {
         let borrowed = inst.borrow();
@@ -1796,13 +1795,13 @@ return Err(RuntimeError {
 fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "entities.count")?;
     let class = {
-let __t = &args[0];
-if __t.is_class() {
-let c = __t.as_class();
-c.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_class() {
+            let c = __t.as_class();
+            c.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!(
@@ -1811,8 +1810,8 @@ return Err(RuntimeError {
                 ),
                 help: None,
             });
-}
-};
+        }
+    };
     let mut n: i64 = 0;
     for inst in &env.active_entities {
         let borrowed = inst.borrow();
@@ -1830,15 +1829,15 @@ fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     require_render(env, "text")?;
     arity(args, 4, "text")?;
     let content = {
-let __t = &args[0];
-if __t.is_str() {
-let s = __t.as_string();
-s.clone()
-} else {
-let other = __t.clone();
-other.display()
-}
-};
+        let __t = &args[0];
+        if __t.is_str() {
+            let s = __t.as_string();
+            s.clone()
+        } else {
+            let other = __t.clone();
+            other.display()
+        }
+    };
     let (x, y) = xy_of(&args[1], "text.at")?;
     let size = number(&args[2], "text.size")? as f32;
     let color = color_of(&args[3], "text.color")?;
@@ -1917,7 +1916,7 @@ fn install_3d(env: &mut Env) {
     env.set(
         "camera".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields: legacy_fields_to_tagged(fields),
+            fields,
             kind: "camera",
         }))),
     );
@@ -1969,23 +1968,20 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     require_render(env, "mesh")?;
     arity(args, 4, "mesh")?;
     let path = {
-let __t = &args[0];
-if __t.is_str() {
-let s = __t.as_string();
-s.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
+        let __t = &args[0];
+        if __t.is_str() {
+            let s = __t.as_string();
+            s.clone()
+        } else {
+            let other = __t.clone();
+            return Err(RuntimeError {
                 line: 0,
                 col: 0,
-                message: format!(
-                    "mesh.path expects a string, got {}",
-                    other.type_name()
-                ),
+                message: format!("mesh.path expects a string, got {}", other.type_name()),
                 help: Some("e.g. `mesh(\"models/box.glb\", at: ...)`".to_string()),
             });
-}
-};
+        }
+    };
     let at = xyz_of(&args[1], "mesh.at")?;
     let color = rgba_of(&args[2], "mesh.color")?;
     let size = number(&args[3], "mesh.size")? as f32;
@@ -2002,17 +1998,19 @@ return Err(RuntimeError {
 /// Pull a 3-component float vector out of a Twe tuple. Used by the
 /// 3D builtins. Mirrors `xy_of` but for the third axis.
 fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
-    if v.is_tuple() && { let elems = v.as_tuple();
-elems.len() == 3 } {
-let elems = v.as_tuple();
-Ok([
+    if v.is_tuple() && {
+        let elems = v.as_tuple();
+        elems.len() == 3
+    } {
+        let elems = v.as_tuple();
+        Ok([
             number(&elems[0], what)? as f32,
             number(&elems[1], what)? as f32,
             number(&elems[2], what)? as f32,
         ])
-} else {
-let other = v.clone();
-Err(RuntimeError {
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
@@ -2021,32 +2019,32 @@ Err(RuntimeError {
             ),
             help: Some("e.g. `vec3(0, 1, 0)` or `(0, 1, 0)`".to_string()),
         })
-}
+    }
 }
 
 /// Pull an RGBA float quartet out of a Twe tuple.
 fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
-    if v.is_tuple() && { let elems = v.as_tuple();
-elems.len() == 4 } {
-let elems = v.as_tuple();
-Ok([
+    if v.is_tuple() && {
+        let elems = v.as_tuple();
+        elems.len() == 4
+    } {
+        let elems = v.as_tuple();
+        Ok([
             number(&elems[0], what)? as f32,
             number(&elems[1], what)? as f32,
             number(&elems[2], what)? as f32,
             number(&elems[3], what)? as f32,
         ])
-} else {
-let other = v.clone();
-Err(RuntimeError {
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!(
                 "{what} expects a 4-component color tuple, got {}",
                 other.type_name()
             ),
-            help: Some(
-                "use `color.red` etc. or build with `(r, g, b, a)` floats".to_string(),
-            ),
+            help: Some("use `color.red` etc. or build with `(r, g, b, a)` floats".to_string()),
         })
-}
+    }
 }

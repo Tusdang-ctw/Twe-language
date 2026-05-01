@@ -19,12 +19,10 @@ fn twec_bin() -> &'static str {
 /// Panics with the file path on lex/parse error so the test
 /// output points at the offender immediately.
 fn fmt_file(path: &str) -> String {
-    let src = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("could not read {path}: {e}"));
-    let tokens = lexer::lex(&src)
-        .unwrap_or_else(|e| panic!("{path}: lex: {e}"));
-    let program = parser::parse(&tokens)
-        .unwrap_or_else(|e| panic!("{path}: parse: {e}"));
+    let src =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"));
+    let tokens = lexer::lex(&src).unwrap_or_else(|e| panic!("{path}: lex: {e}"));
+    let program = parser::parse(&tokens).unwrap_or_else(|e| panic!("{path}: parse: {e}"));
     printer::print_program(&program)
 }
 
@@ -75,10 +73,12 @@ const EXAMPLES: &[&str] = &[
 fn formatted_test_programs_re_parse() {
     for path in PROGRAMS {
         let formatted = fmt_file(path);
-        let tokens = lexer::lex(&formatted)
-            .unwrap_or_else(|e| panic!("{path}: re-lex of formatted output: {e}\n--- formatted ---\n{formatted}"));
-        let _program = parser::parse(&tokens)
-            .unwrap_or_else(|e| panic!("{path}: re-parse of formatted output: {e}\n--- formatted ---\n{formatted}"));
+        let tokens = lexer::lex(&formatted).unwrap_or_else(|e| {
+            panic!("{path}: re-lex of formatted output: {e}\n--- formatted ---\n{formatted}")
+        });
+        let _program = parser::parse(&tokens).unwrap_or_else(|e| {
+            panic!("{path}: re-parse of formatted output: {e}\n--- formatted ---\n{formatted}")
+        });
     }
 }
 

@@ -230,41 +230,57 @@ fn flush_vm_output(vm: &mut crate::vm::VM) {
 /// stdlib installs, so writes via `.borrow_mut()` here reach the
 /// running scene/state code through their globals.
 fn update_vm_input(vm: &crate::vm::VM) {
-    if let Some(__t) = (vm.get_global("key")).as_ref() { if __t.is_object() { let rc = __t.as_object();
-        let mut o = rc.borrow_mut();
-        for (name, code) in KEYS {
-            o.insert_field(*name, Value::from_bool(is_key_down(*code)));
+    if let Some(__t) = (vm.get_global("key")).as_ref() {
+        if __t.is_object() {
+            let rc = __t.as_object();
+            let mut o = rc.borrow_mut();
+            for (name, code) in KEYS {
+                o.insert_field(*name, Value::from_bool(is_key_down(*code)));
+            }
         }
-    } }
-    if let Some(__t) = (vm.get_global("key_press")).as_ref() { if __t.is_object() { let rc = __t.as_object();
-        let mut o = rc.borrow_mut();
-        for (name, code) in KEYS {
-            o.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
+    }
+    if let Some(__t) = (vm.get_global("key_press")).as_ref() {
+        if __t.is_object() {
+            let rc = __t.as_object();
+            let mut o = rc.borrow_mut();
+            for (name, code) in KEYS {
+                o.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
+            }
         }
-    } }
+    }
     write_mouse_object(vm.get_global("mouse"));
     write_mouse_buttons(vm.get_global("mouse_held"), is_mouse_button_down);
     write_mouse_buttons(vm.get_global("mouse_press"), is_mouse_button_pressed);
-    if let Some(__t) = (vm.get_global("screen")).as_ref() { if __t.is_object() { let rc = __t.as_object();
-        let mut o = rc.borrow_mut();
-        let w = screen_width() as f64;
-        let h = screen_height() as f64;
-        o.insert_field(
-            "size".to_string(),
-            Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
-        );
-        o.insert_field(
-            "center".to_string(),
-            Value::from_tuple(Rc::new(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)])),
-        );
-    } }
+    if let Some(__t) = (vm.get_global("screen")).as_ref() {
+        if __t.is_object() {
+            let rc = __t.as_object();
+            let mut o = rc.borrow_mut();
+            let w = screen_width() as f64;
+            let h = screen_height() as f64;
+            o.insert_field(
+                "size".to_string(),
+                Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
+            );
+            o.insert_field(
+                "center".to_string(),
+                Value::from_tuple(Rc::new(vec![
+                    Value::from_float(w / 2.0),
+                    Value::from_float(h / 2.0),
+                ])),
+            );
+        }
+    }
 }
 
 /// Write current mouse position + accumulated wheel delta into the
 /// `mouse` ambient. v0.2 session 3.
 fn write_mouse_object(mouse: Option<Value>) {
-    let Some(t) = mouse else { return; };
-    if !t.is_object() { return; }
+    let Some(t) = mouse else {
+        return;
+    };
+    if !t.is_object() {
+        return;
+    }
     let rc = t.as_object();
     let (mx, my) = mouse_position();
     let (_wx, wy) = mouse_wheel();
@@ -289,8 +305,12 @@ fn write_mouse_object(mouse: Option<Value>) {
 /// for `mouse_held`, `is_mouse_button_pressed` for edge-triggered
 /// `mouse_press`). v0.2 session 3.
 fn write_mouse_buttons(target: Option<Value>, mut pred: impl FnMut(MouseButton) -> bool) {
-    let Some(t) = target else { return; };
-    if !t.is_object() { return; }
+    let Some(t) = target else {
+        return;
+    };
+    if !t.is_object() {
+        return;
+    }
     let rc = t.as_object();
     let mut o = rc.borrow_mut();
     for (name, btn) in MOUSE_BUTTONS {
@@ -385,7 +405,10 @@ fn update_key_state(env: &mut Env) {
             );
             o.insert_field(
                 "center".to_string(),
-                Value::from_tuple(Rc::new(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)])),
+                Value::from_tuple(Rc::new(vec![
+                    Value::from_float(w / 2.0),
+                    Value::from_float(h / 2.0),
+                ])),
             );
         }
     }

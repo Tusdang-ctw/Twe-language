@@ -68,9 +68,7 @@ fn report(name: &str, src: &str, frames: u32, dt: f64) {
     let bc_us = bc_time.as_secs_f64() * 1e6;
     let tw_us = tw_time.as_secs_f64() * 1e6;
     let ratio = if bc_us > 0.0 { tw_us / bc_us } else { 0.0 };
-    println!(
-        "  {name:<22} bc {bc_us:>10.1} us   tree {tw_us:>10.1} us   bc/tree x{ratio:.2}"
-    );
+    println!("  {name:<22} bc {bc_us:>10.1} us   tree {tw_us:>10.1} us   bc/tree x{ratio:.2}");
 }
 
 #[test]
@@ -85,7 +83,8 @@ fn bench_fib_25() {
 #[test]
 #[ignore]
 fn bench_sum_loop_100k() {
-    let src = "var i = 0\nvar total = 0\nwhile i < 100000:\n    total += i\n    i += 1\nprint(total)\n";
+    let src =
+        "var i = 0\nvar total = 0\nwhile i < 100000:\n    total += i\n    i += 1\nprint(total)\n";
     println!("\n[bench] sum_loop(100_000)");
     report("sum_loop(100k)", src, 0, 0.0);
 }

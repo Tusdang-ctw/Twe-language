@@ -85,7 +85,12 @@ fn run_vm_bytecode_matches_tree_on_math() {
 #[test]
 fn run_vm_bytecode_matches_tree_on_interpolation() {
     let tree = run_cli(&["run", "tests/programs/interpolation.twe"]);
-    let bc = run_cli(&["run", "--vm", "bytecode", "tests/programs/interpolation.twe"]);
+    let bc = run_cli(&[
+        "run",
+        "--vm",
+        "bytecode",
+        "tests/programs/interpolation.twe",
+    ]);
     assert_eq!(tree, bc);
 }
 
@@ -93,12 +98,7 @@ fn run_vm_bytecode_matches_tree_on_interpolation() {
 fn run_vm_bytecode_with_frames_drives_scene() {
     // scene_counter.twe: `every 100ms:` printing 1..3 then idling.
     // Five frames of 100ms each should produce "1\n2\n3\n" via both.
-    let tree = run_cli(&[
-        "run",
-        "--frames",
-        "5",
-        "tests/programs/scene_counter.twe",
-    ]);
+    let tree = run_cli(&["run", "--frames", "5", "tests/programs/scene_counter.twe"]);
     let bc = run_cli(&[
         "run",
         "--vm",
@@ -112,12 +112,7 @@ fn run_vm_bytecode_with_frames_drives_scene() {
 
 #[test]
 fn vm_bytecode_with_frames_runs_spawn_entities() {
-    let tree = run_cli(&[
-        "run",
-        "--frames",
-        "5",
-        "tests/programs/spawn_entities.twe",
-    ]);
+    let tree = run_cli(&["run", "--frames", "5", "tests/programs/spawn_entities.twe"]);
     let bc = run_cli(&[
         "run",
         "--vm",
@@ -221,5 +216,8 @@ fn frames_is_only_valid_for_run() {
         .expect("spawn");
     assert!(!output.status.success());
     let err = String::from_utf8_lossy(&output.stderr);
-    assert!(err.contains("--frames"), "stderr did not mention --frames: {err}");
+    assert!(
+        err.contains("--frames"),
+        "stderr did not mention --frames: {err}"
+    );
 }

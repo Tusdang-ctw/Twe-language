@@ -27,7 +27,9 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ast::{AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, Stmt, StateMember, UnOp};
+use crate::ast::{
+    AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, StateMember, Stmt, UnOp,
+};
 use crate::bytecode::{BcClassDef, BcFunction, BcStateDef, Chunk, OpCode};
 use crate::value::Value;
 
@@ -176,7 +178,10 @@ impl Frame {
         // itself (per Crafting Interpreters §24.4.2). For methods
         // it's the receiver. Either way it's nameless to the user.
         let mut locals = Vec::with_capacity(8);
-        locals.push(Local { name: String::new(), depth: 0 });
+        locals.push(Local {
+            name: String::new(),
+            depth: 0,
+        });
         Self {
             chunk: Chunk::new(),
             locals,
@@ -214,17 +219,36 @@ impl Compiler {
 
     fn emit_stmt(&mut self, stmt: &Stmt) -> Result<(), CompileError> {
         match stmt {
-            Stmt::Let { name, value, line, col, .. } => {
+            Stmt::Let {
+                name,
+                value,
+                line,
+                col,
+                ..
+            } => {
                 self.emit_let(name, value, *line, *col)?;
             }
-            Stmt::Assign { target, op, value, line, col } => {
+            Stmt::Assign {
+                target,
+                op,
+                value,
+                line,
+                col,
+            } => {
                 self.emit_assign(target, *op, value, *line, *col)?;
             }
             Stmt::Expr(e) => {
                 // Top-level call to the bare `print` builtin lowers to
                 // a single OP_PRINT — keeps Phase-3 programs printable
                 // before the full builtin pipeline reaches bytecode.
-                if let Expr::Call { callee, args, kwargs, line, col } = e {
+                if let Expr::Call {
+                    callee,
+                    args,
+                    kwargs,
+                    line,
+                    col,
+                } = e
+                {
                     if kwargs.is_empty() {
                         if let Expr::Ident { name, .. } = callee.as_ref() {
                             if name == "print" && args.len() == 1 {
@@ -258,10 +282,19 @@ impl Compiler {
                 self.emit_expr(e)?;
                 self.frame_mut().chunk.write_op(OpCode::Pop, e.line());
             }
-            Stmt::If { cond, then_body, elifs, else_body, line, .. } => {
+            Stmt::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+                line,
+                ..
+            } => {
                 self.emit_if(cond, then_body, elifs, else_body.as_deref(), *line)?;
             }
-            Stmt::While { cond, body, line, .. } => {
+            Stmt::While {
+                cond, body, line, ..
+            } => {
                 self.emit_while(cond, body, *line)?;
             }
             Stmt::Break { line, col } => {
@@ -311,14 +344,33 @@ impl Compiler {
                 }
                 self.frame_mut().chunk.write_op(OpCode::Return, *line);
             }
-            Stmt::FunctionDecl { name, params, body, line, col, .. } => {
+            Stmt::FunctionDecl {
+                name,
+                params,
+                body,
+                line,
+                col,
+                ..
+            } => {
                 let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 self.emit_function_decl(name, &names, body, *line, *col)?;
             }
-            Stmt::Decl { kind, name, parent, members, line, col } => {
+            Stmt::Decl {
+                kind,
+                name,
+                parent,
+                members,
+                line,
+                col,
+            } => {
                 self.emit_decl(*kind, name, parent.as_deref(), members, *line, *col)?;
             }
-            Stmt::OnUpdate { param, body, line, col } => {
+            Stmt::OnUpdate {
+                param,
+                body,
+                line,
+                col,
+            } => {
                 if !self.is_global_scope() {
                     return Err(CompileError {
                         line: *line,
@@ -349,7 +401,13 @@ impl Compiler {
                     *col,
                 ));
             }
-            Stmt::For { var, iter, body, line, .. } => {
+            Stmt::For {
+                var,
+                iter,
+                body,
+                line,
+                ..
+            } => {
                 self.emit_for(var, iter, body, *line)?;
             }
             Stmt::Transition { target, line, .. } => {
@@ -360,7 +418,9 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::Transition, *line);
                 self.frame_mut().chunk.write_byte(name_idx, *line);
             }
-            Stmt::Spawn { class, at, line, .. } => {
+            Stmt::Spawn {
+                class, at, line, ..
+            } => {
                 // `spawn ClassName at <expr>` — emit at-value (if any),
                 // then the class as a global lookup, then OP_SPAWN with
                 // a flag indicating whether at is on the stack.
@@ -375,7 +435,9 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::GetGlobal, *line);
                 self.frame_mut().chunk.write_byte(name_idx, *line);
                 self.frame_mut().chunk.write_op(OpCode::Spawn, *line);
-                self.frame_mut().chunk.write_byte(if with_at { 1 } else { 0 }, *line);
+                self.frame_mut()
+                    .chunk
+                    .write_byte(if with_at { 1 } else { 0 }, *line);
             }
             Stmt::Despawn { target, line, .. } => {
                 self.emit_expr(target)?;
@@ -476,7 +538,8 @@ impl Compiler {
         // Open the function frame and pre-declare each parameter as
         // an initialised local. Slot 0 (the function value itself)
         // is already reserved by `Frame::new`.
-        self.frames.push(Frame::new(FrameKind::Function, name, arity));
+        self.frames
+            .push(Frame::new(FrameKind::Function, name, arity));
         for param in params {
             self.declare_local(param, line, col)?;
             self.mark_initialised();
@@ -493,7 +556,11 @@ impl Compiler {
         self.frame_mut().chunk.write_op(OpCode::Return, last_line);
 
         let function_frame = self.frames.pop().expect("function frame we just pushed");
-        let function = BcFunction::new(function_frame.name, function_frame.arity, function_frame.chunk);
+        let function = BcFunction::new(
+            function_frame.name,
+            function_frame.arity,
+            function_frame.chunk,
+        );
         let func_idx = self
             .frame_mut()
             .chunk
@@ -564,12 +631,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_while(
-        &mut self,
-        cond: &Expr,
-        body: &[Stmt],
-        line: u32,
-    ) -> Result<(), CompileError> {
+    fn emit_while(&mut self, cond: &Expr, body: &[Stmt], line: u32) -> Result<(), CompileError> {
         let loop_start = self.frame().chunk.code.len();
         let locals_at_entry = self.frame().locals.len();
         self.frame_mut().loops.push(LoopFrame {
@@ -675,8 +737,8 @@ impl Compiler {
         }
         self.frame_mut().chunk.write_op(OpCode::Pop, line); // counter
         self.frame_mut().chunk.write_op(OpCode::Pop, line); // iter
-        // Drop the hidden locals from the compile-time table so later
-        // declarations don't think the slots are still in use.
+                                                            // Drop the hidden locals from the compile-time table so later
+                                                            // declarations don't think the slots are still in use.
         self.frame_mut().locals.pop();
         self.frame_mut().locals.pop();
         Ok(())
@@ -802,15 +864,17 @@ impl Compiler {
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
             Expr::Float { value, line, .. } => {
-                let idx = self.frame_mut().chunk.add_constant(Value::from_float(*value));
+                let idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::from_float(*value));
                 self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
             Expr::Bool { value, line, .. } => {
-                self.frame_mut().chunk.write_op(
-                    if *value { OpCode::True } else { OpCode::False },
-                    *line,
-                );
+                self.frame_mut()
+                    .chunk
+                    .write_op(if *value { OpCode::True } else { OpCode::False }, *line);
             }
             Expr::Str { value, line, .. } => {
                 let idx = self
@@ -821,7 +885,10 @@ impl Compiler {
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
             Expr::Percent { value, line, .. } => {
-                let idx = self.frame_mut().chunk.add_constant(Value::from_float(*value));
+                let idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::from_float(*value));
                 self.frame_mut().chunk.write_op(OpCode::Constant, *line);
                 self.frame_mut().chunk.write_byte(idx, *line);
             }
@@ -849,14 +916,22 @@ impl Compiler {
                     self.frame_mut().chunk.write_byte(name_idx, *line);
                 }
             }
-            Expr::Unary { op, operand, line, .. } => {
+            Expr::Unary {
+                op, operand, line, ..
+            } => {
                 self.emit_expr(operand)?;
                 match op {
                     UnOp::Neg => self.frame_mut().chunk.write_op(OpCode::Neg, *line),
                     UnOp::Not => self.frame_mut().chunk.write_op(OpCode::Not, *line),
                 }
             }
-            Expr::Binary { op, left, right, line, col: _ } => {
+            Expr::Binary {
+                op,
+                left,
+                right,
+                line,
+                col: _,
+            } => {
                 if matches!(op, BinOp::And) {
                     return self.emit_and(left, right, *line);
                 }
@@ -892,7 +967,13 @@ impl Compiler {
                 };
                 self.frame_mut().chunk.write_op(op, *line);
             }
-            Expr::Call { callee, args, kwargs, line, col } => {
+            Expr::Call {
+                callee,
+                args,
+                kwargs,
+                line,
+                col,
+            } => {
                 self.emit_call(callee, args, kwargs, *line, *col)?;
             }
             Expr::Tuple { elems, line, col } => {
@@ -923,18 +1004,33 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::BuildList, *line);
                 self.frame_mut().chunk.write_byte(elems.len() as u8, *line);
             }
-            Expr::Range { start, end, exclusive, line, .. } => {
+            Expr::Range {
+                start,
+                end,
+                exclusive,
+                line,
+                ..
+            } => {
                 self.emit_expr(start)?;
                 self.emit_expr(end)?;
                 self.frame_mut().chunk.write_op(OpCode::BuildRange, *line);
-                self.frame_mut().chunk.write_byte(if *exclusive { 1 } else { 0 }, *line);
+                self.frame_mut()
+                    .chunk
+                    .write_byte(if *exclusive { 1 } else { 0 }, *line);
             }
-            Expr::Index { object, index, line, .. } => {
+            Expr::Index {
+                object,
+                index,
+                line,
+                ..
+            } => {
                 self.emit_expr(object)?;
                 self.emit_expr(index)?;
                 self.frame_mut().chunk.write_op(OpCode::Index, *line);
             }
-            Expr::Field { object, name, line, .. } => {
+            Expr::Field {
+                object, name, line, ..
+            } => {
                 self.emit_expr(object)?;
                 let name_idx = self
                     .frame_mut()
@@ -943,7 +1039,12 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::GetField, *line);
                 self.frame_mut().chunk.write_byte(name_idx, *line);
             }
-            Expr::Interp { parts, exprs, line, col } => {
+            Expr::Interp {
+                parts,
+                exprs,
+                line,
+                col,
+            } => {
                 // parts.len() == exprs.len() + 1 by construction in
                 // `lex_string`. Emit alternating text-const + expr-as-str
                 // so the VM can OP_INTERP them all into a single Str.
@@ -977,9 +1078,7 @@ impl Compiler {
                 // `self` is the receiver, sitting at slot 0 of every
                 // method's frame (Crafting Interpreters §28.5). Outside
                 // a method body it's a compile-time error.
-                if self.frame().kind == FrameKind::Script
-                    || !self.frame().is_method
-                {
+                if self.frame().kind == FrameKind::Script || !self.frame().is_method {
                     return Err(CompileError {
                         line: *line,
                         col: *col,
@@ -989,7 +1088,12 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::GetLocal, *line);
                 self.frame_mut().chunk.write_byte(0, *line);
             }
-            Expr::Quantity { value, unit, line, col } => {
+            Expr::Quantity {
+                value,
+                unit,
+                line,
+                col,
+            } => {
                 return Err(self.unsupported(
                     &format!("quantity literal `{value}{unit}` (Phase 4)"),
                     *line,
@@ -1027,7 +1131,13 @@ impl Compiler {
                 message: format!("call has too many arguments (max {})", u8::MAX),
             });
         }
-        if let Expr::Field { object, name, line: fline, .. } = callee {
+        if let Expr::Field {
+            object,
+            name,
+            line: fline,
+            ..
+        } = callee
+        {
             // Method call. Push receiver + args, then OP_INVOKE.
             self.emit_expr(object)?;
             for arg in args {
@@ -1082,12 +1192,7 @@ impl Compiler {
         self.frame().kind == FrameKind::Script && self.frame().scope_depth == 0
     }
 
-    fn declare_local(
-        &mut self,
-        name: &str,
-        line: u32,
-        col: u32,
-    ) -> Result<(), CompileError> {
+    fn declare_local(&mut self, name: &str, line: u32, col: u32) -> Result<(), CompileError> {
         let frame = self.frame();
         if frame.locals.len() >= 256 {
             return Err(CompileError {
@@ -1105,9 +1210,7 @@ impl Compiler {
                 return Err(CompileError {
                     line,
                     col,
-                    message: format!(
-                        "name `{name}` is already declared in this scope"
-                    ),
+                    message: format!("name `{name}` is already declared in this scope"),
                 });
             }
         }
@@ -1183,9 +1286,7 @@ impl Compiler {
             return Err(CompileError {
                 line: chunk.lines[offset],
                 col: 0,
-                message: format!(
-                    "jump distance {jump} exceeds 16-bit limit"
-                ),
+                message: format!("jump distance {jump} exceeds 16-bit limit"),
             });
         }
         chunk.code[offset] = ((jump >> 8) & 0xFF) as u8;
@@ -1203,9 +1304,7 @@ impl Compiler {
             return Err(CompileError {
                 line,
                 col: 0,
-                message: format!(
-                    "loop body too large for 16-bit OP_LOOP offset ({jump})"
-                ),
+                message: format!("loop body too large for 16-bit OP_LOOP offset ({jump})"),
             });
         }
         chunk.write_byte(((jump >> 8) & 0xFF) as u8, line);
@@ -1237,11 +1336,7 @@ impl Compiler {
         col: u32,
     ) -> Result<(), CompileError> {
         if parent.is_some() {
-            return Err(self.unsupported(
-                "class inheritance (parent `extends ...`)",
-                line,
-                col,
-            ));
+            return Err(self.unsupported("class inheritance (parent `extends ...`)", line, col));
         }
         if !self.is_global_scope() {
             return Err(CompileError {
@@ -1260,7 +1355,13 @@ impl Compiler {
         let mut initial_state: Option<String> = None;
         for member in members {
             match member {
-                DeclMember::Field { name: fname, value, line: fline, col: fcol, .. } => {
+                DeclMember::Field {
+                    name: fname,
+                    value,
+                    line: fline,
+                    col: fcol,
+                    ..
+                } => {
                     let v = const_eval(value).ok_or_else(|| CompileError {
                         line: *fline,
                         col: *fcol,
@@ -1286,7 +1387,14 @@ impl Compiler {
         for member in members {
             match member {
                 DeclMember::Field { .. } | DeclMember::InitialState { .. } => {}
-                DeclMember::Method { name: mname, params, body, line: mline, col: mcol, .. } => {
+                DeclMember::Method {
+                    name: mname,
+                    params,
+                    body,
+                    line: mline,
+                    col: mcol,
+                    ..
+                } => {
                     let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                     let func = self.compile_method(
                         mname,
@@ -1298,14 +1406,14 @@ impl Compiler {
                     )?;
                     methods.insert(mname.clone(), Rc::new(func));
                 }
-                DeclMember::State { name: sname, members: smembers, line: sline, col: scol } => {
-                    let state = self.compile_state(
-                        sname,
-                        smembers,
-                        class_fields.clone(),
-                        *sline,
-                        *scol,
-                    )?;
+                DeclMember::State {
+                    name: sname,
+                    members: smembers,
+                    line: sline,
+                    col: scol,
+                } => {
+                    let state =
+                        self.compile_state(sname, smembers, class_fields.clone(), *sline, *scol)?;
                     states.insert(sname.clone(), Rc::new(state));
                 }
             }
@@ -1367,10 +1475,7 @@ impl Compiler {
             return Err(CompileError {
                 line,
                 col,
-                message: format!(
-                    "method `{name}` has too many parameters (max {})",
-                    u8::MAX
-                ),
+                message: format!("method `{name}` has too many parameters (max {})", u8::MAX),
             });
         }
         let arity = params.len() as u8;
@@ -1417,12 +1522,18 @@ impl Compiler {
         for sm in members {
             match sm {
                 StateMember::Stmt(s) => on_entry_stmts.push(s.clone()),
-                StateMember::Every { interval, body, line: el, col: ec } => {
+                StateMember::Every {
+                    interval,
+                    body,
+                    line: el,
+                    col: ec,
+                } => {
                     let secs = const_eval_seconds(interval).ok_or_else(|| CompileError {
                         line: *el,
                         col: *ec,
                         message: "`every <duration>:` interval must be a literal duration \
-                                  in v0.1 (e.g. `100ms`, `0.5s`)".to_string(),
+                                  in v0.1 (e.g. `100ms`, `0.5s`)"
+                            .to_string(),
                     })?;
                     let func = self.compile_state_body(
                         &format!("{name}.every"),
@@ -1433,7 +1544,12 @@ impl Compiler {
                     )?;
                     every.push((secs, Rc::new(func)));
                 }
-                StateMember::OnUpdate { param, body, line: ul, col: uc } => {
+                StateMember::OnUpdate {
+                    param,
+                    body,
+                    line: ul,
+                    col: uc,
+                } => {
                     let func = self.compile_state_on_update(
                         &format!("{name}.on_update"),
                         param,
@@ -1444,7 +1560,11 @@ impl Compiler {
                     )?;
                     on_update = Some(Rc::new(func));
                 }
-                StateMember::OnRender { body, line: rl, col: _rc } => {
+                StateMember::OnRender {
+                    body,
+                    line: rl,
+                    col: _rc,
+                } => {
                     let func = self.compile_state_body(
                         &format!("{name}.on_render"),
                         body,
@@ -1454,7 +1574,12 @@ impl Compiler {
                     )?;
                     on_render = Some(Rc::new(func));
                 }
-                StateMember::OnKeyPress { key, body, line: kl, col: _kc } => {
+                StateMember::OnKeyPress {
+                    key,
+                    body,
+                    line: kl,
+                    col: _kc,
+                } => {
                     let func = self.compile_state_body(
                         &format!("{name}.on_key_press.{key}"),
                         body,
@@ -1464,7 +1589,12 @@ impl Compiler {
                     )?;
                     on_key_press.insert(key.clone(), Rc::new(func));
                 }
-                StateMember::OnPredicate { predicate, body, line: pl, col: _pc } => {
+                StateMember::OnPredicate {
+                    predicate,
+                    body,
+                    line: pl,
+                    col: _pc,
+                } => {
                     let pred_func = self.compile_predicate(
                         &format!("{name}.predicate"),
                         predicate,
@@ -1621,7 +1751,10 @@ impl Compiler {
         let last_line = body.last().map(stmt_line).unwrap_or(line);
         self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
         self.frame_mut().chunk.write_op(OpCode::Return, last_line);
-        let frame = self.frames.pop().expect("state on_update frame we just pushed");
+        let frame = self
+            .frames
+            .pop()
+            .expect("state on_update frame we just pushed");
         Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
     }
 }
@@ -1660,18 +1793,22 @@ fn const_eval(e: &Expr) -> Option<Value> {
             let vals: Option<Vec<Value>> = elems.iter().map(const_eval).collect();
             vals.map(|v| Value::from_tuple(Rc::new(v)))
         }
-        Expr::Unary { op: UnOp::Neg, operand, .. } => {
-let __t = const_eval(operand)?;
-if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-Some(Value::from_int(-n))
-} else if __t.is_float() {
-let x = __t.as_float();
-Some(Value::from_float(-x))
-} else {
-None
-}
-},
+        Expr::Unary {
+            op: UnOp::Neg,
+            operand,
+            ..
+        } => {
+            let __t = const_eval(operand)?;
+            if __t.is_int_or_boxed_int() {
+                let n = __t.as_int();
+                Some(Value::from_int(-n))
+            } else if __t.is_float() {
+                let x = __t.as_float();
+                Some(Value::from_float(-x))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -1733,7 +1870,12 @@ mod tests {
         let chunk = compile_expr(&parse_one_expr("-5")).expect("compile");
         assert_eq!(
             chunk.code,
-            vec![OpCode::Constant as u8, 0, OpCode::Neg as u8, OpCode::Return as u8]
+            vec![
+                OpCode::Constant as u8,
+                0,
+                OpCode::Neg as u8,
+                OpCode::Return as u8
+            ]
         );
         let chunk = compile_expr(&parse_one_expr("not true")).expect("compile");
         assert_eq!(
@@ -1749,9 +1891,12 @@ mod tests {
         assert_eq!(
             chunk.code,
             vec![
-                OpCode::Constant as u8, 0,
-                OpCode::Constant as u8, 1,
-                OpCode::Constant as u8, 2,
+                OpCode::Constant as u8,
+                0,
+                OpCode::Constant as u8,
+                1,
+                OpCode::Constant as u8,
+                2,
                 OpCode::Mul as u8,
                 OpCode::Add as u8,
                 OpCode::Return as u8,
@@ -1769,9 +1914,12 @@ mod tests {
         assert_eq!(
             chunk.code,
             vec![
-                OpCode::Constant as u8, 0,        // 5
-                OpCode::DefineGlobal as u8, 1,    // "x"
-                OpCode::GetGlobal as u8, 2,       // "x" again
+                OpCode::Constant as u8,
+                0, // 5
+                OpCode::DefineGlobal as u8,
+                1, // "x"
+                OpCode::GetGlobal as u8,
+                2, // "x" again
                 OpCode::Print as u8,
                 OpCode::Return as u8,
             ]
@@ -1798,12 +1946,20 @@ mod tests {
         let prog = parse_program("let a = true\nlet b = false\nprint(a and b)\n");
         let chunk = compile_program(&prog).expect("compile");
         let has_peek = chunk.code.contains(&(OpCode::JumpIfFalsePeek as u8));
-        assert!(has_peek, "expected JumpIfFalsePeek for `and`: {:?}", chunk.code);
+        assert!(
+            has_peek,
+            "expected JumpIfFalsePeek for `and`: {:?}",
+            chunk.code
+        );
         // And `or` uses JumpIfTruePeek.
         let prog = parse_program("let a = true\nlet b = false\nprint(a or b)\n");
         let chunk = compile_program(&prog).expect("compile");
         let has_peek = chunk.code.contains(&(OpCode::JumpIfTruePeek as u8));
-        assert!(has_peek, "expected JumpIfTruePeek for `or`: {:?}", chunk.code);
+        assert!(
+            has_peek,
+            "expected JumpIfTruePeek for `or`: {:?}",
+            chunk.code
+        );
     }
 
     #[test]
@@ -1845,7 +2001,11 @@ mod tests {
         // The outer chunk should hold the BcFunction as a constant,
         // followed by OP_DEFINE_GLOBAL for the name.
         let has_function_constant = chunk.constants.iter().any(|v| v.is_bc_function());
-        assert!(has_function_constant, "expected a BcFunction constant: {:?}", chunk.constants);
+        assert!(
+            has_function_constant,
+            "expected a BcFunction constant: {:?}",
+            chunk.constants
+        );
         assert!(
             chunk.code.contains(&(OpCode::DefineGlobal as u8)),
             "expected OP_DEFINE_GLOBAL: {:?}",
@@ -1855,9 +2015,8 @@ mod tests {
 
     #[test]
     fn compile_call_emits_call_op() {
-        let prog = parse_program(
-            "function add(a, b):\n    return a + b\n\nlet r = add(2, 3)\nprint(r)\n",
-        );
+        let prog =
+            parse_program("function add(a, b):\n    return a + b\n\nlet r = add(2, 3)\nprint(r)\n");
         let chunk = compile_program(&prog).expect("compile");
         // The script chunk should contain at least one OP_CALL.
         assert!(
@@ -1870,11 +2029,7 @@ mod tests {
     #[test]
     fn return_outside_function_errors() {
         let err = compile_program(&parse_program("return 1\n")).expect_err("err");
-        assert!(
-            err.message.contains("`return`"),
-            "got: {}",
-            err.message
-        );
+        assert!(err.message.contains("`return`"), "got: {}", err.message);
     }
 
     #[test]
@@ -1883,10 +2038,6 @@ mod tests {
         // function should fail at compile time with a clear message.
         let src = "function outer():\n    function inner():\n        print(1)\n";
         let err = compile_program(&parse_program(src)).expect_err("err");
-        assert!(
-            err.message.contains("top level"),
-            "got: {}",
-            err.message
-        );
+        assert!(err.message.contains("top level"), "got: {}", err.message);
     }
 }

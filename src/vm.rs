@@ -44,8 +44,8 @@ const MAX_CATCHUP_FIRES_PER_FRAME: u32 = 8;
 /// reconcile when the value layer unifies (post-NaN-tagging).
 fn wait_duration_to_seconds(v: &Value, line: u32) -> Result<f64, RuntimeError> {
     if v.is_quantity() {
-let (value, unit) = v.as_quantity();
-match unit.as_str() {
+        let (value, unit) = v.as_quantity();
+        match unit.as_str() {
             "s" => Ok(value),
             "ms" => Ok(value / 1000.0),
             "min" => Ok(value * 60.0),
@@ -59,15 +59,15 @@ match unit.as_str() {
                 help: None,
             }),
         }
-} else if v.is_float() {
-let f = v.as_float();
-Ok(f)
-} else if v.is_int_or_boxed_int() {
-let n = v.as_int();
-Ok(n as f64)
-} else {
-let other = v.clone();
-Err(RuntimeError {
+    } else if v.is_float() {
+        let f = v.as_float();
+        Ok(f)
+    } else if v.is_int_or_boxed_int() {
+        let n = v.as_int();
+        Ok(n as f64)
+    } else {
+        let other = v.clone();
+        Err(RuntimeError {
             line,
             col: 0,
             message: format!(
@@ -76,7 +76,7 @@ Err(RuntimeError {
             ),
             help: Some("e.g. `wait 0.5s` or `wait 250ms`".to_string()),
         })
-}
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -342,13 +342,9 @@ Err(RuntimeError {
                     self.push(Value::from_bool(!values_equal(&l, &r)));
                 }
                 OpCode::Less => self.compare("<", line, |a, b| a < b, |a, b| a < b)?,
-                OpCode::LessEqual => {
-                    self.compare("<=", line, |a, b| a <= b, |a, b| a <= b)?
-                }
+                OpCode::LessEqual => self.compare("<=", line, |a, b| a <= b, |a, b| a <= b)?,
                 OpCode::Greater => self.compare(">", line, |a, b| a > b, |a, b| a > b)?,
-                OpCode::GreaterEqual => {
-                    self.compare(">=", line, |a, b| a >= b, |a, b| a >= b)?
-                }
+                OpCode::GreaterEqual => self.compare(">=", line, |a, b| a >= b, |a, b| a >= b)?,
                 OpCode::Print => {
                     let v = self.pop()?;
                     self.out.push_str(&v.display());
@@ -493,28 +489,32 @@ Err(RuntimeError {
                 }
                 OpCode::JumpIfFalsePeek => {
                     let offset = read_u16!();
-                    let truthy = self.peek_top().as_ref().map(is_truthy).ok_or_else(|| {
-                        RuntimeError {
-                            line,
-                            col: 0,
-                            message: "vm: stack underflow on JumpIfFalsePeek".to_string(),
-                            help: None,
-                        }
-                    })?;
+                    let truthy =
+                        self.peek_top()
+                            .as_ref()
+                            .map(is_truthy)
+                            .ok_or_else(|| RuntimeError {
+                                line,
+                                col: 0,
+                                message: "vm: stack underflow on JumpIfFalsePeek".to_string(),
+                                help: None,
+                            })?;
                     if !truthy {
                         ip += offset as usize;
                     }
                 }
                 OpCode::JumpIfTruePeek => {
                     let offset = read_u16!();
-                    let truthy = self.peek_top().as_ref().map(is_truthy).ok_or_else(|| {
-                        RuntimeError {
-                            line,
-                            col: 0,
-                            message: "vm: stack underflow on JumpIfTruePeek".to_string(),
-                            help: None,
-                        }
-                    })?;
+                    let truthy =
+                        self.peek_top()
+                            .as_ref()
+                            .map(is_truthy)
+                            .ok_or_else(|| RuntimeError {
+                                line,
+                                col: 0,
+                                message: "vm: stack underflow on JumpIfTruePeek".to_string(),
+                                help: None,
+                            })?;
                     if truthy {
                         ip += offset as usize;
                     }
@@ -525,12 +525,14 @@ Err(RuntimeError {
                 }
                 OpCode::Loop => {
                     let offset = read_u16!();
-                    ip = ip.checked_sub(offset as usize).ok_or_else(|| RuntimeError {
-                        line,
-                        col: 0,
-                        message: "vm: OP_LOOP offset underflow".to_string(),
-                        help: None,
-                    })?;
+                    ip = ip
+                        .checked_sub(offset as usize)
+                        .ok_or_else(|| RuntimeError {
+                            line,
+                            col: 0,
+                            message: "vm: OP_LOOP offset underflow".to_string(),
+                            help: None,
+                        })?;
                 }
                 OpCode::DefineGlobal => {
                     let idx = read_byte!() as usize;
@@ -548,16 +550,18 @@ Err(RuntimeError {
                 OpCode::GetGlobal => {
                     let idx = read_byte!() as usize;
                     let name = read_string_const!(idx, line)?;
-                    let tagged = self.globals.get(name.as_str()).cloned().ok_or_else(|| {
-                        RuntimeError {
-                            line,
-                            col: 0,
-                            message: format!("name `{name}` is not defined"),
-                            help: Some(format!(
-                                "declare it with `let {name} = ...` before using it"
-                            )),
-                        }
-                    })?;
+                    let tagged =
+                        self.globals
+                            .get(name.as_str())
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!("name `{name}` is not defined"),
+                                help: Some(format!(
+                                    "declare it with `let {name} = ...` before using it"
+                                )),
+                            })?;
                     self.stack.push(tagged);
                 }
                 OpCode::SetGlobal => {
@@ -641,24 +645,24 @@ Err(RuntimeError {
                     let mut out = String::new();
                     for p in &parts {
                         if p.is_str() {
-let s = p.as_string();
-out.push_str(s.as_str())
-} else {
-let other = p.clone();
-return Err(RuntimeError {
-                                    line,
-                                    col: 0,
-                                    message: format!(
-                                        "vm: OP_INTERP got non-string part {}",
-                                        other.type_name()
-                                    ),
-                                    help: Some(
-                                        "compiler bug — every interp part should be a Str \
+                            let s = p.as_string();
+                            out.push_str(s.as_str())
+                        } else {
+                            let other = p.clone();
+                            return Err(RuntimeError {
+                                line,
+                                col: 0,
+                                message: format!(
+                                    "vm: OP_INTERP got non-string part {}",
+                                    other.type_name()
+                                ),
+                                help: Some(
+                                    "compiler bug — every interp part should be a Str \
                                          (text constants and OP_TO_STR-coerced exprs)"
-                                            .to_string(),
-                                    ),
-                                });
-}
+                                        .to_string(),
+                                ),
+                            });
+                        }
                     }
                     self.push(Value::from_string(out));
                 }
@@ -686,27 +690,27 @@ return Err(RuntimeError {
                 OpCode::InitScene => {
                     let class_val = self.pop()?;
                     let class = if class_val.is_bc_class() {
-class_val.as_bc_class()
-} else {
-let other = class_val.clone();
-return Err(RuntimeError {
-                                line,
-                                col: 0,
-                                message: format!(
-                                    "OP_INIT_SCENE expected a class, got {}",
-                                    other.type_name()
-                                ),
-                                help: Some("compiler bug".to_string()),
-                            });
-};
+                        class_val.as_bc_class()
+                    } else {
+                        let other = class_val.clone();
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "OP_INIT_SCENE expected a class, got {}",
+                                other.type_name()
+                            ),
+                            help: Some("compiler bug".to_string()),
+                        });
+                    };
                     let inst = {
-let __t = instantiate_bc(class.clone());
-if __t.is_bc_instance() {
-__t.as_bc_instance()
-} else {
-unreachable!()
-}
-};
+                        let __t = instantiate_bc(class.clone());
+                        if __t.is_bc_instance() {
+                            __t.as_bc_instance()
+                        } else {
+                            unreachable!()
+                        }
+                    };
                     self.active_scene = Some(inst.clone());
                     if let Some(start) = class.initial_state.clone() {
                         // enter_state runs nested invocations via
@@ -721,27 +725,24 @@ unreachable!()
                     let class_val = self.pop()?;
                     let at_value = if with_at { Some(self.pop()?) } else { None };
                     let class = if class_val.is_bc_class() {
-class_val.as_bc_class()
-} else {
-let other = class_val.clone();
-return Err(RuntimeError {
-                                line,
-                                col: 0,
-                                message: format!(
-                                    "`spawn` expected a class, got {}",
-                                    other.type_name()
-                                ),
-                                help: None,
-                            });
-};
+                        class_val.as_bc_class()
+                    } else {
+                        let other = class_val.clone();
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!("`spawn` expected a class, got {}", other.type_name()),
+                            help: None,
+                        });
+                    };
                     let inst = {
-let __t = instantiate_bc(class.clone());
-if __t.is_bc_instance() {
-__t.as_bc_instance()
-} else {
-unreachable!()
-}
-};
+                        let __t = instantiate_bc(class.clone());
+                        if __t.is_bc_instance() {
+                            __t.as_bc_instance()
+                        } else {
+                            unreachable!()
+                        }
+                    };
                     if let Some(at) = at_value.clone() {
                         inst.borrow_mut().insert_field("pos".to_string(), at);
                     }
@@ -758,20 +759,20 @@ unreachable!()
                 OpCode::Despawn => {
                     let target = self.pop()?;
                     if target.is_bc_instance() {
-let rc = target.as_bc_instance();
-rc.borrow_mut().despawned = true;
-} else {
-let other = target.clone();
-return Err(RuntimeError {
-                                line,
-                                col: 0,
-                                message: format!(
-                                    "`despawn` expects an instance, got {}",
-                                    other.type_name()
-                                ),
-                                help: None,
-                            });
-}
+                        let rc = target.as_bc_instance();
+                        rc.borrow_mut().despawned = true;
+                    } else {
+                        let other = target.clone();
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "`despawn` expects an instance, got {}",
+                                other.type_name()
+                            ),
+                            help: None,
+                        });
+                    }
                 }
                 OpCode::Transition => {
                     let idx = read_byte!() as usize;
@@ -782,20 +783,20 @@ return Err(RuntimeError {
                     let idx = read_byte!() as usize;
                     let value = current_func.chunk.constants[idx].clone();
                     if value.is_bc_function() {
-let func = value.as_bc_function();
-self.on_update = Some(func);
-} else {
-let other = value.clone();
-return Err(RuntimeError {
-                                line,
-                                col: 0,
-                                message: format!(
-                                    "OP_SET_ON_UPDATE expected a function, got {}",
-                                    other.type_name()
-                                ),
-                                help: Some("compiler bug".to_string()),
-                            });
-}
+                        let func = value.as_bc_function();
+                        self.on_update = Some(func);
+                    } else {
+                        let other = value.clone();
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "OP_SET_ON_UPDATE expected a function, got {}",
+                                other.type_name()
+                            ),
+                            help: Some("compiler bug".to_string()),
+                        });
+                    }
                 }
                 OpCode::Invoke => {
                     let name_idx = read_byte!() as usize;
@@ -832,42 +833,42 @@ return Err(RuntimeError {
                     };
                     let iter_value = self.slot_get(abs_iter).unwrap_or(Value::NIL);
                     let next = if iter_value.is_range() {
-let (start, end, exclusive) = iter_value.as_range();
-let limit = if exclusive { end } else { end + 1 };
-                            let cur = start + counter;
-                            if cur < limit {
-                                Some(Value::from_int(cur))
-                            } else {
-                                None
-                            }
-} else if iter_value.is_list() {
-let rc = iter_value.as_list();
-let v = rc.borrow();
-                            if (counter as usize) < v.len() {
-                                Some(v[counter as usize].clone())
-                            } else {
-                                None
-                            }
-} else if iter_value.is_tuple() {
-let elems = iter_value.as_tuple();
-if (counter as usize) < elems.len() {
-                                Some(elems[counter as usize].clone())
-                            } else {
-                                None
-                            }
-} else {
-let other = iter_value.clone();
-return Err(RuntimeError {
-                                line,
-                                col: 0,
-                                message: format!(
-                                    "for-loop iterable must be a range, list, or tuple, \
+                        let (start, end, exclusive) = iter_value.as_range();
+                        let limit = if exclusive { end } else { end + 1 };
+                        let cur = start + counter;
+                        if cur < limit {
+                            Some(Value::from_int(cur))
+                        } else {
+                            None
+                        }
+                    } else if iter_value.is_list() {
+                        let rc = iter_value.as_list();
+                        let v = rc.borrow();
+                        if (counter as usize) < v.len() {
+                            Some(v[counter as usize].clone())
+                        } else {
+                            None
+                        }
+                    } else if iter_value.is_tuple() {
+                        let elems = iter_value.as_tuple();
+                        if (counter as usize) < elems.len() {
+                            Some(elems[counter as usize].clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        let other = iter_value.clone();
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "for-loop iterable must be a range, list, or tuple, \
                                      got {}",
-                                    other.type_name()
-                                ),
-                                help: None,
-                            });
-};
+                                other.type_name()
+                            ),
+                            help: None,
+                        });
+                    };
                     match next {
                         Some(elem) => {
                             self.slot_set(abs_counter, Value::from_int(counter + 1));
@@ -888,19 +889,19 @@ return Err(RuntimeError {
     /// locals 1..=arg_count, and the function value itself becomes the
     /// new frame's local 0 (per *Crafting Interpreters* §24.5).
     fn call_value(&mut self, arg_count: usize, line: u32) -> Result<(), RuntimeError> {
-        let callee_idx = self
-            .stack
-            .len()
-            .checked_sub(arg_count + 1)
-            .ok_or_else(|| RuntimeError {
-                line,
-                col: 0,
-                message: format!(
-                    "vm: stack underflow on Call (arg_count={arg_count}, stack={})",
-                    self.stack.len()
-                ),
-                help: None,
-            })?;
+        let callee_idx =
+            self.stack
+                .len()
+                .checked_sub(arg_count + 1)
+                .ok_or_else(|| RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!(
+                        "vm: stack underflow on Call (arg_count={arg_count}, stack={})",
+                        self.stack.len()
+                    ),
+                    help: None,
+                })?;
         let callee = self.stack[callee_idx].clone();
         if callee.is_bc_function() {
             self.push_call_frame(callee.as_bc_function(), callee_idx, arg_count, line)
@@ -924,10 +925,7 @@ return Err(RuntimeError {
             Ok(())
         } else if callee.is_builtin() {
             let (name, params, func) = callee.as_builtin();
-            let args: Vec<Value> = self
-                .stack
-                .drain(callee_idx + 1..)
-                .collect();
+            let args: Vec<Value> = self.stack.drain(callee_idx + 1..).collect();
             if !params.is_empty() && args.len() != params.len() {
                 return Err(RuntimeError {
                     line,
@@ -1040,11 +1038,7 @@ return Err(RuntimeError {
             }
             let class = entity.borrow().class.clone();
             if let Some(method) = class.methods.get("render").cloned() {
-                self.invoke_method_value(
-                    method,
-                    Value::from_bc_instance(entity.clone()),
-                    &[],
-                )?;
+                self.invoke_method_value(method, Value::from_bc_instance(entity.clone()), &[])?;
             }
         }
         Ok(())
@@ -1054,21 +1048,23 @@ return Err(RuntimeError {
     /// Object's bool fields; for each true field that the active
     /// state has a handler for, invokes the handler. A transition
     /// inside a handler short-circuits the rest.
-    fn dispatch_key_press(
-        &mut self,
-        scene: &Rc<RefCell<BcInstance>>,
-    ) -> Result<(), RuntimeError> {
+    fn dispatch_key_press(&mut self, scene: &Rc<RefCell<BcInstance>>) -> Result<(), RuntimeError> {
         let key_press_val = self.globals.get("key_press");
         let pressed: Vec<String> = if let Some(t) = key_press_val.as_ref() {
             if t.is_object() {
                 let rc = t.as_object();
-                let result: Vec<String> = rc.borrow().fields.iter().filter_map(|(k, v)| {
-                    if v.is_bool() && v.as_bool() {
-                        Some(k.clone())
-                    } else {
-                        None
-                    }
-                }).collect();
+                let result: Vec<String> = rc
+                    .borrow()
+                    .fields
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        if v.is_bool() && v.as_bool() {
+                            Some(k.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 result
             } else {
                 return Ok(());
@@ -1095,11 +1091,7 @@ return Err(RuntimeError {
                 .collect()
         };
         for body in bodies {
-            self.invoke_method_value(
-                body,
-                Value::from_bc_instance(scene.clone()),
-                &[],
-            )?;
+            self.invoke_method_value(body, Value::from_bc_instance(scene.clone()), &[])?;
             if let Some(target) = self.transitioning.take() {
                 self.enter_state(scene, &target)?;
                 break;
@@ -1138,37 +1130,40 @@ return Err(RuntimeError {
                 None => 16,
             };
             let lifetime = {
-let __opt = inst.get_field("lifetime");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_float() {
-__t.as_float()
-} else if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-n as f64
-} else if __t.is_quantity() {
-let (value, _) = __t.as_quantity();
-value
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
-                        line,
-                        col: 0,
-                        message: format!(
-                            "particles `lifetime` must be a number or duration, got {}",
-                            other.type_name()
-                        ),
-                        help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
-                    });
-}
-} else {
-1.0
-}
-};
+                let __opt = inst.get_field("lifetime");
+                if let Some(__t) = (__opt).as_ref() {
+                    if __t.is_float() {
+                        __t.as_float()
+                    } else if __t.is_int_or_boxed_int() {
+                        let n = __t.as_int();
+                        n as f64
+                    } else if __t.is_quantity() {
+                        let (value, _) = __t.as_quantity();
+                        value
+                    } else {
+                        let other = __t.clone();
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: format!(
+                                "particles `lifetime` must be a number or duration, got {}",
+                                other.type_name()
+                            ),
+                            help: Some("e.g. `lifetime = 0.6` (seconds)".to_string()),
+                        });
+                    }
+                } else {
+                    1.0
+                }
+            };
             let on_spawn = inst.class.methods.get("on_spawn").cloned();
             (count, lifetime, on_spawn)
         };
         let initial_pos = at.unwrap_or_else(|| {
-            Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)]))
+            Value::from_tuple(Rc::new(vec![
+                Value::from_float(0.0),
+                Value::from_float(0.0),
+            ]))
         });
         let mut particles: Vec<Value> = Vec::with_capacity(count);
         for _ in 0..count {
@@ -1182,9 +1177,10 @@ return Err(RuntimeError {
             }
             particles.push(p);
         }
-        emitter
-            .borrow_mut()
-            .insert_field("__particles", Value::from_list(Rc::new(RefCell::new(particles))));
+        emitter.borrow_mut().insert_field(
+            "__particles",
+            Value::from_list(Rc::new(RefCell::new(particles))),
+        );
         Ok(())
     }
 
@@ -1201,17 +1197,17 @@ return Err(RuntimeError {
         let class = emitter.borrow().class.clone();
         let on_update = class.methods.get("on_update").cloned();
         let particles = {
-let __opt = emitter.borrow().get_field("__particles");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_list() {
-__t.as_list()
-} else {
-return Ok(())
-}
-} else {
-return Ok(())
-}
-};
+            let __opt = emitter.borrow().get_field("__particles");
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_list() {
+                    __t.as_list()
+                } else {
+                    return Ok(());
+                }
+            } else {
+                return Ok(());
+            }
+        };
         let snapshot: Vec<Value> = particles.borrow().clone();
         for p in &snapshot {
             if let Some(method) = on_update.clone() {
@@ -1225,33 +1221,33 @@ return Ok(())
                 let rc = p.as_object();
                 let mut o = rc.borrow_mut();
                 let age = {
-let __opt = o.get_field("age");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_float() {
-let a = __t.as_float();
-a + dt
-} else if __t.is_int_or_boxed_int() {
-let a = __t.as_int();
-a as f64 + dt
-} else {
-dt
-}
-} else {
-dt
-}
-};
+                    let __opt = o.get_field("age");
+                    if let Some(__t) = (__opt).as_ref() {
+                        if __t.is_float() {
+                            let a = __t.as_float();
+                            a + dt
+                        } else if __t.is_int_or_boxed_int() {
+                            let a = __t.as_int();
+                            a as f64 + dt
+                        } else {
+                            dt
+                        }
+                    } else {
+                        dt
+                    }
+                };
                 let lifetime = {
-let __opt = o.get_field("lifetime");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_float() {
-__t.as_float()
-} else {
-1.0
-}
-} else {
-1.0
-}
-};
+                    let __opt = o.get_field("lifetime");
+                    if let Some(__t) = (__opt).as_ref() {
+                        if __t.is_float() {
+                            __t.as_float()
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    }
+                };
                 o.insert_field("age", Value::from_float(age));
                 let ratio = if lifetime > 0.0 {
                     (age / lifetime).clamp(0.0, 1.0)
@@ -1283,11 +1279,7 @@ __t.as_float()
         Ok(())
     }
 
-    fn tick_scene(
-        &mut self,
-        scene: &Rc<RefCell<BcInstance>>,
-        dt: f64,
-    ) -> Result<(), RuntimeError> {
+    fn tick_scene(&mut self, scene: &Rc<RefCell<BcInstance>>, dt: f64) -> Result<(), RuntimeError> {
         // Phase 5 fibers + v0.2 sessions 2c + 7: if the fiber
         // is suspended, count down by dt and either keep waiting
         // or resume the entire saved frame stack. Mirrors
@@ -1450,8 +1442,10 @@ __t.as_float()
                     message: format!("no state named '{state_name}'"),
                     help: Some(match suggestion {
                         Some(s) => format!("did you mean `-> {s}`?"),
-                        None => "transitions must target a `state <name>:` declared in the same scene"
-                            .to_string(),
+                        None => {
+                            "transitions must target a `state <name>:` declared in the same scene"
+                                .to_string()
+                        }
                     }),
                 });
             }
@@ -1507,18 +1501,14 @@ __t.as_float()
     /// calls suspended above it) and the saved value-stack slice,
     /// then dispatches until the fiber returns to top or hits
     /// another wait. v0.2 session 7 (was single-frame in 2c).
-    fn resume_state_entry(
-        &mut self,
-        scene: &Rc<RefCell<BcInstance>>,
-    ) -> Result<(), RuntimeError> {
+    fn resume_state_entry(&mut self, scene: &Rc<RefCell<BcInstance>>) -> Result<(), RuntimeError> {
         let (saved_frames, saved_stack) = {
             let mut inst = scene.borrow_mut();
             if inst.fiber_frames.is_empty() {
                 return Err(RuntimeError {
                     line: 0,
                     col: 0,
-                    message: "vm: resume_state_entry called without a saved fiber"
-                        .to_string(),
+                    message: "vm: resume_state_entry called without a saved fiber".to_string(),
                     help: None,
                 });
             }
@@ -1533,8 +1523,7 @@ __t.as_float()
         // above is locals + temporaries across all suspended
         // frames.
         let new_bottom = self.stack.len();
-        self.stack
-            .extend(saved_stack);
+        self.stack.extend(saved_stack);
 
         // Re-push each saved frame, recovering the absolute
         // slot_base by adding `slot_base_offset` to the new
@@ -1582,49 +1571,44 @@ __t.as_float()
         line: u32,
     ) -> Result<Value, RuntimeError> {
         let class = {
-let __opt = args.first();
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_bc_class() {
-let c = __t.as_bc_class();
-c.clone()
-} else {
-let other = __t.clone();
-return Err(RuntimeError {
-                    line,
-                    col: 0,
-                    message: format!(
-                        "entities.{name} expected a class, got {}",
-                        other.type_name()
-                    ),
-                    help: None,
-                });
-}
-} else {
-return Err(RuntimeError {
+            let __opt = args.first();
+            if let Some(__t) = (__opt).as_ref() {
+                if __t.is_bc_class() {
+                    let c = __t.as_bc_class();
+                    c.clone()
+                } else {
+                    let other = (*__t).clone();
+                    return Err(RuntimeError {
+                        line,
+                        col: 0,
+                        message: format!(
+                            "entities.{name} expected a class, got {}",
+                            other.type_name()
+                        ),
+                        help: None,
+                    });
+                }
+            } else {
+                return Err(RuntimeError {
                     line,
                     col: 0,
                     message: format!("entities.{name} expected 1 argument, got 0"),
                     help: None,
                 });
-}
-};
+            }
+        };
         if args.len() != 1 {
             return Err(RuntimeError {
                 line,
                 col: 0,
-                message: format!(
-                    "entities.{name} expected 1 argument, got {}",
-                    args.len()
-                ),
+                message: format!("entities.{name} expected 1 argument, got {}", args.len()),
                 help: None,
             });
         }
         let matches: Vec<Rc<RefCell<BcInstance>>> = self
             .active_entities
             .iter()
-            .filter(|e| {
-                !e.borrow().despawned && Rc::ptr_eq(&e.borrow().class, &class)
-            })
+            .filter(|e| !e.borrow().despawned && Rc::ptr_eq(&e.borrow().class, &class))
             .cloned()
             .collect();
         match name {
@@ -1734,7 +1718,6 @@ return Err(RuntimeError {
         Ok(())
     }
 
-
     /// Push a legacy `Value` onto the value stack. v0.2 Phase 8.5
     /// session 8c: shims through `TaggedValue::from_legacy`. Inner
     /// pattern matches still receive `Value`; the boundary is here.
@@ -1752,15 +1735,12 @@ return Err(RuntimeError {
     }
 
     fn pop(&mut self) -> Result<Value, RuntimeError> {
-        self.stack
-            .pop()
-            
-            .ok_or_else(|| RuntimeError {
-                line: 0,
-                col: 0,
-                message: "vm: stack underflow".to_string(),
-                help: Some("compiler bug — every consumer should push before pop".to_string()),
-            })
+        self.stack.pop().ok_or_else(|| RuntimeError {
+            line: 0,
+            col: 0,
+            message: "vm: stack underflow".to_string(),
+            help: Some("compiler bug — every consumer should push before pop".to_string()),
+        })
     }
 
     /// Pop the top `n` values, returning them in source order (the
@@ -1857,10 +1837,7 @@ return Err(RuntimeError {
         if recv_clone.is_object() {
             let rc = recv_clone.as_object();
             if rc.borrow().kind == "entities" {
-                let args: Vec<Value> = self
-                    .stack
-                    .drain(recv_idx + 1..)
-                    .collect();
+                let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
                 self.stack.pop(); // drop receiver
                 let result = self.entities_intrinsic(name, &args, line)?;
                 self.push(result);
@@ -1871,56 +1848,46 @@ return Err(RuntimeError {
         // really a Builtin field; look it up and call it with args.
         if recv_clone.is_object() {
             let rc = recv_clone.as_object();
-            let field = rc.borrow().get_field(name).ok_or_else(|| {
-                RuntimeError {
-                    line,
-                    col: 0,
-                    message: format!("module `{}` has no field '{name}'", rc.borrow().kind),
-                    help: None,
-                }
+            let field = rc.borrow().get_field(name).ok_or_else(|| RuntimeError {
+                line,
+                col: 0,
+                message: format!("module `{}` has no field '{name}'", rc.borrow().kind),
+                help: None,
             })?;
-            let args: Vec<Value> = self
-                .stack
-                .drain(recv_idx + 1..)
-                
-                .collect();
+            let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
             self.stack.pop(); // drop the receiver
             let result = if field.is_builtin() {
-let (bname, params, func) = field.as_builtin();
-if !params.is_empty() && args.len() != params.len() {
-                        return Err(RuntimeError {
-                            line,
-                            col: 0,
-                            message: format!(
-                                "builtin `{bname}` expected {} arguments, got {}",
-                                params.len(),
-                                args.len()
-                            ),
-                            help: None,
-                        });
-                    }
-                    func(&mut self.builtin_env, &args)?
-} else {
-let other = field.clone();
-return Err(RuntimeError {
+                let (bname, params, func) = field.as_builtin();
+                if !params.is_empty() && args.len() != params.len() {
+                    return Err(RuntimeError {
                         line,
                         col: 0,
                         message: format!(
-                            "field `.{name}` on module is a {}, not callable",
-                            other.type_name()
+                            "builtin `{bname}` expected {} arguments, got {}",
+                            params.len(),
+                            args.len()
                         ),
                         help: None,
                     });
-};
+                }
+                func(&mut self.builtin_env, &args)?
+            } else {
+                let other = field.clone();
+                return Err(RuntimeError {
+                    line,
+                    col: 0,
+                    message: format!(
+                        "field `.{name}` on module is a {}, not callable",
+                        other.type_name()
+                    ),
+                    help: None,
+                });
+            };
             self.push(result);
             return Ok(());
         }
         // Built-in receivers: list / range methods (session 10).
-        let args: Vec<Value> = self
-            .stack
-            .drain(recv_idx + 1..)
-            
-            .collect();
+        let args: Vec<Value> = self.stack.drain(recv_idx + 1..).collect();
         let recv = self.stack.pop().expect("receiver");
         let result = if recv.is_list() {
             let rc = recv.as_list();
@@ -1932,10 +1899,7 @@ return Err(RuntimeError {
             return Err(RuntimeError {
                 line,
                 col: 0,
-                message: format!(
-                    "method `.{name}` is not defined on {}",
-                    recv.type_name()
-                ),
+                message: format!("method `.{name}` is not defined on {}", recv.type_name()),
                 help: None,
             });
         };
@@ -1970,20 +1934,20 @@ return Err(RuntimeError {
     fn unary_neg(&mut self, line: u32) -> Result<(), RuntimeError> {
         let v = self.pop()?;
         let result = if v.is_int_or_boxed_int() {
-let n = v.as_int();
-Value::from_int(-n)
-} else if v.is_float() {
-let f = v.as_float();
-Value::from_float(-f)
-} else {
-let other = v.clone();
-return Err(RuntimeError {
-                    line,
-                    col: 0,
-                    message: format!("unary `-` is not defined on {}", other.type_name()),
-                    help: None,
-                });
-};
+            let n = v.as_int();
+            Value::from_int(-n)
+        } else if v.is_float() {
+            let f = v.as_float();
+            Value::from_float(-f)
+        } else {
+            let other = v.clone();
+            return Err(RuntimeError {
+                line,
+                col: 0,
+                message: format!("unary `-` is not defined on {}", other.type_name()),
+                help: None,
+            });
+        };
         self.push(result);
         Ok(())
     }
@@ -2116,7 +2080,6 @@ fn apply_arith(op: ArithOp, l: &Value, r: &Value, line: u32) -> Result<Value, Ru
             ArithOp::Sub => Value::from_int(a - b),
             ArithOp::Mul => Value::from_int(a * b),
             ArithOp::Div => Value::from_int(a / b),
-            _ => return Err(type_error(op.as_str(), l, r, line)),
         }
     } else if l.is_float() && r.is_float() {
         let a = l.as_float();
@@ -2126,7 +2089,6 @@ fn apply_arith(op: ArithOp, l: &Value, r: &Value, line: u32) -> Result<Value, Ru
             ArithOp::Sub => Value::from_float(a - b),
             ArithOp::Mul => Value::from_float(a * b),
             ArithOp::Div => Value::from_float(a / b),
-            _ => return Err(type_error(op.as_str(), l, r, line)),
         }
     } else if l.is_int_or_boxed_int() && r.is_float() {
         mix_float(op, l.as_int() as f64, r.as_float(), line)?
@@ -2178,9 +2140,7 @@ fn index_get(obj: &Value, idx: &Value, line: u32) -> Result<Value, RuntimeError>
                 line,
                 col: 0,
                 message: format!("list index {i} out of bounds (length {len})"),
-                help: Some(
-                    "lists are 0-indexed; negative indices count from the end".to_string(),
-                ),
+                help: Some("lists are 0-indexed; negative indices count from the end".to_string()),
             });
         }
         Ok(v[actual as usize].clone())
@@ -2221,8 +2181,8 @@ fn index_get(obj: &Value, idx: &Value, line: u32) -> Result<Value, RuntimeError>
 /// covers module builtins like `math`, `time`, `key`).
 fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> {
     if obj.is_tuple() {
-let elems = obj.as_tuple();
-match name {
+        let elems = obj.as_tuple();
+        match name {
             "x" if !elems.is_empty() => Ok(elems[0].clone()),
             "y" if elems.len() >= 2 => Ok(elems[1].clone()),
             "z" if elems.len() >= 3 => Ok(elems[2].clone()),
@@ -2236,9 +2196,9 @@ match name {
                 ),
             }),
         }
-} else if obj.is_list() {
-let rc = obj.as_list();
-match name {
+    } else if obj.is_list() {
+        let rc = obj.as_list();
+        match name {
             "length" => Ok(Value::from_int(rc.borrow().len() as i64)),
             _ => Err(RuntimeError {
                 line,
@@ -2251,67 +2211,61 @@ match name {
                 ),
             }),
         }
-} else if obj.is_bc_instance() {
-let rc = obj.as_bc_instance();
-let inst = rc.borrow();
-            inst.get_field(name).ok_or_else(|| RuntimeError {
-                line,
-                col: 0,
-                message: format!(
-                    "field '{name}' is not defined on instance of {}",
-                    inst.class.name
-                ),
-                help: None,
-            })
-} else if obj.is_object() {
-    let rc = obj.as_object();
-    let result = {
-        let borrowed = rc.borrow();
-        borrowed.get_field(name).ok_or_else(|| RuntimeError {
-            line,
-            col: 0,
-            message: format!("module `{}` has no field '{name}'", borrowed.kind),
-            help: None,
-        })
-    };
-    result
-} else {
-let other = obj.clone();
-Err(RuntimeError {
+    } else if obj.is_bc_instance() {
+        let rc = obj.as_bc_instance();
+        let inst = rc.borrow();
+        inst.get_field(name).ok_or_else(|| RuntimeError {
             line,
             col: 0,
             message: format!(
-                "cannot read field '.{name}' on a {}",
-                other.type_name()
+                "field '{name}' is not defined on instance of {}",
+                inst.class.name
             ),
             help: None,
         })
-}
+    } else if obj.is_object() {
+        let rc = obj.as_object();
+        let result = {
+            let borrowed = rc.borrow();
+            borrowed.get_field(name).ok_or_else(|| RuntimeError {
+                line,
+                col: 0,
+                message: format!("module `{}` has no field '{name}'", borrowed.kind),
+                help: None,
+            })
+        };
+        result
+    } else {
+        let other = obj.clone();
+        Err(RuntimeError {
+            line,
+            col: 0,
+            message: format!("cannot read field '.{name}' on a {}", other.type_name()),
+            help: None,
+        })
+    }
 }
 
 /// `recv.name = value`. BcInstance stores in its fields HashMap;
 /// Object likewise. Other receivers error.
 fn field_set(recv: &Value, name: &str, value: Value, line: u32) -> Result<(), RuntimeError> {
     if recv.is_bc_instance() {
-let rc = recv.as_bc_instance();
-rc.borrow_mut().insert_field(name.to_string(), value);
-            Ok(())
-} else if recv.is_object() {
-let rc = recv.as_object();
-rc.borrow_mut().insert_field(name.to_string(), value);
-            Ok(())
-} else {
-let other = recv.clone();
-Err(RuntimeError {
+        let rc = recv.as_bc_instance();
+        rc.borrow_mut().insert_field(name.to_string(), value);
+        Ok(())
+    } else if recv.is_object() {
+        let rc = recv.as_object();
+        rc.borrow_mut().insert_field(name.to_string(), value);
+        Ok(())
+    } else {
+        let other = recv.clone();
+        Err(RuntimeError {
             line,
             col: 0,
-            message: format!(
-                "cannot assign field '.{name}' on a {}",
-                other.type_name()
-            ),
+            message: format!("cannot assign field '.{name}' on a {}", other.type_name()),
             help: None,
         })
-}
+    }
 }
 
 /// Walk the class's defaults to materialise a fresh instance.
@@ -2345,29 +2299,29 @@ fn value_in(needle: &Value, haystack: &Value, line: u32) -> Result<bool, Runtime
         let rc = haystack.as_list();
         let answer = rc.borrow().iter().any(|v| values_equal(v, needle));
         Ok(answer)
-} else if haystack.is_tuple() {
-let elems = haystack.as_tuple();
-Ok(elems.iter().any(|v| values_equal(v, needle)))
-} else if haystack.is_range() {
-let (start, end, exclusive) = haystack.as_range();
-if needle.is_int_or_boxed_int() {
-let n = needle.as_int();
-let upper = if exclusive { end } else { end + 1 };
-                Ok(n >= start && n < upper)
-} else {
-Ok(false)
-}
-} else if haystack.is_str() {
-let s = haystack.as_string();
-if needle.is_str() {
-let sub = needle.as_string();
-Ok(s.contains(sub.as_str()))
-} else {
-Ok(false)
-}
-} else {
-let other = haystack.clone();
-Err(RuntimeError {
+    } else if haystack.is_tuple() {
+        let elems = haystack.as_tuple();
+        Ok(elems.iter().any(|v| values_equal(v, needle)))
+    } else if haystack.is_range() {
+        let (start, end, exclusive) = haystack.as_range();
+        if needle.is_int_or_boxed_int() {
+            let n = needle.as_int();
+            let upper = if exclusive { end } else { end + 1 };
+            Ok(n >= start && n < upper)
+        } else {
+            Ok(false)
+        }
+    } else if haystack.is_str() {
+        let s = haystack.as_string();
+        if needle.is_str() {
+            let sub = needle.as_string();
+            Ok(s.contains(sub.as_str()))
+        } else {
+            Ok(false)
+        }
+    } else {
+        let other = haystack.clone();
+        Err(RuntimeError {
             line,
             col: 0,
             message: format!(
@@ -2376,7 +2330,7 @@ Err(RuntimeError {
             ),
             help: None,
         })
-}
+    }
 }
 
 fn list_method(
@@ -2493,14 +2447,14 @@ fn range_method(
             }
             let upper = if exclusive { end } else { end + 1 };
             let result = {
-let __t = &args[0];
-if __t.is_int_or_boxed_int() {
-let n = __t.as_int();
-n >= start && n < upper
-} else {
-false
-}
-};
+                let __t = &args[0];
+                if __t.is_int_or_boxed_int() {
+                    let n = __t.as_int();
+                    n >= start && n < upper
+                } else {
+                    false
+                }
+            };
             Ok(Value::from_bool(result))
         }
         _ => Err(RuntimeError {
@@ -2521,7 +2475,10 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
     fields.insert("pos".to_string(), initial_pos.clone());
     fields.insert(
         "velocity".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_float(0.0), Value::from_float(0.0)])),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(0.0),
+        ])),
     );
     fields.insert(
         "color".to_string(),
@@ -2537,7 +2494,7 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
     fields.insert("age_ratio".to_string(), Value::from_float(0.0));
     fields.insert("lifetime".to_string(), Value::from_float(lifetime));
     Value::from_object(Rc::new(RefCell::new(crate::value::Object {
-        fields: crate::value::legacy_fields_to_tagged(fields),
+        fields,
         kind: "particle",
     })))
 }
@@ -2574,39 +2531,67 @@ mod tests {
 
     #[test]
     fn vm_evaluates_int_arithmetic() {
-        assert!(run_expr("1 + 2").map(|v| v.is_int_or_boxed_int() && v.as_int() == 3).unwrap_or(false));
-        assert!(run_expr("7 - 4").map(|v| v.is_int_or_boxed_int() && v.as_int() == 3).unwrap_or(false));
-        assert!(run_expr("3 * 4").map(|v| v.is_int_or_boxed_int() && v.as_int() == 12).unwrap_or(false));
-        assert!(run_expr("10 / 3").map(|v| v.is_int_or_boxed_int() && v.as_int() == 3).unwrap_or(false));
-        assert!(run_expr("1 + 2 * 3").map(|v| v.is_int_or_boxed_int() && v.as_int() == 7).unwrap_or(false));
+        assert!(run_expr("1 + 2")
+            .map(|v| v.is_int_or_boxed_int() && v.as_int() == 3)
+            .unwrap_or(false));
+        assert!(run_expr("7 - 4")
+            .map(|v| v.is_int_or_boxed_int() && v.as_int() == 3)
+            .unwrap_or(false));
+        assert!(run_expr("3 * 4")
+            .map(|v| v.is_int_or_boxed_int() && v.as_int() == 12)
+            .unwrap_or(false));
+        assert!(run_expr("10 / 3")
+            .map(|v| v.is_int_or_boxed_int() && v.as_int() == 3)
+            .unwrap_or(false));
+        assert!(run_expr("1 + 2 * 3")
+            .map(|v| v.is_int_or_boxed_int() && v.as_int() == 7)
+            .unwrap_or(false));
     }
 
     #[test]
     fn vm_evaluates_float_arithmetic_with_int_promotion() {
-        assert!(run_expr("1.5 + 0.5").map(|v| v.is_float() && v.as_float() == 2.0).unwrap_or(false));
-        assert!(run_expr("1 + 0.5").map(|v| v.is_float() && v.as_float() == 1.5).unwrap_or(false));
-        assert!(run_expr("3.0 / 2").map(|v| v.is_float() && v.as_float() == 1.5).unwrap_or(false));
+        assert!(run_expr("1.5 + 0.5")
+            .map(|v| v.is_float() && v.as_float() == 2.0)
+            .unwrap_or(false));
+        assert!(run_expr("1 + 0.5")
+            .map(|v| v.is_float() && v.as_float() == 1.5)
+            .unwrap_or(false));
+        assert!(run_expr("3.0 / 2")
+            .map(|v| v.is_float() && v.as_float() == 1.5)
+            .unwrap_or(false));
     }
 
     #[test]
     fn vm_evaluates_unary_neg_and_not() {
-        assert!(run_expr("-7").map(|v| v.is_int_or_boxed_int() && v.as_int() == -7).unwrap_or(false));
+        assert!(run_expr("-7")
+            .map(|v| v.is_int_or_boxed_int() && v.as_int() == -7)
+            .unwrap_or(false));
         assert!(run_expr("not true").map(|v| v.is_falsy()).unwrap_or(false));
-        assert!(run_expr("not false").map(|v| v.is_truthy() && v.is_bool() && v.as_bool()).unwrap_or(false));
+        assert!(run_expr("not false")
+            .map(|v| v.is_truthy() && v.is_bool() && v.as_bool())
+            .unwrap_or(false));
         // Twe truthiness: 0 is truthy; `not 0` is false.
         assert!(run_expr("not 0").map(|v| v.is_falsy()).unwrap_or(false));
     }
 
     #[test]
     fn vm_evaluates_comparisons() {
-        assert!(run_expr("1 < 2").map(|v| v.is_truthy() && v.is_bool() && v.as_bool()).unwrap_or(false));
+        assert!(run_expr("1 < 2")
+            .map(|v| v.is_truthy() && v.is_bool() && v.as_bool())
+            .unwrap_or(false));
         assert!(run_expr("2 < 1").map(|v| v.is_falsy()).unwrap_or(false));
-        assert!(run_expr("3 == 3").map(|v| v.is_truthy() && v.is_bool() && v.as_bool()).unwrap_or(false));
+        assert!(run_expr("3 == 3")
+            .map(|v| v.is_truthy() && v.is_bool() && v.as_bool())
+            .unwrap_or(false));
         assert!(run_expr("3 != 3").map(|v| v.is_falsy()).unwrap_or(false));
-        assert!(run_expr("3 >= 3").map(|v| v.is_truthy() && v.is_bool() && v.as_bool()).unwrap_or(false));
+        assert!(run_expr("3 >= 3")
+            .map(|v| v.is_truthy() && v.is_bool() && v.as_bool())
+            .unwrap_or(false));
         assert!(run_expr("2 <= 1").map(|v| v.is_falsy()).unwrap_or(false));
         // Cross-type numeric: int 3 vs float 3.0 is equal.
-        assert!(run_expr("3 == 3.0").map(|v| v.is_truthy() && v.is_bool() && v.as_bool()).unwrap_or(false));
+        assert!(run_expr("3 == 3.0")
+            .map(|v| v.is_truthy() && v.is_bool() && v.as_bool())
+            .unwrap_or(false));
     }
 
     #[test]
@@ -2624,7 +2609,11 @@ mod tests {
     #[test]
     fn vm_division_by_zero_errors() {
         let err = run_expr("1 / 0").expect_err("should fail");
-        assert!(err.message.contains("division by zero"), "got: {}", err.message);
+        assert!(
+            err.message.contains("division by zero"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -2637,8 +2626,7 @@ mod tests {
     fn run_program(src: &str) -> Result<String, RuntimeError> {
         let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
         let program = parser::parse(&tokens).expect("parse");
-        let chunk =
-            crate::compiler::compile_program(&program).expect("compile");
+        let chunk = crate::compiler::compile_program(&program).expect("compile");
         let mut vm = VM::new();
         vm.run(&chunk)?;
         Ok(std::mem::take(&mut vm.out))
@@ -2735,28 +2723,22 @@ mod tests {
 
     #[test]
     fn vm_calls_a_zero_arg_function() {
-        let out = run_program(
-            "function greet():\n    print(\"hi\")\n\ngreet()\n",
-        )
-        .expect("ok");
+        let out = run_program("function greet():\n    print(\"hi\")\n\ngreet()\n").expect("ok");
         assert_eq!(out, "hi\n");
     }
 
     #[test]
     fn vm_calls_a_function_with_args_and_return() {
-        let out = run_program(
-            "function add(a, b):\n    return a + b\n\nlet r = add(2, 3)\nprint(r)\n",
-        )
-        .expect("ok");
+        let out =
+            run_program("function add(a, b):\n    return a + b\n\nlet r = add(2, 3)\nprint(r)\n")
+                .expect("ok");
         assert_eq!(out, "5\n");
     }
 
     #[test]
     fn vm_function_without_explicit_return_returns_nil() {
-        let out = run_program(
-            "function noop():\n    let x = 1\n\nlet r = noop()\nprint(r)\n",
-        )
-        .expect("ok");
+        let out = run_program("function noop():\n    let x = 1\n\nlet r = noop()\nprint(r)\n")
+            .expect("ok");
         assert_eq!(out, "nil\n");
     }
 
@@ -2795,18 +2777,18 @@ mod tests {
         // a real stack overflow.
         let src = "function loop():\n    return loop()\n\nloop()\n";
         let err = run_program(src).expect_err("should overflow");
-        assert!(err.message.contains("stack overflow"), "got: {}", err.message);
+        assert!(
+            err.message.contains("stack overflow"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
     fn vm_arity_mismatch_errors() {
         let src = "function takes_two(a, b):\n    return a + b\n\ntakes_two(1)\n";
         let err = run_program(src).expect_err("should fail");
-        assert!(
-            err.message.contains("expected 2"),
-            "got: {}",
-            err.message
-        );
+        assert!(err.message.contains("expected 2"), "got: {}", err.message);
         assert!(err.message.contains("got 1"), "got: {}", err.message);
     }
 
@@ -2840,16 +2822,13 @@ mod tests {
             "(1 + 2) * 3",
         ];
         for src in cases {
-            let bytecode_result = run_expr(src).unwrap_or_else(|e| {
-                panic!("bytecode failed on `{src}`: {e}")
-            });
+            let bytecode_result =
+                run_expr(src).unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
             // Run the same expression through the tree-walker by
             // wrapping it in `print(...)` and parsing the output.
             let walker_out = crate::eval::run(
-                &parser::parse(
-                    &lexer::lex(&format!("print({src})\n")).expect("lex"),
-                )
-                .expect("parse"),
+                &parser::parse(&lexer::lex(&format!("print({src})\n")).expect("lex"))
+                    .expect("parse"),
             )
             .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
             let walker_str = walker_out.trim_end_matches('\n').to_string();
@@ -2865,13 +2844,15 @@ mod tests {
 
     #[test]
     fn vm_builds_tuple_and_indexes_it() {
-        let out = run_program("let p = (3, 4, 5)\nprint(p[0])\nprint(p[1])\nprint(p[2])").expect("ok");
+        let out =
+            run_program("let p = (3, 4, 5)\nprint(p[0])\nprint(p[1])\nprint(p[2])").expect("ok");
         assert_eq!(out, "3\n4\n5\n");
     }
 
     #[test]
     fn vm_tuple_field_xyz() {
-        let out = run_program("let p = (10, 20, 30)\nprint(p.x)\nprint(p.y)\nprint(p.z)").expect("ok");
+        let out =
+            run_program("let p = (10, 20, 30)\nprint(p.x)\nprint(p.y)\nprint(p.z)").expect("ok");
         assert_eq!(out, "10\n20\n30\n");
     }
 
@@ -2943,7 +2924,11 @@ mod tests {
     #[test]
     fn vm_list_index_out_of_bounds_errors() {
         let err = run_program("let xs = [1, 2]\nprint(xs[5])").expect_err("should fail");
-        assert!(err.message.contains("out of bounds"), "got: {}", err.message);
+        assert!(
+            err.message.contains("out of bounds"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -2956,16 +2941,20 @@ mod tests {
     fn vm_builds_range_inclusive_and_exclusive() {
         // `0..3` is inclusive (yields 0,1,2,3); `0..<3` is exclusive
         // (yields 0,1,2). Verify via for-loop iteration counts.
-        let out = run_program("let total = 0\nfor i in 0..3:\n    total = total + 1\nprint(total)").expect("ok");
+        let out = run_program("let total = 0\nfor i in 0..3:\n    total = total + 1\nprint(total)")
+            .expect("ok");
         assert_eq!(out, "4\n");
-        let out = run_program("let total = 0\nfor i in 0..<3:\n    total = total + 1\nprint(total)").expect("ok");
+        let out =
+            run_program("let total = 0\nfor i in 0..<3:\n    total = total + 1\nprint(total)")
+                .expect("ok");
         assert_eq!(out, "3\n");
     }
 
     #[test]
     fn vm_for_over_range_sums_correctly() {
         // 1+2+...+10 = 55 — classic.
-        let out = run_program("let sum = 0\nfor i in 1..10:\n    sum = sum + i\nprint(sum)").expect("ok");
+        let out =
+            run_program("let sum = 0\nfor i in 1..10:\n    sum = sum + i\nprint(sum)").expect("ok");
         assert_eq!(out, "55\n");
     }
 
@@ -3113,16 +3102,12 @@ mod tests {
             "print(2 in [1, 2, 3])\nprint(5 in 0..<5)\nprint(\"hi\" in \"high\")\n",
         ];
         for src in cases {
-            let bytecode_out = run_program(src)
-                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
-            let walker_out = crate::eval::run(
-                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
-            )
-            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
-            assert_eq!(
-                bytecode_out, walker_out,
-                "results diverge on `{src}`",
-            );
+            let bytecode_out =
+                run_program(src).unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out =
+                crate::eval::run(&parser::parse(&lexer::lex(src).expect("lex")).expect("parse"))
+                    .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(bytecode_out, walker_out, "results diverge on `{src}`",);
         }
     }
 
@@ -3193,8 +3178,9 @@ mod tests {
     #[test]
     fn vm_math_module_builtins() {
         // `math.min`, `.max`, `.abs` go through OP_INVOKE on Object.
-        let out = run_program("print(math.min(3, 1))\nprint(math.max(3, 1))\nprint(math.abs(-7))\n")
-            .expect("ok");
+        let out =
+            run_program("print(math.min(3, 1))\nprint(math.max(3, 1))\nprint(math.abs(-7))\n")
+                .expect("ok");
         assert_eq!(out, "1\n3\n7\n");
     }
 
@@ -3253,16 +3239,12 @@ mod tests {
             "print(math.abs(-7))\nprint(math.min(3, 1))\nprint(math.max(3.5, 2.5))\n",
         ];
         for src in cases {
-            let bytecode_out = run_program(src)
-                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
-            let walker_out = crate::eval::run(
-                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
-            )
-            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
-            assert_eq!(
-                bytecode_out, walker_out,
-                "results diverge on `{src}`",
-            );
+            let bytecode_out =
+                run_program(src).unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out =
+                crate::eval::run(&parser::parse(&lexer::lex(src).expect("lex")).expect("parse"))
+                    .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(bytecode_out, walker_out, "results diverge on `{src}`",);
         }
     }
 
@@ -3391,8 +3373,7 @@ mod tests {
         let src = "function pause():\n    wait 0.5s\n\npause()\n";
         let err = run_err(src);
         assert!(
-            err.contains("active scene")
-                || err.contains("state's on_entry"),
+            err.contains("active scene") || err.contains("state's on_entry"),
             "expected wait-context runtime error, got: {err}"
         );
     }
@@ -3439,10 +3420,7 @@ mod tests {
             "        print(\"done\")\n",
         );
         let out = run_program_frames(src, 2, 0.1).expect("ok");
-        assert_eq!(
-            out,
-            "inside-if\nnapping\nnapping\ndone\n"
-        );
+        assert_eq!(out, "inside-if\nnapping\nnapping\ndone\n");
     }
 
     #[test]
@@ -3488,10 +3466,7 @@ mod tests {
             "        print(\"done\")\n",
         );
         let out = run_program_frames(src, 2, 0.1).expect("ok");
-        assert_eq!(
-            out,
-            "outer-pre\ninner-pre\ninner-post\nouter-post\ndone\n"
-        );
+        assert_eq!(out, "outer-pre\ninner-pre\ninner-post\nouter-post\ndone\n");
     }
 
     // --- Phase 5 task 4: predicate hooks in the bytecode VM ---
@@ -3678,9 +3653,8 @@ mod tests {
 
     #[test]
     fn vm_field_default_must_be_const_for_scene_too() {
-        let err = compile_err(
-            "let g = 5\nscene S:\n    var n: int = g\n    initial: a\n    state a:\n",
-        );
+        let err =
+            compile_err("let g = 5\nscene S:\n    var n: int = g\n    initial: a\n    state a:\n");
         assert!(err.contains("literal constant"), "got: {err}");
     }
 
@@ -3693,11 +3667,7 @@ mod tests {
     // --- Session 13: render + input + particles ---
 
     /// Helper: run + tick + render in interleaved fashion.
-    fn run_and_render(
-        src: &str,
-        frames: u32,
-        dt: f64,
-    ) -> Result<String, RuntimeError> {
+    fn run_and_render(src: &str, frames: u32, dt: f64) -> Result<String, RuntimeError> {
         let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
         let program = parser::parse(&tokens).expect("parse");
         let chunk = crate::compiler::compile_program(&program).expect("compile");
@@ -3727,12 +3697,13 @@ mod tests {
             // Simulate a key being held down each frame; the tree-
             // walker's matching test does the same single-set then
             // ticks repeatedly.
-            if let Some(__t) = (vm.get_global("key_press")).as_ref() { if __t.is_object() { let rc = __t.as_object();
-                rc.borrow_mut()
-                    .insert_field(key.to_string(), Value::TRUE);
+            if let Some(__t) = (vm.get_global("key_press")).as_ref() {
+                if __t.is_object() {
+                    let rc = __t.as_object();
+                    rc.borrow_mut().insert_field(key.to_string(), Value::TRUE);
+                }
+                vm.tick(dt)?;
             }
-            vm.tick(dt)?;
-        }
         }
         Ok(std::mem::take(&mut vm.out))
     }
@@ -3787,7 +3758,8 @@ mod tests {
     #[test]
     fn vm_particles_block_seeds_count_particles_with_defaults() {
         // Mirrors `tests/eval.rs::particles_block_creates_count_particles_with_defaults`.
-        let src = "particles Spark:\n    count: 4\n    lifetime: 5.0\n\nspawn Spark at (50.0, 60.0)\n";
+        let src =
+            "particles Spark:\n    count: 4\n    lifetime: 5.0\n\nspawn Spark at (50.0, 60.0)\n";
         let tokens = lexer::lex(&format!("{src}\n")).expect("lex");
         let program = parser::parse(&tokens).expect("parse");
         let chunk = crate::compiler::compile_program(&program).expect("compile");
@@ -3874,7 +3846,11 @@ mod tests {
                 panic!("particle should be Object")
             }
         };
-        assert!(size.as_ref().is_some_and(|v| v.is_float() && v.as_float() == 99.0), "size = {size:?}");
+        assert!(
+            size.as_ref()
+                .is_some_and(|v| v.is_float() && v.as_float() == 99.0),
+            "size = {size:?}"
+        );
     }
 
     #[test]
@@ -3888,9 +3864,7 @@ mod tests {
         // dedicated test above; cross-checking it would require the
         // tree-walker's render_frame which the eval tests don't drive
         // for arbitrary scenes).
-        let cases: &[(&str, u32, f64)] = &[
-            (&particles_src, 3, 0.05),
-        ];
+        let cases: &[(&str, u32, f64)] = &[(&particles_src, 3, 0.05)];
         for (src, frames, dt) in cases {
             let bytecode_out = run_program_frames(src, *frames, *dt)
                 .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
@@ -3900,10 +3874,7 @@ mod tests {
                 *dt,
             )
             .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
-            assert_eq!(
-                bytecode_out, walker_out,
-                "results diverge on `{src}`",
-            );
+            assert_eq!(bytecode_out, walker_out, "results diverge on `{src}`",);
         }
     }
 
@@ -3933,10 +3904,7 @@ mod tests {
                 *dt,
             )
             .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
-            assert_eq!(
-                bytecode_out, walker_out,
-                "results diverge on `{src}`",
-            );
+            assert_eq!(bytecode_out, walker_out, "results diverge on `{src}`",);
         }
     }
 
@@ -3952,16 +3920,12 @@ mod tests {
             "function is_even(n):\n    if n == 0:\n        return true\n    return is_odd(n - 1)\n\nfunction is_odd(n):\n    if n == 0:\n        return false\n    return is_even(n - 1)\n\nprint(is_even(10))\nprint(is_odd(10))\n",
         ];
         for src in cases {
-            let bytecode_out = run_program(src)
-                .unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
-            let walker_out = crate::eval::run(
-                &parser::parse(&lexer::lex(src).expect("lex")).expect("parse"),
-            )
-            .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
-            assert_eq!(
-                bytecode_out, walker_out,
-                "results diverge on `{src}`",
-            );
+            let bytecode_out =
+                run_program(src).unwrap_or_else(|e| panic!("bytecode failed on `{src}`: {e}"));
+            let walker_out =
+                crate::eval::run(&parser::parse(&lexer::lex(src).expect("lex")).expect("parse"))
+                    .unwrap_or_else(|e| panic!("walker failed on `{src}`: {e}"));
+            assert_eq!(bytecode_out, walker_out, "results diverge on `{src}`",);
         }
     }
 }

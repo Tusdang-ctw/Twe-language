@@ -2,8 +2,7 @@ use std::env;
 use std::fs;
 use std::process;
 
-const USAGE: &str =
-    "usage: twec [run [--vm tree|bytecode] [--frames N] <file> | \
+const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> | \
      play [--vm tree|bytecode] <file> | \
      play3d <file> | \
      fmt [--in-place|--check] <file> | \
@@ -375,7 +374,11 @@ fn parse_common_flags(args: &[String], allow_frames: bool) -> Result<CommonFlags
             }
         }
     }
-    Ok(CommonFlags { backend, frames, path })
+    Ok(CommonFlags {
+        backend,
+        frames,
+        path,
+    })
 }
 
 fn handle_run(args: &[String]) -> i32 {

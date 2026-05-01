@@ -86,7 +86,10 @@ fn read_message<R: BufRead>(input: &mut R) -> std::io::Result<Option<String>> {
     let mut body = vec![0u8; len];
     input.read_exact(&mut body)?;
     String::from_utf8(body).map(Some).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("body not UTF-8: {e}"))
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("body not UTF-8: {e}"),
+        )
     })
 }
 
@@ -190,15 +193,12 @@ impl Server {
                         // Type::Unknown when it can't prove
                         // anything (per non-strict's no-false-
                         // positives guarantee).
-                        let inferred = self
-                            .documents
-                            .get(&uri)
-                            .and_then(|text| {
-                                let tokens = lexer::lex(text).ok()?;
-                                let program = parser::parse(&tokens).ok()?;
-                                let bindings = crate::infer::infer_program(&program);
-                                bindings.get(&sym.name).cloned()
-                            });
+                        let inferred = self.documents.get(&uri).and_then(|text| {
+                            let tokens = lexer::lex(text).ok()?;
+                            let program = parser::parse(&tokens).ok()?;
+                            let bindings = crate::infer::infer_program(&program);
+                            bindings.get(&sym.name).cloned()
+                        });
                         symbol_to_hover(&sym, inferred.as_ref())
                     })
                     .unwrap_or(Value::Null);
@@ -209,7 +209,12 @@ impl Server {
                 // Unknown method. If it's a request (has `id`),
                 // reply MethodNotFound so the client doesn't hang.
                 if id.is_some() {
-                    self.send_error(output, id, -32601, format!("method '{other}' not implemented"))?;
+                    self.send_error(
+                        output,
+                        id,
+                        -32601,
+                        format!("method '{other}' not implemented"),
+                    )?;
                 }
                 Ok(true)
             }
@@ -306,7 +311,11 @@ impl Server {
     /// a follow-up session.
     fn resolve_position(&self, msg: &Value) -> Option<(String, Symbol)> {
         let params = msg.get("params")?;
-        let uri = params.get("textDocument")?.get("uri")?.as_str()?.to_string();
+        let uri = params
+            .get("textDocument")?
+            .get("uri")?
+            .as_str()?
+            .to_string();
         let pos = params.get("position")?;
         let line = pos.get("line")?.as_i64()? as u32;
         let character = pos.get("character")?.as_i64()? as u32;
@@ -399,19 +408,30 @@ pub fn collect_symbols(program: &Program) -> Vec<Symbol> {
 
 fn collect_from_stmt(stmt: &Stmt, out: &mut Vec<Symbol>) {
     match stmt {
-        Stmt::Let { name, line, col, .. } => out.push(Symbol {
+        Stmt::Let {
+            name, line, col, ..
+        } => out.push(Symbol {
             name: name.clone(),
             kind: SymbolKind::Let,
             line: *line,
             col: *col,
         }),
-        Stmt::FunctionDecl { name, line, col, .. } => out.push(Symbol {
+        Stmt::FunctionDecl {
+            name, line, col, ..
+        } => out.push(Symbol {
             name: name.clone(),
             kind: SymbolKind::Function,
             line: *line,
             col: *col,
         }),
-        Stmt::Decl { kind, name, members, line, col, .. } => {
+        Stmt::Decl {
+            kind,
+            name,
+            members,
+            line,
+            col,
+            ..
+        } => {
             out.push(Symbol {
                 name: name.clone(),
                 kind: decl_kind_to_symbol(*kind),
@@ -426,7 +446,12 @@ fn collect_from_stmt(stmt: &Stmt, out: &mut Vec<Symbol>) {
         // function declarations land in the index too. Skip
         // local lets — those are scope-sensitive and a future
         // pass will handle them properly.
-        Stmt::If { then_body, elifs, else_body, .. } => {
+        Stmt::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             for s in then_body {
                 collect_from_stmt(s, out);
             }
@@ -455,13 +480,21 @@ fn collect_from_stmt(stmt: &Stmt, out: &mut Vec<Symbol>) {
 
 fn collect_from_member(member: &DeclMember, out: &mut Vec<Symbol>) {
     match member {
-        DeclMember::Field { name, line, col, .. } => out.push(Symbol {
+        DeclMember::Field {
+            name, line, col, ..
+        } => out.push(Symbol {
             name: name.clone(),
             kind: SymbolKind::Field,
             line: *line,
             col: *col,
         }),
-        DeclMember::Method { name, body, line, col, .. } => {
+        DeclMember::Method {
+            name,
+            body,
+            line,
+            col,
+            ..
+        } => {
             out.push(Symbol {
                 name: name.clone(),
                 kind: SymbolKind::Method,
@@ -478,7 +511,12 @@ fn collect_from_member(member: &DeclMember, out: &mut Vec<Symbol>) {
             line: *line,
             col: *col,
         }),
-        DeclMember::State { name, members, line, col } => {
+        DeclMember::State {
+            name,
+            members,
+            line,
+            col,
+        } => {
             out.push(Symbol {
                 name: name.clone(),
                 kind: SymbolKind::State,
@@ -535,8 +573,7 @@ pub fn identifier_at(text: &str, line: u32, character: u32) -> Option<String> {
     // right edge of an identifier (either past end-of-line or on
     // a non-id char with an id-char to the left), step left so
     // we're inside the word the user clicked at the end of.
-    let at_end_or_break = idx == chars.len()
-        || (idx < chars.len() && !is_id_continue(chars[idx]));
+    let at_end_or_break = idx == chars.len() || (idx < chars.len() && !is_id_continue(chars[idx]));
     if at_end_or_break && idx > 0 && is_id_continue(chars[idx - 1]) {
         idx -= 1;
     }
@@ -605,8 +642,8 @@ fn name_position_in_source(text: &str, sym: &Symbol) -> (u32, u32) {
         let mut i = 0;
         while i + needle.len() <= bytes.len() {
             let prev_ok = i == 0 || !is_id_continue_byte(bytes[i - 1]);
-            let next_ok = i + needle.len() == bytes.len()
-                || !is_id_continue_byte(bytes[i + needle.len()]);
+            let next_ok =
+                i + needle.len() == bytes.len() || !is_id_continue_byte(bytes[i + needle.len()]);
             if prev_ok && next_ok && &bytes[i..i + needle.len()] == needle {
                 return (line_idx as u32, i as u32);
             }
@@ -650,38 +687,40 @@ fn symbol_to_hover(sym: &Symbol, inferred: Option<&crate::types::Type>) -> Value
 }
 
 fn initialize_result() -> Value {
-    obj([(
-        "capabilities",
-        obj([
-            // Full-document sync — client sends the whole text on
-            // every change. Twe files are small enough that
-            // incremental sync isn't worth the complexity in the
-            // MVP.
-            ("textDocumentSync", Value::Int(1)),
-            ("definitionProvider", Value::Bool(true)),
-            ("hoverProvider", Value::Bool(true)),
-            (
-                "completionProvider",
-                obj([
-                    // No trigger characters — VS Code asks for
-                    // completion on every identifier keystroke
-                    // by default. `.` would be useful for dotted
-                    // builtins (math.abs, random.int) but the
-                    // current stdlib registers them as flat
-                    // names; revisit when namespaces become
-                    // first-class.
-                    ("resolveProvider", Value::Bool(false)),
-                ]),
-            ),
-        ]),
-    ),
+    obj([
+        (
+            "capabilities",
+            obj([
+                // Full-document sync — client sends the whole text on
+                // every change. Twe files are small enough that
+                // incremental sync isn't worth the complexity in the
+                // MVP.
+                ("textDocumentSync", Value::Int(1)),
+                ("definitionProvider", Value::Bool(true)),
+                ("hoverProvider", Value::Bool(true)),
+                (
+                    "completionProvider",
+                    obj([
+                        // No trigger characters — VS Code asks for
+                        // completion on every identifier keystroke
+                        // by default. `.` would be useful for dotted
+                        // builtins (math.abs, random.int) but the
+                        // current stdlib registers them as flat
+                        // names; revisit when namespaces become
+                        // first-class.
+                        ("resolveProvider", Value::Bool(false)),
+                    ]),
+                ),
+            ]),
+        ),
         (
             "serverInfo",
             obj([
                 ("name", Value::Str("twec lsp".into())),
                 ("version", Value::Str(env!("CARGO_PKG_VERSION").into())),
             ]),
-        )])
+        ),
+    ])
 }
 
 // LSP `CompletionItemKind` constants (LSP §3.18). Inlined as a
@@ -704,10 +743,39 @@ mod ck {
 /// (they are not lexer keywords but they look and feel like ones
 /// to the user). If the lexer grows a keyword, add it here too.
 const TWE_KEYWORDS: &[&str] = &[
-    "and", "break", "continue", "despawn", "elif", "else", "entity", "every", "extends", "false",
-    "for", "function", "if", "in", "initial", "inventory", "item", "let", "modifier", "not", "on",
-    "or", "particles", "render", "return", "scene", "self", "spawn", "state", "true", "update",
-    "var", "while",
+    "and",
+    "break",
+    "continue",
+    "despawn",
+    "elif",
+    "else",
+    "entity",
+    "every",
+    "extends",
+    "false",
+    "for",
+    "function",
+    "if",
+    "in",
+    "initial",
+    "inventory",
+    "item",
+    "let",
+    "modifier",
+    "not",
+    "on",
+    "or",
+    "particles",
+    "render",
+    "return",
+    "scene",
+    "self",
+    "spawn",
+    "state",
+    "true",
+    "update",
+    "var",
+    "while",
 ];
 
 /// Build the completion list for `text`. Layered: user-declared
@@ -815,7 +883,11 @@ fn parse_did_open(msg: &Value) -> Option<(String, String)> {
 
 fn parse_did_change(msg: &Value) -> Option<(String, String)> {
     let params = msg.get("params")?;
-    let uri = params.get("textDocument")?.get("uri")?.as_str()?.to_string();
+    let uri = params
+        .get("textDocument")?
+        .get("uri")?
+        .as_str()?
+        .to_string();
     // Full-sync mode means contentChanges has exactly one entry
     // with a `text` field carrying the entire new document.
     let changes = params.get("contentChanges")?.as_array()?;
@@ -862,7 +934,10 @@ fn diagnostic_at(line: u32, col: u32, message: &str) -> Value {
     // and saturate at 0 so a position of 0,0 stays 0,0.
     let l = line.saturating_sub(1);
     let c = col.saturating_sub(1);
-    let pos = obj([("line", Value::Int(l as i64)), ("character", Value::Int(c as i64))]);
+    let pos = obj([
+        ("line", Value::Int(l as i64)),
+        ("character", Value::Int(c as i64)),
+    ]);
     let range = obj([("start", pos.clone()), ("end", pos)]);
     obj([
         ("range", range),
@@ -911,7 +986,11 @@ mod tests {
                 .expect("content length");
             let body_start = header_end + 4;
             let body_end = body_start + len;
-            out.push(std::str::from_utf8(&bytes[body_start..body_end]).unwrap().to_string());
+            out.push(
+                std::str::from_utf8(&bytes[body_start..body_end])
+                    .unwrap()
+                    .to_string(),
+            );
             pos = body_end;
         }
         out
@@ -967,7 +1046,13 @@ mod tests {
         ]);
         let msgs = split_messages(&out);
         let pub_diag = json::parse(&msgs[1]).expect("publishDiagnostics");
-        let diags = pub_diag.get("params").unwrap().get("diagnostics").unwrap().as_array().unwrap();
+        let diags = pub_diag
+            .get("params")
+            .unwrap()
+            .get("diagnostics")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(diags.len(), 1, "expected one error diagnostic");
         let d = &diags[0];
         assert_eq!(d.get("severity").and_then(|v| v.as_i64()), Some(1));
@@ -1117,10 +1202,16 @@ mod tests {
         let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
         // Order: initialize reply, didOpen → publishDiagnostics,
         // definition reply, shutdown reply.
-        let def_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("definition reply");
+        let def_reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("definition reply");
         let v = json::parse(def_reply).expect("parse def reply");
         let result = v.get("result").expect("result field");
-        assert_eq!(result.get("uri").and_then(|x| x.as_str()), Some("file:///t.twe"));
+        assert_eq!(
+            result.get("uri").and_then(|x| x.as_str()),
+            Some("file:///t.twe")
+        );
         let range = result.get("range").expect("range");
         let start = range.get("start").unwrap();
         // `let foo = 5` — `foo` starts at col 4 (0-indexed) on line 0.
@@ -1133,7 +1224,10 @@ mod tests {
         let text = "let foo = 5\n";
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":0,"character":2}}}"#;
         let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
-        let def_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("definition reply");
+        let def_reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("definition reply");
         let v = json::parse(def_reply).expect("parse");
         // Cursor is on `let` (a keyword, not a user-declared name)
         // → should resolve to None and reply with `result: null`.
@@ -1146,11 +1240,20 @@ mod tests {
         // Cursor on `greet` of the call site: line 3 col 2.
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":3,"character":2}}}"#;
         let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
-        let hover_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("hover reply");
+        let hover_reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("hover reply");
         let v = json::parse(hover_reply).expect("parse");
         let contents = v.get("result").unwrap().get("contents").unwrap();
-        assert_eq!(contents.get("kind").and_then(|v| v.as_str()), Some("markdown"));
-        let body = contents.get("value").and_then(|v| v.as_str()).expect("value");
+        assert_eq!(
+            contents.get("kind").and_then(|v| v.as_str()),
+            Some("markdown")
+        );
+        let body = contents
+            .get("value")
+            .and_then(|v| v.as_str())
+            .expect("value");
         assert!(body.contains("function greet"), "got: {body}");
     }
 
@@ -1163,12 +1266,18 @@ mod tests {
         let text = "let n = 42\nprint(n)\n";
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":1,"character":6}}}"#;
         let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
-        let hover_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("hover reply");
+        let hover_reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("hover reply");
         let v = json::parse(hover_reply).expect("parse");
         let body = v
-            .get("result").unwrap()
-            .get("contents").unwrap()
-            .get("value").and_then(|s| s.as_str())
+            .get("result")
+            .unwrap()
+            .get("contents")
+            .unwrap()
+            .get("value")
+            .and_then(|s| s.as_str())
             .expect("value");
         // The body is markdown; it should contain the type.
         assert!(body.contains("int"), "got: {body}");
@@ -1183,12 +1292,18 @@ mod tests {
         // Cursor on the call-site `add` at line 3, col 8.
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":3,"character":9}}}"#;
         let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
-        let hover_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("hover reply");
+        let hover_reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("hover reply");
         let v = json::parse(hover_reply).expect("parse");
         let body = v
-            .get("result").unwrap()
-            .get("contents").unwrap()
-            .get("value").and_then(|s| s.as_str())
+            .get("result")
+            .unwrap()
+            .get("contents")
+            .unwrap()
+            .get("value")
+            .and_then(|s| s.as_str())
             .expect("value");
         assert!(body.contains("function(int, int) -> int"), "got: {body}");
     }
@@ -1202,12 +1317,18 @@ mod tests {
         let text = "let mystery = unresolved_thing\nprint(mystery)\n";
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///t.twe"},"position":{"line":1,"character":7}}}"#;
         let msgs = lsp_with_doc("file:///t.twe", text, &[req]);
-        let hover_reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("hover reply");
+        let hover_reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("hover reply");
         let v = json::parse(hover_reply).expect("parse");
         let body = v
-            .get("result").unwrap()
-            .get("contents").unwrap()
-            .get("value").and_then(|s| s.as_str())
+            .get("result")
+            .unwrap()
+            .get("contents")
+            .unwrap()
+            .get("value")
+            .and_then(|s| s.as_str())
             .expect("value");
         assert!(body.contains("mystery"), "got: {body}");
         // Unknown shouldn't render as `: ?` — when the type is
@@ -1257,7 +1378,10 @@ mod tests {
         let text = "let n = 42\n";
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///c.twe"},"position":{"line":1,"character":0}}}"#;
         let msgs = lsp_with_doc("file:///c.twe", text, &[req]);
-        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("completion reply");
         let v = json::parse(reply).expect("parse");
         let items = v.get("result").unwrap().get("items").unwrap();
         let labels = completion_labels(items);
@@ -1269,7 +1393,10 @@ mod tests {
             .iter()
             .find(|i| i.get("label").and_then(|s| s.as_str()) == Some("n"))
             .expect("n item");
-        let detail = n_item.get("detail").and_then(|s| s.as_str()).expect("detail");
+        let detail = n_item
+            .get("detail")
+            .and_then(|s| s.as_str())
+            .expect("detail");
         assert!(detail.contains("int"), "detail: {detail}");
     }
 
@@ -1278,15 +1405,24 @@ mod tests {
         let text = "let x = 1\n";
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///c.twe"},"position":{"line":1,"character":0}}}"#;
         let msgs = lsp_with_doc("file:///c.twe", text, &[req]);
-        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("completion reply");
         let v = json::parse(reply).expect("parse");
         let labels = completion_labels(v.get("result").unwrap().get("items").unwrap());
         // Spot-check a keyword and a few stdlib names.
-        assert!(labels.contains(&"function".to_string()), "no `function` keyword");
+        assert!(
+            labels.contains(&"function".to_string()),
+            "no `function` keyword"
+        );
         assert!(labels.contains(&"for".to_string()), "no `for` keyword");
         assert!(labels.contains(&"print".to_string()), "no `print` builtin");
         assert!(labels.contains(&"load".to_string()), "no `load` builtin");
-        assert!(labels.contains(&"math.abs".to_string()), "no `math.abs` builtin");
+        assert!(
+            labels.contains(&"math.abs".to_string()),
+            "no `math.abs` builtin"
+        );
     }
 
     #[test]
@@ -1296,7 +1432,10 @@ mod tests {
         let text = "let "; // partial input
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///broken.twe"},"position":{"line":0,"character":4}}}"#;
         let msgs = lsp_with_doc("file:///broken.twe", text, &[req]);
-        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("completion reply");
         let v = json::parse(reply).expect("parse");
         let labels = completion_labels(v.get("result").unwrap().get("items").unwrap());
         assert!(labels.contains(&"function".to_string()));
@@ -1315,7 +1454,10 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"exit"}"#,
         ]);
         let msgs = split_messages(&out);
-        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("completion reply");
         let v = json::parse(reply).expect("parse");
         assert_eq!(v.get("result"), Some(&Value::Null));
     }
@@ -1327,9 +1469,18 @@ mod tests {
         let text = "function greet():\n    return 0\n";
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///c.twe"},"position":{"line":2,"character":0}}}"#;
         let msgs = lsp_with_doc("file:///c.twe", text, &[req]);
-        let reply = msgs.iter().find(|m| m.contains(r#""id":2"#)).expect("completion reply");
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("completion reply");
         let v = json::parse(reply).expect("parse");
-        let items = v.get("result").unwrap().get("items").unwrap().as_array().unwrap();
+        let items = v
+            .get("result")
+            .unwrap()
+            .get("items")
+            .unwrap()
+            .as_array()
+            .unwrap();
         let greet = items
             .iter()
             .find(|i| i.get("label").and_then(|s| s.as_str()) == Some("greet"))

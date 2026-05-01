@@ -214,15 +214,6 @@ impl Object {
     }
 }
 
-/// v0.2 Phase 8.5 session 8f: identity passthrough during the
-/// migration. With `Value = TaggedValue`, this is `HashMap → HashMap`
-/// with no conversion. Deletes once stdlib + save migrate.
-pub fn legacy_fields_to_tagged(
-    fields: HashMap<String, TaggedValue>,
-) -> HashMap<String, TaggedValue> {
-    fields
-}
-
 pub type BuiltinFn = fn(&mut Env, &[TaggedValue]) -> Result<TaggedValue, RuntimeError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -370,7 +361,11 @@ impl Env {
 
     pub fn seed_rng(&mut self, seed: u64) {
         // xorshift cannot be seeded with zero; substitute a non-zero value.
-        self.rng_state = if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed };
+        self.rng_state = if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        };
     }
 
     /// Look up a binding. v0.2 Phase 8.5 session 8f: returns the
@@ -475,10 +470,12 @@ fn edit_distance(a: &str, b: &str, cap: usize) -> usize {
         curr[0] = i;
         let mut row_min = curr[0];
         for j in 1..=m {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
             if curr[j] < row_min {
                 row_min = curr[j];
             }

@@ -44,25 +44,25 @@ use crate::value::{Object, RuntimeError, Value};
 /// outside the serializable subset.
 pub fn encode(value: &Value) -> Result<json::Value, String> {
     if value.is_nil() {
-Ok(json::Value::Null)
-} else if value.is_bool() {
-let b = value.as_bool();
-Ok(json::Value::Bool(b))
-} else if value.is_int_or_boxed_int() {
-let n = value.as_int();
-Ok(json::Value::Int(n))
-} else if value.is_float() {
-let f = value.as_float();
-Ok(json::Value::Float(f))
-} else if value.is_str() {
-let s = value.as_string();
-Ok(json::Value::Str(s))
-} else if value.is_percent() {
-let p = value.as_percent();
-Ok(tagged("percent", &[("v", json::Value::Float(p))]))
-} else if value.is_range() {
-let (start, end, exclusive) = value.as_range();
-Ok(tagged(
+        Ok(json::Value::Null)
+    } else if value.is_bool() {
+        let b = value.as_bool();
+        Ok(json::Value::Bool(b))
+    } else if value.is_int_or_boxed_int() {
+        let n = value.as_int();
+        Ok(json::Value::Int(n))
+    } else if value.is_float() {
+        let f = value.as_float();
+        Ok(json::Value::Float(f))
+    } else if value.is_str() {
+        let s = value.as_string();
+        Ok(json::Value::Str(s))
+    } else if value.is_percent() {
+        let p = value.as_percent();
+        Ok(tagged("percent", &[("v", json::Value::Float(p))]))
+    } else if value.is_range() {
+        let (start, end, exclusive) = value.as_range();
+        Ok(tagged(
             "range",
             &[
                 ("start", json::Value::Int(start)),
@@ -70,98 +70,98 @@ Ok(tagged(
                 ("exclusive", json::Value::Bool(exclusive)),
             ],
         ))
-} else if value.is_quantity() {
-let (value, unit) = value.as_quantity();
-Ok(tagged(
+    } else if value.is_quantity() {
+        let (value, unit) = value.as_quantity();
+        Ok(tagged(
             "quantity",
             &[
                 ("value", json::Value::Float(value)),
                 ("unit", json::Value::Str((*unit).clone())),
             ],
         ))
-} else if value.is_tuple() {
-let elems = value.as_tuple();
-let mut arr = Vec::with_capacity(elems.len());
-            for e in elems.iter() {
-                arr.push(encode(e)?);
+    } else if value.is_tuple() {
+        let elems = value.as_tuple();
+        let mut arr = Vec::with_capacity(elems.len());
+        for e in elems.iter() {
+            arr.push(encode(e)?);
+        }
+        Ok(tagged("tuple", &[("v", json::Value::Array(arr))]))
+    } else if value.is_list() {
+        let rc = value.as_list();
+        let v = rc.borrow();
+        let mut arr = Vec::with_capacity(v.len());
+        for e in v.iter() {
+            arr.push(encode(e)?);
+        }
+        Ok(json::Value::Array(arr))
+    } else if value.is_object() {
+        let rc = value.as_object();
+        let o = rc.borrow();
+        // Refuse to save Objects whose `kind` is "class",
+        // "input", "module" — these are stdlib ambients
+        // (`key`, `mouse`, `math`) that capture host state,
+        // not user data. The user almost certainly didn't
+        // mean to dump them.
+        if matches!(o.kind, "input" | "module" | "screen") {
+            return Err(format!(
+                "cannot save the `{}` ambient Object — it carries host state, not game data",
+                o.kind
+            ));
+        }
+        let mut map = std::collections::BTreeMap::new();
+        // `__twe` is reserved as the type-tag key. Object
+        // keys that collide get rejected.
+        for (k, v) in &o.fields {
+            if k == "__twe" {
+                return Err("object field name '__twe' is reserved by the save format".to_string());
             }
-            Ok(tagged("tuple", &[("v", json::Value::Array(arr))]))
-} else if value.is_list() {
-let rc = value.as_list();
-let v = rc.borrow();
-            let mut arr = Vec::with_capacity(v.len());
-            for e in v.iter() {
-                arr.push(encode(e)?);
-            }
-            Ok(json::Value::Array(arr))
-} else if value.is_object() {
-let rc = value.as_object();
-let o = rc.borrow();
-            // Refuse to save Objects whose `kind` is "class",
-            // "input", "module" — these are stdlib ambients
-            // (`key`, `mouse`, `math`) that capture host state,
-            // not user data. The user almost certainly didn't
-            // mean to dump them.
-            if matches!(o.kind, "input" | "module" | "screen") {
-                return Err(format!(
-                    "cannot save the `{}` ambient Object — it carries host state, not game data",
-                    o.kind
-                ));
-            }
-            let mut map = std::collections::BTreeMap::new();
-            // `__twe` is reserved as the type-tag key. Object
-            // keys that collide get rejected.
-            for (k, v) in &o.fields {
-                if k == "__twe" {
-                    return Err(
-                        "object field name '__twe' is reserved by the save format".to_string(),
-                    );
-                }
-                map.insert(k.clone(), encode(v)?);
-            }
-            Ok(json::Value::Object(map))
-} else if value.is_class() {
-let c = value.as_class();
-Err(format!(
+            map.insert(k.clone(), encode(v)?);
+        }
+        Ok(json::Value::Object(map))
+    } else if value.is_class() {
+        let c = value.as_class();
+        Err(format!(
             "cannot save class '{}' — saves hold data, not declarations",
             c.name
         ))
-} else if value.is_instance() {
-let rc = value.as_instance();
-Err(format!(
+    } else if value.is_instance() {
+        let rc = value.as_instance();
+        Err(format!(
             "cannot save instance of `{}` — saves hold data, not live objects (extract the fields you want into a tuple or a plain Object first)",
             rc.borrow().class.name
         ))
-} else if value.is_bc_instance() {
-let rc = value.as_bc_instance();
-Err(format!(
+    } else if value.is_bc_instance() {
+        let rc = value.as_bc_instance();
+        Err(format!(
             "cannot save bytecode instance of `{}` — same restriction as `Instance`",
             rc.borrow().class.name
         ))
-} else if value.is_function() {
-let f = value.as_function();
-Err(format!(
+    } else if value.is_function() {
+        let f = value.as_function();
+        Err(format!(
             "cannot save function '{}' — saves hold data, not code",
             f.name
         ))
-} else if value.is_bc_function() {
-let f = value.as_bc_function();
-Err(format!(
+    } else if value.is_bc_function() {
+        let f = value.as_bc_function();
+        Err(format!(
             "cannot save bytecode function '{}' — saves hold data, not code",
             f.name
         ))
-} else if value.is_bc_class() {
-let c = value.as_bc_class();
-Err(format!(
+    } else if value.is_bc_class() {
+        let c = value.as_bc_class();
+        Err(format!(
             "cannot save bytecode class '{}' — saves hold data, not declarations",
             c.name
         ))
-} else if value.is_builtin() {
-let (name, _, _) = value.as_builtin();
-Err(format!(
+    } else if value.is_builtin() {
+        let (name, _, _) = value.as_builtin();
+        Err(format!(
             "cannot save builtin '{name}' — saves hold data, not code"
         ))
-} else { unreachable!("non-exhaustive predicate dispatch") }
+    } else {
+        unreachable!("non-exhaustive predicate dispatch")
+    }
 }
 
 /// Decode a `json::Value` into a Twe `Value`. JSON's data model
@@ -240,7 +240,10 @@ pub fn decode(value: &json::Value) -> Value {
 
 fn tagged(tag: &str, fields: &[(&str, json::Value)]) -> json::Value {
     let mut map = std::collections::BTreeMap::new();
-    map.insert("__twe".to_string(), json::Value::Str((tag.to_string()).to_string()));
+    map.insert(
+        "__twe".to_string(),
+        json::Value::Str((tag.to_string()).to_string()),
+    );
     for (k, v) in fields {
         map.insert((*k).to_string(), v.clone());
     }
@@ -275,16 +278,20 @@ pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
     };
     std::fs::write(&tmp_path, serialized.as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| format!("cannot rename {} -> {}: {e}", tmp_path.display(), path.display()))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        format!(
+            "cannot rename {} -> {}: {e}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
     Ok(())
 }
 
 /// Read + parse + decode. Errors carry the path + the underlying
 /// IO / parse failure for debug-ability.
 pub fn load_from_path(path: &Path) -> Result<Value, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|e| format!("save file at {} is not valid UTF-8: {e}", path.display()))?;
     let json_value = json::parse(text)
@@ -321,19 +328,23 @@ mod tests {
     fn primitives_round_trip() {
         {
             let v = round_trip(Value::from_int(42));
-            assert!(v.is_int_or_boxed_int() && v.as_int() == 42, "expected Int(42), got {v:?}");
+            assert!(
+                v.is_int_or_boxed_int() && v.as_int() == 42,
+                "expected Int(42), got {v:?}"
+            );
         }
         {
-let __t = round_trip(Value::from_float(3.14));
-if __t.is_float() && { let f = __t.as_float();
-(f - 3.14).abs() < 1e-9 } {
-let _f = __t.as_float();
-
-} else {
-let other = __t.clone();
-panic!("expected ~Float(3.14), got {other:?}")
-}
-}
+            let __t = round_trip(Value::from_float(3.14));
+            if __t.is_float() && {
+                let f = __t.as_float();
+                (f - 3.14).abs() < 1e-9
+            } {
+                let _f = __t.as_float();
+            } else {
+                let other = __t.clone();
+                panic!("expected ~Float(3.14), got {other:?}")
+            }
+        }
         {
             let __t = round_trip(Value::TRUE);
             if __t.is_bool() && __t.as_bool() {
@@ -344,44 +355,51 @@ panic!("expected ~Float(3.14), got {other:?}")
             }
         }
         {
-let __t = round_trip(Value::NIL);
-if __t.is_nil() {
-
-} else {
-let other = __t.clone();
-panic!("expected Nil, got {other:?}")
-}
-}
+            let __t = round_trip(Value::NIL);
+            if __t.is_nil() {
+            } else {
+                let other = __t.clone();
+                panic!("expected Nil, got {other:?}")
+            }
+        }
         {
-let __t = round_trip(Value::from_string("hello".to_string()));
-if __t.is_str() && { let s = __t.as_string();
-s == "hello" } {
-let _s = __t.as_string();
-
-} else {
-let other = __t.clone();
-panic!("expected Str(\"hello\"), got {other:?}")
-}
-}
+            let __t = round_trip(Value::from_string("hello".to_string()));
+            if __t.is_str() && {
+                let s = __t.as_string();
+                s == "hello"
+            } {
+                let _s = __t.as_string();
+            } else {
+                let other = __t.clone();
+                panic!("expected Str(\"hello\"), got {other:?}")
+            }
+        }
     }
 
     #[test]
     fn tuple_round_trips_as_tuple_not_list() {
-        let v = Value::from_tuple(Rc::new(vec![Value::from_int(1), Value::from_int(2), Value::from_int(3)]));
+        let v = Value::from_tuple(Rc::new(vec![
+            Value::from_int(1),
+            Value::from_int(2),
+            Value::from_int(3),
+        ]));
         let back = round_trip(v);
         if back.is_tuple() {
-let elems = back.as_tuple();
-assert_eq!(elems.len(), 3);
-                assert!(elems[0].is_int_or_boxed_int());
-} else {
-let other = back.clone();
-panic!("expected Tuple, got {other:?}")
-}
+            let elems = back.as_tuple();
+            assert_eq!(elems.len(), 3);
+            assert!(elems[0].is_int_or_boxed_int());
+        } else {
+            let other = back.clone();
+            panic!("expected Tuple, got {other:?}")
+        }
     }
 
     #[test]
     fn list_round_trips_as_list() {
-        let v = Value::from_list(Rc::new(RefCell::new(vec![Value::from_int(7), Value::from_int(8)])));
+        let v = Value::from_list(Rc::new(RefCell::new(vec![
+            Value::from_int(7),
+            Value::from_int(8),
+        ])));
         let back = round_trip(v);
         if back.is_list() {
             let rc = back.as_list();
@@ -397,48 +415,48 @@ panic!("expected Tuple, got {other:?}")
     fn quantity_round_trips_with_unit() {
         let v = Value::from_quantity(5.0, Rc::new("kg".to_string()));
         {
-let __t = round_trip(v);
-if __t.is_quantity() {
-let (value, unit) = __t.as_quantity();
-assert_eq!(value, 5.0);
+            let __t = round_trip(v);
+            if __t.is_quantity() {
+                let (value, unit) = __t.as_quantity();
+                assert_eq!(value, 5.0);
                 assert_eq!(&**unit, "kg");
-} else {
-let other = __t.clone();
-panic!("expected Quantity, got {other:?}")
-}
-}
+            } else {
+                let other = __t.clone();
+                panic!("expected Quantity, got {other:?}")
+            }
+        }
     }
 
     #[test]
     fn range_round_trips() {
         let v = Value::from_range(0, 10, true);
         {
-let __t = round_trip(v);
-if __t.is_range() {
-let (start, end, exclusive) = __t.as_range();
-assert_eq!(start, 0);
+            let __t = round_trip(v);
+            if __t.is_range() {
+                let (start, end, exclusive) = __t.as_range();
+                assert_eq!(start, 0);
                 assert_eq!(end, 10);
                 assert!(exclusive);
-} else {
-let other = __t.clone();
-panic!("expected Range, got {other:?}")
-}
-}
+            } else {
+                let other = __t.clone();
+                panic!("expected Range, got {other:?}")
+            }
+        }
     }
 
     #[test]
     fn percent_round_trips() {
         let v = Value::from_percent(0.25);
         {
-let __t = round_trip(v);
-if __t.is_percent() {
-let p = __t.as_percent();
-assert!((p - 0.25).abs() < 1e-9)
-} else {
-let other = __t.clone();
-panic!("expected Percent, got {other:?}")
-}
-}
+            let __t = round_trip(v);
+            if __t.is_percent() {
+                let p = __t.as_percent();
+                assert!((p - 0.25).abs() < 1e-9)
+            } else {
+                let other = __t.clone();
+                panic!("expected Percent, got {other:?}")
+            }
+        }
     }
 
     #[test]
@@ -447,21 +465,24 @@ panic!("expected Percent, got {other:?}")
         inner.insert("hp".to_string(), Value::from_int(100));
         inner.insert("name".to_string(), Value::from_string("Hero".to_string()));
         let v = Value::from_object(Rc::new(RefCell::new(Object {
-            fields: crate::value::legacy_fields_to_tagged(inner),
+            fields: inner,
             kind: "save",
         })));
         {
-let __t = round_trip(v);
-if __t.is_object() {
-let rc = __t.as_object();
-let o = rc.borrow();
-                assert!(o.get_field("hp").as_ref().is_some_and(|t| t.is_int_or_boxed_int()));
+            let __t = round_trip(v);
+            if __t.is_object() {
+                let rc = __t.as_object();
+                let o = rc.borrow();
+                assert!(o
+                    .get_field("hp")
+                    .as_ref()
+                    .is_some_and(|t| t.is_int_or_boxed_int()));
                 assert!(o.get_field("name").as_ref().is_some_and(|t| t.is_str()));
-} else {
-let other = __t.clone();
-panic!("expected Object, got {other:?}")
-}
-}
+            } else {
+                let other = __t.clone();
+                panic!("expected Object, got {other:?}")
+            }
+        }
     }
 
     #[test]
@@ -496,12 +517,9 @@ panic!("expected Object, got {other:?}")
 
         let mut fields = HashMap::new();
         fields.insert("hp".to_string(), Value::from_int(75));
-        fields.insert(
-            "name".to_string(),
-            Value::from_string("Hero".to_string()),
-        );
+        fields.insert("name".to_string(), Value::from_string("Hero".to_string()));
         let v = Value::from_object(Rc::new(RefCell::new(Object {
-            fields: crate::value::legacy_fields_to_tagged(fields),
+            fields,
             kind: "save",
         })));
 
@@ -510,13 +528,16 @@ panic!("expected Object, got {other:?}")
         let _ = std::fs::remove_file(&path);
 
         if loaded.is_object() {
-let rc = loaded.as_object();
-let o = rc.borrow();
-                assert!(o.get_field("hp").as_ref().is_some_and(|t| t.is_int_or_boxed_int()));
-} else {
-let other = loaded.clone();
-panic!("expected Object, got {other:?}")
-}
+            let rc = loaded.as_object();
+            let o = rc.borrow();
+            assert!(o
+                .get_field("hp")
+                .as_ref()
+                .is_some_and(|t| t.is_int_or_boxed_int()));
+        } else {
+            let other = loaded.clone();
+            panic!("expected Object, got {other:?}")
+        }
     }
 
     #[test]

@@ -46,7 +46,10 @@ pub fn print_program(p: &Program) -> String {
 fn takes_blank_neighbor(stmt: &Stmt) -> bool {
     matches!(
         stmt,
-        Stmt::Decl { .. } | Stmt::FunctionDecl { .. } | Stmt::OnUpdate { .. } | Stmt::OnRender { .. }
+        Stmt::Decl { .. }
+            | Stmt::FunctionDecl { .. }
+            | Stmt::OnUpdate { .. }
+            | Stmt::OnRender { .. }
     )
 }
 
@@ -70,7 +73,9 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             print_expr(out, value, Prec::Lowest);
             out.push('\n');
         }
-        Stmt::Assign { target, op, value, .. } => {
+        Stmt::Assign {
+            target, op, value, ..
+        } => {
             push_indent(out, depth);
             print_assign_target(out, target);
             out.push(' ');
@@ -79,7 +84,13 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             print_expr(out, value, Prec::Lowest);
             out.push('\n');
         }
-        Stmt::If { cond, then_body, elifs, else_body, .. } => {
+        Stmt::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
             push_indent(out, depth);
             out.push_str("if ");
             print_expr(out, cond, Prec::Lowest);
@@ -110,7 +121,13 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str("on render():\n");
             print_block(out, body, depth + 1);
         }
-        Stmt::Decl { kind, name, parent, members, .. } => {
+        Stmt::Decl {
+            kind,
+            name,
+            parent,
+            members,
+            ..
+        } => {
             push_indent(out, depth);
             out.push_str(kind.as_str());
             out.push(' ');
@@ -122,7 +139,13 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str(":\n");
             print_decl_members(out, members, depth + 1, *kind);
         }
-        Stmt::FunctionDecl { name, params, ret, body, .. } => {
+        Stmt::FunctionDecl {
+            name,
+            params,
+            ret,
+            body,
+            ..
+        } => {
             push_indent(out, depth);
             out.push_str("function ");
             out.push_str(name);
@@ -152,7 +175,9 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str(":\n");
             print_block(out, body, depth + 1);
         }
-        Stmt::For { var, iter, body, .. } => {
+        Stmt::For {
+            var, iter, body, ..
+        } => {
             push_indent(out, depth);
             out.push_str("for ");
             out.push_str(var);
@@ -250,12 +275,7 @@ fn print_block(out: &mut String, stmts: &[Stmt], depth: usize) {
     }
 }
 
-fn print_decl_members(
-    out: &mut String,
-    members: &[DeclMember],
-    depth: usize,
-    _kind: DeclKind,
-) {
+fn print_decl_members(out: &mut String, members: &[DeclMember], depth: usize, _kind: DeclKind) {
     // Print fields, then initial: state, then methods, then states
     // — this matches the convention all the test programs use and
     // keeps the formatted output readable. We preserve the source
@@ -284,7 +304,9 @@ fn member_takes_blank_line(m: &DeclMember) -> bool {
 
 fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize) {
     match m {
-        DeclMember::Field { name, value, ty, .. } => {
+        DeclMember::Field {
+            name, value, ty, ..
+        } => {
             push_indent(out, depth);
             // `var X = expr` reads better than `X: expr` for
             // variable fields — but the AST doesn't distinguish
@@ -309,7 +331,13 @@ fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize) {
             }
             out.push('\n');
         }
-        DeclMember::Method { name, params, ret, body, .. } => {
+        DeclMember::Method {
+            name,
+            params,
+            ret,
+            body,
+            ..
+        } => {
             push_indent(out, depth);
             // Method form: `name(params)[ -> ret]:`. Phase 6
             // session 4 lifted method param + return annotations
@@ -397,7 +425,9 @@ fn print_state_member(out: &mut String, m: &StateMember, depth: usize) {
             out.push_str("):\n");
             print_block(out, body, depth + 1);
         }
-        StateMember::OnPredicate { predicate, body, .. } => {
+        StateMember::OnPredicate {
+            predicate, body, ..
+        } => {
             push_indent(out, depth);
             out.push_str("on ");
             print_expr(out, predicate, Prec::Lowest);
@@ -421,7 +451,6 @@ fn push_params(out: &mut String, params: &[crate::ast::Param]) {
         }
     }
 }
-
 
 fn print_assign_target(out: &mut String, target: &AssignTarget) {
     match target {
@@ -549,7 +578,12 @@ fn print_expr(out: &mut String, expr: &Expr, parent_prec: Prec) {
             }
             out.push(']');
         }
-        Expr::Range { start, end, exclusive, .. } => {
+        Expr::Range {
+            start,
+            end,
+            exclusive,
+            ..
+        } => {
             let need_paren = parent_prec > Prec::Range;
             if need_paren {
                 out.push('(');
@@ -572,7 +606,12 @@ fn print_expr(out: &mut String, expr: &Expr, parent_prec: Prec) {
             out.push('.');
             out.push_str(name);
         }
-        Expr::Call { callee, args, kwargs, .. } => {
+        Expr::Call {
+            callee,
+            args,
+            kwargs,
+            ..
+        } => {
             print_expr(out, callee, Prec::Postfix);
             out.push('(');
             let mut first = true;
@@ -609,7 +648,9 @@ fn print_expr(out: &mut String, expr: &Expr, parent_prec: Prec) {
                 out.push(')');
             }
         }
-        Expr::Binary { op, left, right, .. } => {
+        Expr::Binary {
+            op, left, right, ..
+        } => {
             let prec = binop_prec(*op);
             let need_paren = parent_prec > prec;
             if need_paren {
@@ -757,17 +798,15 @@ mod tests {
     #[test]
     fn formats_function_decl() {
         let src = "function add(a, b):\n    return a + b";
-        assert_eq!(
-            fmt(src),
-            "function add(a, b):\n    return a + b\n"
-        );
+        assert_eq!(fmt(src), "function add(a, b):\n    return a + b\n");
     }
 
     #[test]
     fn formats_method_with_self_field() {
         let src = "item Counter:\n    n: 0\n\n    bump(amount):\n        self.n = self.n + amount";
         // Field-then-method gets a blank line between.
-        let want = "item Counter:\n    n: 0\n\n    bump(amount):\n        self.n = self.n + amount\n";
+        let want =
+            "item Counter:\n    n: 0\n\n    bump(amount):\n        self.n = self.n + amount\n";
         assert_eq!(fmt(src), want);
     }
 
@@ -805,15 +844,9 @@ mod tests {
     #[test]
     fn formats_short_circuit_and_or_with_parens_when_needed() {
         // `a and b or c` — `and` binds tighter than `or`, no paren needed.
-        assert_eq!(
-            fmt("let x = a and b or c"),
-            "let x = a and b or c\n"
-        );
+        assert_eq!(fmt("let x = a and b or c"), "let x = a and b or c\n");
         // `(a or b) and c` — paren needed because `or` < `and`.
-        assert_eq!(
-            fmt("let x = (a or b) and c"),
-            "let x = (a or b) and c\n"
-        );
+        assert_eq!(fmt("let x = (a or b) and c"), "let x = (a or b) and c\n");
     }
 
     #[test]

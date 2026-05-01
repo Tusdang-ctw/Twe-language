@@ -53,7 +53,10 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
     PercentLit(f64),
-    UnitLit { value: f64, unit: String },
+    UnitLit {
+        value: f64,
+        unit: String,
+    },
     Str(String),
     /// Interpolated string. Alternating literal chunks and expression
     /// source spans. e.g. `"hi {name}!"` lexes as
@@ -166,7 +169,11 @@ impl<'a> Lexer<'a> {
                 b'\n' => {
                     self.bump_newline();
                     if self.bracket_depth == 0 && content_since_newline {
-                        out.push(Token { kind: TokenKind::Newline, line, col });
+                        out.push(Token {
+                            kind: TokenKind::Newline,
+                            line,
+                            col,
+                        });
                         content_since_newline = false;
                     }
                     self.at_line_start = true;
@@ -190,9 +197,7 @@ impl<'a> Lexer<'a> {
                                         ),
                                     });
                                 }
-                                Some(b'-')
-                                    if self.src.get(self.pos + 1) == Some(&b'#') =>
-                                {
+                                Some(b'-') if self.src.get(self.pos + 1) == Some(&b'#') => {
                                     self.bump();
                                     self.bump();
                                     break;
@@ -214,7 +219,11 @@ impl<'a> Lexer<'a> {
                 b'(' => {
                     self.bump();
                     self.bracket_depth += 1;
-                    out.push(Token { kind: TokenKind::LParen, line, col });
+                    out.push(Token {
+                        kind: TokenKind::LParen,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b')' => {
@@ -228,13 +237,21 @@ impl<'a> Lexer<'a> {
                         });
                     }
                     self.bracket_depth -= 1;
-                    out.push(Token { kind: TokenKind::RParen, line, col });
+                    out.push(Token {
+                        kind: TokenKind::RParen,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b'[' => {
                     self.bump();
                     self.bracket_depth += 1;
-                    out.push(Token { kind: TokenKind::LBracket, line, col });
+                    out.push(Token {
+                        kind: TokenKind::LBracket,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b']' => {
@@ -248,13 +265,21 @@ impl<'a> Lexer<'a> {
                         });
                     }
                     self.bracket_depth -= 1;
-                    out.push(Token { kind: TokenKind::RBracket, line, col });
+                    out.push(Token {
+                        kind: TokenKind::RBracket,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b'{' => {
                     self.bump();
                     self.bracket_depth += 1;
-                    out.push(Token { kind: TokenKind::LBrace, line, col });
+                    out.push(Token {
+                        kind: TokenKind::LBrace,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b'}' => {
@@ -268,7 +293,11 @@ impl<'a> Lexer<'a> {
                         });
                     }
                     self.bracket_depth -= 1;
-                    out.push(Token { kind: TokenKind::RBrace, line, col });
+                    out.push(Token {
+                        kind: TokenKind::RBrace,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b'.' => {
@@ -289,12 +318,20 @@ impl<'a> Lexer<'a> {
                 }
                 b',' => {
                     self.bump();
-                    out.push(Token { kind: TokenKind::Comma, line, col });
+                    out.push(Token {
+                        kind: TokenKind::Comma,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b':' => {
                     self.bump();
-                    out.push(Token { kind: TokenKind::Colon, line, col });
+                    out.push(Token {
+                        kind: TokenKind::Colon,
+                        line,
+                        col,
+                    });
                     content_since_newline = true;
                 }
                 b'=' => {
@@ -307,7 +344,11 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     if self.peek() == Some(b'=') {
                         self.bump();
-                        out.push(Token { kind: TokenKind::NotEq, line, col });
+                        out.push(Token {
+                            kind: TokenKind::NotEq,
+                            line,
+                            col,
+                        });
                         content_since_newline = true;
                     } else {
                         return Err(LexError {
@@ -440,9 +481,7 @@ impl<'a> Lexer<'a> {
                 line,
                 col,
                 message: "mixed tabs and spaces in indentation".to_string(),
-                help: Some(
-                    "use either tabs or spaces consistently within a file".to_string(),
-                ),
+                help: Some("use either tabs or spaces consistently within a file".to_string()),
             });
         }
 
@@ -482,9 +521,7 @@ impl<'a> Lexer<'a> {
                 col,
             });
         } else if level < current {
-            while self.indent_stack.len() > 1
-                && *self.indent_stack.last().unwrap() > level
-            {
+            while self.indent_stack.len() > 1 && *self.indent_stack.last().unwrap() > level {
                 self.indent_stack.pop();
                 out.push(Token {
                     kind: TokenKind::Dedent,
@@ -496,8 +533,7 @@ impl<'a> Lexer<'a> {
                 return Err(LexError {
                     line,
                     col,
-                    message: "dedent does not match any outer indentation level"
-                        .to_string(),
+                    message: "dedent does not match any outer indentation level".to_string(),
                     help: Some("align this line with one of the outer levels".to_string()),
                 });
             }
@@ -565,8 +601,7 @@ impl<'a> Lexer<'a> {
                     return Err(LexError {
                         line,
                         col,
-                        message: "unterminated triple-quoted string at end of file"
-                            .to_string(),
+                        message: "unterminated triple-quoted string at end of file".to_string(),
                         help: Some("close with '\"\"\"'".to_string()),
                     });
                 }
@@ -656,9 +691,7 @@ impl<'a> Lexer<'a> {
                             line: interp_line,
                             col: interp_col,
                             message: "unterminated interpolation '{...}'".to_string(),
-                            help: Some(
-                                "close with '}' before end of line / string".to_string(),
-                            ),
+                            help: Some("close with '}' before end of line / string".to_string()),
                         });
                     }
                     let expr_text = std::str::from_utf8(&self.src[expr_start..self.pos])
@@ -698,8 +731,7 @@ impl<'a> Lexer<'a> {
                                 col: esc_col,
                                 message: format!("unknown escape '\\{}'", other as char),
                                 help: Some(
-                                    "supported: \\n \\r \\t \\\\ \\\" \\0 \\{ \\}"
-                                        .to_string(),
+                                    "supported: \\n \\r \\t \\\\ \\\" \\0 \\{ \\}".to_string(),
                                 ),
                             });
                         }
@@ -809,8 +841,8 @@ impl<'a> Lexer<'a> {
                 });
             }
         }
-        let raw = std::str::from_utf8(&self.src[start..self.pos])
-            .expect("ascii digits are valid utf-8");
+        let raw =
+            std::str::from_utf8(&self.src[start..self.pos]).expect("ascii digits are valid utf-8");
         let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
         let numeric_value: f64 = cleaned.parse().map_err(|_| LexError {
             line,
@@ -849,8 +881,7 @@ impl<'a> Lexer<'a> {
                     col,
                     message: format!("unknown unit suffix '{unit}'"),
                     help: Some(
-                        "valid suffixes: s ms min h, m cm mm km px, kg g mg, deg rad"
-                            .to_string(),
+                        "valid suffixes: s ms min h, m cm mm km px, kg g mg, deg rad".to_string(),
                     ),
                 });
             }
@@ -919,8 +950,8 @@ impl<'a> Lexer<'a> {
                 }),
             });
         }
-        let raw = std::str::from_utf8(&self.src[start..self.pos])
-            .expect("ascii digits are valid utf-8");
+        let raw =
+            std::str::from_utf8(&self.src[start..self.pos]).expect("ascii digits are valid utf-8");
         let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
         let value = i64::from_str_radix(&cleaned, radix).map_err(|_| LexError {
             line,

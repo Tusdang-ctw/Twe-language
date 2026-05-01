@@ -376,12 +376,12 @@ fn sphere_mesh() -> (Vec<Vertex>, Vec<u16>) {
     let mut vertices: Vec<Vertex> = Vec::with_capacity(((lat + 1) * (lon + 1)) as usize);
     for i in 0..=lat {
         let v = i as f32 / lat as f32;
-        let theta = v * pi;          // [0, π] from +y down to -y
+        let theta = v * pi; // [0, π] from +y down to -y
         let sin_t = theta.sin();
         let cos_t = theta.cos();
         for j in 0..=lon {
             let u = j as f32 / lon as f32;
-            let phi = u * 2.0 * pi;  // [0, 2π] around y axis
+            let phi = u * 2.0 * pi; // [0, 2π] around y axis
             let sin_p = phi.sin();
             let cos_p = phi.cos();
             // Unit-sphere position; normal is the same (radial).
@@ -552,12 +552,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let state = match self.state.as_mut() {
             Some(s) => s,
             None => return,
@@ -569,20 +564,18 @@ impl ApplicationHandler for App {
                     state.config.width = size.width;
                     state.config.height = size.height;
                     state.surface.configure(&state.device, &state.config);
-                    state.depth_view = create_depth_view(
-                        &state.device,
-                        state.config.width,
-                        state.config.height,
-                    );
+                    state.depth_view =
+                        create_depth_view(&state.device, state.config.width, state.config.height);
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    physical_key: PhysicalKey::Code(code),
-                    state: key_state,
-                    repeat,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state: key_state,
+                        repeat,
+                        ..
+                    },
                 ..
             } => {
                 if let Some(name) = Self::key_name(code) {
@@ -616,7 +609,11 @@ impl ApplicationHandler for App {
                 self.mouse_x = position.x;
                 self.mouse_y = position.y;
             }
-            WindowEvent::MouseInput { state: btn_state, button, .. } => {
+            WindowEvent::MouseInput {
+                state: btn_state,
+                button,
+                ..
+            } => {
                 if let Some(name) = mouse_button_name(button) {
                     match btn_state {
                         ElementState::Pressed => {
@@ -669,7 +666,11 @@ impl ApplicationHandler for App {
 
                 // Push input state into the Twe-visible `key` /
                 // `key_press` Objects before running the frame.
-                update_key_state(&mut self.env, &self.keys_held, &self.keys_pressed_this_frame);
+                update_key_state(
+                    &mut self.env,
+                    &self.keys_held,
+                    &self.keys_pressed_this_frame,
+                );
                 self.keys_pressed_this_frame.clear();
                 // v0.2 session 3: same for mouse / mouse_held /
                 // mouse_press. Wheel + edge-press are reset here.
@@ -702,11 +703,7 @@ impl ApplicationHandler for App {
 /// Mirrors `src/play.rs::update_key_state` but reads from the
 /// winit-fed `HashSet`s rather than macroquad's `is_key_down` /
 /// `is_key_pressed`.
-fn update_key_state(
-    env: &mut Env,
-    held: &HashSet<&'static str>,
-    pressed: &HashSet<&'static str>,
-) {
+fn update_key_state(env: &mut Env, held: &HashSet<&'static str>, pressed: &HashSet<&'static str>) {
     if let Some(t) = env.get("key") {
         if t.is_object() {
             let rc = t.as_object();
@@ -757,7 +754,10 @@ fn update_mouse_state(
             o.insert_field("y", Value::from_float(mouse_y));
             o.insert_field(
                 "pos",
-                Value::from_tuple(Rc::new(vec![Value::from_float(mouse_x), Value::from_float(mouse_y)])),
+                Value::from_tuple(Rc::new(vec![
+                    Value::from_float(mouse_x),
+                    Value::from_float(mouse_y),
+                ])),
             );
             o.insert_field("wheel", Value::from_float(wheel_y as f64));
         }
@@ -790,13 +790,11 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
     let surface = instance
         .create_surface(window.clone())
         .map_err(|e| e.to_string())?;
-    let adapter = pollster::block_on(instance.request_adapter(
-        &wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        },
-    ))
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    }))
     .ok_or_else(|| "no compatible wgpu adapter found".to_string())?;
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
@@ -1003,8 +1001,7 @@ fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>), String> {
 /// an in-memory byte slice instead of a path so we can exercise
 /// the decode path without shipping binary fixtures.
 fn parse_glb_bytes(bytes: &[u8]) -> Result<(Vec<Vertex>, Vec<u32>), String> {
-    let (doc, buffers, _images) =
-        gltf::import_slice(bytes).map_err(|e| e.to_string())?;
+    let (doc, buffers, _images) = gltf::import_slice(bytes).map_err(|e| e.to_string())?;
     let mesh = doc
         .meshes()
         .next()
@@ -1062,10 +1059,7 @@ fn parse_glb_bytes(bytes: &[u8]) -> Result<(Vec<Vertex>, Vec<u32>), String> {
 /// Load `.glb` at `path`, upload CPU-side data to GPU, return a
 /// `GpuMesh` ready for rendering. Logs the failure path to stderr
 /// on any error so the user sees what went wrong.
-fn load_and_upload_mesh(
-    device: &wgpu::Device,
-    path: &str,
-) -> Result<GpuMesh, String> {
+fn load_and_upload_mesh(device: &wgpu::Device, path: &str) -> Result<GpuMesh, String> {
     let (vertices, indices) = load_glb(path)?;
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("twec-play3d mesh vertices"),
@@ -1112,7 +1106,10 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     if let Err(e) = eval::render_frame3d(env) {
         // Surface the runtime error to stderr but keep rendering —
         // a broken render frame shouldn't tear down the window.
-        eprintln!("render error in `on render()`: {}:{}: {}", e.line, e.col, e.message);
+        eprintln!(
+            "render error in `on render()`: {}:{}: {}",
+            e.line, e.col, e.message
+        );
     }
     if !env.out.is_empty() {
         // Drain any `print` output the body produced this frame.
@@ -1283,15 +1280,9 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
             // when the binding hasn't changed).
             if cube_range.1 > cube_range.0 {
                 rpass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                rpass.set_index_buffer(
-                    state.cube_index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint16,
-                );
-                rpass.draw_indexed(
-                    0..state.cube_index_count,
-                    0,
-                    cube_range.0..cube_range.1,
-                );
+                rpass
+                    .set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                rpass.draw_indexed(0..state.cube_index_count, 0, cube_range.0..cube_range.1);
             }
             if sphere_range.1 > sphere_range.0 {
                 rpass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
@@ -1317,15 +1308,8 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                     None => continue,
                 };
                 rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                rpass.set_index_buffer(
-                    gpu_mesh.index_buffer.slice(..),
-                    gpu_mesh.index_format,
-                );
-                rpass.draw_indexed(
-                    0..gpu_mesh.index_count,
-                    0,
-                    range.0..range.1,
-                );
+                rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
+                rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
             }
         }
     }
@@ -1343,18 +1327,18 @@ fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
     let target_default = [0.0, 0.0, 0.0];
     let up_default = [0.0, 1.0, 0.0];
     let camera = {
-let __opt = env.get("camera");
-if let Some(__t) = (__opt).as_ref() {
-if __t.is_object() {
-let rc = __t.as_object();
-rc.clone()
-} else {
-return (eye_default, target_default, up_default)
-}
-} else {
-return (eye_default, target_default, up_default)
-}
-};
+        let __opt = env.get("camera");
+        if let Some(__t) = (__opt).as_ref() {
+            if __t.is_object() {
+                let rc = __t.as_object();
+                rc.clone()
+            } else {
+                return (eye_default, target_default, up_default);
+            }
+        } else {
+            return (eye_default, target_default, up_default);
+        }
+    };
     let cam = camera.borrow();
     let eye = cam
         .get_field("eye")
@@ -1389,14 +1373,14 @@ fn value_as_vec3(v: &Value) -> Option<[f32; 3]> {
 
 fn number(v: &Value) -> Option<f64> {
     if v.is_int_or_boxed_int() {
-let n = v.as_int();
-Some(n as f64)
-} else if v.is_float() {
-let f = v.as_float();
-Some(f)
-} else {
-None
-}
+        let n = v.as_int();
+        Some(n as f64)
+    } else if v.is_float() {
+        let f = v.as_float();
+        Some(f)
+    } else {
+        None
+    }
 }
 
 // ---------- Hand-rolled column-major matrix math ----------
@@ -1540,11 +1524,7 @@ mod tests {
     /// indices, no normals (loader fills with up-vector). Used to
     /// exercise `parse_glb_bytes` without shipping binary fixtures.
     fn make_minimal_glb() -> Vec<u8> {
-        let positions: [f32; 9] = [
-            0.0, 0.0, 0.0,
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-        ];
+        let positions: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let indices: [u32; 3] = [0, 1, 2];
         let pos_bytes = bytemuck::cast_slice::<f32, u8>(&positions).to_vec();
         let idx_bytes = bytemuck::cast_slice::<u32, u8>(&indices).to_vec();

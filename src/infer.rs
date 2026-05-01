@@ -83,10 +83,7 @@ pub fn detect_strict(source: &str) -> bool {
     let needle_d = "#!strict";
     for line in source.lines().take(10) {
         let trimmed = line.trim();
-        if trimmed == needle_a
-            || trimmed == needle_b
-            || trimmed == needle_c
-            || trimmed == needle_d
+        if trimmed == needle_a || trimmed == needle_b || trimmed == needle_c || trimmed == needle_d
         {
             return true;
         }
@@ -110,10 +107,7 @@ pub fn infer_program(program: &Program) -> Bindings {
 /// returned `Vec<TypeError>` is always empty (non-strict drops
 /// failures), so callers that want strict reporting just pass
 /// `true`.
-pub fn infer_program_strict(
-    program: &Program,
-    strict: bool,
-) -> (Bindings, Vec<TypeError>) {
+pub fn infer_program_strict(program: &Program, strict: bool) -> (Bindings, Vec<TypeError>) {
     let mut inferer = Inferer::new(strict);
     inferer.walk_program(program);
     let bindings = inferer.resolved_top_level();
@@ -196,14 +190,7 @@ impl Inferer {
     /// (`"comparison"`, `"return"`, `"call argument"`) so the
     /// diagnostic reads naturally; `line`/`col` come from the
     /// triggering Expr.
-    fn try_unify(
-        &mut self,
-        a: &Type,
-        b: &Type,
-        line: u32,
-        col: u32,
-        kind: &str,
-    ) {
+    fn try_unify(&mut self, a: &Type, b: &Type, line: u32, col: u32, kind: &str) {
         let result = unify(a, b, &mut self.subst);
         if !self.strict {
             return;
@@ -242,7 +229,13 @@ impl Inferer {
 
     fn walk_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, value, ty, line, col } => {
+            Stmt::Let {
+                name,
+                value,
+                ty,
+                line,
+                col,
+            } => {
                 let inferred = self.expr_type(value);
                 // Phase 6 session 2: if the user annotated the
                 // binding (`let x: int = ...`), unify the value's
@@ -255,7 +248,14 @@ impl Inferer {
                     self.bind(name.clone(), inferred);
                 }
             }
-            Stmt::FunctionDecl { name, params, ret, body, line, col } => {
+            Stmt::FunctionDecl {
+                name,
+                params,
+                ret,
+                body,
+                line,
+                col,
+            } => {
                 // Allocate fresh vars for params + return. Register
                 // the function's type BEFORE walking the body so
                 // recursive self-reference (`function fact(n): ...
@@ -295,7 +295,13 @@ impl Inferer {
                     let _ = self.expr_type(v);
                 }
             }
-            Stmt::If { cond, then_body, elifs, else_body, .. } => {
+            Stmt::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
                 let _ = self.expr_type(cond);
                 for s in then_body {
                     self.walk_stmt(s);
@@ -318,7 +324,9 @@ impl Inferer {
                     self.walk_stmt(s);
                 }
             }
-            Stmt::For { var, iter, body, .. } => {
+            Stmt::For {
+                var, iter, body, ..
+            } => {
                 // The loop var's type is the iter's element type
                 // when known. List<T> -> T; tuple/range fall through
                 // to Unknown for this MVP.
@@ -366,8 +374,7 @@ impl Inferer {
                 // walk the body so member expressions resolve. The
                 // body's `say`/`choice`/`wait` arms type-check via
                 // their own arms.
-                let dialogue_ty =
-                    crate::types::Type::func(Vec::new(), crate::types::Type::Unknown);
+                let dialogue_ty = crate::types::Type::func(Vec::new(), crate::types::Type::Unknown);
                 self.scopes
                     .last_mut()
                     .unwrap()
@@ -416,7 +423,14 @@ impl Inferer {
         // it (strict surfaces a mismatch) and record the
         // annotation as the field's canonical type.
         for m in members {
-            if let DeclMember::Field { name, value, ty, line, col } = m {
+            if let DeclMember::Field {
+                name,
+                value,
+                ty,
+                line,
+                col,
+            } = m
+            {
                 let inferred = self.expr_type(value);
                 if let Some(annotated) = ty {
                     self.try_unify(&inferred, annotated, *line, *col, "field annotation");
@@ -437,7 +451,15 @@ impl Inferer {
         // point so usage refines (or violates, in strict) them.
         let mut method_meta: Vec<(String, Vec<Type>, Type)> = Vec::new();
         for m in members {
-            if let DeclMember::Method { name, params, ret, line, col, .. } = m {
+            if let DeclMember::Method {
+                name,
+                params,
+                ret,
+                line,
+                col,
+                ..
+            } = m
+            {
                 let pv: Vec<Type> = params.iter().map(|_| self.fresh_var()).collect();
                 let rv = self.fresh_var();
                 for (i, p) in params.iter().enumerate() {
@@ -462,7 +484,14 @@ impl Inferer {
         // signatures get further refined here through return
         // constraints and operator-driven param pinning.
         for (m_idx, m) in members.iter().enumerate() {
-            if let DeclMember::Method { params, body, line, col, .. } = m {
+            if let DeclMember::Method {
+                params,
+                body,
+                line,
+                col,
+                ..
+            } = m
+            {
                 let (_, pv, rv) = &method_meta[method_count_up_to(members, m_idx)];
                 self.push_scope();
                 let prev_class = self.current_class.take();
@@ -531,13 +560,7 @@ impl Inferer {
     /// Zero return statements leaves `ret_var` unconstrained
     /// (caller-side may pin it via a call site, otherwise it
     /// prints as `?N` per non-strict).
-    fn finalise_return_type(
-        &mut self,
-        ret_var: &Type,
-        returns: Vec<Type>,
-        line: u32,
-        col: u32,
-    ) {
+    fn finalise_return_type(&mut self, ret_var: &Type, returns: Vec<Type>, line: u32, col: u32) {
         if returns.is_empty() {
             return;
         }
@@ -570,7 +593,13 @@ impl Inferer {
                 Stmt::Assign { value, .. } => {
                     let _ = self.expr_type(value);
                 }
-                Stmt::If { cond, then_body, elifs, else_body, .. } => {
+                Stmt::If {
+                    cond,
+                    then_body,
+                    elifs,
+                    else_body,
+                    ..
+                } => {
                     let _ = self.expr_type(cond);
                     self.walk_function_block(then_body, returns);
                     for (c, body) in elifs {
@@ -585,7 +614,9 @@ impl Inferer {
                     let _ = self.expr_type(cond);
                     self.walk_function_block(body, returns);
                 }
-                Stmt::For { var, iter, body, .. } => {
+                Stmt::For {
+                    var, iter, body, ..
+                } => {
                     let iter_t = self.expr_type(iter);
                     let elem_t = match self.resolve(&iter_t) {
                         Type::List(elem) => (*elem).clone(),
@@ -600,7 +631,14 @@ impl Inferer {
                 Stmt::Expr(e) => {
                     let _ = self.expr_type(e);
                 }
-                Stmt::FunctionDecl { name, params, ret, body, line, col } => {
+                Stmt::FunctionDecl {
+                    name,
+                    params,
+                    ret,
+                    body,
+                    line,
+                    col,
+                } => {
                     // Nested function decl — same logic as top
                     // level, isolated from the enclosing return.
                     let pv: Vec<Type> = params.iter().map(|_| self.fresh_var()).collect();
@@ -640,13 +678,10 @@ impl Inferer {
                         // diagnostic. Non-strict drops to Unknown
                         // silently — no false-positive contract.
                         if self.strict {
-                            let names: Vec<&String> = self
-                                .scopes
-                                .iter()
-                                .flat_map(|s| s.keys())
-                                .collect();
-                            let suggestion = crate::value::did_you_mean(name, &names)
-                                .map(str::to_string);
+                            let names: Vec<&String> =
+                                self.scopes.iter().flat_map(|s| s.keys()).collect();
+                            let suggestion =
+                                crate::value::did_you_mean(name, &names).map(str::to_string);
                             self.errors.push(TypeError {
                                 line: *line,
                                 col: *col,
@@ -714,7 +749,13 @@ impl Inferer {
                     _ => Type::Unknown,
                 }
             }
-            Expr::Call { callee, args, line, col, .. } => {
+            Expr::Call {
+                callee,
+                args,
+                line,
+                col,
+                ..
+            } => {
                 let callee_raw = self.expr_type(callee);
                 let callee_t = self.resolve(&callee_raw);
                 let arg_ts: Vec<Type> = args.iter().map(|a| self.expr_type(a)).collect();
@@ -754,7 +795,13 @@ impl Inferer {
                     UnOp::Not => Type::Bool,
                 }
             }
-            Expr::Binary { op, left, right, line, col } => {
+            Expr::Binary {
+                op,
+                left,
+                right,
+                line,
+                col,
+            } => {
                 let l = self.expr_type(left);
                 let r = self.expr_type(right);
                 self.binop_type(*op, &l, &r, *line, *col)
@@ -979,16 +1026,38 @@ fn is_scalar_type(t: &Type) -> bool {
 fn stdlib_names() -> &'static [&'static str] {
     &[
         // top-level builtins
-        "print", "load", "vec3", "cube", "rect", "circle", "line", "text",
-        "sprite", "sound", "screen", "time", "math", "random", "key",
-        "key_press", "color", "entities", "camera",
+        "print",
+        "load",
+        "vec3",
+        "cube",
+        "rect",
+        "circle",
+        "line",
+        "text",
+        "sprite",
+        "sound",
+        "screen",
+        "time",
+        "math",
+        "random",
+        "key",
+        "key_press",
+        "color",
+        "entities",
+        "camera",
         // rarity tier symbols (installed in stdlib::install)
-        "common", "uncommon", "rare", "epic", "legendary",
+        "common",
+        "uncommon",
+        "rare",
+        "epic",
+        "legendary",
         // boolean literal forms accepted by the parser
-        "true", "false",
+        "true",
+        "false",
         // self / nil — both have explicit Expr handling but listing
         // them keeps the strict check's coverage uniform
-        "self", "nil",
+        "self",
+        "nil",
     ]
 }
 
@@ -1110,7 +1179,10 @@ mod tests {
     #[test]
     fn class_decl_binds_class_type() {
         let bs = types_of("entity Hero:\n    var hp = 100\n");
-        assert_eq!(bs.get("Hero").map(|t| t.to_string()).as_deref(), Some("<class Hero>"));
+        assert_eq!(
+            bs.get("Hero").map(|t| t.to_string()).as_deref(),
+            Some("<class Hero>")
+        );
     }
 
     #[test]
@@ -1174,9 +1246,7 @@ mod tests {
 
     #[test]
     fn call_site_resolves_to_function_return_type() {
-        let bs = types_of(
-            "function double(x):\n    return x * 2\n\nlet result = double(5)\n",
-        );
+        let bs = types_of("function double(x):\n    return x * 2\n\nlet result = double(5)\n");
         assert_eq!(bs.get("result"), Some(&Type::Int));
     }
 
@@ -1186,7 +1256,10 @@ mod tests {
             "function outer():\n    function inner(x):\n        return x + 1\n    return inner(5)\n",
         );
         // outer's return came from inner(5) which is int.
-        assert_eq!(bs.get("outer").map(|t| t.to_string()).as_deref(), Some("function() -> int"));
+        assert_eq!(
+            bs.get("outer").map(|t| t.to_string()).as_deref(),
+            Some("function() -> int")
+        );
     }
 
     #[test]
@@ -1200,9 +1273,7 @@ mod tests {
         // important thing is the return type *includes* int; we
         // don't assert the precise union shape because the var
         // numbering depends on allocation order.
-        let bs = types_of(
-            "function head(xs):\n    for x in xs:\n        return x\n    return 0\n",
-        );
+        let bs = types_of("function head(xs):\n    for x in xs:\n        return x\n    return 0\n");
         let t = bs.get("head").expect("head binding");
         let s = t.to_string();
         assert!(s.contains("int"), "got: {s}");
@@ -1222,9 +1293,7 @@ mod tests {
         // Call `double` (which expects int) with a string. Per
         // non-strict, we silently absorb the unification failure
         // — `result` ends up Unknown rather than blowing up.
-        let bs = types_of(
-            "function double(x):\n    return x * 2\n\nlet result = double(\"hi\")\n",
-        );
+        let bs = types_of("function double(x):\n    return x * 2\n\nlet result = double(\"hi\")\n");
         // The signature is still int -> int; the call result
         // type is whatever `*` produced for the body, which
         // resolves to int.
@@ -1277,26 +1346,23 @@ mod tests {
 
     #[test]
     fn instance_field_access_resolves_to_field_type() {
-        let bs = types_of(
-            "item Counter:\n    value: 0\n\nlet c = Counter()\nlet n = c.value\n",
+        let bs = types_of("item Counter:\n    value: 0\n\nlet c = Counter()\nlet n = c.value\n");
+        assert_eq!(
+            bs.get("c").map(|t| t.to_string()).as_deref(),
+            Some("Counter")
         );
-        assert_eq!(bs.get("c").map(|t| t.to_string()).as_deref(), Some("Counter"));
         assert_eq!(bs.get("n"), Some(&Type::Int));
     }
 
     #[test]
     fn instance_field_with_string_default_resolves_to_string() {
-        let bs = types_of(
-            "item NPC:\n    name: \"Bob\"\n\nlet npc = NPC()\nlet who = npc.name\n",
-        );
+        let bs = types_of("item NPC:\n    name: \"Bob\"\n\nlet npc = NPC()\nlet who = npc.name\n");
         assert_eq!(bs.get("who"), Some(&Type::Str));
     }
 
     #[test]
     fn instance_unknown_field_falls_back_to_unknown() {
-        let bs = types_of(
-            "item Counter:\n    value: 0\n\nlet c = Counter()\nlet x = c.glubjorm\n",
-        );
+        let bs = types_of("item Counter:\n    value: 0\n\nlet c = Counter()\nlet x = c.glubjorm\n");
         // Per non-strict ("no false positives"): unknown field
         // is allowed at parse time, returns Unknown.
         assert_eq!(bs.get("x"), Some(&Type::Unknown));
@@ -1304,9 +1370,7 @@ mod tests {
 
     #[test]
     fn entity_with_var_field_carries_inferred_type() {
-        let bs = types_of(
-            "entity Mob:\n    var hp = 100\n\nlet m = Mob()\nlet h = m.hp\n",
-        );
+        let bs = types_of("entity Mob:\n    var hp = 100\n\nlet m = Mob()\nlet h = m.hp\n");
         assert_eq!(bs.get("h"), Some(&Type::Int));
     }
 
@@ -1349,9 +1413,7 @@ mod tests {
         // Bare `return` (no value) is how Twe writes the nil
         // case. Combined with `return n` (int), the return
         // type is int?.
-        let bs = types_of(
-            "function maybe(n):\n    if n > 0:\n        return n\n    return\n",
-        );
+        let bs = types_of("function maybe(n):\n    if n > 0:\n        return n\n    return\n");
         let t = bs.get("maybe").expect("maybe binding");
         let s = t.to_string();
         assert!(s.contains("-> int?"), "got: {s}");
@@ -1361,20 +1423,20 @@ mod tests {
     fn function_returning_distinct_types_yields_union() {
         // Two return statements with different concrete types
         // (int vs str) → return type is `int | string`.
-        let bs = types_of(
-            "function pick(flag):\n    if flag:\n        return 1\n    return \"hi\"\n",
-        );
+        let bs =
+            types_of("function pick(flag):\n    if flag:\n        return 1\n    return \"hi\"\n");
         let t = bs.get("pick").expect("pick binding");
         let s = t.to_string();
-        assert!(s.contains("int | string") || s.contains("string | int"), "got: {s}");
+        assert!(
+            s.contains("int | string") || s.contains("string | int"),
+            "got: {s}"
+        );
     }
 
     #[test]
     fn function_with_all_same_return_type_stays_singleton() {
         // Two `return X` of the same type → just X, not X | X.
-        let bs = types_of(
-            "function abs_(n):\n    if n < 0:\n        return -n\n    return n\n",
-        );
+        let bs = types_of("function abs_(n):\n    if n < 0:\n        return -n\n    return n\n");
         let t = bs.get("abs_").expect("abs binding");
         assert_eq!(t.to_string(), "function(int) -> int");
     }
@@ -1383,9 +1445,7 @@ mod tests {
     fn bare_return_with_no_value_yields_nil_branch() {
         // `return` with no value contributes a Nil to the union.
         // Combined with `return X`, the result is X?.
-        let bs = types_of(
-            "function maybe2(n):\n    if n < 0:\n        return\n    return n + 1\n",
-        );
+        let bs = types_of("function maybe2(n):\n    if n < 0:\n        return\n    return n + 1\n");
         let t = bs.get("maybe2").expect("maybe2 binding");
         let s = t.to_string();
         assert!(s.contains("-> int?"), "got: {s}");
@@ -1397,7 +1457,10 @@ mod tests {
     fn same_unit_addition_preserves_unit() {
         // 100ms + 50ms : quantity<ms>
         let bs = types_of("let a = 100ms\nlet b = 50ms\nlet c = a + b\n");
-        assert_eq!(bs.get("c").map(|t| t.to_string()).as_deref(), Some("quantity<ms>"));
+        assert_eq!(
+            bs.get("c").map(|t| t.to_string()).as_deref(),
+            Some("quantity<ms>")
+        );
     }
 
     #[test]
@@ -1413,8 +1476,14 @@ mod tests {
     fn quantity_times_scalar_keeps_unit() {
         // 100ms * 2 -> quantity<ms>; 3 * 100ms -> quantity<ms>
         let bs = types_of("let dt = 100ms\nlet doubled = dt * 2\nlet tripled = 3 * dt\n");
-        assert_eq!(bs.get("doubled").map(|t| t.to_string()).as_deref(), Some("quantity<ms>"));
-        assert_eq!(bs.get("tripled").map(|t| t.to_string()).as_deref(), Some("quantity<ms>"));
+        assert_eq!(
+            bs.get("doubled").map(|t| t.to_string()).as_deref(),
+            Some("quantity<ms>")
+        );
+        assert_eq!(
+            bs.get("tripled").map(|t| t.to_string()).as_deref(),
+            Some("quantity<ms>")
+        );
     }
 
     #[test]
@@ -1428,28 +1497,35 @@ mod tests {
     fn quantity_div_quantity_different_units_combines() {
         // 5m / 3s -> quantity<m/s> (velocity, by convention)
         let bs = types_of("let dist = 5m\nlet time = 3s\nlet speed = dist / time\n");
-        assert_eq!(bs.get("speed").map(|t| t.to_string()).as_deref(), Some("quantity<m/s>"));
+        assert_eq!(
+            bs.get("speed").map(|t| t.to_string()).as_deref(),
+            Some("quantity<m/s>")
+        );
     }
 
     #[test]
     fn quantity_mul_quantity_combines_units() {
         // 5kg * 9m -> quantity<kg*m>
         let bs = types_of("let m = 5kg\nlet d = 9m\nlet work = m * d\n");
-        assert_eq!(bs.get("work").map(|t| t.to_string()).as_deref(), Some("quantity<kg*m>"));
+        assert_eq!(
+            bs.get("work").map(|t| t.to_string()).as_deref(),
+            Some("quantity<kg*m>")
+        );
     }
 
     #[test]
     fn quantity_squared_uses_caret_notation() {
         // Same unit on both sides of mul -> unit^2.
         let bs = types_of("let s = 10m\nlet area = s * s\n");
-        assert_eq!(bs.get("area").map(|t| t.to_string()).as_deref(), Some("quantity<m^2>"));
+        assert_eq!(
+            bs.get("area").map(|t| t.to_string()).as_deref(),
+            Some("quantity<m^2>")
+        );
     }
 
     #[test]
     fn scene_field_shape_works_too() {
-        let bs = types_of(
-            "scene S:\n    var n = 0\n    initial: a\n    state a:\n",
-        );
+        let bs = types_of("scene S:\n    var n = 0\n    initial: a\n    state a:\n");
         // We can't easily access scene fields from outside a
         // scene declaration without an explicit reference, but
         // we can at least confirm the class binds and the shape
@@ -1458,7 +1534,10 @@ mod tests {
         // scenes (they auto-instantiate at runtime), so we
         // can't test access syntactically. This test just
         // confirms the type for S binds without error.
-        assert_eq!(bs.get("S").map(|t| t.to_string()).as_deref(), Some("<class S>"));
+        assert_eq!(
+            bs.get("S").map(|t| t.to_string()).as_deref(),
+            Some("<class S>")
+        );
     }
 
     // --- Phase 6 session 1: strict mode ---
@@ -1504,7 +1583,10 @@ mod tests {
         // The unification failures still happen internally; they
         // just stay silent.
         let errors = strict_errors("let bad = \"hi\" < 5\n");
-        assert!(errors.is_empty(), "non-strict should drop errors, got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "non-strict should drop errors, got {errors:?}"
+        );
     }
 
     #[test]
@@ -1532,9 +1614,8 @@ mod tests {
         // type (e.g. via call-site arg unify) before the union
         // is built. The simplest fire is calling a function with
         // mismatched arg types so the call-site arg-unify fails.
-        let errors = strict_errors(
-            "# strict\nfunction f(n):\n    return n + 1\n\nlet x = f(\"hi\") + 1\n",
-        );
+        let errors =
+            strict_errors("# strict\nfunction f(n):\n    return n + 1\n\nlet x = f(\"hi\") + 1\n");
         // The call site `f("hi")` passes Str where param is Int
         // (pinned by `n + 1` inside the body). Strict should
         // surface the call-arg mismatch.
@@ -1616,9 +1697,8 @@ mod tests {
         // Same shape as the strict cases but no `# strict`. Errors
         // stay silent — the v0.1 default contract.
         let errors_let = strict_errors("let x: int = \"hi\"\n");
-        let errors_param = strict_errors(
-            "function add(n: int):\n    return n + 1\n\nadd(\"hi\")\n",
-        );
+        let errors_param =
+            strict_errors("function add(n: int):\n    return n + 1\n\nadd(\"hi\")\n");
         let errors_ret = strict_errors("function f() -> int:\n    return \"hi\"\n");
         assert!(errors_let.is_empty());
         assert!(errors_param.is_empty());
@@ -1644,7 +1724,9 @@ mod tests {
         // Type::Unknown silently.
         let errors = strict_errors("# strict\nlet x = gibberish_name + 1\n");
         assert!(
-            errors.iter().any(|e| e.message.contains("unknown name `gibberish_name`")),
+            errors
+                .iter()
+                .any(|e| e.message.contains("unknown name `gibberish_name`")),
             "expected unknown-name error, got {errors:?}"
         );
     }
@@ -1660,7 +1742,11 @@ mod tests {
             .find(|e| e.message.contains("unknown name `goblion`"))
             .expect("expected unknown-name error");
         assert!(
-            unknown.help.as_ref().map(|h| h.contains("did you mean `goblin`?")).unwrap_or(false),
+            unknown
+                .help
+                .as_ref()
+                .map(|h| h.contains("did you mean `goblin`?"))
+                .unwrap_or(false),
             "expected did-you-mean suggestion, got {:?}",
             unknown.help
         );
@@ -1698,7 +1784,9 @@ mod tests {
         let src = "# strict\nentity Hero:\n    hp: int = \"hi\"\n";
         let errors = strict_errors(src);
         assert!(
-            errors.iter().any(|e| e.message.contains("field annotation")),
+            errors
+                .iter()
+                .any(|e| e.message.contains("field annotation")),
             "expected field-annotation error, got {errors:?}"
         );
     }
