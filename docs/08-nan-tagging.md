@@ -298,10 +298,44 @@ Stress tests (under `gc_set_threshold(0)` — force collect on every safepoint):
 
 **8h shipped in one commit:** `phase-8.5: 8h GC roots wiring + safepoints — auto-collect on cross-threshold`. **502 tests pass; clippy clean under `-D warnings`; release build zero warnings.**
 
-#### Session 8i — Bench + tune
+#### Session 8i — Bench + tune (✅ shipped 2026-05-01; 3× criterion NOT met)
 
-- `cargo bench` survival-clone benchmark against pre-migration baseline.
-- Hard exit criterion from `docs/05-roadmap.md` Phase 8: 3× speedup vs. pre-tag VM. Tune until met.
+What 8i shipped:
+
+- `#[inline]` annotations on the hot TaggedValue predicates (`is_int`, `is_float`, `is_bool`, `is_str`, `is_obj`, `is_tagged`, `is_int_or_boxed_int`, `is_truthy`, `is_falsy`) and constructors (`from_int`, `from_bool`, `from_float`).
+- `#[inline]` on `gc_should_collect` — the safepoint check fires on every VM bytecode instruction and statement-boundary, so making it inlinable matters. Without this, sum_loop ran ~30% slower than with the safepoint disabled.
+- Cached `slot_base` in the VM dispatch loop alongside `current_func` / `ip`. OP_GET_LOCAL / OP_SET_LOCAL no longer pay a `self.frames.last().unwrap()` lookup per iteration.
+- Bench harness ran against three baselines:
+  - pre-tag (`962fa77`, before Phase 8.5 started)
+  - post-8f (`82ca80a`, predicate dispatch shipped, no GC yet)
+  - post-8i (`HEAD`, all of Phase 8.5)
+
+**Measured numbers (cargo test --release --test bench -- --ignored):**
+
+| Workload | pre-tag bc (µs) | post-8i bc (µs) | post-8i / pre-tag |
+|----------|-----------------|-----------------|-------------------|
+| fib(25) | 54,931 | 66,533 | 1.21× slower |
+| sum_loop(100k) | 64,205 | 108,103 | 1.68× slower |
+| method_call(10k) | 6,995 | 12,318 | 1.76× slower |
+| list_iter(10k) | 9,283 | 12,182 | 1.31× slower |
+| scene_tick(1k) | 707 | 808 | 1.14× slower |
+| entity_tick(500) | 1,030 | 1,263 | 1.23× slower |
+| entity_tick(500) × 60 | 12,485 | 16,432 | 1.32× slower |
+
+**The 3× speedup-vs-pre-tag-VM criterion is NOT met.** We're 1.1×–1.8× *slower* than pre-tag, leaving a 3.3×–5.4× gap to the criterion target. Bisecting at `82ca80a` (post-8f, before GC) showed 8f's predicate-dispatch migration introduced most of the regression; the GC machinery in 8g–8h adds modest but recoverable overhead on top.
+
+Caveats: per-run variance is large (40% swings on the same workload across consecutive runs). A criterion-style multi-iteration harness would be needed for precise per-optimization claims; that's out of 8i scope.
+
+Follow-on perf phase needed (post-Phase-8.5):
+
+1. Switch to a criterion-based bench harness for stable measurement.
+2. Profile the dispatch loop (`samply` / VS profiler) to identify actual hot instructions.
+3. Reorder predicate-dispatch fall-through (put `int + int` first in `binary_arith` / `compare`).
+4. Investigate the regression at 8f specifically — the controlled diff between pre-tag's enum-match and post-8f's predicate-dispatch on `binary_arith` may reveal a small fix.
+5. Consider direct-threaded interpreter (computed goto) per *Crafting Interpreters* §24.7.
+6. Consider inline caches for monomorphic call sites.
+
+Captured as the agenda for a dedicated post-Phase-8.5 perf phase. See `docs/changes/2026-05-01-phase-8.5-closeout.md`.
 
 ### Total estimated size
 
