@@ -66,7 +66,7 @@ fn wait_duration_to_seconds(v: &Value, line: u32) -> Result<f64, RuntimeError> {
         let n = v.as_int();
         Ok(n as f64)
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line,
             col: 0,
@@ -312,7 +312,7 @@ Err(RuntimeError {
             match op {
                 OpCode::Constant => {
                     let idx = read_byte!() as usize;
-                    let value = current_func.chunk.constants[idx].clone();
+                    let value = current_func.chunk.constants[idx];
                     self.push(value);
                 }
                 OpCode::Nil => self.push(Value::NIL),
@@ -358,7 +358,7 @@ Err(RuntimeError {
                         // Nested invocation completing: leave the
                         // result on the stack so the VM-side caller
                         // can pop it.
-                        self.push(result.clone());
+                        self.push(result);
                         return Ok(result);
                     }
                     if self.frames.is_empty() {
@@ -648,7 +648,7 @@ Err(RuntimeError {
                             let s = p.as_string();
                             out.push_str(s.as_str())
                         } else {
-                            let other = p.clone();
+                            let other = *p;
                             return Err(RuntimeError {
                                 line,
                                 col: 0,
@@ -684,7 +684,7 @@ Err(RuntimeError {
                     let name = read_string_const!(idx, line)?;
                     let value = self.pop()?;
                     let recv = self.pop()?;
-                    field_set(&recv, name.as_str(), value.clone(), line)?;
+                    field_set(&recv, name.as_str(), value, line)?;
                     self.push(value);
                 }
                 OpCode::InitScene => {
@@ -692,7 +692,7 @@ Err(RuntimeError {
                     let class = if class_val.is_bc_class() {
                         class_val.as_bc_class()
                     } else {
-                        let other = class_val.clone();
+                        let other = class_val;
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -727,7 +727,7 @@ Err(RuntimeError {
                     let class = if class_val.is_bc_class() {
                         class_val.as_bc_class()
                     } else {
-                        let other = class_val.clone();
+                        let other = class_val;
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -743,7 +743,7 @@ Err(RuntimeError {
                             unreachable!()
                         }
                     };
-                    if let Some(at) = at_value.clone() {
+                    if let Some(at) = at_value {
                         inst.borrow_mut().insert_field("pos".to_string(), at);
                     }
                     if class.kind == "particles" {
@@ -762,7 +762,7 @@ Err(RuntimeError {
                         let rc = target.as_bc_instance();
                         rc.borrow_mut().despawned = true;
                     } else {
-                        let other = target.clone();
+                        let other = target;
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -781,12 +781,12 @@ Err(RuntimeError {
                 }
                 OpCode::SetOnUpdate => {
                     let idx = read_byte!() as usize;
-                    let value = current_func.chunk.constants[idx].clone();
+                    let value = current_func.chunk.constants[idx];
                     if value.is_bc_function() {
                         let func = value.as_bc_function();
                         self.on_update = Some(func);
                     } else {
-                        let other = value.clone();
+                        let other = value;
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -845,19 +845,19 @@ Err(RuntimeError {
                         let rc = iter_value.as_list();
                         let v = rc.borrow();
                         if (counter as usize) < v.len() {
-                            Some(v[counter as usize].clone())
+                            Some(v[counter as usize])
                         } else {
                             None
                         }
                     } else if iter_value.is_tuple() {
                         let elems = iter_value.as_tuple();
                         if (counter as usize) < elems.len() {
-                            Some(elems[counter as usize].clone())
+                            Some(elems[counter as usize])
                         } else {
                             None
                         }
                     } else {
-                        let other = iter_value.clone();
+                        let other = iter_value;
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -902,7 +902,7 @@ Err(RuntimeError {
                     ),
                     help: None,
                 })?;
-        let callee = self.stack[callee_idx].clone();
+        let callee = self.stack[callee_idx];
         if callee.is_bc_function() {
             self.push_call_frame(callee.as_bc_function(), callee_idx, arg_count, line)
         } else if callee.is_bc_class() {
@@ -1141,7 +1141,7 @@ Err(RuntimeError {
                         let (value, _) = __t.as_quantity();
                         value
                     } else {
-                        let other = __t.clone();
+                        let other = *__t;
                         return Err(RuntimeError {
                             line,
                             col: 0,
@@ -1214,7 +1214,7 @@ Err(RuntimeError {
                 self.invoke_method_value(
                     method,
                     Value::from_bc_instance(emitter.clone()),
-                    &[p.clone(), Value::from_float(dt)],
+                    &[*p, Value::from_float(dt)],
                 )?;
             }
             if p.is_object() {
@@ -1577,7 +1577,7 @@ Err(RuntimeError {
                     let c = __t.as_bc_class();
                     c.clone()
                 } else {
-                    let other = (*__t).clone();
+                    let other = *(*__t);
                     return Err(RuntimeError {
                         line,
                         col: 0,
@@ -1669,7 +1669,7 @@ Err(RuntimeError {
         let recv_idx = self.stack.len();
         self.push(recv);
         for arg in args {
-            self.push(arg.clone());
+            self.push(*arg);
         }
         let target_depth = self.frames.len();
         self.push_call_frame(function, recv_idx, args.len(), 0)?;
@@ -1809,7 +1809,7 @@ Err(RuntimeError {
         // BcInstance dispatch keeps the receiver on the stack as the
         // method's slot 0 (`self`) and continues from the new frame —
         // it doesn't drop into the simple "compute one value" pattern.
-        let recv_clone = self.stack[recv_idx].clone();
+        let recv_clone = self.stack[recv_idx];
         if recv_clone.is_bc_instance() {
             let inst_rc = recv_clone.as_bc_instance();
             let method = inst_rc
@@ -1872,7 +1872,7 @@ Err(RuntimeError {
                 }
                 func(&mut self.builtin_env, &args)?
             } else {
-                let other = field.clone();
+                let other = field;
                 return Err(RuntimeError {
                     line,
                     col: 0,
@@ -1940,7 +1940,7 @@ Err(RuntimeError {
             let f = v.as_float();
             Value::from_float(-f)
         } else {
-            let other = v.clone();
+            let other = v;
             return Err(RuntimeError {
                 line,
                 col: 0,
@@ -2143,7 +2143,7 @@ fn index_get(obj: &Value, idx: &Value, line: u32) -> Result<Value, RuntimeError>
                 help: Some("lists are 0-indexed; negative indices count from the end".to_string()),
             });
         }
-        Ok(v[actual as usize].clone())
+        Ok(v[actual as usize])
     } else if obj.is_tuple() {
         if !idx.is_int_or_boxed_int() {
             return Err(RuntimeError {
@@ -2165,7 +2165,7 @@ fn index_get(obj: &Value, idx: &Value, line: u32) -> Result<Value, RuntimeError>
                 help: None,
             });
         }
-        Ok(elems[actual as usize].clone())
+        Ok(elems[actual as usize])
     } else {
         Err(RuntimeError {
             line,
@@ -2183,9 +2183,9 @@ fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> 
     if obj.is_tuple() {
         let elems = obj.as_tuple();
         match name {
-            "x" if !elems.is_empty() => Ok(elems[0].clone()),
-            "y" if elems.len() >= 2 => Ok(elems[1].clone()),
-            "z" if elems.len() >= 3 => Ok(elems[2].clone()),
+            "x" if !elems.is_empty() => Ok(elems[0]),
+            "y" if elems.len() >= 2 => Ok(elems[1]),
+            "z" if elems.len() >= 3 => Ok(elems[2]),
             _ => Err(RuntimeError {
                 line,
                 col: 0,
@@ -2236,7 +2236,7 @@ fn field_get(obj: &Value, name: &str, line: u32) -> Result<Value, RuntimeError> 
         };
         result
     } else {
-        let other = obj.clone();
+        let other = *obj;
         Err(RuntimeError {
             line,
             col: 0,
@@ -2258,7 +2258,7 @@ fn field_set(recv: &Value, name: &str, value: Value, line: u32) -> Result<(), Ru
         rc.borrow_mut().insert_field(name.to_string(), value);
         Ok(())
     } else {
-        let other = recv.clone();
+        let other = *recv;
         Err(RuntimeError {
             line,
             col: 0,
@@ -2277,7 +2277,7 @@ fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
     let fields: HashMap<String, TaggedValue> = class
         .field_defaults
         .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (k.clone(), *v))
         .collect();
     Value::from_bc_instance(Rc::new(RefCell::new(BcInstance {
         class,
@@ -2320,7 +2320,7 @@ fn value_in(needle: &Value, haystack: &Value, line: u32) -> Result<bool, Runtime
             Ok(false)
         }
     } else {
-        let other = haystack.clone();
+        let other = *haystack;
         Err(RuntimeError {
             line,
             col: 0,
@@ -2358,12 +2358,12 @@ fn list_method(
     match name {
         "append" => {
             arity_check(1)?;
-            rc.borrow_mut().push(args[0].clone());
+            rc.borrow_mut().push(args[0]);
             Ok(Value::NIL)
         }
         "prepend" => {
             arity_check(1)?;
-            rc.borrow_mut().insert(0, args[0].clone());
+            rc.borrow_mut().insert(0, args[0]);
             Ok(Value::NIL)
         }
         "pop_back" => {
@@ -2472,7 +2472,7 @@ fn range_method(
 /// receive this Object as `p` and can mutate any field.
 fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
     let mut fields = HashMap::new();
-    fields.insert("pos".to_string(), initial_pos.clone());
+    fields.insert("pos".to_string(), *initial_pos);
     fields.insert(
         "velocity".to_string(),
         Value::from_tuple(Rc::new(vec![
@@ -2601,7 +2601,7 @@ mod tests {
             let s = v.as_string();
             assert_eq!(s.as_str(), "hello, world");
         } else {
-            let other = v.clone();
+            let other = v;
             panic!("want Str, got {other:?}");
         }
     }

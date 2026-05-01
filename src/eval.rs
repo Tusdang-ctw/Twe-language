@@ -133,7 +133,7 @@ fn seed_particle_emitter(
                     let (value, _) = __t.as_quantity();
                     value
                 } else {
-                    let other = __t.clone();
+                    let other = *__t;
                     return Err(RuntimeError {
                         line,
                         col,
@@ -185,7 +185,7 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
         fields: HashMap::new(),
         kind: "particle",
     };
-    o.insert_field("pos", initial_pos.clone());
+    o.insert_field("pos", *initial_pos);
     o.insert_field(
         "velocity",
         Value::from_tuple(Rc::new(vec![
@@ -235,7 +235,7 @@ fn tick_particle_emitter(
                 env,
                 Value::from_instance(emitter.clone()),
                 &method,
-                &[p.clone(), Value::from_float(dt)],
+                &[*p, Value::from_float(dt)],
                 &[],
                 0,
                 0,
@@ -1357,7 +1357,7 @@ fn run_user_call_resumable(
     let saved_params: Vec<(String, Option<Value>)> =
         def.params.iter().map(|p| (p.clone(), env.get(p))).collect();
     for (param, arg) in def.params.iter().zip(bound.iter()) {
-        env.set(param.clone(), arg.clone());
+        env.set(param.clone(), *arg);
     }
 
     // Push the function frame upfront. Saved env state lives on
@@ -1517,7 +1517,7 @@ fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeErr
         let n = v.as_int();
         Ok(n as f64)
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line,
             col,
@@ -1682,7 +1682,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             let class_rc = if class_val.is_class() {
                 class_val.as_class()
             } else {
-                let other = class_val.clone();
+                let other = class_val;
                 return Err(RuntimeError {
                     line: *line,
                     col: *col,
@@ -1701,7 +1701,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             if let Some(av) = &at_value {
                 if inst_val.is_instance() {
                     let rc = inst_val.as_instance();
-                    rc.borrow_mut().insert_field("pos", av.clone());
+                    rc.borrow_mut().insert_field("pos", *av);
                 }
             }
             if inst_val.is_instance() {
@@ -1720,7 +1720,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 rc.borrow_mut().despawned = true;
                 Ok(())
             } else {
-                let other = v.clone();
+                let other = v;
                 Err(RuntimeError {
                     line: *line,
                     col: *col,
@@ -1923,8 +1923,8 @@ fn eval_assign(
                     let elems = &final_value.as_tuple();
                     if elems.len() >= 2 {
                         let mut o = rc.borrow_mut();
-                        o.insert_field("x".to_string(), elems[0].clone());
-                        o.insert_field("y".to_string(), elems[1].clone());
+                        o.insert_field("x".to_string(), elems[0]);
+                        o.insert_field("y".to_string(), elems[1]);
                     }
                 }
                 rc.borrow_mut().insert_field(name.clone(), final_value);
@@ -1966,7 +1966,7 @@ fn eval_assign(
                 rc.borrow_mut().insert_field(name.clone(), final_value);
                 Ok(())
             } else {
-                let other = obj_val.clone();
+                let other = obj_val;
                 Err(RuntimeError {
                     line,
                     col,
@@ -2035,7 +2035,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             message: format!("name '{name}' is not defined"),
             help: Some(format!("declare it with `let {name} = ...` before use")),
         }),
-        Expr::SelfRef { line, col } => env.self_value.clone().ok_or_else(|| RuntimeError {
+        Expr::SelfRef { line, col } => env.self_value.ok_or_else(|| RuntimeError {
             line: *line,
             col: *col,
             message: "`self` is only valid inside a method body".to_string(),
@@ -2161,7 +2161,7 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
                 help: Some("lists are 0-indexed; negative indices count from the end".to_string()),
             });
         }
-        Ok(v[actual as usize].clone())
+        Ok(v[actual as usize])
     } else if obj.is_tuple() {
         if !idx.is_int_or_boxed_int() {
             return Err(RuntimeError {
@@ -2186,7 +2186,7 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
                 )),
             });
         }
-        Ok(elems[actual as usize].clone())
+        Ok(elems[actual as usize])
     } else {
         Err(RuntimeError {
             line,
@@ -2201,9 +2201,9 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
     if obj.is_tuple() {
         let elems = obj.as_tuple();
         match name {
-            "x" if !elems.is_empty() => Ok(elems[0].clone()),
-            "y" if elems.len() >= 2 => Ok(elems[1].clone()),
-            "z" if elems.len() >= 3 => Ok(elems[2].clone()),
+            "x" if !elems.is_empty() => Ok(elems[0]),
+            "y" if elems.len() >= 2 => Ok(elems[1]),
+            "z" if elems.len() >= 3 => Ok(elems[2]),
             _ => Err(RuntimeError {
                 line,
                 col,
@@ -2620,7 +2620,7 @@ fn apply_call(
         }
         Ok(instantiate(class))
     } else {
-        let other = f.clone();
+        let other = f;
         Err(RuntimeError {
             line,
             col,
@@ -2669,7 +2669,7 @@ fn call_function(
     let saved_params: Vec<(String, Option<Value>)> =
         def.params.iter().map(|p| (p.clone(), env.get(p))).collect();
     for (param, arg) in def.params.iter().zip(args.iter()) {
-        env.set(param.clone(), arg.clone());
+        env.set(param.clone(), *arg);
     }
     env.call_depth += 1;
     let body_result = run_block(env, &def.body);
@@ -2697,7 +2697,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
     }
     for c in chain.iter().rev() {
         for (k, v) in &c.field_defaults {
-            fields.insert(k.clone(), v.clone());
+            fields.insert(k.clone(), *v);
         }
     }
     Value::from_instance(Rc::new(RefCell::new(Instance {
@@ -2763,7 +2763,7 @@ fn call_method(
         .map(|p| (p.clone(), env.get(p)))
         .collect();
     for (param, arg) in method.params.iter().zip(args.iter()) {
-        env.set(param.clone(), arg.clone());
+        env.set(param.clone(), *arg);
     }
     env.call_depth += 1;
     let body_result = run_block(env, &method.body);
@@ -2825,7 +2825,7 @@ fn run_for(
         let snapshot: Vec<Value> = elems.iter().cloned().collect();
         run_for_iter(env, var, body, snapshot.into_iter())
     } else {
-        let other = iter_val.clone();
+        let other = iter_val;
         Err(RuntimeError {
             line,
             col,
@@ -2883,7 +2883,7 @@ fn eval_decl(
                     let c = __t.as_class();
                     Some(c.clone())
                 } else {
-                    let other = __t.clone();
+                    let other = *__t;
                     return Err(RuntimeError {
                         line,
                         col,
@@ -3097,7 +3097,7 @@ fn value_in(needle: &Value, haystack: &Value, line: u32, col: u32) -> Result<boo
             Ok(false)
         }
     } else {
-        let other = haystack.clone();
+        let other = *haystack;
         Err(RuntimeError {
             line,
             col,

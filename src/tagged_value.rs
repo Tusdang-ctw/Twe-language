@@ -191,12 +191,32 @@ impl HeapBodyKind {
     }
 }
 
-/// One heap object. `body` is the actual data; session 8g adds a
-/// `header: HeapHeader` field with mark bits + body-kind cache.
-/// `RefCell` keeps mutation interior so `Rc<HeapObject>` is
-/// sufficient for now (real GC allocator lands in 8g).
+/// One heap object. `body` is the actual data; the GC header
+/// (mark bit + body-kind cache + linked-list `next` pointer)
+/// rides alongside per-object so `Heap::collect` can sweep without
+/// a side table. v0.2 Phase 8.5 session 8g.
+///
+/// `mark` and `next` use `Cell` so the GC's mark/sweep can mutate
+/// them through `&HeapObject` without `RefCell::borrow_mut`'s
+/// runtime check (mark/sweep is single-threaded by construction —
+/// stop-the-world — and never aliases with body access).
 #[derive(Debug)]
 pub struct HeapObject {
+    /// GC mark bit. `false` = white (unreached) at the start of
+    /// each cycle. The mark phase sets it `true` (black). The
+    /// sweep phase resets `true` → `false` and frees `false`s.
+    pub mark: std::cell::Cell<bool>,
+    /// Cached body discriminant — used by `is_obj_body_kind`
+    /// without a `with_obj_body` borrow, and by `Heap::collect`
+    /// when scanning for nested pointers.
+    pub body_kind: HeapBodyKind,
+    /// Intrusive linked-list pointer threading every heap
+    /// allocation onto `Heap::all_objects`. The sweep walk uses
+    /// this list. `Cell` so sweep can rewire neighbours through
+    /// shared `&HeapObject`.
+    pub next: std::cell::Cell<*mut HeapObject>,
+    /// The actual value data. `RefCell` keeps mutation interior
+    /// (e.g. `List`'s `Vec<TaggedValue>` push / pop).
     pub body: RefCell<HeapBody>,
 }
 
@@ -250,12 +270,10 @@ impl TaggedValue {
     }
 
     /// Encode a string. Allocates a `HeapObject { String(s) }`
-    /// and tags the pointer.
+    /// on the GC heap and tags the pointer. v0.2 Phase 8.5
+    /// session 8g — the heap owns the allocation; sweep frees it.
     pub fn from_string(s: String) -> Self {
-        let rc = Rc::new(HeapObject {
-            body: RefCell::new(HeapBody::String(s)),
-        });
-        let raw = Rc::into_raw(rc) as usize as u64;
+        let raw = crate::heap::gc_alloc(HeapBody::String(s)) as usize as u64;
         Self(QNAN | TAG_STR | (raw & PAYLOAD_MASK))
     }
 
@@ -271,12 +289,10 @@ impl TaggedValue {
     }
 
     /// Internal: heap-allocate any non-string `HeapBody` and
-    /// tag the pointer with `TAG_OBJ`. v0.2 Phase 8.5 session 8b.
+    /// tag the pointer with `TAG_OBJ`. v0.2 Phase 8.5 session 8b
+    /// (8g routes through the GC heap allocator).
     fn from_heap(body: HeapBody) -> Self {
-        let rc = Rc::new(HeapObject {
-            body: RefCell::new(body),
-        });
-        let raw = Rc::into_raw(rc) as usize as u64;
+        let raw = crate::heap::gc_alloc(body) as usize as u64;
         Self(QNAN | TAG_OBJ | (raw & PAYLOAD_MASK))
     }
 
@@ -787,55 +803,49 @@ impl TaggedValue {
     }
 
     /// Borrow the heap object behind a pointer-tagged value.
-    /// The closure runs while the `Rc` is alive; the refcount
-    /// stays balanced. **The caller's closure must not hold
-    /// references past return** — once `with_heap_object`
-    /// returns, the `Rc` may drop.
+    /// The closure must not retain any reference past return —
+    /// the borrow lives only for the duration of the call. The
+    /// GC heap owns the allocation; this borrow does not affect
+    /// liveness.
     fn with_heap_object<R>(&self, f: impl FnOnce(&HeapObject) -> R) -> R {
         debug_assert!(self.is_heap(), "with_heap_object on non-heap value");
-        let raw = (self.0 & PAYLOAD_MASK) as usize as *const HeapObject;
-        // SAFETY: pointer was produced by `Rc::into_raw` and the
-        // refcount-balance invariants of `TaggedValue` keep it
-        // valid. We `increment_strong_count` to take a temporary
-        // share, then `Rc::from_raw` consumes that share when the
-        // function returns.
-        unsafe {
-            Rc::increment_strong_count(raw);
-            let rc: Rc<HeapObject> = Rc::from_raw(raw);
-            f(&rc)
-        }
+        let ptr = self.heap_ptr();
+        // SAFETY: a pointer-tagged TaggedValue's payload always
+        // points at a live heap object — either still on
+        // `Heap::all_objects`, or about to be marked black by an
+        // ongoing collect that walks transitively from this root.
+        // GC sweep frees only objects that finish a cycle white;
+        // by construction, anything we hold a TaggedValue to is
+        // either reachable or safely past the relevant safepoint.
+        unsafe { f(&*ptr) }
+    }
+
+    /// Raw pointer to the heap object. Public for `crate::heap`'s
+    /// mark phase. Returns `null` if the value isn't pointer-tagged.
+    pub(crate) fn heap_ptr(&self) -> *mut HeapObject {
+        debug_assert!(self.is_heap(), "heap_ptr on non-heap value");
+        (self.0 & PAYLOAD_MASK) as usize as *mut HeapObject
+    }
+
+    /// Cheap predicate: is this a Str-tagged or Obj-tagged value
+    /// (i.e. carries a heap pointer)? Used by `crate::heap::mark_value`.
+    pub(crate) fn is_heap_pointer(&self) -> bool {
+        self.is_heap()
     }
 }
 
-// ---------- Clone + Drop (refcount management) ----------
+// ---------- Copy / Clone ----------
+//
+// Pre-8g, `TaggedValue` ran a refcount dance on Clone / Drop because
+// pointer-tagged variants owned an `Rc<HeapObject>`. With the GC
+// heap owning every allocation (8g), `TaggedValue` is just a u64 —
+// freely copyable, no destructor needed.
+
+impl Copy for TaggedValue {}
 
 impl Clone for TaggedValue {
     fn clone(&self) -> Self {
-        if self.is_heap() {
-            let raw = (self.0 & PAYLOAD_MASK) as usize as *const HeapObject;
-            // SAFETY: pointer was produced by Rc::into_raw and is
-            // valid for the lifetime of the original TaggedValue.
-            // increment_strong_count takes one extra share; the
-            // matching decrement runs in `Drop`.
-            unsafe {
-                Rc::increment_strong_count(raw);
-            }
-        }
-        Self(self.0)
-    }
-}
-
-impl Drop for TaggedValue {
-    fn drop(&mut self) {
-        if self.is_heap() {
-            let raw = (self.0 & PAYLOAD_MASK) as usize as *const HeapObject;
-            // SAFETY: every TaggedValue holds exactly one share
-            // of the inner Rc; reconstructing + dropping
-            // `Rc::from_raw` here decrements the refcount.
-            unsafe {
-                let _drop_one_share: Rc<HeapObject> = Rc::from_raw(raw);
-            }
-        }
+        *self
     }
 }
 
@@ -915,7 +925,7 @@ mod tests {
             0.0_f64,
             1.0,
             -1.0,
-            3.14,
+            2.5,
             1e100,
             -1e-100,
             f64::INFINITY,
@@ -957,21 +967,6 @@ mod tests {
     }
 
     #[test]
-    fn clone_bumps_refcount_and_drop_balances() {
-        let v1 = TaggedValue::from_borrowed_str("shared");
-        let v2 = v1.clone();
-        let v3 = v1.clone();
-        // All three see the same string.
-        assert_eq!(v1.as_string(), "shared");
-        assert_eq!(v2.as_string(), "shared");
-        assert_eq!(v3.as_string(), "shared");
-        // Drop two of the three. The third must still read.
-        drop(v2);
-        drop(v3);
-        assert_eq!(v1.as_string(), "shared");
-    }
-
-    #[test]
     fn predicates_partition_correctly() {
         // Every value reports exactly one is_* category.
         let cases: Vec<(TaggedValue, &str)> = vec![
@@ -1005,7 +1000,7 @@ mod tests {
     #[test]
     fn is_number_covers_int_and_float() {
         assert!(TaggedValue::from_int(3).is_number());
-        assert!(TaggedValue::from_float(3.14).is_number());
+        assert!(TaggedValue::from_float(2.5).is_number());
         assert!(!TaggedValue::NIL.is_number());
         assert!(!TaggedValue::from_bool(true).is_number());
         assert!(!TaggedValue::from_borrowed_str("x").is_number());

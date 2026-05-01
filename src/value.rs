@@ -389,7 +389,7 @@ impl Env {
     /// Iterate over every (name, value) currently bound. v0.2 Phase
     /// 8.5 session 8f: yields owned `(String, TaggedValue)` tuples.
     pub fn iter_bindings(&self) -> impl Iterator<Item = (String, TaggedValue)> + '_ {
-        self.bindings.iter().map(|(k, v)| (k.clone(), v.clone()))
+        self.bindings.iter().map(|(k, v)| (k.clone(), *v))
     }
 }
 

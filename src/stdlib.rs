@@ -219,7 +219,7 @@ fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let s = __t.as_string();
             s.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -356,7 +356,7 @@ fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
             }
         }
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line: 0,
             col: 0,
@@ -483,7 +483,7 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let s = __t.as_string();
             s.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -525,7 +525,7 @@ fn save_to_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let s = __t.as_string();
             s.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -550,7 +550,7 @@ fn load_from_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             let s = __t.as_string();
             s.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -588,7 +588,7 @@ fn as_f64(v: &Value, op: &str) -> Result<f64, RuntimeError> {
         let f = v.as_float();
         Ok(f)
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line: 0,
             col: 0,
@@ -612,7 +612,7 @@ fn math_abs(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let f = __t.as_float();
             Ok(Value::from_float(f.abs()))
         } else {
-            let other = __t.clone();
+            let other = *__t;
             Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -756,9 +756,9 @@ fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 });
             }
             let idx = (env.next_random_u64() as usize) % v.len();
-            Ok(v[idx].clone())
+            Ok(v[idx])
         } else {
-            let other = __t.clone();
+            let other = *__t;
             Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -778,7 +778,7 @@ fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             env.seed_rng(n as u64);
             Ok(Value::NIL)
         } else {
-            let other = __t.clone();
+            let other = *__t;
             Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -905,7 +905,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
         if __t.is_str() {
             __t.as_string()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -932,7 +932,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             let rc = __t.as_list();
             rc.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -985,7 +985,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                     help: None,
                 });
             } else {
-                let other = __t.clone();
+                let other = *__t;
                 return Err(RuntimeError {
                     line: 0,
                     col: 0,
@@ -1002,7 +1002,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             if __t.is_str() {
                 __t.as_string()
             } else {
-                let other = __t.clone();
+                let other = *__t;
                 return Err(RuntimeError {
                     line: 0,
                     col: 0,
@@ -1025,7 +1025,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
                         let s = t.as_string();
                         out.push(s)
                     } else {
-                        let other = t.clone();
+                        let other = *t;
                         return Err(RuntimeError {
                             line: 0,
                             col: 0,
@@ -1041,7 +1041,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             } else if __t.is_nil() {
                 Vec::new()
             } else {
-                let other = __t.clone();
+                let other = *__t;
                 return Err(RuntimeError {
                     line: 0,
                     col: 0,
@@ -1147,7 +1147,7 @@ fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             let y = number(&elems[1], "tilemap_render.at.y")? as f32;
             (x, y)
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -1233,7 +1233,7 @@ fn trait_color(
     let traits = tile_specs
         .get(tile_name)
         .and_then(|v| {
-            let __t = v.clone();
+            let __t = *v;
             if __t.is_object() {
                 let rc = __t.as_object();
                 Some(rc)
@@ -1457,7 +1457,7 @@ fn expect_tilemap(v: &Value, what: &str) -> Result<Rc<RefCell<Object>>, RuntimeE
             return Ok(rc);
         }
     }
-    let other = v.clone();
+    let other = *v;
     Err(RuntimeError {
         line: 0,
         col: 0,
@@ -1567,7 +1567,7 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 }
             }
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -1643,7 +1643,7 @@ fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
         let elems = v.as_tuple();
         Ok((number(&elems[0], what)?, number(&elems[1], what)?))
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line: 0,
             col: 0,
@@ -1672,7 +1672,7 @@ fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeErr
         };
         Ok(macroquad::color::Color::new(r, g, b, a))
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line: 0,
             col: 0,
@@ -1698,7 +1698,7 @@ fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
         let (value, _) = v.as_quantity();
         Ok(value)
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line: 0,
             col: 0,
@@ -1766,7 +1766,7 @@ fn entities_of(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let c = __t.as_class();
             c.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -1800,7 +1800,7 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             let c = __t.as_class();
             c.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -1834,7 +1834,7 @@ fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let s = __t.as_string();
             s.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             other.display()
         }
     };
@@ -1973,7 +1973,7 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let s = __t.as_string();
             s.clone()
         } else {
-            let other = __t.clone();
+            let other = *__t;
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
@@ -2009,7 +2009,7 @@ fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
             number(&elems[2], what)? as f32,
         ])
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line: 0,
             col: 0,
@@ -2036,7 +2036,7 @@ fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
             number(&elems[3], what)? as f32,
         ])
     } else {
-        let other = v.clone();
+        let other = *v;
         Err(RuntimeError {
             line: 0,
             col: 0,

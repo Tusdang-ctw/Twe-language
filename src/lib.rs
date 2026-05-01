@@ -4,6 +4,7 @@ pub mod bytecode;
 pub mod cli;
 pub mod compiler;
 pub mod eval;
+pub mod heap;
 pub mod infer;
 pub mod json;
 pub mod lexer;

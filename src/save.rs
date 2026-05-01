@@ -334,15 +334,15 @@ mod tests {
             );
         }
         {
-            let __t = round_trip(Value::from_float(3.14));
+            let __t = round_trip(Value::from_float(2.5));
             if __t.is_float() && {
                 let f = __t.as_float();
-                (f - 3.14).abs() < 1e-9
+                (f - 2.5).abs() < 1e-9
             } {
                 let _f = __t.as_float();
             } else {
-                let other = __t.clone();
-                panic!("expected ~Float(3.14), got {other:?}")
+                let other = __t;
+                panic!("expected ~Float(2.5), got {other:?}")
             }
         }
         {
@@ -350,7 +350,7 @@ mod tests {
             if __t.is_bool() && __t.as_bool() {
                 // ok
             } else {
-                let other = __t.clone();
+                let other = __t;
                 panic!("expected Bool(true), got {other:?}")
             }
         }
@@ -358,7 +358,7 @@ mod tests {
             let __t = round_trip(Value::NIL);
             if __t.is_nil() {
             } else {
-                let other = __t.clone();
+                let other = __t;
                 panic!("expected Nil, got {other:?}")
             }
         }
@@ -370,7 +370,7 @@ mod tests {
             } {
                 let _s = __t.as_string();
             } else {
-                let other = __t.clone();
+                let other = __t;
                 panic!("expected Str(\"hello\"), got {other:?}")
             }
         }
@@ -389,7 +389,7 @@ mod tests {
             assert_eq!(elems.len(), 3);
             assert!(elems[0].is_int_or_boxed_int());
         } else {
-            let other = back.clone();
+            let other = back;
             panic!("expected Tuple, got {other:?}")
         }
     }
@@ -406,7 +406,7 @@ mod tests {
             let len = rc.borrow().len();
             assert_eq!(len, 2);
         } else {
-            let other = back.clone();
+            let other = back;
             panic!("expected List, got {other:?}")
         }
     }
@@ -421,7 +421,7 @@ mod tests {
                 assert_eq!(value, 5.0);
                 assert_eq!(&**unit, "kg");
             } else {
-                let other = __t.clone();
+                let other = __t;
                 panic!("expected Quantity, got {other:?}")
             }
         }
@@ -438,7 +438,7 @@ mod tests {
                 assert_eq!(end, 10);
                 assert!(exclusive);
             } else {
-                let other = __t.clone();
+                let other = __t;
                 panic!("expected Range, got {other:?}")
             }
         }
@@ -453,7 +453,7 @@ mod tests {
                 let p = __t.as_percent();
                 assert!((p - 0.25).abs() < 1e-9)
             } else {
-                let other = __t.clone();
+                let other = __t;
                 panic!("expected Percent, got {other:?}")
             }
         }
@@ -479,7 +479,7 @@ mod tests {
                     .is_some_and(|t| t.is_int_or_boxed_int()));
                 assert!(o.get_field("name").as_ref().is_some_and(|t| t.is_str()));
             } else {
-                let other = __t.clone();
+                let other = __t;
                 panic!("expected Object, got {other:?}")
             }
         }
@@ -535,7 +535,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|t| t.is_int_or_boxed_int()));
         } else {
-            let other = loaded.clone();
+            let other = loaded;
             panic!("expected Object, got {other:?}")
         }
     }

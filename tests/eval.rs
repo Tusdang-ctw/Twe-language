@@ -1010,7 +1010,7 @@ fn snake_advances_right_by_default() {
     let snake = inst.get_field("snake").expect("snake field");
     let head = if snake.is_list() {
         let rc = snake.as_list();
-        let h = rc.borrow()[0].clone();
+        let h = rc.borrow()[0];
         h
     } else {
         panic!("snake should be a list")
