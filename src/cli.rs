@@ -5,6 +5,7 @@ use std::process;
 const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> | \
      play [--vm tree|bytecode] <file> | \
      play3d <file> | \
+     play_visual <file> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -40,6 +41,7 @@ pub fn run() {
         "run" => process::exit(handle_run(&args[2..])),
         "play" => process::exit(handle_play(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
+        "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
         "lsp" => process::exit(handle_lsp(&args[2..])),
         "types" => process::exit(handle_types(&args[2..])),
@@ -100,6 +102,33 @@ fn handle_play3d(args: &[String]) -> i32 {
     }
     let path = path.expect("non-empty args + no flags ⇒ at least one positional");
     crate::play3d::launch(path)
+}
+
+/// `twec play_visual <file>` — Phase 9 session 11: render the
+/// first `visual` block in the file as a fullscreen wgpu fragment
+/// shader. Time uniform is driven from the system clock; Esc
+/// closes the window. Hot reload picks up edits to the source.
+fn handle_play_visual(args: &[String]) -> i32 {
+    if args.is_empty() {
+        eprintln!("error: `twec play_visual` requires a file path");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    let mut path: Option<String> = None;
+    for a in args {
+        if a.starts_with('-') {
+            eprintln!("error: unknown flag for `play_visual`: {a}");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+        if path.is_some() {
+            eprintln!("error: `twec play_visual` takes one file path");
+            return 2;
+        }
+        path = Some(a.clone());
+    }
+    let path = path.expect("non-empty args + no flags ⇒ at least one positional");
+    crate::play_visual::launch(path)
 }
 
 /// `twec fmt [--in-place|--check] <file>` — print the canonical

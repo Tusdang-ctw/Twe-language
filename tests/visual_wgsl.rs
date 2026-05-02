@@ -91,6 +91,30 @@ fn math_dot_sin_calls_through() {
 }
 
 #[test]
+fn example_5_wgsl_validates_through_naga() {
+    // Phase 9 session 11: prove the WGSL we emit actually parses
+    // through naga (wgpu's WGSL frontend). naga's accept-set is a
+    // superset of what wgpu::create_shader_module accepts at runtime,
+    // so a parse failure here would fail at GPU-init time too.
+    let src = std::fs::read_to_string("tests/programs/visual_fire.twe").unwrap();
+    let modules = compile(&src).expect("should compile");
+    let wgsl = &modules[0].1;
+    let parsed = naga::front::wgsl::parse_str(wgsl);
+    if let Err(e) = &parsed {
+        panic!("naga parse failed:\n{}\n--- WGSL ---\n{}", e, wgsl);
+    }
+    // naga also wants validation to confirm bindings + types are sound.
+    let module = parsed.unwrap();
+    let mut validator = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::default(),
+    );
+    if let Err(e) = validator.validate(&module) {
+        panic!("naga validate failed:\n{:?}\n--- WGSL ---\n{}", e, wgsl);
+    }
+}
+
+#[test]
 fn module_includes_vertex_uniform_noise_and_fs_main() {
     // Sanity: the emitted module should include all four sections
     // a wgpu pipeline needs.

@@ -46,3 +46,7 @@ gilrs = "0.10"
 
 [dev-dependencies]
 insta = "1.41"
+# Phase 9 session 11: WGSL validation in tests without needing a GPU.
+# naga is wgpu's WGSL frontend; if naga accepts the shader, wgpu's
+# create_shader_module will too. Pinned to match wgpu = 22.0.
+naga = { version = "22", default-features = false, features = ["wgsl-in"] }

@@ -29,6 +29,38 @@ fn run_cli(args: &[&str]) -> String {
 }
 
 #[test]
+fn play_visual_subcommand_recognized() {
+    // Phase 9 session 11: `play_visual` is a real CLI subcommand.
+    // Invoking it with no args returns exit-2 (missing-path), proving
+    // the dispatcher reaches handle_play_visual rather than the
+    // unknown-command branch (which would also exit 2 but with a
+    // different stderr — assert on the stderr to disambiguate).
+    let output = Command::new(twec_bin())
+        .arg("play_visual")
+        .output()
+        .expect("spawn twec");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`twec play_visual` requires a file path"),
+        "got: {stderr}"
+    );
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn play_visual_rejects_unknown_flag() {
+    let output = Command::new(twec_bin())
+        .args(["play_visual", "--bogus", "foo.twe"])
+        .output()
+        .expect("spawn twec");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown flag for `play_visual`"),
+        "got: {stderr}"
+    );
+}
+
+#[test]
 fn run_with_default_backend_uses_tree_walker() {
     let out = run_cli(&["run", "tests/programs/hello.twe"]);
     assert_eq!(out, "hello, twe\n");

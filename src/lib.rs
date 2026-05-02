@@ -12,6 +12,7 @@ pub mod lsp;
 pub mod parser;
 pub mod play;
 pub mod play3d;
+pub mod play_visual;
 pub mod printer;
 pub mod save;
 pub mod stdlib;

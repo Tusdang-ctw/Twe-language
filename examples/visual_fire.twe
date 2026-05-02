@@ -1,0 +1,24 @@
+# Phase 9 exit demo — Example 5 from docs/01-examples.md, run end-to-end.
+# `twec play_visual examples/visual_fire.twe` opens a window and renders
+# the procedural fire shader fullscreen, driven by a time uniform from
+# the system clock. Esc closes; saving this file hot-reloads the shader.
+#
+# What the pipeline does behind the scenes:
+#   1. `crate::visual_check` walks the body and proves it's GPU-safe.
+#   2. `crate::visual_wgsl` compiles it to a complete WGSL module
+#      (vertex passthrough, time uniform, custom noise() helper,
+#      twe_pixel function, fragment entry).
+#   3. `crate::play_visual` hands the WGSL to wgpu and renders a
+#      fullscreen-quad fragment-shader pass each frame.
+
+visual Fire:
+    size: (64, 96)
+
+    pixel(uv, time) -> color:
+        let edge_l = smoothstep(0.5 - uv.y * 0.4, 0.5, uv.x)
+        let edge_r = smoothstep(0.5 + uv.y * 0.4, 0.5, 1 - uv.x)
+        let flame_shape = edge_l * edge_r
+        let n = noise(uv * 4 + (0, -time * 3))
+        let intensity = flame_shape * (n + 1 - uv.y)
+        let inner = mix(color.yellow, color.red, uv.y)
+        return mix(color.transparent, inner, intensity)

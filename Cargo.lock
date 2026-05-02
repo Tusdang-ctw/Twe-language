@@ -2322,6 +2322,7 @@ dependencies = [
  "gltf",
  "insta",
  "macroquad",
+ "naga",
  "pollster",
  "wgpu",
  "winit",
