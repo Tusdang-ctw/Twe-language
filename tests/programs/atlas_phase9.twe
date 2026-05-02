@@ -1,0 +1,13 @@
+# Phase 9 session 3 — verify load_atlas builds the right handle and
+# rejects bad inputs. The actual draw path (sprite_frame /
+# sprite_frame_at) needs a GL context so it's exercised by hand via
+# `twec play examples/atlas_demo.twe` — see that file.
+
+let walk = load_atlas("examples/assets/hero.png", (4, 2))
+print(walk.path)        # examples/assets/hero.png
+print(walk.grid)        # (4, 2)
+
+# A second atlas to confirm independent handles.
+let icons = load_atlas("examples/assets/hero.png", (8, 8))
+print(icons.grid)       # (8, 8)
+print(walk.grid)        # (4, 2)  — first handle untouched

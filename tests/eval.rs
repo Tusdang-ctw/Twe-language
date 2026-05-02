@@ -207,6 +207,47 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn runs_atlas_phase9_load_handle() {
+    // Phase 9 session 3: load_atlas builds an atlas-kind handle with
+    // path + grid fields. The sprite_frame / sprite_frame_at draw
+    // calls need a GL context (require_render guards them) so they
+    // can't run headless — exercised by hand via examples/atlas_demo.twe.
+    let out = run_program("tests/programs/atlas_phase9.twe").expect("program should run");
+    let expected =
+        "examples/assets/hero.png\n(4, 2)\n(8, 8)\n(4, 2)\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn load_atlas_errors_on_missing_file() {
+    let err = run_program_str("load_atlas(\"no_such_file.png\", (4, 2))\n")
+        .expect_err("should fail");
+    assert!(err.contains("cannot find asset"), "got: {err}");
+}
+
+#[test]
+fn load_atlas_errors_on_zero_grid() {
+    let err = run_program_str("load_atlas(\"examples/assets/hero.png\", (0, 4))\n")
+        .expect_err("should fail");
+    assert!(err.contains("grid must be positive"), "got: {err}");
+}
+
+#[test]
+fn sprite_frame_outside_render_fails_clearly() {
+    // sprite_frame is require_render-guarded so calling it outside
+    // an `on render():` body fails fast with the standard message —
+    // the atlas-handle type-check never gets reached headless.
+    let err = run_program_str(
+        "let s = load(\"examples/assets/hero.png\")\nsprite_frame(s, (0, 0), 0)\n",
+    )
+    .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn runs_camera_phase9_follow_shake_reset() {
     // Phase 9 session 2: 2D camera ambient shipped with pos/zoom +
     // follow/shake/reset. Headless run tests the script-visible state

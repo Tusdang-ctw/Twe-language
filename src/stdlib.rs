@@ -138,6 +138,18 @@ pub fn install(env: &mut Env) {
         "load".to_string(),
         Value::from_builtin("load", &["path"], load_impl),
     );
+    // Phase 9 session 3: spritesheet loader. `load_atlas(path, grid)`
+    // returns an atlas handle `{ path, grid, kind: "atlas" }` where
+    // `grid = (cols, rows)`. Combine with `sprite_frame(handle, at,
+    // frame)` to draw one cell. Keeping `sprite(handle, at, [size])`
+    // unchanged on plain sprites — atlases get their own draw call
+    // because Twe's calling convention requires every kwarg to be
+    // supplied (no defaults yet), so an optional `frame:` on sprite
+    // isn't expressible without breaking existing call sites.
+    env.set(
+        "load_atlas".to_string(),
+        Value::from_builtin("load_atlas", &["path", "grid"], load_atlas_impl),
+    );
     // v0.2 session 4: save / load for Twe Values. Bottom layer
     // of the eventual `save` block compiler — see
     // `docs/07-save-system.md`. Schema declarations come in
@@ -626,6 +638,70 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
         fields,
         kind: "sprite",
+    }))))
+}
+
+/// `load_atlas(path, grid)` — register a spritesheet. Returns an
+/// atlas handle `{ path, grid, kind: "atlas" }`. `grid` is
+/// `(cols, rows)` — number of cells horizontally and vertically.
+/// Texture decoding is lazy on first `sprite_frame` (same reason as
+/// `load`: GL context). Path existence is checked at load time.
+/// Phase 9 session 3.
+fn load_atlas_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "load_atlas")?;
+    let path = {
+        let t = &args[0];
+        if t.is_str() {
+            t.as_string().clone()
+        } else {
+            let other = *t;
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "load_atlas expected a string path, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `load_atlas(\"walk.png\", (8, 4))`".to_string()),
+            });
+        }
+    };
+    if std::fs::metadata(&path).is_err() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("load_atlas: cannot find asset '{path}'"),
+            help: Some(
+                "the path is relative to the working directory; check spelling and case"
+                    .to_string(),
+            ),
+        });
+    }
+    let (cols, rows) = xy_of(&args[1], "load_atlas.grid")?;
+    let cols = cols as i64;
+    let rows = rows as i64;
+    if cols <= 0 || rows <= 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "load_atlas: grid must be positive integers, got ({cols}, {rows})"
+            ),
+            help: Some("e.g. `load_atlas(\"walk.png\", (8, 4))`".to_string()),
+        });
+    }
+    let mut fields = HashMap::new();
+    fields.insert("path".to_string(), Value::from_string(path));
+    fields.insert(
+        "grid".to_string(),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_int(cols),
+            Value::from_int(rows),
+        ])),
+    );
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "atlas",
     }))))
 }
 
@@ -1717,6 +1793,28 @@ fn install_draw(env: &mut Env) {
         "sprite".to_string(),
         Value::from_builtin("sprite", &[], draw_sprite),
     );
+    // Phase 9 session 3: atlas-frame draw calls. Two builtins instead
+    // of optional kwargs on `sprite()` because Twe's calling convention
+    // requires every kwarg to be supplied (audio v2 took the same
+    // shape per the comment in install_sound).
+    //   - sprite_frame(atlas, at, frame): draws one cell at native size
+    //   - sprite_frame_at(atlas, at, size, frame): cell scaled to size
+    env.set(
+        "sprite_frame".to_string(),
+        Value::from_builtin(
+            "sprite_frame",
+            &["handle", "at", "frame"],
+            draw_sprite_frame,
+        ),
+    );
+    env.set(
+        "sprite_frame_at".to_string(),
+        Value::from_builtin(
+            "sprite_frame_at",
+            &["handle", "at", "size", "frame"],
+            draw_sprite_frame_at,
+        ),
+    );
 }
 
 fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1830,6 +1928,196 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         Ok(())
     })?;
     Ok(Value::NIL)
+}
+
+/// Pull `(path, cols, rows)` off an atlas handle. Errors when the
+/// argument isn't an `atlas`-kind object built by `load_atlas`.
+fn atlas_handle(v: &Value, callee: &str) -> Result<(String, i64, i64), RuntimeError> {
+    if !v.is_object() {
+        let other = *v;
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{callee} expects an atlas handle from `load_atlas(...)`, got {}",
+                other.type_name()
+            ),
+            help: None,
+        });
+    }
+    let rc = v.as_object();
+    let o = rc.borrow();
+    if o.kind != "atlas" {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{callee} expects an atlas handle from `load_atlas(...)`, got a `{}` handle",
+                o.kind
+            ),
+            help: Some("plain sprite handles draw via `sprite(handle, at, ...)`".to_string()),
+        });
+    }
+    let path = match o.get_field("path") {
+        Some(v) if v.is_str() => v.as_string().clone(),
+        _ => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{callee}: atlas handle is missing a `path` field"),
+                help: None,
+            });
+        }
+    };
+    let (cols, rows) = match o.get_field("grid") {
+        Some(v) => xy_of(&v, &format!("{callee}.grid"))?,
+        None => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{callee}: atlas handle is missing a `grid` field"),
+                help: None,
+            });
+        }
+    };
+    Ok((path, cols as i64, rows as i64))
+}
+
+/// Compute the source rectangle in the atlas texture for a frame
+/// index. Frame 0 is the top-left cell; frames advance left-to-right,
+/// then top-to-bottom (row-major).
+fn atlas_source_rect(
+    tex: &macroquad::texture::Texture2D,
+    cols: i64,
+    rows: i64,
+    frame: i64,
+    callee: &str,
+) -> Result<macroquad::math::Rect, RuntimeError> {
+    let total = cols * rows;
+    if frame < 0 || frame >= total {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{callee}: frame {frame} out of range for a {cols}x{rows} atlas (0..{total})"
+            ),
+            help: None,
+        });
+    }
+    let col = (frame % cols) as f32;
+    let row = (frame / cols) as f32;
+    let cell_w = tex.width() / cols as f32;
+    let cell_h = tex.height() / rows as f32;
+    Ok(macroquad::math::Rect {
+        x: col * cell_w,
+        y: row * cell_h,
+        w: cell_w,
+        h: cell_h,
+    })
+}
+
+/// Decode + cache a texture by path, then call `draw` with the live
+/// `Texture2D`. Mirrors the pattern in `draw_sprite` so atlases share
+/// the same cache and hot-reload behavior.
+fn with_texture<F>(path: &str, callee: &str, draw: F) -> Result<(), RuntimeError>
+where
+    F: FnOnce(&macroquad::texture::Texture2D) -> Result<(), RuntimeError>,
+{
+    SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
+        let mut c = cache.borrow_mut();
+        if !c.contains_key(path) {
+            let bytes = std::fs::read(path).map_err(|e| RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{callee}: cannot read '{path}': {e}"),
+                help: None,
+            })?;
+            let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
+            c.insert(path.to_string(), tex);
+        }
+        let tex = &c[path];
+        draw(tex)
+    })
+}
+
+/// `sprite_frame(atlas, at, frame)` — draw cell `frame` of `atlas`
+/// at world position `at` at the cell's native pixel size.
+fn draw_sprite_frame(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "sprite_frame")?;
+    arity(args, 3, "sprite_frame")?;
+    let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame")?;
+    let (x, y) = xy_of(&args[1], "sprite_frame.at")?;
+    let frame = as_i64(&args[2], "sprite_frame.frame")?;
+    with_texture(&path, "sprite_frame", |tex| {
+        let src = atlas_source_rect(tex, cols, rows, frame, "sprite_frame")?;
+        macroquad::texture::draw_texture_ex(
+            tex,
+            x as f32,
+            y as f32,
+            macroquad::color::WHITE,
+            macroquad::texture::DrawTextureParams {
+                source: Some(src),
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })?;
+    Ok(Value::NIL)
+}
+
+/// `sprite_frame_at(atlas, at, size, frame)` — draw cell `frame` of
+/// `atlas` at world position `at`, scaled to `size`.
+fn draw_sprite_frame_at(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "sprite_frame_at")?;
+    arity(args, 4, "sprite_frame_at")?;
+    let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame_at")?;
+    let (x, y) = xy_of(&args[1], "sprite_frame_at.at")?;
+    let (w, h) = xy_of(&args[2], "sprite_frame_at.size")?;
+    let frame = as_i64(&args[3], "sprite_frame_at.frame")?;
+    with_texture(&path, "sprite_frame_at", |tex| {
+        let src = atlas_source_rect(tex, cols, rows, frame, "sprite_frame_at")?;
+        macroquad::texture::draw_texture_ex(
+            tex,
+            x as f32,
+            y as f32,
+            macroquad::color::WHITE,
+            macroquad::texture::DrawTextureParams {
+                dest_size: Some(macroquad::math::vec2(w as f32, h as f32)),
+                source: Some(src),
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })?;
+    Ok(Value::NIL)
+}
+
+/// Coerce a Twe Value to i64 for index/frame arguments. Floats with
+/// fractional components error so a typo `frame: 3.5` doesn't silently
+/// truncate.
+fn as_i64(v: &Value, op: &str) -> Result<i64, RuntimeError> {
+    if v.is_int_or_boxed_int() {
+        return Ok(v.as_int());
+    }
+    if v.is_float() {
+        let f = v.as_float();
+        if f.fract() != 0.0 {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{op} expected an integer, got {f}"),
+                help: None,
+            });
+        }
+        return Ok(f as i64);
+    }
+    let other = *v;
+    Err(RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{op} expected an integer, got {}", other.type_name()),
+        help: None,
+    })
 }
 
 fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {

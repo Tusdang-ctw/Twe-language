@@ -1,0 +1,19 @@
+# Phase 9 session 3 — sprite atlas + frame stepping demo.
+# Run with `twec play examples/atlas_demo.twe`.
+#
+# The bundled `hero.png` is a single sprite (no real grid), so this
+# demo reuses it as a degenerate 1x1 "atlas" to prove the draw call
+# path without needing a separate spritesheet asset. Swap the path
+# and grid for any real spritesheet to see frame stepping.
+
+let walk = load_atlas("examples/assets/hero.png", (1, 1))
+
+var t = 0s
+on update(dt):
+    t = t + dt
+
+on render():
+    # At a 1x1 grid, frame is always 0. With a real spritesheet
+    # like (8, 1) we'd cycle frames with `frame: floor(t * 10) % 8`.
+    sprite_frame(walk, (100, 100), 0)
+    sprite_frame_at(walk, (200, 100), (128, 128), 0)
