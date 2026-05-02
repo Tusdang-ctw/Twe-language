@@ -1,0 +1,41 @@
+# Phase 9 session 6 — color pipeline.
+# Verifies from_hex, hsv, sRGB↔linear gamma helpers, and the two
+# lerp variants (perceptual sRGB-space and gamma-correct linear-space).
+# Reference values precomputed in Rust against the IEC 61966-2-1
+# piecewise transfer function so this test pins the exact bit pattern
+# the Phase 9 session 10 WGSL counterpart will need to match.
+
+# from_hex — '#' optional; rgb and rgba both accepted.
+print(color.from_hex("#ff0000"))     # (1.0, 0.0, 0.0, 1.0)
+print(color.from_hex("00ff00"))      # (0.0, 1.0, 0.0, 1.0)
+print(color.from_hex("#ff8800"))     # (1.0, 0.5333333333333333, 0.0, 1.0)
+print(color.from_hex("#80808080"))   # (0.5019607843137255, 0.5019607843137255, 0.5019607843137255, 0.5019607843137255)
+
+# hsv — pure hue sweep around the wheel.
+print(color.hsv(0, 1, 1))            # red
+print(color.hsv(120, 1, 1))          # green
+print(color.hsv(240, 1, 1))          # blue
+print(color.hsv(60, 1, 1))           # yellow
+# Saturation 0 yields gray at value level.
+print(color.hsv(0, 0, 0.5))          # (0.5, 0.5, 0.5, 1.0)
+# Negative hue wraps via rem_euclid.
+print(color.hsv(-30, 1, 1) == color.hsv(330, 1, 1))   # true
+
+# sRGB↔linear gamma helpers. Endpoints are fixed points.
+print(color.to_linear((0.0, 0.5, 1.0, 0.5)))
+print(color.to_srgb((0.0, 0.5, 1.0, 0.5)))
+
+# Roundtrip: to_srgb(to_linear(c)) == c (within float).
+let c = (0.3, 0.6, 0.9, 1.0)
+print(color.to_srgb(color.to_linear(c)))
+
+# lerp — sRGB-space (perceptual). Same arithmetic as the existing
+# tuple-form mix(); shipped here for the documented surface symmetry.
+print(color.lerp((0, 0, 0, 1), (1, 1, 1, 1), 0.5))   # (0.5, 0.5, 0.5, 1.0)
+print(color.lerp(color.red, color.blue, 0.5))        # (0.5, 0.0, 0.5, 1.0)
+
+# lerp_linear — gamma-correct. Midgray of black↔white in linear
+# space lands at the sRGB encoding of 0.5 linear, which is ≈0.735.
+# That's the headline difference: physical light blending is
+# brighter at the midpoint than perceptual blending.
+print(color.lerp_linear((0, 0, 0, 1), (1, 1, 1, 1), 0.5))

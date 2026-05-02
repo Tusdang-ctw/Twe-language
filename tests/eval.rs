@@ -207,6 +207,43 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn runs_color_phase9_pipeline() {
+    // Phase 9 session 6: color pipeline — from_hex, hsv, gamma helpers,
+    // and the two lerp variants (sRGB perceptual + gamma-correct linear).
+    // Float reference values pinned to the IEC 61966-2-1 transfer
+    // function so the future WGSL counterpart in Phase 9 session 10
+    // produces bit-identical output.
+    let out = run_program("tests/programs/color_phase9.twe").expect("program should run");
+    let expected = "(1.0, 0.0, 0.0, 1.0)\n\
+        (0.0, 1.0, 0.0, 1.0)\n\
+        (1.0, 0.5333333333333333, 0.0, 1.0)\n\
+        (0.5019607843137255, 0.5019607843137255, 0.5019607843137255, 0.5019607843137255)\n\
+        (1.0, 0.0, 0.0, 1.0)\n\
+        (0.0, 1.0, 0.0, 1.0)\n\
+        (0.0, 0.0, 1.0, 1.0)\n\
+        (1.0, 1.0, 0.0, 1.0)\n\
+        (0.5, 0.5, 0.5, 1.0)\n\
+        true\n\
+        (0.0, 0.21404114048223255, 1.0, 0.5)\n\
+        (0.0, 0.7353569830524495, 0.9999999999999999, 0.5)\n\
+        (0.3, 0.6, 0.9, 1.0)\n\
+        (0.5, 0.5, 0.5, 1.0)\n\
+        (0.5, 0.0, 0.5, 1.0)\n\
+        (0.7353569830524495, 0.7353569830524495, 0.7353569830524495, 1.0)\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn color_from_hex_errors_on_bad_input() {
+    let err =
+        run_program_str("color.from_hex(\"#zzz\")\n").expect_err("should fail");
+    assert!(err.contains("color.from_hex"), "got: {err}");
+
+    let err = run_program_str("color.from_hex(\"#abc\")\n").expect_err("should fail");
+    assert!(err.contains("expected 6 or 8 hex digits"), "got: {err}");
+}
+
+#[test]
 fn runs_gamepad_phase9_surface_defaults() {
     // Phase 9 session 5: `gamepad` / `gamepad_press` / `gamepad_axis`
     // ambients install with all-false / all-zero defaults. The

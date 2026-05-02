@@ -1254,6 +1254,7 @@ fn install_color(env: &mut Env) {
         ("red", 1.0, 0.0, 0.0, 1.0),
         ("green", 0.0, 1.0, 0.0, 1.0),
         ("blue", 0.0, 0.0, 1.0, 1.0),
+        ("cyan", 0.0, 1.0, 1.0, 1.0),
         ("yellow", 1.0, 1.0, 0.0, 1.0),
         ("orange", 1.0, 0.5, 0.0, 1.0),
         ("purple", 0.5, 0.0, 0.5, 1.0),
@@ -1274,6 +1275,48 @@ fn install_color(env: &mut Env) {
             ])),
         );
     }
+    // Phase 9 session 6: color pipeline.
+    // - from_hex: parse "#rrggbb" / "#rrggbbaa" (the leading '#' is
+    //   optional) into a linear-space [0, 1] tuple.
+    // - hsv: HSV → RGB constructor with hue in [0, 360).
+    // - to_linear / to_srgb: gamma helpers using the IEC 61966-2-1
+    //   piecewise sRGB transfer function (matches WGSL's textureLoad
+    //   linear-storage convention so visual block colors will round-trip
+    //   bit-identical with their CPU samples in Phase 9 session 10).
+    //   Alpha is passed through untouched — alpha is always linear.
+    // - lerp: sRGB-space (perceptual) component lerp; this is what
+    //   the existing `mix(c, c, t)` already does, so it's named
+    //   `color.lerp` for surface symmetry with the documented §7.5
+    //   stdlib reference.
+    // - lerp_linear: gamma-correct lerp (to_linear → mix → to_srgb)
+    //   — physically accurate but loses some saturation through
+    //   the midtones; offered alongside lerp because both have
+    //   legitimate use cases (perceptual gradients vs. physical
+    //   blending of light).
+    fields.insert(
+        "from_hex".to_string(),
+        Value::from_builtin("color.from_hex", &["s"], color_from_hex),
+    );
+    fields.insert(
+        "hsv".to_string(),
+        Value::from_builtin("color.hsv", &["h", "s", "v"], color_hsv),
+    );
+    fields.insert(
+        "to_linear".to_string(),
+        Value::from_builtin("color.to_linear", &["c"], color_to_linear),
+    );
+    fields.insert(
+        "to_srgb".to_string(),
+        Value::from_builtin("color.to_srgb", &["c"], color_to_srgb),
+    );
+    fields.insert(
+        "lerp".to_string(),
+        Value::from_builtin("color.lerp", &["a", "b", "t"], color_lerp),
+    );
+    fields.insert(
+        "lerp_linear".to_string(),
+        Value::from_builtin("color.lerp_linear", &["a", "b", "t"], color_lerp_linear),
+    );
     env.set(
         "color".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -1281,6 +1324,199 @@ fn install_color(env: &mut Env) {
             kind: "module",
         }))),
     );
+}
+
+// IEC 61966-2-1 sRGB → linear (alpha untouched). The 0.04045 cutoff
+// + 1/12.92 below + ((c + 0.055) / 1.055) ^ 2.4 above is the standard
+// piecewise-defined transfer function (matches WGSL's storage-format
+// behavior so colors round-trip CPU↔shader unchanged).
+fn srgb_to_linear(c: f64) -> f64 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(c: f64) -> f64 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn color_to_linear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "color.to_linear")?;
+    let (r, g, b, a) = rgba(&args[0], "color.to_linear")?;
+    Ok(make_color(srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), a))
+}
+
+fn color_to_srgb(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "color.to_srgb")?;
+    let (r, g, b, a) = rgba(&args[0], "color.to_srgb")?;
+    Ok(make_color(linear_to_srgb(r), linear_to_srgb(g), linear_to_srgb(b), a))
+}
+
+fn color_lerp(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "color.lerp")?;
+    let (ar, ag, ab, aa) = rgba(&args[0], "color.lerp.a")?;
+    let (br, bg, bb, ba) = rgba(&args[1], "color.lerp.b")?;
+    let t = as_f64(&args[2], "color.lerp.t")?;
+    Ok(make_color(
+        ar * (1.0 - t) + br * t,
+        ag * (1.0 - t) + bg * t,
+        ab * (1.0 - t) + bb * t,
+        aa * (1.0 - t) + ba * t,
+    ))
+}
+
+fn color_lerp_linear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "color.lerp_linear")?;
+    let (ar, ag, ab, aa) = rgba(&args[0], "color.lerp_linear.a")?;
+    let (br, bg, bb, ba) = rgba(&args[1], "color.lerp_linear.b")?;
+    let t = as_f64(&args[2], "color.lerp_linear.t")?;
+    let mix = |x: f64, y: f64| {
+        let lx = srgb_to_linear(x);
+        let ly = srgb_to_linear(y);
+        linear_to_srgb(lx * (1.0 - t) + ly * t)
+    };
+    Ok(make_color(
+        mix(ar, br),
+        mix(ag, bg),
+        mix(ab, bb),
+        // Alpha lerps in straight space — it isn't gamma-encoded.
+        aa * (1.0 - t) + ba * t,
+    ))
+}
+
+fn color_from_hex(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "color.from_hex")?;
+    let raw = {
+        let t = &args[0];
+        if !t.is_str() {
+            let other = *t;
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "color.from_hex expected a string, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `color.from_hex(\"#ff8800\")`".to_string()),
+            });
+        }
+        t.as_string().clone()
+    };
+    let s = raw.strip_prefix('#').unwrap_or(&raw);
+    let parse_byte = |span: &str| -> Result<f64, RuntimeError> {
+        u8::from_str_radix(span, 16)
+            .map(|b| b as f64 / 255.0)
+            .map_err(|_| RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("color.from_hex: invalid hex byte `{span}`"),
+                help: Some(
+                    "expected `#rrggbb` or `#rrggbbaa` (case-insensitive, '#' optional)".to_string(),
+                ),
+            })
+    };
+    let (r, g, b, a) = match s.len() {
+        6 => (parse_byte(&s[0..2])?, parse_byte(&s[2..4])?, parse_byte(&s[4..6])?, 1.0),
+        8 => (
+            parse_byte(&s[0..2])?,
+            parse_byte(&s[2..4])?,
+            parse_byte(&s[4..6])?,
+            parse_byte(&s[6..8])?,
+        ),
+        _ => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "color.from_hex: expected 6 or 8 hex digits (rgb / rgba), got {}",
+                    s.len()
+                ),
+                help: Some(
+                    "e.g. `color.from_hex(\"#ff8800\")` or `color.from_hex(\"#ff8800cc\")`"
+                        .to_string(),
+                ),
+            });
+        }
+    };
+    Ok(make_color(r, g, b, a))
+}
+
+fn color_hsv(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "color.hsv")?;
+    let h = as_f64(&args[0], "color.hsv.h")?;
+    let s = as_f64(&args[1], "color.hsv.s")?.clamp(0.0, 1.0);
+    let v = as_f64(&args[2], "color.hsv.v")?.clamp(0.0, 1.0);
+    // Standard HSV→RGB. Hue is reduced into [0, 360); negative hues
+    // wrap so `color.hsv(-30, 1, 1)` is equivalent to `color.hsv(330, 1, 1)`.
+    let h = h.rem_euclid(360.0);
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r1, g1, b1) = match h {
+        h if h < 60.0 => (c, x, 0.0),
+        h if h < 120.0 => (x, c, 0.0),
+        h if h < 180.0 => (0.0, c, x),
+        h if h < 240.0 => (0.0, x, c),
+        h if h < 300.0 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Ok(make_color(r1 + m, g1 + m, b1 + m, 1.0))
+}
+
+/// Pull (r, g, b, a) out of a 3- or 4-tuple, defaulting alpha to 1.0
+/// for the 3-tuple form. Centralises the unpack so every color helper
+/// errors with the same message shape.
+fn rgba(v: &Value, what: &str) -> Result<(f64, f64, f64, f64), RuntimeError> {
+    if !v.is_tuple() {
+        let other = *v;
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what} expects an (r, g, b[, a]) tuple, got {}",
+                other.type_name()
+            ),
+            help: Some(
+                "use `color.red` etc. or build with `(r, g, b, a)` floats in [0, 1]".to_string(),
+            ),
+        });
+    }
+    let elems = v.as_tuple();
+    if elems.len() < 3 || elems.len() > 4 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what} expects an (r, g, b[, a]) tuple, got a {}-tuple",
+                elems.len()
+            ),
+            help: None,
+        });
+    }
+    let r = number(&elems[0], what)?;
+    let g = number(&elems[1], what)?;
+    let b = number(&elems[2], what)?;
+    let a = if elems.len() == 4 {
+        number(&elems[3], what)?
+    } else {
+        1.0
+    };
+    Ok((r, g, b, a))
+}
+
+fn make_color(r: f64, g: f64, b: f64, a: f64) -> Value {
+    Value::from_tuple(Rc::new(vec![
+        Value::from_float(r),
+        Value::from_float(g),
+        Value::from_float(b),
+        Value::from_float(a),
+    ]))
 }
 
 fn install_screen(env: &mut Env) {
