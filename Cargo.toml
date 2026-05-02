@@ -37,6 +37,12 @@ bytemuck = { version = "1", features = ["derive"] }
 # .glb loading; `utils` exposes the `Reader` API used to extract
 # POSITION / NORMAL / index accessors.
 gltf = { version = "1", default-features = false, features = ["import", "utils"] }
+# Phase 9 session 5: cross-platform gamepad input. Macroquad 0.4 has
+# no gamepad support of its own (input.rs ships a "and gamepads soon"
+# header and zero functions); gilrs is the canonical Rust gamepad
+# crate, uses XInput on Windows, evdev on Linux, IOKit on macOS. No
+# native build deps on any of the target platforms.
+gilrs = "0.10"
 
 [dev-dependencies]
 insta = "1.41"

@@ -43,6 +43,22 @@ struct CameraShake {
     remaining: f64,
 }
 
+/// Phase 9 session 5: gamepad button names exposed to Twe. Xbox-style
+/// naming so scripts read naturally; the gilrs button enum mapping
+/// lives in `play.rs::poll_gamepad`. `lt` / `rt` are the analog
+/// triggers thresholded into booleans (gilrs's default 0.75 cutoff);
+/// the analog values live in `gamepad_axis.lt` / `.rt`.
+pub const GAMEPAD_BUTTON_NAMES: &[&str] = &[
+    "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "select",
+    "dup", "ddown", "dleft", "dright",
+];
+
+/// Axis names for the analog sticks + triggers. Sticks are in
+/// `[-1, 1]` per gilrs; triggers are `[0, 1]`. `ly` / `ry` follow
+/// gilrs's "+y is up" convention — scripts that want screen-space
+/// (+y down) should negate.
+pub const GAMEPAD_AXIS_NAMES: &[&str] = &["lx", "ly", "rx", "ry", "lt", "rt"];
+
 /// Drop every cached `Texture2D` and `Sound`. The play loop calls this
 /// on hot reload so swapped asset paths pick up. Also resets camera
 /// shake — a hot-reloaded script shouldn't inherit jitter from the
@@ -254,6 +270,48 @@ pub fn install(env: &mut Env) {
         "mouse_press".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
             fields: pressed,
+            kind: "input",
+        }))),
+    );
+
+    // Phase 9 session 5: gamepad surface. First-connected gamepad
+    // only — multi-gamepad routing is a follow-on. Mirrors the
+    // key / key_press / mouse split: continuous in `gamepad`,
+    // edge-triggered in `gamepad_press`, analog axes in
+    // `gamepad_axis`. Twe field names follow Xbox-style naming so
+    // scripts read naturally: `gamepad.a`, `gamepad.start`,
+    // `gamepad_axis.lx`. The macroquad `play` loop polls gilrs each
+    // frame and writes here; `twec run` (headless) leaves all
+    // fields at their install-time defaults (false / 0.0).
+    let mut gp = HashMap::new();
+    let mut gp_press = HashMap::new();
+    for name in GAMEPAD_BUTTON_NAMES {
+        gp.insert((*name).to_string(), Value::FALSE);
+        gp_press.insert((*name).to_string(), Value::FALSE);
+    }
+    gp.insert("connected".to_string(), Value::FALSE);
+    env.set(
+        "gamepad".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: gp,
+            kind: "input",
+        }))),
+    );
+    env.set(
+        "gamepad_press".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: gp_press,
+            kind: "input",
+        }))),
+    );
+    let mut gp_axis = HashMap::new();
+    for name in GAMEPAD_AXIS_NAMES {
+        gp_axis.insert((*name).to_string(), Value::from_float(0.0));
+    }
+    env.set(
+        "gamepad_axis".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: gp_axis,
             kind: "input",
         }))),
     );

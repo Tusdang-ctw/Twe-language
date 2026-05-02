@@ -207,6 +207,26 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn runs_gamepad_phase9_surface_defaults() {
+    // Phase 9 session 5: `gamepad` / `gamepad_press` / `gamepad_axis`
+    // ambients install with all-false / all-zero defaults. The
+    // polling impl lives in play.rs (gilrs-driven, requires the
+    // macroquad window context) so headless `twec run` is the
+    // perfect place to assert nothing else got accidentally set.
+    let out =
+        run_program("tests/programs/gamepad_phase9.twe").expect("program should run");
+    let mut expected = String::new();
+    // 15 booleans (connected + 14 buttons), 1 edge-trigger, 6 axes.
+    for _ in 0..16 {
+        expected.push_str("false\n");
+    }
+    for _ in 0..6 {
+        expected.push_str("0.0\n");
+    }
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn load_font_errors_on_missing_file() {
     // Phase 9 session 4: load_font surface. Positive path needs a real
     // TTF + GL context (text_with_font) so it's exercised by hand via

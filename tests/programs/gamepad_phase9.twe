@@ -1,0 +1,33 @@
+# Phase 9 session 5 — verify the gamepad ambient surface installs
+# with the expected fields at their install-time defaults. The
+# polling impl (`twec play` driving gilrs) is hand-tested via
+# `examples/gamepad_demo.twe`; headless `twec run` never updates
+# any gamepad field so all defaults stay in place.
+
+# Continuous-state ambient.
+print(gamepad.connected)   # false
+print(gamepad.a)           # false
+print(gamepad.b)           # false
+print(gamepad.x)           # false
+print(gamepad.y)           # false
+print(gamepad.lb)          # false
+print(gamepad.rb)          # false
+print(gamepad.lt)          # false
+print(gamepad.rt)          # false
+print(gamepad.start)       # false
+print(gamepad.select)      # false
+print(gamepad.dup)         # false
+print(gamepad.ddown)       # false
+print(gamepad.dleft)       # false
+print(gamepad.dright)      # false
+
+# Edge-trigger ambient.
+print(gamepad_press.a)     # false
+
+# Analog axes default to 0.0.
+print(gamepad_axis.lx)     # 0.0
+print(gamepad_axis.ly)     # 0.0
+print(gamepad_axis.rx)     # 0.0
+print(gamepad_axis.ry)     # 0.0
+print(gamepad_axis.lt)     # 0.0
+print(gamepad_axis.rt)     # 0.0

@@ -43,6 +43,66 @@ const MOUSE_BUTTONS: &[(&str, MouseButton)] = &[
     ("right", MouseButton::Right),
 ];
 
+/// Phase 9 session 5: Twe field name → gilrs::Button mapping. Order
+/// must mirror the `GAMEPAD_BUTTON_NAMES` const in stdlib (since
+/// scripts read fields by name, the Rust list is the source of truth
+/// for which buttons we poll).
+const GAMEPAD_BUTTONS: &[(&str, gilrs::Button)] = &[
+    ("a", gilrs::Button::South),
+    ("b", gilrs::Button::East),
+    ("x", gilrs::Button::West),
+    ("y", gilrs::Button::North),
+    ("lb", gilrs::Button::LeftTrigger),
+    ("rb", gilrs::Button::RightTrigger),
+    ("lt", gilrs::Button::LeftTrigger2),
+    ("rt", gilrs::Button::RightTrigger2),
+    ("start", gilrs::Button::Start),
+    ("select", gilrs::Button::Select),
+    ("dup", gilrs::Button::DPadUp),
+    ("ddown", gilrs::Button::DPadDown),
+    ("dleft", gilrs::Button::DPadLeft),
+    ("dright", gilrs::Button::DPadRight),
+];
+
+/// Twe axis name → gilrs::Axis mapping. Triggers `lt` / `rt` use
+/// `LeftZ` / `RightZ` (gilrs's analog trigger axes); the `lt` / `rt`
+/// fields on `gamepad` and `gamepad_press` are the thresholded
+/// boolean variants.
+const GAMEPAD_AXES: &[(&str, gilrs::Axis)] = &[
+    ("lx", gilrs::Axis::LeftStickX),
+    ("ly", gilrs::Axis::LeftStickY),
+    ("rx", gilrs::Axis::RightStickX),
+    ("ry", gilrs::Axis::RightStickY),
+    ("lt", gilrs::Axis::LeftZ),
+    ("rt", gilrs::Axis::RightZ),
+];
+
+thread_local! {
+    /// Lazily-initialised gilrs context. None means "tried and failed
+    /// to initialise" — we log the error once and continue without
+    /// gamepad input. Re-initialisation is not supported (matches
+    /// gilrs's lifecycle expectations).
+    static GILRS: RefCell<GilrsState> = const { RefCell::new(GilrsState::Uninit) };
+    /// Previous-frame button states for edge-triggered detection.
+    /// Cleared on hot reload by `clear_gamepad_state`.
+    static PREV_GAMEPAD: RefCell<[bool; 14]> = const { RefCell::new([false; 14]) };
+}
+
+enum GilrsState {
+    Uninit,
+    // Boxed: gilrs::Gilrs is ~230 bytes (XInput buffers + connection
+    // table); without the Box, clippy's large_enum_variant fires
+    // because Uninit / Failed carry no data.
+    Active(Box<gilrs::Gilrs>),
+    Failed,
+}
+
+/// Reset the previous-frame gamepad state so a hot reload doesn't
+/// produce phantom press events.
+pub fn clear_gamepad_state() {
+    PREV_GAMEPAD.with(|p| *p.borrow_mut() = [false; 14]);
+}
+
 pub fn launch(path: String) -> i32 {
     let conf = window_conf();
     macroquad::Window::from_config(conf, run_loop(path));
@@ -96,6 +156,7 @@ async fn run_loop(path: String) {
                 Ok(new_env) => {
                     eprintln!("[twec] hot reload: {path_ref}");
                     crate::stdlib::clear_asset_caches();
+                    clear_gamepad_state();
                     env = new_env;
                     flush_output(&mut env);
                 }
@@ -192,6 +253,7 @@ async fn run_loop_bytecode(path: String) {
                 Ok(new_vm) => {
                     eprintln!("[twec] hot reload: {path_ref}");
                     crate::stdlib::clear_asset_caches();
+                    clear_gamepad_state();
                     vm = new_vm;
                     flush_vm_output(&mut vm);
                 }
@@ -457,4 +519,95 @@ fn update_key_state(env: &mut Env) {
     write_mouse_object(env.get("mouse"));
     write_mouse_buttons(env.get("mouse_held"), is_mouse_button_down);
     write_mouse_buttons(env.get("mouse_press"), is_mouse_button_pressed);
+    poll_gamepad(env);
+}
+
+/// Phase 9 session 5: poll gilrs and write button + axis state to
+/// the `gamepad`, `gamepad_press`, and `gamepad_axis` ambients. The
+/// first connected gamepad wins; multi-gamepad routing is a follow-on.
+/// `gamepad_press` is derived by diffing `PREV_GAMEPAD` against the
+/// current state (gilrs's event stream is drained but we don't use
+/// it directly — diffing keeps the surface symmetric with `key_press`).
+fn poll_gamepad(env: &mut Env) {
+    GILRS.with(|g| {
+        // Lazy init the first time we're called inside the macroquad
+        // window context. gilrs init failures (e.g. no input
+        // subsystem) produce a single warning and disable polling.
+        let mut state = g.borrow_mut();
+        if matches!(*state, GilrsState::Uninit) {
+            *state = match gilrs::Gilrs::new() {
+                Ok(g) => GilrsState::Active(Box::new(g)),
+                Err(e) => {
+                    eprintln!("[twec] gamepad disabled: {e}");
+                    GilrsState::Failed
+                }
+            };
+        }
+        let GilrsState::Active(gilrs) = &mut *state else {
+            return;
+        };
+        let gilrs = gilrs.as_mut();
+        // Drain pending events so gilrs's internal connection /
+        // disconnection state stays current. We don't act on the
+        // event payloads — buttons are sampled below by polling.
+        while gilrs.next_event().is_some() {}
+
+        let pad = gilrs.gamepads().next().map(|(_id, p)| p);
+        let connected = pad.is_some();
+
+        // Continuous + edge-triggered booleans.
+        let cur: [bool; 14] = match pad {
+            Some(p) => {
+                let mut buf = [false; 14];
+                for (i, (_name, btn)) in GAMEPAD_BUTTONS.iter().enumerate() {
+                    buf[i] = p.is_pressed(*btn);
+                }
+                buf
+            }
+            None => [false; 14],
+        };
+        let prev = PREV_GAMEPAD.with(|p| *p.borrow());
+        if let Some(t) = env.get("gamepad") {
+            if t.is_object() {
+                let rc = t.as_object();
+                let mut o = rc.borrow_mut();
+                for (i, (name, _)) in GAMEPAD_BUTTONS.iter().enumerate() {
+                    o.insert_field(*name, Value::from_bool(cur[i]));
+                }
+                o.insert_field("connected", Value::from_bool(connected));
+            }
+        }
+        if let Some(t) = env.get("gamepad_press") {
+            if t.is_object() {
+                let rc = t.as_object();
+                let mut o = rc.borrow_mut();
+                for (i, (name, _)) in GAMEPAD_BUTTONS.iter().enumerate() {
+                    // Edge-trigger: true only on the frame the button
+                    // transitions from up to down.
+                    o.insert_field(*name, Value::from_bool(cur[i] && !prev[i]));
+                }
+            }
+        }
+        PREV_GAMEPAD.with(|p| *p.borrow_mut() = cur);
+
+        // Analog axes.
+        if let Some(t) = env.get("gamepad_axis") {
+            if t.is_object() {
+                let rc = t.as_object();
+                let mut o = rc.borrow_mut();
+                match pad {
+                    Some(p) => {
+                        for (name, axis) in GAMEPAD_AXES {
+                            o.insert_field(*name, Value::from_float(p.value(*axis) as f64));
+                        }
+                    }
+                    None => {
+                        for (name, _) in GAMEPAD_AXES {
+                            o.insert_field(*name, Value::from_float(0.0));
+                        }
+                    }
+                }
+            }
+        }
+    });
 }

@@ -1,0 +1,35 @@
+# Phase 9 session 5 — gamepad polling demo.
+# Run with `twec play examples/gamepad_demo.twe` and a connected
+# Xbox/PlayStation/generic gamepad. If gilrs can't initialise (rare),
+# you'll see "[twec] gamepad disabled: ..." once on stdout and the
+# fields stay at their defaults — no crash.
+
+on render():
+    # Connection light.
+    let conn_color = if gamepad.connected: color.green else: color.red
+    rect((10, 10), (16, 16), conn_color)
+    text("connected", (32, 24), 16, color.white)
+
+    # Face buttons (A/B/X/Y) light up when held.
+    let a_col = if gamepad.a: color.yellow else: color.gray
+    let b_col = if gamepad.b: color.yellow else: color.gray
+    let x_col = if gamepad.x: color.yellow else: color.gray
+    let y_col = if gamepad.y: color.yellow else: color.gray
+    circle((100, 100), 16, b_col)
+    circle((70, 130), 16, x_col)
+    circle((100, 160), 16, a_col)
+    circle((130, 130), 16, y_col)
+
+    # Left stick position as a moving dot.
+    let cx = 250 + gamepad_axis.lx * 40
+    let cy = 130 - gamepad_axis.ly * 40   # negate ly to match screen-down
+    rect((230, 110), (40, 40), color.gray)
+    circle((cx, cy), 4, color.white)
+
+    # Trigger bars (analog triggers, [0, 1]).
+    rect((320, 110), (10, 40 * gamepad_axis.lt), color.cyan)
+    rect((340, 110), (10, 40 * gamepad_axis.rt), color.cyan)
+
+    # Press latch — flashes briefly when A transitions to down.
+    if gamepad_press.a:
+        text("A pressed!", (10, 220), 24, color.yellow)
