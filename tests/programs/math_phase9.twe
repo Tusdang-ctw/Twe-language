@@ -1,0 +1,48 @@
+# Phase 9 session 1 — noise / smoothstep / mix.
+# These three are documented in 01-examples.md Example 5 as the
+# CPU half of the Twe builtins that also work inside `visual` blocks
+# (the WGSL half lands in Phase 9 session 10).
+
+# ---- smoothstep(low, high, x) — WGSL Hermite curve, clamped at edges.
+
+print(smoothstep(0, 1, 0))
+print(smoothstep(0, 1, 1))
+print(smoothstep(0, 1, 0.5))
+print(smoothstep(0, 1, -1))
+print(smoothstep(0, 1, 2))
+print(smoothstep(0, 10, 5))
+print(smoothstep(2, 2, 3))
+
+# Same function via math.smoothstep — both surfaces ship.
+print(math.smoothstep(0, 1, 0.5))
+
+# ---- mix(a, b, t) — linear interp on numbers and same-shape tuples.
+
+print(mix(0, 10, 0))
+print(mix(0, 10, 1))
+print(mix(0, 10, 0.5))
+print(mix(-1, 1, 0.25))
+
+# Color blending (4-tuple).
+let red = (1.0, 0.0, 0.0, 1.0)
+let blue = (0.0, 0.0, 1.0, 1.0)
+print(mix(red, blue, 0.5))
+
+# 2D vector blending (2-tuple).
+print(mix((0, 0), (10, 20), 0.5))
+
+# ---- noise(point) — 2D value noise, deterministic, range [-1, 1].
+
+let n1 = noise((1.5, 2.5))
+let n2 = noise((1.5, 2.5))
+print(n1 == n2)
+print(n1 >= -1 and n1 <= 1)
+
+# math.noise is the same surface.
+print(math.noise((1.5, 2.5)) == n1)
+
+# Origin is non-degenerate (the golden-ratio offset in the hash
+# prevents the (0, 0) → 0 collapse that naive multiplicative
+# hashes have).
+let origin = noise((0, 0))
+print(origin > -1 and origin < 1)

@@ -453,7 +453,35 @@ fn install_math(env: &mut Env) {
         "cos".to_string(),
         Value::from_builtin("math.cos", &["x"], math_cos),
     );
+    math.insert(
+        "smoothstep".to_string(),
+        Value::from_builtin("math.smoothstep", &["low", "high", "x"], math_smoothstep),
+    );
+    math.insert(
+        "mix".to_string(),
+        Value::from_builtin("math.mix", &["a", "b", "t"], math_mix),
+    );
+    math.insert(
+        "noise".to_string(),
+        Value::from_builtin("math.noise", &["point"], math_noise),
+    );
     math.insert("pi".to_string(), Value::from_float(std::f64::consts::PI));
+    // Top-level aliases so `noise(uv)`, `smoothstep(a, b, x)`, `mix(a, b, t)` work
+    // without the `math.` prefix — Example 5 in docs/01-examples.md uses the
+    // bare names because the same surface must compile inside `visual` blocks
+    // (Phase 9 sessions 8+) where module access isn't available.
+    env.set(
+        "smoothstep".to_string(),
+        Value::from_builtin("smoothstep", &["low", "high", "x"], math_smoothstep),
+    );
+    env.set(
+        "mix".to_string(),
+        Value::from_builtin("mix", &["a", "b", "t"], math_mix),
+    );
+    env.set(
+        "noise".to_string(),
+        Value::from_builtin("noise", &["point"], math_noise),
+    );
     env.set(
         "math".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -677,6 +705,103 @@ fn math_sin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn math_cos(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.cos")?;
     Ok(Value::from_float(as_f64(&args[0], "math.cos")?.cos()))
+}
+
+// WGSL-spec smoothstep: t = clamp((x - low) / (high - low), 0, 1);
+// return t * t * (3 - 2t). Degenerate-interval (low == high) returns
+// 0 if x < low else 1 — WGSL spec calls it undefined; this matches the
+// step-function intuition.
+fn math_smoothstep(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "smoothstep")?;
+    let low = as_f64(&args[0], "smoothstep")?;
+    let high = as_f64(&args[1], "smoothstep")?;
+    let x = as_f64(&args[2], "smoothstep")?;
+    if (high - low).abs() < f64::EPSILON {
+        return Ok(Value::from_float(if x < low { 0.0 } else { 1.0 }));
+    }
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    Ok(Value::from_float(t * t * (3.0 - 2.0 * t)))
+}
+
+// Linear interpolation. Works on numbers, or on same-shape tuples
+// (so colors `(r, g, b, a)` and 2D vectors `(x, y)` mix elementwise).
+fn math_mix(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "mix")?;
+    let t = as_f64(&args[2], "mix")?;
+    if args[0].is_tuple() && args[1].is_tuple() {
+        let a = args[0].as_tuple();
+        let b = args[1].as_tuple();
+        if a.len() != b.len() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "mix: tuple lengths differ ({} vs {})",
+                    a.len(),
+                    b.len()
+                ),
+                help: Some(
+                    "mix two same-shape tuples — e.g. two (r, g, b, a) colors or two (x, y) vectors"
+                        .to_string(),
+                ),
+            });
+        }
+        let mut out = Vec::with_capacity(a.len());
+        for i in 0..a.len() {
+            let av = as_f64(&a[i], "mix")?;
+            let bv = as_f64(&b[i], "mix")?;
+            out.push(Value::from_float(av * (1.0 - t) + bv * t));
+        }
+        return Ok(Value::from_tuple(Rc::new(out)));
+    }
+    let a = as_f64(&args[0], "mix")?;
+    let b = as_f64(&args[1], "mix")?;
+    Ok(Value::from_float(a * (1.0 - t) + b * t))
+}
+
+// Wang-style 2D integer hash → float in [-1, 1]. Deterministic so
+// the CPU `noise` and the future WGSL `noise` (Phase 9 session 10)
+// produce bit-identical output for the same point. The 0x9e3779b9
+// offset is the 32-bit golden-ratio constant; without it,
+// `noise_hash2(0, 0)` would collapse to 0 → output -1.0, which makes
+// the origin a strong negative point in the noise field.
+fn noise_hash2(x: i64, y: i64) -> f64 {
+    let mut h = (x as u32)
+        .wrapping_mul(0x27d4_eb2du32)
+        .wrapping_add((y as u32).wrapping_mul(0x1656_67b1u32))
+        .wrapping_add(0x9e37_79b9u32);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x85eb_ca6bu32);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2_ae35u32);
+    h ^= h >> 16;
+    (h as f64 / u32::MAX as f64) * 2.0 - 1.0
+}
+
+// 2D value noise: hash four lattice corners, smoothstep-weighted
+// bilinear interp on the fractional. Output is in [-1, 1].
+fn value_noise_2d(x: f64, y: f64) -> f64 {
+    let xi = x.floor();
+    let yi = y.floor();
+    let xf = x - xi;
+    let yf = y - yi;
+    let u = xf * xf * (3.0 - 2.0 * xf);
+    let v = yf * yf * (3.0 - 2.0 * yf);
+    let xi = xi as i64;
+    let yi = yi as i64;
+    let n00 = noise_hash2(xi, yi);
+    let n10 = noise_hash2(xi + 1, yi);
+    let n01 = noise_hash2(xi, yi + 1);
+    let n11 = noise_hash2(xi + 1, yi + 1);
+    let nx0 = n00 * (1.0 - u) + n10 * u;
+    let nx1 = n01 * (1.0 - u) + n11 * u;
+    nx0 * (1.0 - v) + nx1 * v
+}
+
+fn math_noise(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "noise")?;
+    let (x, y) = xy_of(&args[0], "noise")?;
+    Ok(Value::from_float(value_noise_2d(x, y)))
 }
 
 fn install_random(env: &mut Env) {

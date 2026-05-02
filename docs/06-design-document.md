@@ -595,7 +595,7 @@ Conversion between compatible units is automatic at the type level (`30cm + 1m =
 Detailed in a separate document (`stdlib.md`, not yet written). Sections planned:
 
 1. **`core`** — `print`, `assert`, `panic`, type predicates.
-2. **`math`** — `sin`, `cos`, `noise`, `smoothstep`, `mix`, `clamp`, `floor`, `ceil`, etc. (most also work in `visual` blocks).
+2. **`math`** — `sin`, `cos`, `noise`, `smoothstep`, `mix`, `clamp`, `floor`, `ceil`, etc. (most also work in `visual` blocks). *(v0.1 ships `abs`, `sqrt`, `floor`, `ceil`, `min`, `max`, `sin`, `cos`, `pi`. Phase 9 session 1 adds `smoothstep(low, high, x)`, `mix(a, b, t)`, and `noise(point)` — all reachable via the `math.` prefix and as bare names at the top level so the same surface compiles inside `visual` block bodies. `mix` accepts numbers or same-shape tuples, so it blends colors `(r, g, b, a)` and 2D vectors `(x, y)` elementwise. `noise` is 2D value noise on an `(x, y)` tuple, deterministic, range [-1, 1] — the WGSL counterpart that produces bit-identical output lands in Phase 9 session 10.)*
 3. **`random`** — `random.float()`, `random.int(0..10)`, `random.in_circle(radius:)`, `random.choice([...])`.
 4. **`vector`** — vector operations: `dot`, `cross`, `length`, `normalize`, `lerp`.
 5. **`color`** — named constants, `color.lerp`, `color.from_hex`, `color.hsv`.

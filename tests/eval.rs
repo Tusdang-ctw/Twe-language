@@ -207,6 +207,35 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn runs_math_phase9_smoothstep_mix_noise() {
+    // Phase 9 session 1: noise / smoothstep / mix on the CPU surface.
+    // Smoothstep + mix outputs are exact (algebraic). Noise is asserted
+    // by property (deterministic + range) so the hash internals can
+    // change without a brittle test.
+    let out =
+        run_program("tests/programs/math_phase9.twe").expect("program should run");
+    let expected = "0.0\n\
+        1.0\n\
+        0.5\n\
+        0.0\n\
+        1.0\n\
+        0.5\n\
+        1.0\n\
+        0.5\n\
+        0.0\n\
+        10.0\n\
+        5.0\n\
+        -0.5\n\
+        (0.5, 0.0, 0.5, 1.0)\n\
+        (5.0, 10.0)\n\
+        true\n\
+        true\n\
+        true\n\
+        true\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn runs_lists() {
     let out = run_program("tests/programs/lists.twe").expect("program should run");
     let expected = "[1, 2, 3]\n3\n1\n2\n3\n\
