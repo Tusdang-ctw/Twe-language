@@ -207,6 +207,43 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn load_font_errors_on_missing_file() {
+    // Phase 9 session 4: load_font surface. Positive path needs a real
+    // TTF + GL context (text_with_font) so it's exercised by hand via
+    // examples/font_demo.twe. Headless tests cover the load-side
+    // sanity checks.
+    let err = run_program_str("load_font(\"no_such_font.ttf\")\n").expect_err("should fail");
+    assert!(err.contains("cannot find asset"), "got: {err}");
+}
+
+#[test]
+fn load_font_errors_on_bad_format() {
+    // hero.png is not a TTF; load_font's parse step should reject it
+    // with a clear "not a valid TTF/OTF" message rather than panicking
+    // or silently returning a junk handle.
+    let err =
+        run_program_str("load_font(\"examples/assets/hero.png\")\n").expect_err("should fail");
+    assert!(
+        err.contains("is not a valid TTF/OTF font"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn text_with_font_outside_render_fails_clearly() {
+    // require_render fires before the font-handle type check, so the
+    // bogus 0 in the font slot never gets validated.
+    let err = run_program_str(
+        "text_with_font(\"hi\", (0, 0), 24, color.white, 0)\n",
+    )
+    .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn runs_atlas_phase9_load_handle() {
     // Phase 9 session 3: load_atlas builds an atlas-kind handle with
     // path + grid fields. The sprite_frame / sprite_frame_at draw

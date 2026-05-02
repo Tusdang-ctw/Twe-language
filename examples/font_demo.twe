@@ -1,0 +1,14 @@
+# Phase 9 session 4 — TTF font loading demo.
+# Run with `twec play examples/font_demo.twe`.
+#
+# Drop a TTF or OTF at examples/assets/font.ttf and uncomment the
+# load_font + text_with_font lines below. The repo doesn't ship a
+# font of its own to keep the asset directory minimal — any free
+# font (Inter, Roboto, system-installed) will do.
+
+# let inter = load_font("examples/assets/font.ttf")
+
+on render():
+    text("default macroquad font", (50, 80), 32, color.white)
+    # text_with_font("custom font via load_font(...)", (50, 140), 32,
+    #                color.yellow, inter)

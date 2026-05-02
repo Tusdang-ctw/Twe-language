@@ -23,6 +23,18 @@ thread_local! {
         amplitude: 0.0,
         remaining: 0.0,
     }) };
+    // Phase 9 session 4: TTF font cache. Two-stage lazy load: the
+    // raw font bytes are cached at `load_font` time (headless-safe,
+    // path + TTF magic-bytes validation runs there), and macroquad's
+    // `Font` parse happens on first `text_with_font` draw inside
+    // `on render():` — same lazy-on-first-draw pattern as sprites.
+    // Reason: macroquad's `load_ttf_font_from_bytes` asserts on
+    // THREAD_ID, which is only initialised inside `Window::from_config`,
+    // so eager parsing would crash `twec run` and the test harness.
+    static FONT_BYTES_CACHE: RefCell<HashMap<String, Vec<u8>>>
+        = RefCell::new(HashMap::new());
+    static FONT_CACHE: RefCell<HashMap<String, macroquad::text::Font>>
+        = RefCell::new(HashMap::new());
 }
 
 #[derive(Clone, Copy)]
@@ -38,6 +50,8 @@ struct CameraShake {
 pub fn clear_asset_caches() {
     SPRITE_CACHE.with(|c| c.borrow_mut().clear());
     SOUND_CACHE.with(|c| c.borrow_mut().clear());
+    FONT_BYTES_CACHE.with(|c| c.borrow_mut().clear());
+    FONT_CACHE.with(|c| c.borrow_mut().clear());
     CAMERA_SHAKE.with(|c| {
         let mut s = c.borrow_mut();
         s.amplitude = 0.0;
@@ -149,6 +163,16 @@ pub fn install(env: &mut Env) {
     env.set(
         "load_atlas".to_string(),
         Value::from_builtin("load_atlas", &["path", "grid"], load_atlas_impl),
+    );
+    // Phase 9 session 4: TTF / OTF font loading. `load_font(path)`
+    // returns a font handle `{ path }`; `text_with_font(content,
+    // at, size, color, font)` is the draw call that uses it (kept
+    // separate from `text` for the same calling-convention reason
+    // as sprite_frame vs sprite — required-kwargs only). Fonts
+    // decode eagerly because they don't need a GL context.
+    env.set(
+        "load_font".to_string(),
+        Value::from_builtin("load_font", &["path"], load_font_impl),
     );
     // v0.2 session 4: save / load for Twe Values. Bottom layer
     // of the eventual `save` block compiler — see
@@ -703,6 +727,95 @@ fn load_atlas_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
         fields,
         kind: "atlas",
     }))))
+}
+
+/// `load_font(path)` — read + validate a TTF/OTF font and cache its
+/// bytes for lazy parsing on first draw. Returns a font handle
+/// `{ path, kind: "font" }`. We do our own magic-bytes check here
+/// (cheap, headless-safe) instead of calling macroquad's
+/// `load_ttf_font_from_bytes` — that asserts on THREAD_ID and only
+/// works inside `Window::from_config`, so eagerly decoding would
+/// crash `twec run` and the test harness. The actual `Font` is
+/// constructed on first `text_with_font` call inside `on render():`,
+/// the same lazy-on-first-draw pattern as `sprite()` for textures.
+/// Phase 9 session 4.
+fn load_font_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "load_font")?;
+    let path = {
+        let t = &args[0];
+        if t.is_str() {
+            t.as_string().clone()
+        } else {
+            let other = *t;
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "load_font expected a string path, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `load_font(\"fonts/Inter-Regular.ttf\")`".to_string()),
+            });
+        }
+    };
+    if std::fs::metadata(&path).is_err() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("load_font: cannot find asset '{path}'"),
+            help: Some(
+                "the path is relative to the working directory; check spelling and case"
+                    .to_string(),
+            ),
+        });
+    }
+    let bytes = std::fs::read(&path).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("load_font: cannot read '{path}': {e}"),
+        help: None,
+    })?;
+    if !is_ttf_or_otf(&bytes) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("load_font: '{path}' is not a valid TTF/OTF font"),
+            help: Some(
+                "expected TTF (0x00010000 or 'true'), OTF ('OTTO'), or TTC ('ttcf') magic bytes"
+                    .to_string(),
+            ),
+        });
+    }
+    FONT_BYTES_CACHE.with(|c| {
+        c.borrow_mut().insert(path.clone(), bytes);
+    });
+    let mut fields = HashMap::new();
+    fields.insert("path".to_string(), Value::from_string(path));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "font",
+    }))))
+}
+
+/// Sniff the standard TrueType / OpenType / TrueType-collection
+/// magic-byte signatures. Web font formats (WOFF/WOFF2) intentionally
+/// don't match — macroquad's parser doesn't accept them either, so
+/// erroring up-front is friendlier than a confusing render-time crash.
+fn is_ttf_or_otf(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 {
+        return false;
+    }
+    matches!(
+        &bytes[..4],
+        // TrueType (sfnt 0x00010000)
+        [0x00, 0x01, 0x00, 0x00]
+        // OpenType with CFF outlines: "OTTO"
+        | [0x4F, 0x54, 0x54, 0x4F]
+        // Apple TrueType: "true"
+        | [0x74, 0x72, 0x75, 0x65]
+        // TrueType collection: "ttcf"
+        | [0x74, 0x74, 0x63, 0x66]
+    )
 }
 
 /// `save_to(path, value)` — serialize `value` to JSON and write
@@ -1786,6 +1899,15 @@ fn install_draw(env: &mut Env) {
         "text".to_string(),
         Value::from_builtin("text", &["content", "at", "size", "color"], draw_text),
     );
+    // Phase 9 session 4: text rendering with a custom TTF/OTF font.
+    env.set(
+        "text_with_font".to_string(),
+        Value::from_builtin(
+            "text_with_font",
+            &["content", "at", "size", "color", "font"],
+            draw_text_with_font,
+        ),
+    );
     // sprite() is variadic-style — 2 or 3 positional args, no kwargs in v0.1.
     // Add named-param support when the optional `size` slot has a clean
     // representation in bind_kwargs.
@@ -2344,6 +2466,127 @@ fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let color = color_of(&args[3], "text.color")?;
     macroquad::text::draw_text(&content, x as f32, y as f32, size, color);
     Ok(Value::NIL)
+}
+
+/// `text_with_font(content, at, size, color, font)` — same as `text`
+/// but renders with a custom TTF/OTF loaded via `load_font`. Phase 9
+/// session 4.
+fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "text_with_font")?;
+    arity(args, 5, "text_with_font")?;
+    let content = {
+        let t = &args[0];
+        if t.is_str() {
+            t.as_string().clone()
+        } else {
+            (*t).display()
+        }
+    };
+    let (x, y) = xy_of(&args[1], "text_with_font.at")?;
+    let size = number(&args[2], "text_with_font.size")? as f32;
+    let color = color_of(&args[3], "text_with_font.color")?;
+    let path = font_handle_path(&args[4], "text_with_font")?;
+    // Lazy-decode the Font on first use. The bytes were validated +
+    // cached by `load_font` (headless-safe); the actual macroquad
+    // parse needs THREAD_ID, which only exists once we're inside the
+    // render frame — here.
+    ensure_font_decoded(&path)?;
+    FONT_CACHE.with(|cache| -> Result<(), RuntimeError> {
+        let c = cache.borrow();
+        let font = c.get(&path).ok_or_else(|| RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "text_with_font: internal — font '{path}' lazy-decode failed silently"
+            ),
+            help: None,
+        })?;
+        macroquad::text::draw_text_ex(
+            &content,
+            x as f32,
+            y as f32,
+            macroquad::text::TextParams {
+                font: Some(font),
+                font_size: size as u16,
+                color,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })?;
+    Ok(Value::NIL)
+}
+
+/// Decode the cached TTF bytes for `path` into a macroquad `Font`,
+/// caching the result. Returns Ok if the font is already cached or
+/// the parse succeeds. Errors if `load_font` was never called for
+/// this path or if the parse fails.
+fn ensure_font_decoded(path: &str) -> Result<(), RuntimeError> {
+    let already = FONT_CACHE.with(|c| c.borrow().contains_key(path));
+    if already {
+        return Ok(());
+    }
+    let bytes = FONT_BYTES_CACHE.with(|c| c.borrow().get(path).cloned());
+    let bytes = bytes.ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!(
+            "text_with_font: font '{path}' was not loaded (call `load_font(...)` first)"
+        ),
+        help: Some(
+            "store the handle from `load_font(...)` and reuse it across draw calls".to_string(),
+        ),
+    })?;
+    let font = macroquad::text::load_ttf_font_from_bytes(&bytes).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("text_with_font: failed to decode font '{path}': {e}"),
+        help: None,
+    })?;
+    FONT_CACHE.with(|c| {
+        c.borrow_mut().insert(path.to_string(), font);
+    });
+    Ok(())
+}
+
+/// Pull the cache key off a font handle. Atlas/sprite/sound handles
+/// won't pass — this is the type-check for `text_with_font`'s last
+/// arg.
+fn font_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
+    if !v.is_object() {
+        let other = *v;
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{callee} expects a font handle from `load_font(...)`, got {}",
+                other.type_name()
+            ),
+            help: None,
+        });
+    }
+    let rc = v.as_object();
+    let o = rc.borrow();
+    if o.kind != "font" {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{callee} expects a font handle from `load_font(...)`, got a `{}` handle",
+                o.kind
+            ),
+            help: None,
+        });
+    }
+    match o.get_field("path") {
+        Some(v) if v.is_str() => Ok(v.as_string().clone()),
+        _ => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{callee}: font handle is missing a `path` field"),
+            help: None,
+        }),
+    }
 }
 
 // --- Phase 5 task 5 sessions (d) + (e): 3D rendering surface ---
