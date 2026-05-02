@@ -100,7 +100,8 @@ fn stmt_line(s: &Stmt) -> u32 {
         | Stmt::DialogueDecl { line, .. }
         | Stmt::Say { line, .. }
         | Stmt::Choice { line, .. }
-        | Stmt::OnRender { line, .. } => *line,
+        | Stmt::OnRender { line, .. }
+        | Stmt::OnClassEvent { line, .. } => *line,
         Stmt::Expr(e) => e.line(),
     }
 }
@@ -389,6 +390,18 @@ impl Compiler {
                     .add_constant(Value::from_bc_function(Rc::new(func)));
                 self.frame_mut().chunk.write_op(OpCode::SetOnUpdate, *line);
                 self.frame_mut().chunk.write_byte(func_idx, *line);
+            }
+            Stmt::OnClassEvent { line, col, .. } => {
+                // Phase 9 session 7b: class-event handlers run on the
+                // tree-walker only in v0.3. The bytecode VM mirror is
+                // a follow-on session — declare it explicitly so a
+                // script that uses the syntax fails fast on the VM
+                // path with the same shape as `on render():`.
+                return Err(self.unsupported(
+                    "`on <Class>.death(...):` (Phase 9 session 7b — tree-walker only for now; run with `--vm tree`)",
+                    *line,
+                    *col,
+                ));
             }
             Stmt::OnRender { line, col, .. } => {
                 // Top-level `on render():` only flows through the

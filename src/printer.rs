@@ -50,6 +50,7 @@ fn takes_blank_neighbor(stmt: &Stmt) -> bool {
             | Stmt::FunctionDecl { .. }
             | Stmt::OnUpdate { .. }
             | Stmt::OnRender { .. }
+            | Stmt::OnClassEvent { .. }
     )
 }
 
@@ -119,6 +120,23 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
         Stmt::OnRender { body, .. } => {
             push_indent(out, depth);
             out.push_str("on render():\n");
+            print_block(out, body, depth + 1);
+        }
+        Stmt::OnClassEvent {
+            class,
+            event,
+            param,
+            body,
+            ..
+        } => {
+            push_indent(out, depth);
+            out.push_str("on ");
+            out.push_str(class);
+            out.push('.');
+            out.push_str(event);
+            out.push('(');
+            out.push_str(param);
+            out.push_str("):\n");
             print_block(out, body, depth + 1);
         }
         Stmt::Decl {

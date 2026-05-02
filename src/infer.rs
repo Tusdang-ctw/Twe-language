@@ -358,6 +358,20 @@ impl Inferer {
                 }
                 self.pop_scope();
             }
+            Stmt::OnClassEvent { param, body, .. } => {
+                // Bind the dying-entity param as Unknown so the body
+                // type-checks loosely; field reads on `e` defer to
+                // runtime (matches non-strict's existing handling of
+                // unknown receivers). Strict-mode validation that the
+                // class is declared can ride a follow-on session.
+                // Phase 9 session 7b.
+                self.push_scope();
+                self.bind(param.clone(), Type::Unknown);
+                for s in body {
+                    self.walk_stmt(s);
+                }
+                self.pop_scope();
+            }
             Stmt::Expr(e) => {
                 let _ = self.expr_type(e);
             }

@@ -85,6 +85,11 @@ pub struct Instance {
     /// Set by `despawn self`; the runtime drops this instance from
     /// `Env::active_entities` at the end of the frame.
     pub despawned: bool,
+    /// True after the death-event handler (registered via
+    /// `on <Class>.death(e):`) has fired for this instance. Avoids
+    /// re-firing if the entity stays in `active_entities` for
+    /// multiple frames before pruning. Phase 9 session 7b.
+    pub death_fired: bool,
     /// Suspended-fiber call stack. Empty = not suspended (entry
     /// ran to completion, or the state has no entry body / hasn't
     /// been entered). Non-empty = a `wait` fired somewhere in the
@@ -248,6 +253,12 @@ pub struct Env {
     /// frame in `twec play3d`. State-scoped on_render lives on
     /// `StateDef` and is for the 2D macroquad path.
     pub top_on_render: Option<Vec<crate::ast::Stmt>>,
+    /// Class-name → registered death handlers. Phase 9 session 7b.
+    /// Multiple handlers per class fire in registration order; the
+    /// dying entity is bound to the handler's `param` for the body's
+    /// scope. Only the tree-walker reads this in v0.3 — the bytecode
+    /// VM mirror is a follow-on.
+    pub death_handlers: HashMap<String, Vec<OnDeathHandler>>,
     pub active_scene: Option<Rc<RefCell<Instance>>>,
     pub active_entities: Vec<Rc<RefCell<Instance>>>,
     pub self_value: Option<TaggedValue>,
@@ -303,6 +314,15 @@ pub struct OnUpdateHandler {
     pub body: Vec<crate::ast::Stmt>,
 }
 
+/// Handler registered via `on <Class>.death(e):`. Multiple handlers
+/// for the same class are allowed and fire in registration order.
+/// Phase 9 session 7b.
+#[derive(Clone, Debug)]
+pub struct OnDeathHandler {
+    pub param: String,
+    pub body: Vec<crate::ast::Stmt>,
+}
+
 impl Env {
     pub fn new() -> Self {
         Self {
@@ -310,6 +330,7 @@ impl Env {
             out: String::new(),
             on_update: None,
             top_on_render: None,
+            death_handlers: HashMap::new(),
             active_scene: None,
             active_entities: Vec::new(),
             self_value: None,

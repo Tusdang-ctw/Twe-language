@@ -104,6 +104,25 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Stmt::OnClassEvent {
+            class,
+            event,
+            param,
+            body,
+            line,
+            col,
+        } => {
+            s.push_str("{\"kind\":\"OnClassEvent\",\"class\":");
+            write_str_value(s, class);
+            s.push_str(",\"event\":");
+            write_str_value(s, event);
+            s.push_str(",\"param\":");
+            write_str_value(s, param);
+            s.push_str(",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Stmt::Decl {
             kind,
             name,

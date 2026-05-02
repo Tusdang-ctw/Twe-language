@@ -207,6 +207,29 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn runs_death_event_phase9_handler_fires_once() {
+    // Phase 9 session 7b: `on <Class>.death(e):` fires when the
+    // entity transitions despawned → pruned. We tick frames until
+    // the particles emitter ages out (>= 0.1s), then assert the
+    // handler ran exactly once. Frame count is conservative — three
+    // frames at 0.05s each gets us past the 0.1s lifetime.
+    let out = run_program_frames("tests/programs/death_event_phase9.twe", 3, 0.05)
+        .expect("program should run");
+    assert_eq!(out, "burst died\n");
+}
+
+#[test]
+fn death_event_unknown_keyword_errors() {
+    // Use a non-keyword identifier so the parser reaches the
+    // "unknown class event" branch — `spawn` is a Twe keyword and
+    // hits the "expected event name" branch first (also a clean
+    // error, but tests a different code path).
+    let err = run_program_str("on Foo.fire(e):\n    print(\"x\")\n")
+        .expect_err("should fail");
+    assert!(err.contains("unknown class event"), "got: {err}");
+}
+
+#[test]
 fn runs_visual_block_phase9_parses_and_no_ops() {
     // Phase 9 session 8: the `visual` keyword + DeclKind::Visual + parser
     // dispatch should accept Example 5's shape and execute the surrounding

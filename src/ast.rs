@@ -54,6 +54,20 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    /// `on <ClassName>.<event>(<param>):` — top-level class-event
+    /// handler. v0.3 (Phase 9 session 7b) ships only `event = "death"`
+    /// (fires when an instance of `<ClassName>` is despawned). The
+    /// param binds the dying entity, scoped to the body. Generic
+    /// shape so future events (`spawn`, `collide`) can ride the same
+    /// AST node.
+    OnClassEvent {
+        class: String,
+        event: String,
+        param: String,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
     Decl {
         kind: DeclKind,
         name: String,

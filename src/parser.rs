@@ -190,10 +190,78 @@ impl<'a> Parser<'a> {
                     line: event_tok.line,
                     col: event_tok.col,
                     message: format!("expected event name after `on`, got {other:?}"),
-                    help: Some("e.g. `on update(dt):` or `on render():`".to_string()),
+                    help: Some(
+                        "e.g. `on update(dt):`, `on render():`, or `on Enemy.death(e):`"
+                            .to_string(),
+                    ),
                 })
             }
         };
+        // Phase 9 session 7b: `on <ClassName>.<event>(<param>):` —
+        // class-event handler. Currently only `death` is supported.
+        // The first ident is the class name; the next token must be
+        // `.` to disambiguate from the existing `on update(dt):` /
+        // `on render():` shapes.
+        if matches!(self.peek().kind, TokenKind::Dot) {
+            self.bump();
+            let event_kind_tok = self.bump().clone();
+            let event_kind = match event_kind_tok.kind {
+                TokenKind::Ident(s) => s,
+                other => {
+                    return Err(ParseError {
+                        line: event_kind_tok.line,
+                        col: event_kind_tok.col,
+                        message: format!("expected event name after `on {event_name}.`, got {other:?}"),
+                        help: Some("v0.3 supports `on <Class>.death(param):`".to_string()),
+                    });
+                }
+            };
+            if event_kind != "death" {
+                return Err(ParseError {
+                    line: event_kind_tok.line,
+                    col: event_kind_tok.col,
+                    message: format!(
+                        "unknown class event `{event_kind}` on `{event_name}`"
+                    ),
+                    help: Some(
+                        "v0.3 supports `death`; `spawn` / `collide` / etc. ride a follow-on session"
+                            .to_string(),
+                    ),
+                });
+            }
+            self.expect(
+                TokenKind::LParen,
+                "expected '(' after `on <Class>.death`",
+            )?;
+            let param_tok = self.bump().clone();
+            let param = match param_tok.kind {
+                TokenKind::Ident(s) => s,
+                other => {
+                    return Err(ParseError {
+                        line: param_tok.line,
+                        col: param_tok.col,
+                        message: format!("expected parameter name, got {other:?}"),
+                        help: Some(
+                            "`on Enemy.death(e):` binds e as the dying entity".to_string(),
+                        ),
+                    });
+                }
+            };
+            self.expect(TokenKind::RParen, "expected ')' to close parameter list")?;
+            self.expect(
+                TokenKind::Colon,
+                "expected ':' after `on <Class>.death(...)`",
+            )?;
+            let body = self.parse_block()?;
+            return Ok(Stmt::OnClassEvent {
+                class: event_name,
+                event: event_kind,
+                param,
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
         match event_name.as_str() {
             "update" => {
                 self.expect(TokenKind::LParen, "expected '(' after `on update`")?;

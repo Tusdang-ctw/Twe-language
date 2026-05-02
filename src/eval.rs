@@ -90,7 +90,50 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
 }
 
 fn prune_despawned(env: &mut Env) {
+    // Phase 9 session 7b: fire `on <Class>.death(e):` handlers for any
+    // entity whose `despawned` flag was set this frame and whose death
+    // hasn't fired yet. The dying entity is still in `active_entities`
+    // at this point so the handler body can read its fields (`e.pos`,
+    // etc.) before pruning. Handlers run in registration order; spawn
+    // calls inside a handler push to `active_entities` and won't be
+    // re-pruned this frame.
+    if !env.death_handlers.is_empty() {
+        let snapshot = env.active_entities.clone();
+        for entity in snapshot {
+            let (despawned, fired, class_name) = {
+                let i = entity.borrow();
+                (i.despawned, i.death_fired, i.class.name.clone())
+            };
+            if !despawned || fired {
+                continue;
+            }
+            entity.borrow_mut().death_fired = true;
+            let handlers = env.death_handlers.get(&class_name).cloned();
+            if let Some(handlers) = handlers {
+                let entity_value = Value::from_instance(entity);
+                for handler in handlers {
+                    if let Err(e) = run_death_handler(env, &handler, entity_value) {
+                        eprintln!("[twec] error in `on {class_name}.death`: {e}");
+                    }
+                }
+            }
+        }
+    }
     env.active_entities.retain(|e| !e.borrow().despawned);
+}
+
+/// Bind the handler's `param` to the dying entity and run the body.
+/// Mirrors the OnUpdate calling convention (env-level binding rather
+/// than a pushed scope — there's no scope mechanism on Env yet, so
+/// the param survives in env after the handler runs; consistent with
+/// how `dt` is left behind by `OnUpdate`).
+fn run_death_handler(
+    env: &mut Env,
+    handler: &crate::value::OnDeathHandler,
+    entity: Value,
+) -> Result<(), RuntimeError> {
+    env.set(handler.param.clone(), entity);
+    run_block(env, &handler.body)
 }
 
 /// On `spawn EmitterClass at pos`, create the particle list as a hidden
@@ -1455,6 +1498,7 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
         Stmt::If { .. } => "if",
         Stmt::OnUpdate { .. } => "on update",
         Stmt::OnRender { .. } => "on render",
+        Stmt::OnClassEvent { .. } => "on class event",
         Stmt::Decl { .. } => "decl",
         Stmt::FunctionDecl { .. } => "function",
         Stmt::Return { .. } => "return",
@@ -1846,6 +1890,28 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
         }
         Stmt::OnRender { body, .. } => {
             env.top_on_render = Some(body.clone());
+            Ok(())
+        }
+        Stmt::OnClassEvent {
+            class,
+            event,
+            param,
+            body,
+            ..
+        } => {
+            // Phase 9 session 7b. Only `event = "death"` is recognized
+            // by the parser; we keep the runtime keyed by event-name
+            // so future events ride the same field with no schema bump.
+            // Multiple handlers per (class, event) registered in source
+            // order; the death-fire site iterates that list.
+            let _ = event;
+            env.death_handlers
+                .entry(class.clone())
+                .or_default()
+                .push(crate::value::OnDeathHandler {
+                    param: param.clone(),
+                    body: body.clone(),
+                });
             Ok(())
         }
         Stmt::Decl {
@@ -2717,6 +2783,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
         despawned: false,
+        death_fired: false,
         fiber_frames: Vec::new(),
         entry_wait_remaining: 0.0,
         predicate_last_values: Vec::new(),

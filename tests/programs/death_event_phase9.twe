@@ -1,0 +1,14 @@
+# Phase 9 session 7b — verify `on <Class>.death(e):` fires when an
+# entity is despawned. Uses a particles emitter as the dying entity
+# (its despawn is automatic when all particles age out, so the test
+# doesn't depend on entity-mutation APIs that aren't all stable on
+# the tree-walker public surface).
+
+particles Burst:
+    count: 3
+    lifetime: 0.1s
+
+on Burst.death(e):
+    print("burst died")
+
+spawn Burst at (10, 20)
