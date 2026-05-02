@@ -117,7 +117,27 @@ async fn run_loop(path: String) {
 
         clear_background(BLACK);
         env.in_render = true;
-        if let Err(e) = crate::eval::render_frame(&mut env) {
+        // Phase 9 session 2: drive a macroquad Camera2D from the Twe
+        // `camera` ambient (pos / zoom) plus the runtime shake offset.
+        // Backward-compat carve-out: when pos == (0, 0), zoom == 1.0,
+        // and shake is silent we leave macroquad's default camera in
+        // place — every existing example that draws at pixel coords
+        // (origin top-left, +y down) keeps working unchanged.
+        // Convention when opted in: camera.pos is the world-space
+        // coordinate that ends up at the screen center.
+        crate::stdlib::camera_tick(dt);
+        let ((px, py), zoom) = crate::stdlib::camera_view(&env);
+        let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
+        let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
+        if cam_active {
+            let cam = build_camera2d(px + sx, py + sy, zoom);
+            set_camera(&cam);
+        }
+        let render_result = crate::eval::render_frame(&mut env);
+        if cam_active {
+            set_default_camera();
+        }
+        if let Err(e) = render_result {
             eprintln!("{path_ref}: runtime error: {e}");
             env.in_render = false;
             break;
@@ -126,6 +146,28 @@ async fn run_loop(path: String) {
         flush_output(&mut env);
 
         next_frame().await;
+    }
+}
+
+/// Build a macroquad `Camera2D` that puts world-coord `(cx, cy)` at
+/// the screen center, with `zoom > 1.0` zooming in and `< 1.0` zooming
+/// out. Y axis stays inverted (+y down) so call-site coordinates keep
+/// matching the screen's pixel orientation.
+fn build_camera2d(cx: f64, cy: f64, zoom: f64) -> Camera2D {
+    let w = screen_width();
+    let h = screen_height();
+    let z = zoom as f32;
+    Camera2D {
+        target: vec2(cx as f32, cy as f32),
+        // zoom.x positive: world +x → screen +x.
+        // zoom.y negative: world +y → screen +y (orthographic flip
+        // would otherwise put +y up, which contradicts the rest of
+        // the runtime's pixel-coord convention).
+        zoom: vec2(2.0 / w * z, -2.0 / h * z),
+        offset: vec2(0.0, 0.0),
+        rotation: 0.0,
+        render_target: None,
+        viewport: None,
     }
 }
 

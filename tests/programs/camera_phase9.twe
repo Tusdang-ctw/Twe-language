@@ -1,0 +1,42 @@
+# Phase 9 session 2 — verify the camera ambient ships with the
+# expected fields, that follow lerps in place, that shake updates
+# the runtime state, and that reset clears everything.
+
+# Defaults at install time.
+print(camera.pos)        # (0.0, 0.0)
+print(camera.zoom)       # 1.0
+
+# Manual writes.
+camera.pos = (200, 150)
+camera.zoom = 1.5
+print(camera.pos)        # (200, 150)
+print(camera.zoom)       # 1.5
+
+# follow lerps camera.pos toward the target by `lerp` factor.
+# After one call with lerp=0.5 starting at (200, 150) toward (0, 0):
+#   pos = (200 + (0 - 200) * 0.5, 150 + (0 - 150) * 0.5) = (100, 75)
+camera.follow((0, 0), 0.5)
+print(camera.pos)        # (100.0, 75.0)
+
+# A second call halves the distance again.
+camera.follow((0, 0), 0.5)
+print(camera.pos)        # (50.0, 37.5)
+
+# follow with lerp=0 is a no-op.
+camera.follow((999, 999), 0)
+print(camera.pos)        # (50.0, 37.5)
+
+# follow with lerp=1 snaps.
+camera.follow((42, 42), 1)
+print(camera.pos)        # (42.0, 42.0)
+
+# shake doesn't have a script-readable amplitude field — the offset
+# only matters at render-time. We can at least call it without
+# error and confirm it doesn't mutate camera.pos.
+camera.shake(5, 0.3)
+print(camera.pos)        # (42.0, 42.0)
+
+# reset snaps everything back.
+camera.reset()
+print(camera.pos)        # (0.0, 0.0)
+print(camera.zoom)       # 1.0

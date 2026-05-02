@@ -207,6 +207,46 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn runs_camera_phase9_follow_shake_reset() {
+    // Phase 9 session 2: 2D camera ambient shipped with pos/zoom +
+    // follow/shake/reset. Headless run tests the script-visible state
+    // mutations; the macroquad render-loop integration (set_camera,
+    // shake offset, default-camera carve-out) is exercised by hand
+    // via `twec play` and not snapshot-tested.
+    let out =
+        run_program("tests/programs/camera_phase9.twe").expect("program should run");
+    let expected = "(0.0, 0.0)\n\
+        1.0\n\
+        (200, 150)\n\
+        1.5\n\
+        (100.0, 75.0)\n\
+        (50.0, 37.5)\n\
+        (50.0, 37.5)\n\
+        (42.0, 42.0)\n\
+        (42.0, 42.0)\n\
+        (0.0, 0.0)\n\
+        1.0\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn camera_shake_decays_with_camera_tick() {
+    // Direct-API test for the runtime decay path that `twec play`
+    // drives but no Twe surface exposes (the script can only set
+    // shake; the offset/decay live entirely in stdlib).
+    use twec::stdlib::{camera_shake_remaining, camera_tick, clear_asset_caches};
+    clear_asset_caches();
+    assert_eq!(camera_shake_remaining(), 0.0);
+    // Trigger a shake via a tiny Twe program.
+    run_program_str("camera.shake(5, 0.5)\n").expect("should run");
+    assert_eq!(camera_shake_remaining(), 0.5);
+    camera_tick(0.2);
+    assert!((camera_shake_remaining() - 0.3).abs() < 1e-9);
+    camera_tick(1.0);
+    assert_eq!(camera_shake_remaining(), 0.0);
+}
+
+#[test]
 fn runs_math_phase9_smoothstep_mix_noise() {
     // Phase 9 session 1: noise / smoothstep / mix on the CPU surface.
     // Smoothstep + mix outputs are exact (algebraic). Noise is asserted

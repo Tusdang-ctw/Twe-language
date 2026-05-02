@@ -14,13 +14,101 @@ thread_local! {
         = RefCell::new(HashMap::new());
     static SOUND_CACHE: RefCell<HashMap<String, macroquad::audio::Sound>>
         = RefCell::new(HashMap::new());
+    // Phase 9 session 2: 2D camera shake state. The Twe-facing API is
+    // `camera.shake(amplitude, duration)`; that builtin writes here.
+    // Each frame the play loop calls `camera_tick` to decay the timer
+    // and `camera_shake_offset` to read a fresh random offset that
+    // feeds the macroquad `Camera2D` transform.
+    static CAMERA_SHAKE: RefCell<CameraShake> = const { RefCell::new(CameraShake {
+        amplitude: 0.0,
+        remaining: 0.0,
+    }) };
+}
+
+#[derive(Clone, Copy)]
+struct CameraShake {
+    amplitude: f64,
+    remaining: f64,
 }
 
 /// Drop every cached `Texture2D` and `Sound`. The play loop calls this
-/// on hot reload so swapped asset paths pick up.
+/// on hot reload so swapped asset paths pick up. Also resets camera
+/// shake — a hot-reloaded script shouldn't inherit jitter from the
+/// previous session.
 pub fn clear_asset_caches() {
     SPRITE_CACHE.with(|c| c.borrow_mut().clear());
     SOUND_CACHE.with(|c| c.borrow_mut().clear());
+    CAMERA_SHAKE.with(|c| {
+        let mut s = c.borrow_mut();
+        s.amplitude = 0.0;
+        s.remaining = 0.0;
+    });
+}
+
+/// Decay the camera-shake timer by `dt` seconds. The play loop calls
+/// this once per frame between `tick_frame` and `render_frame`.
+pub fn camera_tick(dt: f64) {
+    CAMERA_SHAKE.with(|c| {
+        let mut s = c.borrow_mut();
+        if s.remaining > 0.0 {
+            s.remaining = (s.remaining - dt).max(0.0);
+            if s.remaining == 0.0 {
+                s.amplitude = 0.0;
+            }
+        }
+    });
+}
+
+/// Sample a per-frame screen-shake offset in pixels. Returns `(0, 0)`
+/// when no shake is active. Uses the env's PRNG so the offset stream
+/// is reproducible across replays of the same seed.
+pub fn camera_shake_offset(env: &mut Env) -> (f64, f64) {
+    let amp = CAMERA_SHAKE.with(|c| {
+        let s = c.borrow();
+        if s.remaining > 0.0 { s.amplitude } else { 0.0 }
+    });
+    if amp == 0.0 {
+        return (0.0, 0.0);
+    }
+    // Two 53-bit floats in [0, 1), remapped to [-amp, amp].
+    let a = (env.next_random_u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
+    let b = (env.next_random_u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
+    let dx = (a * 2.0 - 1.0) * amp;
+    let dy = (b * 2.0 - 1.0) * amp;
+    (dx, dy)
+}
+
+/// Read the current `camera.pos` and `camera.zoom` off the Twe ambient.
+/// Returns `((px, py), zoom)`. Falls back to `((0, 0), 1.0)` if the
+/// camera ambient is missing or has been overwritten — the render loop
+/// must not crash on a script with `camera = nil`.
+pub fn camera_view(env: &Env) -> ((f64, f64), f64) {
+    let Some(cam) = env.get("camera") else {
+        return ((0.0, 0.0), 1.0);
+    };
+    if !cam.is_object() {
+        return ((0.0, 0.0), 1.0);
+    }
+    let rc = cam.as_object();
+    let o = rc.borrow();
+    let pos = match o.get_field("pos") {
+        Some(v) if v.is_tuple() => {
+            let elems = v.as_tuple();
+            if elems.len() >= 2 {
+                let x = number(&elems[0], "camera.pos.x").unwrap_or(0.0);
+                let y = number(&elems[1], "camera.pos.y").unwrap_or(0.0);
+                (x, y)
+            } else {
+                (0.0, 0.0)
+            }
+        }
+        _ => (0.0, 0.0),
+    };
+    let zoom = match o.get_field("zoom") {
+        Some(v) => number(&v, "camera.zoom").unwrap_or(1.0),
+        None => 1.0,
+    };
+    ((pos.0, pos.1), zoom)
 }
 
 /// Drive a future to completion synchronously. Used for macroquad's
@@ -2010,9 +2098,16 @@ fn install_3d(env: &mut Env) {
         Value::from_builtin("mesh", &["path", "at", "color", "size"], mesh_impl),
     );
 
-    // `camera` ambient — eye / target / up are mutable Tuple fields
-    // the script writes via `camera.eye = vec3(...)`. The `play3d`
-    // render loop reads them each frame to build the view matrix.
+    // `camera` ambient — both 2D (Phase 9 session 2) and 3D fields
+    // live on one object. 3D: `eye` / `target` / `up` (Tuple fields
+    // the script writes via `camera.eye = vec3(...)`; the `play3d`
+    // render loop reads them each frame to build the view matrix).
+    // 2D: `pos` / `zoom` (Tuple + float; the macroquad `play` loop
+    // reads them each frame to build a `Camera2D`) plus three
+    // builtin methods stored as fields:
+    //   - `camera.follow(target_xy, lerp)` — smooth-track a 2D point
+    //   - `camera.shake(amplitude, duration)` — screen shake
+    //   - `camera.reset()` — snap pos/zoom to defaults + clear shake
     let mut fields = HashMap::new();
     fields.insert(
         "eye".to_string(),
@@ -2038,6 +2133,30 @@ fn install_3d(env: &mut Env) {
             Value::from_float(0.0),
         ])),
     );
+    fields.insert(
+        "pos".to_string(),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(0.0),
+            Value::from_float(0.0),
+        ])),
+    );
+    fields.insert("zoom".to_string(), Value::from_float(1.0));
+    fields.insert(
+        "follow".to_string(),
+        Value::from_builtin("camera.follow", &["target", "lerp"], camera_follow_impl),
+    );
+    fields.insert(
+        "shake".to_string(),
+        Value::from_builtin(
+            "camera.shake",
+            &["amplitude", "duration"],
+            camera_shake_impl,
+        ),
+    );
+    fields.insert(
+        "reset".to_string(),
+        Value::from_builtin("camera.reset", &[], camera_reset_impl),
+    );
     env.set(
         "camera".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -2057,6 +2176,122 @@ fn vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         Value::from_float(y),
         Value::from_float(z),
     ])))
+}
+
+// `camera.follow(target_xy, lerp)` — exponential smoothing toward a
+// 2D point. `target_xy` is a 2-tuple (so `camera.follow(player.pos,
+// 0.1)` is the canonical call); `lerp` is the per-frame blend in
+// [0, 1] where 0 means no movement and 1 means snap. Mutates the
+// `camera.pos` field in place. Phase 9 session 2.
+fn camera_follow_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "camera.follow")?;
+    let (tx, ty) = xy_of(&args[0], "camera.follow.target")?;
+    let lerp = as_f64(&args[1], "camera.follow.lerp")?;
+    let cam = env.get("camera").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: "camera.follow: `camera` ambient is missing".to_string(),
+        help: None,
+    })?;
+    if !cam.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "camera.follow: `camera` is not an object, got {}",
+                cam.type_name()
+            ),
+            help: None,
+        });
+    }
+    let rc = cam.as_object();
+    let mut o = rc.borrow_mut();
+    let (cx, cy) = match o.get_field("pos") {
+        Some(v) if v.is_tuple() => {
+            let elems = v.as_tuple();
+            if elems.len() >= 2 {
+                (
+                    number(&elems[0], "camera.pos.x")?,
+                    number(&elems[1], "camera.pos.y")?,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        }
+        _ => (0.0, 0.0),
+    };
+    let nx = cx + (tx - cx) * lerp;
+    let ny = cy + (ty - cy) * lerp;
+    o.insert_field(
+        "pos".to_string(),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(nx),
+            Value::from_float(ny),
+        ])),
+    );
+    Ok(Value::NIL)
+}
+
+// `camera.shake(amplitude, duration)` — start (or extend) a screen
+// shake. Amplitude is in pixels; duration is seconds (or a Duration
+// quantity — `number()` accepts both). Stacking semantics: a stronger
+// shake replaces a weaker one; a longer duration extends a shorter
+// one. Both backends ignore shake; only `twec play` reads it.
+fn camera_shake_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "camera.shake")?;
+    let amp = as_f64(&args[0], "camera.shake.amplitude")?;
+    let dur = number(&args[1], "camera.shake.duration")?;
+    if amp < 0.0 || dur < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "camera.shake: amplitude and duration must be non-negative".to_string(),
+            help: None,
+        });
+    }
+    CAMERA_SHAKE.with(|c| {
+        let mut s = c.borrow_mut();
+        if amp > s.amplitude {
+            s.amplitude = amp;
+        }
+        if dur > s.remaining {
+            s.remaining = dur;
+        }
+    });
+    Ok(Value::NIL)
+}
+
+// `camera.reset()` — snap pos to (0, 0), zoom to 1.0, kill any
+// active shake. Useful in scene transitions.
+fn camera_reset_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "camera.reset")?;
+    CAMERA_SHAKE.with(|c| {
+        let mut s = c.borrow_mut();
+        s.amplitude = 0.0;
+        s.remaining = 0.0;
+    });
+    if let Some(cam) = env.get("camera") {
+        if cam.is_object() {
+            let rc = cam.as_object();
+            let mut o = rc.borrow_mut();
+            o.insert_field(
+                "pos".to_string(),
+                Value::from_tuple(Rc::new(vec![
+                    Value::from_float(0.0),
+                    Value::from_float(0.0),
+                ])),
+            );
+            o.insert_field("zoom".to_string(), Value::from_float(1.0));
+        }
+    }
+    Ok(Value::NIL)
+}
+
+/// Inspect-only: how many seconds of shake remain. Tests use this to
+/// verify decay; the play loop doesn't need it (it queries the offset
+/// directly via `camera_shake_offset`).
+pub fn camera_shake_remaining() -> f64 {
+    CAMERA_SHAKE.with(|c| c.borrow().remaining)
 }
 
 fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
