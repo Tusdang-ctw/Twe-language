@@ -19,4 +19,5 @@ pub mod tagged_value;
 pub mod types;
 pub mod value;
 pub mod visual_check;
+pub mod visual_wgsl;
 pub mod vm;
