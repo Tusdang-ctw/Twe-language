@@ -367,6 +367,7 @@ pub enum SymbolKind {
     Inventory,
     Scene,
     Particles,
+    Visual,
     Method,
     State,
     InitialState,
@@ -385,6 +386,7 @@ impl SymbolKind {
             SymbolKind::Inventory => "inventory",
             SymbolKind::Scene => "scene",
             SymbolKind::Particles => "particles",
+            SymbolKind::Visual => "visual",
             SymbolKind::Method => "method",
             SymbolKind::State => "state",
             SymbolKind::InitialState => "initial state",
@@ -554,6 +556,7 @@ fn decl_kind_to_symbol(k: crate::ast::DeclKind) -> SymbolKind {
         DeclKind::Inventory => SymbolKind::Inventory,
         DeclKind::Scene => SymbolKind::Scene,
         DeclKind::Particles => SymbolKind::Particles,
+        DeclKind::Visual => SymbolKind::Visual,
     }
 }
 
@@ -858,7 +861,8 @@ fn symbol_kind_to_completion_kind(kind: SymbolKind) -> i64 {
         | SymbolKind::Modifier
         | SymbolKind::Inventory
         | SymbolKind::Scene
-        | SymbolKind::Particles => ck::CLASS,
+        | SymbolKind::Particles
+        | SymbolKind::Visual => ck::CLASS,
         SymbolKind::State | SymbolKind::InitialState => ck::ENUM,
     }
 }

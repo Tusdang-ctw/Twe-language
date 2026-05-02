@@ -349,7 +349,7 @@ Phase 8.5 inherits the runtime perf criteria:
 
 **Components:**
 
-- `visual` block → WGSL fragment-shader compilation. Example 5 (procedural fire), finally. Subset of math + vector + color stdlib usable inside `visual` bodies.
+- `visual` block → WGSL fragment-shader compilation. Example 5 (procedural fire), finally. Subset of math + vector + color stdlib usable inside `visual` bodies. **Status (2026-05-02 / Phase 9 session 8):** lexer keyword + `DeclKind::Visual` + parser dispatch shipped. Bodies parse with the full `pixel(uv, time) -> color` signature and round-trip through `ast_json::to_json`; the LSP symbol kind is wired (`SymbolKind::Visual` → `CLASS`). Runtime is no-op — declaring a visual block at top-level is harmless. Type-checker (subset enforcement: no allocs, bounded loops, no host calls) is session 9; WGSL codegen is session 10; render integration is session 11.
 - `particles` runtime against the parsed `particles` block. Example 6 (particle burst), finally. `on_spawn` / `on_update` lifecycle, `p.age_ratio` implicit field, global `on enemy.death(e)` event glue. **Status (2026-05-02 / Phase 9 session 7 doc-honesty pass):** lifecycle + `age_ratio` + emitter despawn ship on **both** the tree-walker and bytecode VM (the VM port landed in a prior session and went undocumented). `spawn ExplosionBurst at e.pos` syntax also ships. The remaining gap is the global `on enemy.death(e)` event hook — that's a parser/AST/dispatch addition scheduled as a Phase 9 follow-on session (call it 7b in the session sequencing).
 - Texture atlas + spritesheet loading: `load_atlas("walk.png", grid: (32, 32))`, `sprite(handle, frame: 3, ...)`.
 - TTF / OTF font loading. Replaces macroquad's default font.

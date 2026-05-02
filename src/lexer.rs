@@ -24,6 +24,11 @@ pub enum TokenKind {
     Inventory,
     Scene,
     Particles,
+    /// `visual Name:` — declares a procedural visual (fragment-shader
+    /// style). Phase 9 session 8: keyword + AST + parser only;
+    /// type-checking is session 9, WGSL codegen is session 10, render
+    /// integration is session 11.
+    Visual,
     State,
     Every,
     Extends,
@@ -993,6 +998,7 @@ impl<'a> Lexer<'a> {
             "inventory" => TokenKind::Inventory,
             "scene" => TokenKind::Scene,
             "particles" => TokenKind::Particles,
+            "visual" => TokenKind::Visual,
             "state" => TokenKind::State,
             "every" => TokenKind::Every,
             "extends" => TokenKind::Extends,

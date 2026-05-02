@@ -207,6 +207,33 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn runs_visual_block_phase9_parses_and_no_ops() {
+    // Phase 9 session 8: the `visual` keyword + DeclKind::Visual + parser
+    // dispatch should accept Example 5's shape and execute the surrounding
+    // top-level statements unchanged. The block body itself is parsed but
+    // never invoked; the runtime ships in session 11 (after the WGSL
+    // codegen in session 10). The trailing `print("ok")` is the proof
+    // that nothing exploded.
+    let out = run_program("tests/programs/visual_fire.twe").expect("program should run");
+    assert_eq!(out, "ok\n");
+}
+
+#[test]
+fn visual_is_now_a_reserved_keyword() {
+    // Adding `visual` to the keyword table means scripts that try to
+    // use it as a let-binding name fail at parse time. Scripts have
+    // never been able to in practice (docs/06 §10.1 listed it as
+    // reserved since v0.1), but the lexer wasn't enforcing it.
+    let err = run_program_str("let visual = 5\n").expect_err("should fail");
+    // The exact error wording is parser-driven; we just need to
+    // confirm `visual` isn't bound as an identifier.
+    assert!(
+        err.contains("visual") || err.contains("expected") || err.contains("let"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn runs_color_phase9_pipeline() {
     // Phase 9 session 6: color pipeline — from_hex, hsv, gamma helpers,
     // and the two lerp variants (sRGB perceptual + gamma-correct linear).

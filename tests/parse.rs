@@ -24,3 +24,12 @@ fn json_dump_for_functions() {
     let src = std::fs::read_to_string("tests/programs/functions.twe").unwrap();
     assert_snapshot!(parse_to_json(&src));
 }
+
+#[test]
+fn json_dump_for_visual_fire() {
+    // Phase 9 session 8: lock the AST shape for a visual block so
+    // future parser/AST changes have to acknowledge any structural
+    // shift via an `insta` snapshot review.
+    let src = std::fs::read_to_string("tests/programs/visual_fire.twe").unwrap();
+    assert_snapshot!(parse_to_json(&src));
+}

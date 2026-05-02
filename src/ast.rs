@@ -163,6 +163,12 @@ pub enum DeclKind {
     Inventory,
     Scene,
     Particles,
+    /// `visual Name:` — procedural visual block. Phase 9 session 8
+    /// adds the keyword + parser + AST node only; the runtime
+    /// (WGSL fragment-shader compilation) lands in Phase 9 sessions
+    /// 9-11. Bodies are parsed but never type-checked or executed
+    /// today, which means scripts can declare them harmlessly.
+    Visual,
 }
 
 impl DeclKind {
@@ -174,6 +180,7 @@ impl DeclKind {
             DeclKind::Inventory => "inventory",
             DeclKind::Scene => "scene",
             DeclKind::Particles => "particles",
+            DeclKind::Visual => "visual",
         }
     }
 }

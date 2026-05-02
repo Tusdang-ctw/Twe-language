@@ -1,0 +1,22 @@
+# Phase 9 session 8 — `visual` block parser surface check.
+# Adapted from Example 5 in docs/01-examples.md but with each
+# arithmetic step on its own line — the parser doesn't yet support
+# the indentation-based line continuation used in the prose example
+# (that's a separate design question for a future session).
+# Runtime is no-op until session 11.
+
+visual Fire:
+    size: (64, 96)
+
+    pixel(uv, time) -> color:
+        let edge_l = smoothstep(0.5 - uv.y * 0.4, 0.5, uv.x)
+        let edge_r = smoothstep(0.5 + uv.y * 0.4, 0.5, 1 - uv.x)
+        let flame_shape = edge_l * edge_r
+        let n = noise(uv * 4 + (0, -time * 3))
+        let intensity = flame_shape * (n + 1 - uv.y)
+        let inner = mix(color.yellow, color.red, uv.y)
+        return mix(color.transparent, inner, intensity)
+
+# Declaring a visual block at top-level shouldn't print anything,
+# error, or trigger any runtime work — it's just a declaration.
+print("ok")
