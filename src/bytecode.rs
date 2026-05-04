@@ -217,6 +217,15 @@ pub enum OpCode {
     /// compiler at the top level of a state's on_entry body — the
     /// `Stmt::Wait` arm of `emit_stmt` errors elsewhere.
     Wait,
+    /// Phase 11 session 10: register a death-event handler on the
+    /// VM. Two operands: a class-name string-constant index, and
+    /// a function-constant index. The function takes one argument
+    /// (the dying entity); it's invoked between the entity tick
+    /// and the despawn-prune for any entity whose `despawned`
+    /// flag was set this frame and whose `death_fired` flag is
+    /// false. Mirrors the eval-side `OnDeathHandler` registration
+    /// path (see `eval.rs::run_top_level` Stmt::OnClassEvent arm).
+    RegisterDeathHandler,
 }
 
 impl OpCode {
@@ -274,6 +283,7 @@ impl OpCode {
             45 => OpCode::Transition,
             46 => OpCode::SetOnUpdate,
             47 => OpCode::Wait,
+            48 => OpCode::RegisterDeathHandler,
             other => panic!("OpCode::from_u8: invalid byte {other}"),
         }
     }
@@ -411,6 +421,11 @@ pub struct BcInstance {
     /// Set by `despawn self`; the runtime drops this instance from
     /// `VM::active_entities` at the end of the frame.
     pub despawned: bool,
+    /// Phase 11 session 10: parity with eval-side `Instance.death_fired`.
+    /// Each `on <Class>.death(e):` handler fires at most once per
+    /// instance; this flag is checked + set by the death-dispatch
+    /// site in the VM tick loop.
+    pub death_fired: bool,
     /// v0.2 session 7: suspended-fiber call stack. Empty = not
     /// suspended. Replaces the single `entry_resume_function` /
     /// `entry_resume_ip` pair from Phase 5.
@@ -435,6 +450,16 @@ pub struct BcInstance {
     /// VM can detect false → true transitions for edge-triggered
     /// firing. Reset on state entry.
     pub predicate_last_values: Vec<bool>,
+}
+
+/// Phase 11 session 10: bytecode-VM mirror of eval's
+/// `OnDeathHandler`. The handler body compiles to a `BcFunction`
+/// whose single parameter is the dying entity; the VM invokes it
+/// via `invoke_method_value` with the entity as receiver.
+#[derive(Debug, Clone)]
+pub struct BcDeathHandler {
+    pub param: String,
+    pub func: Rc<BcFunction>,
 }
 
 impl BcInstance {
@@ -555,6 +580,10 @@ pub fn disassemble_instruction(out: &mut String, chunk: &Chunk, offset: usize) -
         OpCode::Transition => constant_instruction(out, "OP_TRANSITION", chunk, offset),
         OpCode::SetOnUpdate => constant_instruction(out, "OP_SET_ON_UPDATE", chunk, offset),
         OpCode::Wait => simple_instruction(out, "OP_WAIT", offset),
+        OpCode::RegisterDeathHandler => {
+            // Two single-byte operands: class name + function constant.
+            invoke_instruction(out, "OP_REGISTER_DEATH_HANDLER", chunk, offset)
+        }
     }
 }
 
@@ -717,6 +746,8 @@ mod tests {
             OpCode::Despawn,
             OpCode::Transition,
             OpCode::SetOnUpdate,
+            OpCode::Wait,
+            OpCode::RegisterDeathHandler,
         ] {
             assert_eq!(OpCode::from_u8(op as u8), op);
         }

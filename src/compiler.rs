@@ -391,17 +391,57 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::SetOnUpdate, *line);
                 self.frame_mut().chunk.write_byte(func_idx, *line);
             }
-            Stmt::OnClassEvent { line, col, .. } => {
-                // Phase 9 session 7b: class-event handlers run on the
-                // tree-walker only in v0.3. The bytecode VM mirror is
-                // a follow-on session — declare it explicitly so a
-                // script that uses the syntax fails fast on the VM
-                // path with the same shape as `on render():`.
-                return Err(self.unsupported(
-                    "`on <Class>.death(...):` (Phase 9 session 7b — tree-walker only for now; run with `--vm tree`)",
-                    *line,
-                    *col,
-                ));
+            Stmt::OnClassEvent {
+                class,
+                event,
+                param,
+                body,
+                line,
+                col,
+            } => {
+                // Phase 11 session 10: bytecode-VM mirror of the
+                // tree-walker's death-event hook. Only "death" is
+                // recognized today (the parser enforces this); we
+                // route through a string-keyed runtime map so future
+                // events ride the same opcode.
+                if !self.is_global_scope() {
+                    return Err(CompileError {
+                        line: *line,
+                        col: *col,
+                        message: format!(
+                            "`on {class}.{event}(...):` is only valid at the script root"
+                        ),
+                    });
+                }
+                if event != "death" {
+                    return Err(self.unsupported(
+                        "non-death class events (only `on <Class>.death(e):` ships in v0.3)",
+                        *line,
+                        *col,
+                    ));
+                }
+                let func = self.compile_class_event_handler(
+                    class, event, param, body, *line, *col,
+                )?;
+                let class_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::from_string(class.clone()));
+                let func_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::from_bc_function(Rc::new(func)));
+                self.frame_mut()
+                    .chunk
+                    .write_op(OpCode::RegisterDeathHandler, *line);
+                self.frame_mut().chunk.write_byte(class_idx, *line);
+                self.frame_mut().chunk.write_byte(func_idx, *line);
+                // Stash the param name on the function name so the
+                // runtime can introspect it for diagnostics; the VM
+                // doesn't need it to dispatch (the function body
+                // already binds the param via slot 1 by the time
+                // we get there).
+                let _ = param;
             }
             Stmt::OnRender { line, col, .. } => {
                 // Top-level `on render():` only flows through the
@@ -1772,6 +1812,38 @@ impl Compiler {
         self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
         self.frame_mut().chunk.write_op(OpCode::Return, last_line);
         let frame = self.frames.pop().expect("on_update frame we just pushed");
+        Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
+    }
+
+    /// Phase 11 session 10. Compile the body of an
+    /// `on <Class>.death(e):` block as a no-self function whose
+    /// only parameter is the dying entity (slot 1 — slot 0 is the
+    /// implicit "function value" callee). Mirrors
+    /// `compile_top_level_on_update`.
+    fn compile_class_event_handler(
+        &mut self,
+        class: &str,
+        event: &str,
+        param: &str,
+        body: &[Stmt],
+        line: u32,
+        col: u32,
+    ) -> Result<BcFunction, CompileError> {
+        let frame_name = format!("<on {class}.{event}>");
+        self.frames
+            .push(Frame::new(FrameKind::Function, frame_name, 1));
+        self.declare_local(param, line, col)?;
+        self.mark_initialised();
+        for stmt in body {
+            self.emit_stmt(stmt)?;
+        }
+        let last_line = body.last().map(stmt_line).unwrap_or(line);
+        self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
+        self.frame_mut().chunk.write_op(OpCode::Return, last_line);
+        let frame = self
+            .frames
+            .pop()
+            .expect("class-event frame we just pushed");
         Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
     }
 

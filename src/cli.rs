@@ -6,6 +6,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      play [--vm tree|bytecode] <file> | \
      play3d <file> | \
      play_visual <file> | \
+     profile [--frames N] [-o trace.json] <file> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -32,6 +33,7 @@ impl Backend {
 }
 
 pub fn run() {
+    install_crash_reporter();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         print_version();
@@ -40,6 +42,7 @@ pub fn run() {
     match args[1].as_str() {
         "run" => process::exit(handle_run(&args[2..])),
         "play" => process::exit(handle_play(&args[2..])),
+        "profile" => process::exit(handle_profile(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -410,6 +413,112 @@ fn parse_common_flags(args: &[String], allow_frames: bool) -> Result<CommonFlags
     })
 }
 
+/// `twec profile [--frames N] [-o trace.json] <file>` — run the
+/// script through the tree-walker for `N` frames with profiling
+/// enabled, then dump a Chrome Tracing JSON file. Defaults: 60
+/// frames at 1/60s dt, output `<file>.trace.json` next to the source.
+/// The bytecode VM doesn't ship instrumentation in this session
+/// because the dispatch loop is hot enough that adding a per-call
+/// probe would skew the very numbers Phase 11 session 7 is trying
+/// to drive down. Profiling the tree-walker is enough to pressure-
+/// test the trace format end-to-end.
+fn handle_profile(args: &[String]) -> i32 {
+    let mut frames: u32 = 60;
+    let mut output: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--frames" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --frames needs a value");
+                    return 2;
+                }
+                match args[i + 1].parse::<u32>() {
+                    Ok(n) => frames = n,
+                    Err(_) => {
+                        eprintln!("error: --frames takes a non-negative integer");
+                        return 2;
+                    }
+                }
+                i += 2;
+            }
+            "-o" | "--output" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: -o needs a value");
+                    return 2;
+                }
+                output = Some(args[i + 1].clone());
+                i += 2;
+            }
+            a if a.starts_with('-') => {
+                eprintln!("error: unknown flag for `profile`: {a}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+            _ => {
+                if path.is_some() {
+                    eprintln!("error: `twec profile` takes one file path");
+                    return 2;
+                }
+                path = Some(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("error: `twec profile` requires a file path");
+        eprintln!("{USAGE}");
+        return 2;
+    };
+    let trace_path = output.unwrap_or_else(|| format!("{path}.trace.json"));
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not read '{path}': {e}");
+            return 2;
+        }
+    };
+    let tokens = match crate::lexer::lex(&src) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+    let program = match crate::parser::parse(&tokens) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+
+    crate::profile::enable();
+    let result = crate::eval::run_with_frames(&program, frames, 1.0 / 60.0);
+    crate::profile::disable();
+
+    match result {
+        Ok(_out) => {
+            // Drop the script's print output during profiling — the
+            // user is opting in to a trace, not script output. (If
+            // they want both, they can run `twec run` separately.)
+        }
+        Err(e) => {
+            eprintln!("{path}: runtime error: {e}");
+            return 1;
+        }
+    }
+
+    if let Err(e) = crate::profile::dump_to_path(std::path::Path::new(&trace_path)) {
+        eprintln!("error: {e}");
+        return 1;
+    }
+    eprintln!("[twec] trace written: {trace_path}");
+    0
+}
+
 fn handle_run(args: &[String]) -> i32 {
     let parsed = match parse_common_flags(args, true) {
         Ok(p) => p,
@@ -508,4 +617,145 @@ fn run_file_bytecode(path: &str, frames: u32) -> i32 {
     }
     print!("{}", vm.out);
     0
+}
+
+/// Phase 11 session 3: crash reporter. Replace the default panic
+/// printer with one that:
+///
+/// 1. Prints a readable user-facing banner pointing at the dump
+///    file, instead of dumping a Rust backtrace at the user.
+/// 2. Writes a developer-readable bundle to the current directory:
+///    timestamp, panic message + location, twec version, OS, and
+///    a backtrace (when `RUST_BACKTRACE=1` is set or
+///    `force_capture` succeeds in the current toolchain).
+///
+/// Set `TWEC_NO_CRASH_REPORTER=1` to bypass the hook (useful when
+/// running under a debugger that wants to catch the panic itself).
+/// The default Rust panic-hook output stays available too — we
+/// invoke it after writing the dump, so terminal users still see
+/// the colored Rust panic banner.
+pub fn install_crash_reporter() {
+    if std::env::var_os("TWEC_NO_CRASH_REPORTER").is_some() {
+        return;
+    }
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let path = write_crash_dump(info);
+        match path {
+            Some(p) => eprintln!("\n[twec] crashed — dump written to {p}"),
+            None => eprintln!("\n[twec] crashed — failed to write dump file"),
+        }
+        // Still print the standard Rust panic line so the developer
+        // sees the message + location without opening the dump.
+        default_hook(info);
+    }));
+}
+
+fn write_crash_dump(info: &std::panic::PanicHookInfo<'_>) -> Option<String> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = std::env::var_os("TWEC_CRASH_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let path = dir.join(format!(
+        "twec-crash-{secs}-{pid}.log",
+        pid = std::process::id()
+    ));
+    let body = format_crash_body(info, secs);
+    fs::write(&path, body).ok()?;
+    Some(path.display().to_string())
+}
+
+fn format_crash_body(info: &std::panic::PanicHookInfo<'_>, secs: u64) -> String {
+    let msg = panic_payload_string(info);
+    let loc = info
+        .location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_else(|| "<unknown location>".to_string());
+    let bt = std::backtrace::Backtrace::force_capture();
+    format!(
+        "twec crash report\n\
+         =================\n\
+         twec version: {ver}\n\
+         os: {os}\n\
+         arch: {arch}\n\
+         unix-time: {secs}\n\
+         \n\
+         panic: {msg}\n\
+         at: {loc}\n\
+         \n\
+         backtrace:\n\
+         {bt}\n",
+        ver = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+    )
+}
+
+fn panic_payload_string(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let p = info.payload();
+    if let Some(s) = p.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = p.downcast_ref::<String>() {
+        return s.clone();
+    }
+    "<non-string panic payload>".to_string()
+}
+
+#[cfg(test)]
+mod crash_tests {
+    use super::*;
+
+    /// End-to-end smoke test: install the hook, trigger a panic via
+    /// `catch_unwind`, confirm that a `twec-crash-*.log` file landed
+    /// in the temp-dir override path and contains the expected
+    /// fields. Uses `TWEC_CRASH_DIR` instead of mutating cwd so the
+    /// test doesn't race with other suites that read relative paths.
+    #[test]
+    fn install_crash_reporter_writes_dump_on_panic() {
+        let dir = std::env::temp_dir().join(format!("twec_crash_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        // Set TWEC_CRASH_DIR before installing the hook; the writer
+        // reads it on every invocation.
+        // SAFETY-ish: cargo test runs threads in the same process,
+        // but no other test reads TWEC_CRASH_DIR — we set + leave it
+        // for the duration of this test. Removing at the end keeps
+        // suites that may be added later from inheriting it.
+        std::env::set_var("TWEC_CRASH_DIR", &dir);
+
+        let saved = std::panic::take_hook();
+        install_crash_reporter();
+
+        let _ = std::panic::catch_unwind(|| {
+            panic!("synthetic crash for the dump test");
+        });
+
+        std::panic::set_hook(saved);
+        std::env::remove_var("TWEC_CRASH_DIR");
+
+        let mut found: Option<std::path::PathBuf> = None;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("twec-crash-") && name.ends_with(".log") {
+                    found = Some(e.path());
+                    break;
+                }
+            }
+        }
+
+        let path = found.expect("dump file was not written");
+        let body = std::fs::read_to_string(&path).expect("read dump");
+        assert!(body.contains("twec version"), "missing version: {body}");
+        assert!(
+            body.contains("synthetic crash for the dump test"),
+            "missing panic message: {body}"
+        );
+        assert!(body.contains("backtrace:"), "missing backtrace section");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

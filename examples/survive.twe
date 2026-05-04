@@ -20,7 +20,13 @@
 # next to this script (or run pause_menu_demo and click Save) to
 # customize the controls without editing the source.
 #
-# ~140 lines. The roadmap's <500-line budget for the Phase 2 game
+# Phase 11 session 9: gamepad support. The analog left stick drives
+# motion (with a 0.2 dead-zone), the d-pad is a digital fallback for
+# the same direction, A or right-trigger fires, Start restarts after
+# a game-over. Keyboard still works the same way; gamepad layers on
+# top so playing with both is a no-op.
+#
+# ~150 lines. The roadmap's <500-line budget for the Phase 2 game
 # (Lua/GDScript reference: 800–1000) holds with room to spare.
 
 settings.set_default("keys.right", "right")
@@ -54,6 +60,7 @@ scene Survive:
             elapsed += dt
 
             let speed = 200.0 * dt
+            # Keyboard.
             if key_held(settings.get("keys.right")) or key_held(settings.get("keys.right_alt")):
                 player_x += speed
             if key_held(settings.get("keys.left")) or key_held(settings.get("keys.left_alt")):
@@ -62,6 +69,23 @@ scene Survive:
                 player_y -= speed
             if key_held(settings.get("keys.down")) or key_held(settings.get("keys.down_alt")):
                 player_y += speed
+            # Gamepad analog stick (Phase 9 session 5 + Phase 11 follow-on).
+            # gilrs's "+y up" convention is negated so the world's +y-down
+            # direction matches the keyboard: pushing the stick down moves
+            # the player down. Dead-zone of 0.2 prevents drift on cheap
+            # pads; values outside that scale linearly.
+            if gamepad.connected:
+                let lx = gamepad_axis.lx
+                let ly = gamepad_axis.ly
+                if lx > 0.2 or lx < -0.2:
+                    player_x += lx * speed
+                if ly > 0.2 or ly < -0.2:
+                    player_y -= ly * speed
+            # Gamepad d-pad as digital fallback for the same direction.
+            if gamepad.dright: player_x += speed
+            if gamepad.dleft:  player_x -= speed
+            if gamepad.dup:    player_y -= speed
+            if gamepad.ddown:  player_y += speed
 
             spawn_timer += dt
             if spawn_timer >= 0.8:
@@ -77,7 +101,8 @@ scene Survive:
                     spawn Monster at (640, random.int(0..480))
 
             fire_timer += dt
-            if key_held(settings.get("keys.fire")) and fire_timer >= 0.18:
+            let firing = key_held(settings.get("keys.fire")) or gamepad.a or gamepad_axis.rt > 0.4
+            if firing and fire_timer >= 0.18:
                 fire_timer = 0.0
                 spawn Bullet at (player_x, player_y - 20.0)
 
@@ -97,7 +122,7 @@ scene Survive:
             text("Press R to restart", at: (220, 320), size: 16, color: color.gray)
 
         every 16ms:
-            if key_pressed(settings.get("keys.restart")):
+            if key_pressed(settings.get("keys.restart")) or gamepad_press.start:
                 elapsed = 0.0
                 spawn_timer = 0.0
                 fire_timer = 0.0

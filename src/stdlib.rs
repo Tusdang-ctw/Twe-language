@@ -418,6 +418,33 @@ pub fn install(env: &mut Env) {
         "is_paused".to_string(),
         Value::from_builtin("is_paused", &[], pause_get),
     );
+    // Phase 11 session 1: screenshot capture. `screenshot(path)`
+    // queues a write that the play loop honors after the current
+    // frame finishes rendering — calling `get_screen_data` inside
+    // `on render():` would capture the *previous* frame, which is
+    // confusing. The play loop also handles the F12 hotkey; the
+    // builtin gives scripts a way to take screenshots from custom
+    // bindings (e.g. an "Export" button in a level editor).
+    env.set(
+        "screenshot".to_string(),
+        Value::from_builtin("screenshot", &["path"], screenshot_impl),
+    );
+    // Phase 11 session 11: opt-in pause-when-idle. Until macroquad
+    // exposes desktop focus events (the win/macos paths in miniquad's
+    // `window_minimized_event` are no-ops on 0.4), the player-walked-
+    // away case is approximated by "no keyboard or mouse input for N
+    // seconds". Set the threshold via `auto_pause_when_idle(seconds)`;
+    // pass 0 to disable. The play loop calls `pause(true)` once the
+    // idle-timer crosses the threshold and clears the auto-set flag
+    // when input resumes (so manually-set pause stays paused).
+    env.set(
+        "auto_pause_when_idle".to_string(),
+        Value::from_builtin(
+            "auto_pause_when_idle",
+            &["seconds"],
+            auto_pause_when_idle_impl,
+        ),
+    );
 }
 
 /// Phase 10 session 8: process-wide pause flag. Atomic + thread-local
@@ -428,8 +455,63 @@ pub fn install(env: &mut Env) {
 /// surprising in practice we can clear it inside `clear_asset_caches`.
 static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// Phase 11 session 1: screenshot request slot. The Twe `screenshot(path)`
+// builtin writes the path here; the play loop drains it after each
+// frame's render and writes the PNG via `get_screen_data().export_png`.
+// Single-slot (last write wins) is fine — issuing two screenshot calls
+// in the same frame is degenerate.
+thread_local! {
+    static PENDING_SCREENSHOT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub fn take_pending_screenshot() -> Option<String> {
+    PENDING_SCREENSHOT.with(|c| c.borrow_mut().take())
+}
+
+fn screenshot_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "screenshot")?;
+    let path = string_arg(&args[0], "screenshot", "path")?;
+    PENDING_SCREENSHOT.with(|c| *c.borrow_mut() = Some(path));
+    Ok(Value::NIL)
+}
+
+/// Phase 11 session 11: idle-pause threshold. The play loop reads
+/// this each frame to decide whether to auto-pause; set to 0 to
+/// disable. Storing as `f64::to_bits` keeps the static atomic happy.
+static AUTO_PAUSE_IDLE_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn auto_pause_idle_threshold() -> f64 {
+    f64::from_bits(AUTO_PAUSE_IDLE_SECS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn auto_pause_when_idle_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "auto_pause_when_idle")?;
+    let secs = as_f64(&args[0], "auto_pause_when_idle.seconds")?;
+    if secs.is_nan() || secs < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("auto_pause_when_idle expects a non-negative number, got {secs}"),
+            help: Some(
+                "pass 0 to disable, otherwise the seconds of input-idle before auto-pausing"
+                    .to_string(),
+            ),
+        });
+    }
+    AUTO_PAUSE_IDLE_SECS.store(secs.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    Ok(Value::NIL)
+}
+
 pub fn is_paused() -> bool {
     PAUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Phase 11 session 11: play-loop write path for the pause flag.
+/// The idle-auto-pause machinery and any future focus-event
+/// integration go through here so they don't have to import the
+/// `PAUSED` static directly.
+pub fn set_paused(flag: bool) {
+    PAUSED.store(flag, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn pause_set(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

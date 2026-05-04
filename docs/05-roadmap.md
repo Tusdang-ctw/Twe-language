@@ -409,6 +409,25 @@ Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a
 
 ## Phase 11 — v0.5 — Production hardening
 
+**Status:** **closed 2026-05-04** per `docs/changes/2026-05-04-phase-11-closeout.md`. Twelve sessions shipped:
+
+| # | Surface |
+|---|---------|
+| 1 | `screenshot(path)` builtin + F12 hotkey (PNG via macroquad's `Image::export_png`) |
+| 2 | F3 frame-time HUD overlay (current ms / avg / max / fps over 120-frame ring buffer) |
+| 3 | Panic-hook crash reporter (readable banner + `twec-crash-<ts>-<pid>.log` bundle) |
+| 4 | Debounced hot-reload (`ReloadGate` — 6-frame stable-mtime gate; mid-debounce changes restart the countdown) |
+| 5 | `twec profile [--frames N] [-o trace.json] <file>` (Chrome Tracing JSON) |
+| 6 | Criterion bench harness `benches/vm.rs` (`sum_loop` / `fib_recursive` / `float_loop` cross-runs) |
+| 7 | Bytecode dispatch tuning (in-place stack peek + hoisted int+int / float+float fast paths in `binary_arith` / `compare` / `apply_arith`) |
+| 8 | Spritesheet animation demo + procedurally-generated `examples/assets/walk.png` |
+| 9 | `examples/survive.twe` gamepad integration (analog stick + d-pad + A/RT fire + Start restart) |
+| 10 | VM mirror of `on Class.death(e)` (new `OpCode::RegisterDeathHandler`, `BcDeathHandler`, `BcInstance.death_fired` flag, fire site in `VM::tick`) |
+| 11 | `auto_pause_when_idle(seconds)` — opt-in idle-pause primitive (real auto-pause-on-blur still deferred) |
+| 12 | Closeout |
+
+**601 tests pass.** Crash reporter and ReloadGate exit criteria met; Luau-parity perf number is bench-measurable but not snapshotted (criterion is the canonical command). True auto-pause-on-window-blur still slips — macroquad 0.4 has no desktop focus events; the idle-timer approximation in session 11 is the practical workaround.
+
 **Theme:** the things Valve or a player will hand back to the dev as a build-rejection.
 
 **Components:**
@@ -552,7 +571,7 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 8.5 — NaN tagging + tracing GC | v0.2 (perf) | L (closed 2026-05-01; 3× speedup criterion missed, follow-on perf phase pending) |
 | 9 — Visuals + assets-for-UI | v0.3 | L (closed 2026-05-04; 11 sessions shipped, 2 sub-criteria slipped to follow-ons) |
 | 10 — UI + game-shell | v0.4 | M (closed 2026-05-04; 11 sessions shipped, all 3 exit criteria met) |
-| 11 — Production hardening | v0.5 | M |
+| 11 — Production hardening | v0.5 | M (closed 2026-05-04; 12 sessions shipped, real auto-pause-on-blur deferred to a winit-integration follow-on) |
 | 12 — Asset pipeline + build | v0.6 | M |
 | 13 — Modules + type-system stability | v0.7 | L |
 | 14 — Beta + dogfood | v0.8 | XL (game-dependent) |

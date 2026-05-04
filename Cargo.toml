@@ -52,7 +52,21 @@ arboard = "3"
 
 [dev-dependencies]
 insta = "1.41"
+# Phase 11 session 8: tiny dev-only PNG encoder for the walk-cycle
+# spritesheet generator (`tests/gen_walk_sheet.rs`). image is already
+# pulled transitively by macroquad / gltf, so this is a re-export
+# more than a new dep. PNG-only feature set.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Phase 9 session 11: WGSL validation in tests without needing a GPU.
 # naga is wgpu's WGSL frontend; if naga accepts the shader, wgpu's
 # create_shader_module will too. Pinned to match wgpu = 22.0.
 naga = { version = "22", default-features = false, features = ["wgsl-in"] }
+# Phase 11 session 6: criterion bench harness driving the perf gap
+# from Phase 8.5. Statistical (warmup + sample-size + outlier
+# detection) so the regression numbers are stable run-to-run.
+# default-features = false drops `rayon` which we don't need.
+criterion = { version = "0.5", default-features = false, features = ["html_reports", "cargo_bench_support"] }
+
+[[bench]]
+name = "vm"
+harness = false

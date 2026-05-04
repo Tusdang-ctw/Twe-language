@@ -44,6 +44,7 @@ pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeErro
 /// seconds. Side-effects (prints, field mutations, transitions) are
 /// applied to `env`.
 pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
+    let _profile = crate::profile::scope("tick");
     update_time_ambient(env, dt);
     if let Some(handler) = env.on_update.clone() {
         env.set(handler.param.clone(), Value::from_float(dt));
@@ -547,6 +548,7 @@ pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
 /// setting that flag (the macroquad `play` loop does it around this
 /// call).
 pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
+    let _profile = crate::profile::scope("render");
     if let Some(scene) = env.active_scene.clone() {
         let body: Option<Vec<Stmt>> = {
             let inst = scene.borrow();
@@ -2733,6 +2735,7 @@ fn call_function(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
+    let _profile = crate::profile::scope(&def.name);
     let bound = if kwargs.is_empty() {
         if args.len() != def.params.len() {
             return Err(RuntimeError {
@@ -2825,6 +2828,7 @@ fn call_method(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
+    let _profile = crate::profile::scope("method");
     let bound = if kwargs.is_empty() {
         if args.len() != method.params.len() {
             return Err(RuntimeError {

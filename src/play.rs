@@ -103,6 +103,76 @@ pub fn clear_gamepad_state() {
     PREV_GAMEPAD.with(|p| *p.borrow_mut() = [false; 14]);
 }
 
+/// Phase 11 session 4: hot-reload reliability gate.
+///
+/// Editor save sequences are typically `truncate → write → close` on
+/// POSIX or `write-temp → rename` on Windows. The Phase 1 mtime-poll
+/// raced both: a poll between truncate and the final write read a
+/// half-empty file and produced a parse error. The gate fixes that
+/// by debouncing — when mtime first changes, start a countdown; the
+/// reload only fires after the mtime has been stable for
+/// `DEBOUNCE_FRAMES` consecutive polls. A mid-debounce mtime change
+/// resets the countdown.
+///
+/// `reloaded_mtime` is the mtime we've already loaded against. The
+/// gate ignores polls that don't differ from it.
+pub struct ReloadGate {
+    /// Last mtime that was successfully loaded (or initial mtime).
+    reloaded_mtime: Option<SystemTime>,
+    /// Pending mtime + frames remaining before we attempt the reload.
+    pending: Option<(SystemTime, u32)>,
+}
+
+const RELOAD_DEBOUNCE_FRAMES: u32 = 6;
+
+impl ReloadGate {
+    pub fn new(initial_mtime: Option<SystemTime>) -> Self {
+        Self {
+            reloaded_mtime: initial_mtime,
+            pending: None,
+        }
+    }
+
+    /// Drive the gate one frame forward. Returns `true` exactly once
+    /// per stable mtime change — when the debounce countdown reaches
+    /// zero. `cur` is the file's current mtime (None if the path is
+    /// unreadable; we treat that as "no change" rather than panic).
+    pub fn should_reload(&mut self, cur: Option<SystemTime>) -> bool {
+        let Some(cur) = cur else {
+            return false;
+        };
+        if Some(cur) == self.reloaded_mtime {
+            // Stable at the loaded version. Drop any pending state —
+            // the file came back to the same mtime (e.g. a touch then
+            // an undo).
+            self.pending = None;
+            return false;
+        }
+        match self.pending {
+            None => {
+                self.pending = Some((cur, RELOAD_DEBOUNCE_FRAMES));
+                false
+            }
+            Some((p, _)) if p != cur => {
+                // Mid-debounce mtime change — restart the countdown
+                // with the newer mtime.
+                self.pending = Some((cur, RELOAD_DEBOUNCE_FRAMES));
+                false
+            }
+            Some((p, frames)) => {
+                if frames > 1 {
+                    self.pending = Some((p, frames - 1));
+                    false
+                } else {
+                    self.pending = None;
+                    self.reloaded_mtime = Some(p);
+                    true
+                }
+            }
+        }
+    }
+}
+
 pub fn launch(path: String) -> i32 {
     let conf = window_conf();
     macroquad::Window::from_config(conf, run_loop(path));
@@ -141,7 +211,8 @@ async fn run_loop(path: String) {
         Ok(e) => e,
         Err(()) => return,
     };
-    let mut last_mtime = current_mtime(&path_ref);
+    let mut gate = ReloadGate::new(current_mtime(&path_ref));
+    let mut idle = IdleAutoPause::new();
     flush_output(&mut env);
 
     loop {
@@ -149,9 +220,13 @@ async fn run_loop(path: String) {
             break;
         }
 
-        // Hot reload: poll mtime, reload on change.
-        let cur_mtime = current_mtime(&path_ref);
-        if cur_mtime.is_some() && cur_mtime != last_mtime {
+        // Hot reload: debounced mtime poll. The gate buffers
+        // mid-write reads (truncate → write → close on POSIX)
+        // and only fires the reload after the file's mtime has
+        // been stable for `RELOAD_DEBOUNCE_FRAMES` frames. If the
+        // reload itself fails (transient parse error), the gate
+        // doesn't retry until the next mtime change.
+        if gate.should_reload(current_mtime(&path_ref)) {
             match initialize(&path_ref) {
                 Ok(new_env) => {
                     eprintln!("[twec] hot reload: {path_ref}");
@@ -161,15 +236,16 @@ async fn run_loop(path: String) {
                     flush_output(&mut env);
                 }
                 Err(()) => {
-                    // Init failed — keep running with the old env so the
-                    // window doesn't close on a transient parse error.
+                    eprintln!("[twec] hot reload failed; keeping previous script live");
                 }
             }
-            last_mtime = cur_mtime;
         }
 
         update_key_state(&mut env);
         let dt = get_frame_time() as f64;
+        hud_record(dt);
+        idle.tick(dt);
+        idle.apply();
         // Phase 10 session 8: when paused, skip `tick_frame` so no
         // fibers advance and no every-clocks fire, but keep the
         // render path live so a "PAUSED" overlay or settings menu
@@ -213,8 +289,349 @@ async fn run_loop(path: String) {
         env.in_render = false;
         flush_output(&mut env);
 
+        hud_draw();
+        write_pending_screenshot();
+
         next_frame().await;
     }
+}
+
+/// Phase 11 session 1: F12 / `screenshot(path)` writer. Honor the
+/// `screenshot` builtin's queued path first; otherwise check whether
+/// F12 was pressed this frame and write a timestamped default.
+fn write_pending_screenshot() {
+    let path = if let Some(p) = crate::stdlib::take_pending_screenshot() {
+        Some(p)
+    } else if is_key_pressed(KeyCode::F12) {
+        Some(default_screenshot_path())
+    } else {
+        None
+    };
+    let Some(path) = path else { return };
+    // `export_png` panics on web and unwraps on save failure; catch it
+    // so a bad path (read-only dir, etc.) doesn't kill the game.
+    let img = get_screen_data();
+    let p = path.clone();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || img.export_png(&p))) {
+        Ok(()) => eprintln!("[twec] screenshot saved: {path}"),
+        Err(_) => eprintln!("[twec] screenshot failed: {path}"),
+    }
+}
+
+fn default_screenshot_path() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("screenshot-{secs}.png")
+}
+
+// Phase 11 session 11: idle-pause tracking. The "real" auto-pause-
+// on-window-blur defers to a winit-integration session — macroquad
+// 0.4 still doesn't expose desktop focus events. Until then we
+// approximate the player-walked-away case with an idle timer: when
+// no keyboard or mouse input has arrived for `auto_pause_when_idle`
+// seconds, the play loop sets `pause(true)` and notes that *it*
+// did the pausing (so input resuming auto-resumes). The whole
+// machinery is opt-in; with the threshold at 0 the timer + the
+// auto-pause path are bypassed.
+struct IdleAutoPause {
+    /// Seconds since last input event. Resets to 0 on any key /
+    /// mouse / wheel motion this frame.
+    idle_secs: f64,
+    /// Mouse position last frame; used to detect motion.
+    last_mouse: (f32, f32),
+    /// Wheel-y last frame.
+    last_wheel: f32,
+    /// Key-down state we last saw — non-empty value means at least
+    /// one of the polled keys was held this frame.
+    last_any_key: bool,
+    /// True when the auto-pause path drove `pause(true)` — input
+    /// resuming will then drive `pause(false)`.
+    paused_by_us: bool,
+}
+
+impl IdleAutoPause {
+    fn new() -> Self {
+        Self {
+            idle_secs: 0.0,
+            last_mouse: (0.0, 0.0),
+            last_wheel: 0.0,
+            last_any_key: false,
+            paused_by_us: false,
+        }
+    }
+
+    /// Drive the idle timer one frame forward. Returns the new
+    /// idle-secs value; the caller compares it to the threshold.
+    fn tick(&mut self, dt: f64) {
+        let mp = mouse_position();
+        let (_wx, wy) = mouse_wheel();
+        let any_key = KEYS.iter().any(|(_, k)| is_key_down(*k));
+        let mouse_moved =
+            (mp.0 - self.last_mouse.0).abs() > 0.5 || (mp.1 - self.last_mouse.1).abs() > 0.5;
+        let wheel_moved = wy.abs() > 0.001 || self.last_wheel.abs() > 0.001;
+        let any_button = is_mouse_button_down(MouseButton::Left)
+            || is_mouse_button_down(MouseButton::Right)
+            || is_mouse_button_down(MouseButton::Middle);
+        let active = any_key || mouse_moved || wheel_moved || any_button;
+        self.last_mouse = mp;
+        self.last_wheel = wy;
+        self.last_any_key = any_key;
+        if active {
+            self.idle_secs = 0.0;
+        } else {
+            self.idle_secs += dt;
+        }
+    }
+
+    /// Apply the auto-pause decision against the user-set threshold.
+    fn apply(&mut self) {
+        let threshold = crate::stdlib::auto_pause_idle_threshold();
+        if threshold <= 0.0 {
+            // Disabled — also clear our flag so we don't auto-resume
+            // a pause the user set after disabling auto-pause.
+            self.paused_by_us = false;
+            return;
+        }
+        if self.idle_secs >= threshold {
+            if !crate::stdlib::is_paused() {
+                crate::stdlib::set_paused(true);
+                self.paused_by_us = true;
+            }
+        } else if self.paused_by_us && self.idle_secs == 0.0 {
+            // Input came back; the *paused-by-us* flag means we drove
+            // the pause, so dropping it is also our call.
+            crate::stdlib::set_paused(false);
+            self.paused_by_us = false;
+        }
+    }
+}
+
+// Phase 11 session 2: frame-time HUD overlay (F3 to toggle).
+// Ring-buffered recent frame deltas; the HUD shows current ms +
+// rolling 60-frame average + fps. Drawn after the Twe render so it
+// overlays game content. Off by default; toggling persists for the
+// life of the process (hot reload is irrelevant — the HUD is dev-loop
+// only and isn't game state). 120-frame history gives 2 seconds of
+// data at 60fps and lets us catch the occasional hitch.
+const HUD_HISTORY: usize = 120;
+
+thread_local! {
+    static HUD_VISIBLE: RefCell<bool> = const { RefCell::new(false) };
+    static HUD_FRAMES: RefCell<FrameRing> = const {
+        RefCell::new(FrameRing { samples: [0.0; HUD_HISTORY], idx: 0, len: 0 })
+    };
+}
+
+struct FrameRing {
+    samples: [f64; HUD_HISTORY],
+    idx: usize,
+    len: usize,
+}
+
+impl FrameRing {
+    fn push(&mut self, dt: f64) {
+        self.samples[self.idx] = dt;
+        self.idx = (self.idx + 1) % HUD_HISTORY;
+        if self.len < HUD_HISTORY {
+            self.len += 1;
+        }
+    }
+    fn avg_ms(&self) -> f64 {
+        if self.len == 0 {
+            return 0.0;
+        }
+        let sum: f64 = self.samples.iter().take(self.len).sum();
+        (sum / self.len as f64) * 1000.0
+    }
+    fn max_ms(&self) -> f64 {
+        let mut m = 0.0_f64;
+        for s in self.samples.iter().take(self.len) {
+            if *s > m {
+                m = *s;
+            }
+        }
+        m * 1000.0
+    }
+}
+
+#[cfg(test)]
+mod reload_gate_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn t0() -> SystemTime {
+        std::time::UNIX_EPOCH + Duration::from_secs(1_000_000)
+    }
+
+    #[test]
+    fn no_change_never_fires() {
+        let mut g = ReloadGate::new(Some(t0()));
+        for _ in 0..100 {
+            assert!(!g.should_reload(Some(t0())));
+        }
+    }
+
+    #[test]
+    fn stable_change_fires_after_debounce() {
+        let mut g = ReloadGate::new(Some(t0()));
+        let new = t0() + Duration::from_secs(1);
+        // First change: pending starts.
+        assert!(!g.should_reload(Some(new)));
+        // Stable polls draining the countdown.
+        for _ in 0..(RELOAD_DEBOUNCE_FRAMES - 1) {
+            assert!(!g.should_reload(Some(new)));
+        }
+        // The next stable poll fires the reload.
+        assert!(g.should_reload(Some(new)));
+        // After firing, the gate is at the new mtime; no further fires.
+        for _ in 0..10 {
+            assert!(!g.should_reload(Some(new)));
+        }
+    }
+
+    #[test]
+    fn churning_mtime_resets_countdown() {
+        let mut g = ReloadGate::new(Some(t0()));
+        let mid = t0() + Duration::from_secs(1);
+        let later = t0() + Duration::from_secs(2);
+        // Editor's truncate seen as `mid`.
+        assert!(!g.should_reload(Some(mid)));
+        // Editor's final write seen as `later` partway through debounce.
+        assert!(!g.should_reload(Some(later)));
+        // Now we need a full debounce against `later` before firing.
+        for _ in 0..(RELOAD_DEBOUNCE_FRAMES - 1) {
+            assert!(!g.should_reload(Some(later)));
+        }
+        assert!(g.should_reload(Some(later)));
+    }
+
+    #[test]
+    fn unreadable_file_does_not_fire() {
+        let mut g = ReloadGate::new(Some(t0()));
+        for _ in 0..10 {
+            assert!(!g.should_reload(None));
+        }
+    }
+
+    #[test]
+    fn revert_to_loaded_mtime_clears_pending() {
+        let mut g = ReloadGate::new(Some(t0()));
+        let new = t0() + Duration::from_secs(1);
+        // Mid-debounce.
+        assert!(!g.should_reload(Some(new)));
+        // User undoes the save; mtime returns to the loaded version.
+        assert!(!g.should_reload(Some(t0())));
+        // No fire even after many stable polls.
+        for _ in 0..100 {
+            assert!(!g.should_reload(Some(t0())));
+        }
+    }
+}
+
+#[cfg(test)]
+mod hud_tests {
+    use super::FrameRing;
+    use super::HUD_HISTORY;
+
+    fn empty_ring() -> FrameRing {
+        FrameRing {
+            samples: [0.0; HUD_HISTORY],
+            idx: 0,
+            len: 0,
+        }
+    }
+
+    #[test]
+    fn avg_and_max_are_zero_when_empty() {
+        let r = empty_ring();
+        assert_eq!(r.avg_ms(), 0.0);
+        assert_eq!(r.max_ms(), 0.0);
+    }
+
+    #[test]
+    fn avg_is_mean_in_milliseconds() {
+        let mut r = empty_ring();
+        r.push(0.016);
+        r.push(0.020);
+        r.push(0.012);
+        let avg = r.avg_ms();
+        assert!((avg - 16.0).abs() < 1e-9, "got {avg}");
+    }
+
+    #[test]
+    fn max_is_largest_sample_in_milliseconds() {
+        let mut r = empty_ring();
+        r.push(0.016);
+        r.push(0.033);
+        r.push(0.012);
+        assert!((r.max_ms() - 33.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ring_evicts_oldest_after_capacity() {
+        let mut r = empty_ring();
+        for _ in 0..HUD_HISTORY {
+            r.push(0.010);
+        }
+        // Capacity reached; pushing a heavy sample displaces a 10ms one.
+        r.push(0.100);
+        assert_eq!(r.len, HUD_HISTORY);
+        assert!((r.max_ms() - 100.0).abs() < 1e-9);
+    }
+}
+
+fn hud_record(dt: f64) {
+    if is_key_pressed(KeyCode::F3) {
+        HUD_VISIBLE.with(|v| {
+            let mut b = v.borrow_mut();
+            *b = !*b;
+        });
+    }
+    HUD_FRAMES.with(|c| c.borrow_mut().push(dt));
+}
+
+fn hud_draw() {
+    let visible = HUD_VISIBLE.with(|v| *v.borrow());
+    if !visible {
+        return;
+    }
+    let (cur_ms, avg_ms, max_ms) = HUD_FRAMES.with(|c| {
+        let r = c.borrow();
+        let cur = if r.len == 0 {
+            0.0
+        } else {
+            // last pushed sample is at (idx + HUD_HISTORY - 1) % HUD_HISTORY
+            let last = (r.idx + HUD_HISTORY - 1) % HUD_HISTORY;
+            r.samples[last] * 1000.0
+        };
+        (cur, r.avg_ms(), r.max_ms())
+    });
+    let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
+    let text = format!(
+        "frame {cur_ms:>5.1}ms  avg {avg_ms:>5.1}ms  max {max_ms:>5.1}ms  {fps:>5.1} fps"
+    );
+    // Top-right anchored. Measure first to know how wide the panel is.
+    let font_size: u16 = 14;
+    let dim = measure_text(&text, None, font_size, 1.0);
+    let pad = 6.0;
+    let x = screen_width() - dim.width - pad * 2.0;
+    let y = pad;
+    draw_rectangle(
+        x,
+        y,
+        dim.width + pad * 2.0,
+        dim.height + pad * 2.0,
+        Color::new(0.0, 0.0, 0.0, 0.7),
+    );
+    draw_text(
+        &text,
+        x + pad,
+        y + pad + dim.height,
+        f32::from(font_size),
+        WHITE,
+    );
 }
 
 /// Build a macroquad `Camera2D` that puts world-coord `(cx, cy)` at
@@ -245,7 +662,8 @@ async fn run_loop_bytecode(path: String) {
         Ok(v) => v,
         Err(()) => return,
     };
-    let mut last_mtime = current_mtime(&path_ref);
+    let mut gate = ReloadGate::new(current_mtime(&path_ref));
+    let mut idle = IdleAutoPause::new();
     flush_vm_output(&mut vm);
 
     loop {
@@ -253,9 +671,7 @@ async fn run_loop_bytecode(path: String) {
             break;
         }
 
-        // Hot reload: poll mtime, reload on change.
-        let cur_mtime = current_mtime(&path_ref);
-        if cur_mtime.is_some() && cur_mtime != last_mtime {
+        if gate.should_reload(current_mtime(&path_ref)) {
             match initialize_bytecode(&path_ref) {
                 Ok(new_vm) => {
                     eprintln!("[twec] hot reload: {path_ref}");
@@ -265,15 +681,16 @@ async fn run_loop_bytecode(path: String) {
                     flush_vm_output(&mut vm);
                 }
                 Err(()) => {
-                    // Init failed — keep running with the old VM so the
-                    // window doesn't close on a transient parse error.
+                    eprintln!("[twec] hot reload failed; keeping previous script live");
                 }
             }
-            last_mtime = cur_mtime;
         }
 
         update_vm_input(&vm);
         let dt = get_frame_time() as f64;
+        hud_record(dt);
+        idle.tick(dt);
+        idle.apply();
         if let Err(e) = vm.tick(dt) {
             eprintln!("{path_ref}: runtime error: {e}");
             break;
@@ -286,6 +703,9 @@ async fn run_loop_bytecode(path: String) {
             break;
         }
         flush_vm_output(&mut vm);
+
+        hud_draw();
+        write_pending_screenshot();
 
         next_frame().await;
     }

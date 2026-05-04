@@ -258,6 +258,29 @@ fn runs_math_stdlib() {
 }
 
 #[test]
+fn vm_death_event_handler_fires_once() {
+    // Phase 11 session 10: bytecode-VM mirror of the tree-walker
+    // death-event hook. Uses a plain entity that despawns itself
+    // (the v0.1 VM compiler rejects `lifetime: 0.1s` particle
+    // defaults, hence the separate-from-eval test program).
+    use twec::{compiler, lexer, parser, vm};
+    let src = fs::read_to_string("tests/programs/death_event_vm.twe").expect("read");
+    let tokens = lexer::lex(&src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    let chunk = compiler::compile_program(&program).expect("compile");
+    let mut machine = vm::VM::new();
+    machine.run(&chunk).expect("vm boot");
+    let dt = 0.05;
+    for _ in 0..3 {
+        machine.tick(dt).expect("tick");
+    }
+    let out = machine.take_out();
+    // Handler fires exactly once even though the entity stays
+    // marked despawned across multiple frames before pruning.
+    assert_eq!(out, "doomed died\n", "VM output: {out:?}");
+}
+
+#[test]
 fn runs_death_event_phase9_handler_fires_once() {
     // Phase 9 session 7b: `on <Class>.death(e):` fires when the
     // entity transitions despawned → pruned. We tick frames until
@@ -733,6 +756,51 @@ fn settings_load_missing_file_errors_clearly() {
 }
 
 // --- Phase 10 session 10: localization scaffolding ---
+
+#[test]
+fn auto_pause_when_idle_round_trips_threshold() {
+    // Phase 11 session 11: setting a non-zero threshold and reading
+    // it via the public accessor should round-trip the seconds value.
+    // Headless `twec run` doesn't actually pause — that's the
+    // play-loop's IdleAutoPause path; the test confirms the surface
+    // exists and stores the configured value.
+    twec::stdlib::set_paused(false);
+    let src = r#"
+auto_pause_when_idle(2.5)
+"#;
+    run_program_str(src).expect("program should run");
+    let t = twec::stdlib::auto_pause_idle_threshold();
+    assert!((t - 2.5).abs() < 1e-9, "got {t}");
+    // 0 disables.
+    run_program_str("auto_pause_when_idle(0)\n").expect("disable");
+    let t = twec::stdlib::auto_pause_idle_threshold();
+    assert_eq!(t, 0.0);
+}
+
+#[test]
+fn auto_pause_when_idle_rejects_negative() {
+    let err = run_program_str("auto_pause_when_idle(-1.5)\n")
+        .expect_err("negative seconds should error");
+    assert!(err.contains("non-negative"), "got: {err}");
+}
+
+#[test]
+fn screenshot_queues_path_for_play_loop() {
+    // Phase 11 session 1: `screenshot(path)` is a deferred call —
+    // it queues the path in a thread-local that the play loop
+    // drains after rendering. Headless `twec run` doesn't have a
+    // play loop, so the call is a no-op that returns nil. Test
+    // that the surface exists and the queued path is visible to
+    // `take_pending_screenshot`.
+    let src = r#"
+screenshot("test_shot.png")
+print("queued")
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "queued\n");
+    let queued = twec::stdlib::take_pending_screenshot();
+    assert_eq!(queued.as_deref(), Some("test_shot.png"));
+}
 
 #[test]
 fn key_input_outside_render_fails_clearly() {

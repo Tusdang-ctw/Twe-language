@@ -146,6 +146,12 @@ pub struct VM {
     /// Top-level `on update(dt):` handler. Fires once per
     /// `tick(dt)` before the scene tick.
     on_update: Option<Rc<BcFunction>>,
+    /// Phase 11 session 10: bytecode-VM mirror of eval's
+    /// `death_handlers`. Keyed by class name (matched against
+    /// `BcInstance.class.name` at fire time); each entry is a list
+    /// of handler functions registered in source order, each
+    /// invoked once per dying instance.
+    death_handlers: HashMap<String, Vec<crate::bytecode::BcDeathHandler>>,
     /// v0.2 session 7: when dispatch is currently inside (or
     /// descended from) a state.on_entry call, this is the index
     /// in `self.frames` of the state-entry frame. None
@@ -198,6 +204,7 @@ impl VM {
             active_entities: Vec::new(),
             transitioning: None,
             on_update: None,
+            death_handlers: HashMap::new(),
             state_entry_frame_depth: None,
             out: String::new(),
         }
@@ -851,6 +858,40 @@ Err(RuntimeError {
                         });
                     }
                 }
+                OpCode::RegisterDeathHandler => {
+                    let class_idx = read_byte!() as usize;
+                    let func_idx = read_byte!() as usize;
+                    let class_v = current_func.chunk.constants[class_idx];
+                    let func_v = current_func.chunk.constants[func_idx];
+                    if !class_v.is_str() {
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: "OP_REGISTER_DEATH_HANDLER expected a string class name".to_string(),
+                            help: Some("compiler bug".to_string()),
+                        });
+                    }
+                    if !func_v.is_bc_function() {
+                        return Err(RuntimeError {
+                            line,
+                            col: 0,
+                            message: "OP_REGISTER_DEATH_HANDLER expected a function".to_string(),
+                            help: Some("compiler bug".to_string()),
+                        });
+                    }
+                    let class_name = class_v.as_string().clone();
+                    let func = func_v.as_bc_function();
+                    self.death_handlers
+                        .entry(class_name)
+                        .or_default()
+                        .push(crate::bytecode::BcDeathHandler {
+                            // The compiler doesn't ship the param name into
+                            // the runtime — slot 1 in the function body is
+                            // already bound to the argument we pass.
+                            param: String::new(),
+                            func,
+                        });
+                }
                 OpCode::Invoke => {
                     let name_idx = read_byte!() as usize;
                     let arg_count = read_byte!() as usize;
@@ -1049,6 +1090,35 @@ Err(RuntimeError {
                     Value::from_bc_instance(entity.clone()),
                     &[Value::from_float(dt)],
                 )?;
+            }
+        }
+        // Phase 11 session 10: fire `on <Class>.death(e):` handlers
+        // for any entity flagged this frame whose handler hasn't run
+        // yet. Mirrors the eval-side `prune_despawned` ordering: the
+        // dying entity is still in `active_entities` when its handler
+        // runs, so the handler body can read its fields.
+        if !self.death_handlers.is_empty() {
+            let snapshot = self.active_entities.clone();
+            for entity in snapshot {
+                let (despawned, fired, class_name) = {
+                    let i = entity.borrow();
+                    (i.despawned, i.death_fired, i.class.name.clone())
+                };
+                if !despawned || fired {
+                    continue;
+                }
+                entity.borrow_mut().death_fired = true;
+                let handlers = self.death_handlers.get(&class_name).cloned();
+                if let Some(handlers) = handlers {
+                    let recv = Value::from_bc_instance(entity.clone());
+                    for handler in handlers {
+                        self.invoke_method_value(
+                            handler.func,
+                            recv,
+                            &[recv],
+                        )?;
+                    }
+                }
             }
         }
         self.active_entities.retain(|e| !e.borrow().despawned);
@@ -1774,6 +1844,7 @@ Err(RuntimeError {
     /// Push a legacy `Value` onto the value stack. v0.2 Phase 8.5
     /// session 8c: shims through `TaggedValue::from_legacy`. Inner
     /// pattern matches still receive `Value`; the boundary is here.
+    #[inline]
     fn push(&mut self, v: Value) {
         self.stack.push(v);
     }
@@ -1787,6 +1858,7 @@ Err(RuntimeError {
         self.stack.push(v);
     }
 
+    #[inline]
     fn pop(&mut self) -> Result<Value, RuntimeError> {
         self.stack.pop().ok_or_else(|| RuntimeError {
             line: 0,
@@ -1960,11 +2032,60 @@ Err(RuntimeError {
         Ok(())
     }
 
+    #[inline]
     fn binary_arith(&mut self, op: ArithOp, line: u32) -> Result<(), RuntimeError> {
-        let r = self.pop()?;
-        let l = self.pop()?;
+        // Phase 11 session 7: hot-path peeking. The previous
+        // shape — `pop, pop, apply_arith, push` — drained the stack
+        // and then refilled it on every arithmetic op even for the
+        // overwhelming common case of int+int. Reading the top two
+        // slots in place and overwriting with `truncate(len-1)` +
+        // direct write avoids two `Vec::pop` underflow checks and
+        // one `Vec::push` capacity check per op.
+        let len = self.stack.len();
+        if len < 2 {
+            return Err(RuntimeError {
+                line,
+                col: 0,
+                message: "vm: stack underflow on binary op".to_string(),
+                help: None,
+            });
+        }
+        let l = self.stack[len - 2];
+        let r = self.stack[len - 1];
+        // Hot fast path for int+int — bypasses apply_arith's
+        // string + tuple + mixed branches entirely.
+        if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
+            let a = l.as_int();
+            let b = r.as_int();
+            let v = match op {
+                ArithOp::Div if b == 0 => return Err(division_by_zero(line)),
+                ArithOp::Add => Value::from_int(a + b),
+                ArithOp::Sub => Value::from_int(a - b),
+                ArithOp::Mul => Value::from_int(a * b),
+                ArithOp::Div => Value::from_int(a / b),
+            };
+            self.stack.truncate(len - 1);
+            self.stack[len - 2] = v;
+            return Ok(());
+        }
+        // Hot fast path for float+float.
+        if l.is_float() && r.is_float() {
+            let a = l.as_float();
+            let b = r.as_float();
+            let v = match op {
+                ArithOp::Add => Value::from_float(a + b),
+                ArithOp::Sub => Value::from_float(a - b),
+                ArithOp::Mul => Value::from_float(a * b),
+                ArithOp::Div => Value::from_float(a / b),
+            };
+            self.stack.truncate(len - 1);
+            self.stack[len - 2] = v;
+            return Ok(());
+        }
+        // Slow path: strings, tuples, mixed int/float, errors.
         let result = apply_arith(op, &l, &r, line)?;
-        self.push(result);
+        self.stack.truncate(len - 1);
+        self.stack[len - 2] = result;
         Ok(())
     }
 
@@ -2005,6 +2126,7 @@ Err(RuntimeError {
         Ok(())
     }
 
+    #[inline]
     fn compare(
         &mut self,
         op_str: &str,
@@ -2012,8 +2134,18 @@ Err(RuntimeError {
         int_cmp: fn(i64, i64) -> bool,
         float_cmp: fn(f64, f64) -> bool,
     ) -> Result<(), RuntimeError> {
-        let r = self.pop()?;
-        let l = self.pop()?;
+        // Phase 11 session 7: same in-place rewrite as binary_arith.
+        let len = self.stack.len();
+        if len < 2 {
+            return Err(RuntimeError {
+                line,
+                col: 0,
+                message: "vm: stack underflow on compare".to_string(),
+                help: None,
+            });
+        }
+        let l = self.stack[len - 2];
+        let r = self.stack[len - 1];
         let result = if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
             Value::from_bool(int_cmp(l.as_int(), r.as_int()))
         } else if l.is_float() && r.is_float() {
@@ -2025,7 +2157,8 @@ Err(RuntimeError {
         } else {
             return Err(type_error(op_str, &l, &r, line));
         };
-        self.push(result);
+        self.stack.truncate(len - 1);
+        self.stack[len - 2] = result;
         Ok(())
     }
 }
@@ -2066,7 +2199,40 @@ fn values_equal(l: &Value, r: &Value) -> bool {
 /// flat. Tuple element-wise + / - and tuple <-> scalar * / / are
 /// here so Snake-style `cell * cell_size` and `pos + direction`
 /// produce the same Tuple values as the tree-walker.
+///
+/// Phase 11 session 7: int+int and float+float fast paths are
+/// hoisted to the top so tight numeric loops short-circuit out
+/// before testing for strings, tuples, or mixed numerics. The
+/// VM-side `binary_arith` handles the same two cases inline so
+/// the ideal call frequency for this function approaches zero
+/// in numeric-heavy benchmarks; keeping the fast paths here too
+/// covers code paths (constant folding, tuple element recursion)
+/// that reach `apply_arith` directly.
+#[inline]
 fn apply_arith(op: ArithOp, l: &Value, r: &Value, line: u32) -> Result<Value, RuntimeError> {
+    // Hot path: int + int.
+    if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
+        let a = l.as_int();
+        let b = r.as_int();
+        return Ok(match op {
+            ArithOp::Div if b == 0 => return Err(division_by_zero(line)),
+            ArithOp::Add => Value::from_int(a + b),
+            ArithOp::Sub => Value::from_int(a - b),
+            ArithOp::Mul => Value::from_int(a * b),
+            ArithOp::Div => Value::from_int(a / b),
+        });
+    }
+    // Hot path: float + float.
+    if l.is_float() && r.is_float() {
+        let a = l.as_float();
+        let b = r.as_float();
+        return Ok(match op {
+            ArithOp::Add => Value::from_float(a + b),
+            ArithOp::Sub => Value::from_float(a - b),
+            ArithOp::Mul => Value::from_float(a * b),
+            ArithOp::Div => Value::from_float(a / b),
+        });
+    }
     // String concatenation via `+`.
     if matches!(op, ArithOp::Add) && l.is_str() && r.is_str() {
         let a = l.as_string();
@@ -2123,34 +2289,15 @@ fn apply_arith(op: ArithOp, l: &Value, r: &Value, line: u32) -> Result<Value, Ru
             return Ok(Value::from_tuple(Rc::new(out)));
         }
     }
-    // Scalar paths.
-    let result = if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
-        let a = l.as_int();
-        let b = r.as_int();
-        match op {
-            ArithOp::Div if b == 0 => return Err(division_by_zero(line)),
-            ArithOp::Add => Value::from_int(a + b),
-            ArithOp::Sub => Value::from_int(a - b),
-            ArithOp::Mul => Value::from_int(a * b),
-            ArithOp::Div => Value::from_int(a / b),
-        }
-    } else if l.is_float() && r.is_float() {
-        let a = l.as_float();
-        let b = r.as_float();
-        match op {
-            ArithOp::Add => Value::from_float(a + b),
-            ArithOp::Sub => Value::from_float(a - b),
-            ArithOp::Mul => Value::from_float(a * b),
-            ArithOp::Div => Value::from_float(a / b),
-        }
-    } else if l.is_int_or_boxed_int() && r.is_float() {
-        mix_float(op, l.as_int() as f64, r.as_float(), line)?
-    } else if l.is_float() && r.is_int_or_boxed_int() {
-        mix_float(op, l.as_float(), r.as_int() as f64, line)?
-    } else {
-        return Err(type_error(op.as_str(), l, r, line));
-    };
-    Ok(result)
+    // Mixed int / float — only reachable now that the homogeneous
+    // int+int and float+float fast paths short-circuit at the top.
+    if l.is_int_or_boxed_int() && r.is_float() {
+        return mix_float(op, l.as_int() as f64, r.as_float(), line);
+    }
+    if l.is_float() && r.is_int_or_boxed_int() {
+        return mix_float(op, l.as_float(), r.as_int() as f64, line);
+    }
+    Err(type_error(op.as_str(), l, r, line))
 }
 
 fn mix_float(op: ArithOp, a: f64, b: f64, line: u32) -> Result<Value, RuntimeError> {
@@ -2339,6 +2486,7 @@ fn instantiate_bc(class: Rc<BcClassDef>) -> Value {
         every_timers: Vec::new(),
         every_intervals_secs: Vec::new(),
         despawned: false,
+        death_fired: false,
         fiber_frames: Vec::new(),
         fiber_stack: Vec::new(),
         entry_wait_remaining: 0.0,

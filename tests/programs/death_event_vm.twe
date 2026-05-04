@@ -1,0 +1,17 @@
+# Phase 11 session 10 — VM-friendly death-event test program.
+#
+# Uses a plain entity that despawns itself in its first update tick
+# (avoids the v0.1 limitation where the VM compiler rejects `lifetime:
+# 0.1s` as a particles default; the eval-side test program targets
+# particles and that test still runs end-to-end on the tree-walker).
+
+entity Doomed:
+    var hp = 1
+
+    function update(dt):
+        despawn self
+
+on Doomed.death(e):
+    print("doomed died")
+
+spawn Doomed at (0, 0)
