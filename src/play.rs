@@ -191,6 +191,17 @@ pub fn launch_bytecode(path: String) -> i32 {
     0
 }
 
+/// Phase 12 session 4: launch the runtime against an in-memory
+/// `main.twe` source, with no hot-reload (the source lives in the
+/// `.exe`; nothing to watch). Used by self-extracting binaries —
+/// `cli::run` detects an embedded bundle, extracts main.twe, sets
+/// the bundle as the active asset source, then calls this.
+pub fn launch_embedded(source: String) -> i32 {
+    let conf = window_conf();
+    macroquad::Window::from_config(conf, run_loop_embedded(source));
+    0
+}
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "Twec play".to_string(),
@@ -772,6 +783,71 @@ async fn run_loop_bytecode(path: String) {
     }
 }
 
+// Phase 12 session 4: embedded-bundle play loop. Mirrors `run_loop`
+// but with no hot-reload (the source lives in the running .exe;
+// nothing to watch). Uses the tree-walker — production default per
+// CLAUDE.md — since shipped games shouldn't gate on the in-flight
+// bytecode-VM perf gap from Phase 8.5. A future session can add a
+// `--vm` toggle in the embedded boot path if a bundled game wants
+// the bytecode backend explicitly.
+async fn run_loop_embedded(source: String) {
+    const LABEL: &str = "<embedded>main.twe";
+    let mut env = match initialize_from_source(&source, LABEL) {
+        Ok(e) => e,
+        Err(()) => return,
+    };
+    let mut idle = IdleAutoPause::new();
+    let mut blur = BlurAutoPause::new();
+    flush_output(&mut env);
+
+    loop {
+        if is_key_pressed(KeyCode::Escape) {
+            break;
+        }
+
+        update_key_state(&mut env);
+        let dt = get_frame_time() as f64;
+        hud_record(dt);
+        idle.tick(dt);
+        idle.apply();
+        blur.tick(crate::window_focus::is_focused());
+        if !crate::stdlib::is_paused() {
+            if let Err(e) = crate::eval::tick_frame(&mut env, dt) {
+                eprintln!("{LABEL}: runtime error: {e}");
+                break;
+            }
+        }
+        flush_output(&mut env);
+
+        clear_background(BLACK);
+        env.in_render = true;
+        crate::stdlib::camera_tick(dt);
+        let ((px, py), zoom) = crate::stdlib::camera_view(&env);
+        let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
+        let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
+        if cam_active {
+            let cam = build_camera2d(px + sx, py + sy, zoom);
+            set_camera(&cam);
+        }
+        let render_result = crate::eval::render_frame(&mut env);
+        if cam_active {
+            set_default_camera();
+        }
+        if let Err(e) = render_result {
+            eprintln!("{LABEL}: runtime error: {e}");
+            env.in_render = false;
+            break;
+        }
+        env.in_render = false;
+        flush_output(&mut env);
+
+        hud_draw();
+        write_pending_screenshot();
+
+        next_frame().await;
+    }
+}
+
 fn initialize_bytecode(path: &str) -> Result<crate::vm::VM, ()> {
     let src = match std::fs::read_to_string(Path::new(path)) {
         Ok(s) => s,
@@ -780,30 +856,36 @@ fn initialize_bytecode(path: &str) -> Result<crate::vm::VM, ()> {
             return Err(());
         }
     };
-    let tokens = match crate::lexer::lex(&src) {
+    initialize_bytecode_from_source(&src, path)
+}
+
+/// Phase 12 session 4: shared bytecode init for both file-backed
+/// and embedded-bundle launches.
+fn initialize_bytecode_from_source(src: &str, label: &str) -> Result<crate::vm::VM, ()> {
+    let tokens = match crate::lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("{path}:{e}");
+            eprintln!("{label}:{e}");
             return Err(());
         }
     };
     let program = match crate::parser::parse(&tokens) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("{path}:{e}");
+            eprintln!("{label}:{e}");
             return Err(());
         }
     };
     let chunk = match crate::compiler::compile_program(&program) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{path}: compile error: {e}");
+            eprintln!("{label}: compile error: {e}");
             return Err(());
         }
     };
     let mut vm = crate::vm::VM::new();
     if let Err(e) = vm.run(&chunk) {
-        eprintln!("{path}: runtime error: {e}");
+        eprintln!("{label}: runtime error: {e}");
         return Err(());
     }
     Ok(vm)
@@ -924,24 +1006,32 @@ fn initialize(path: &str) -> Result<Env, ()> {
             return Err(());
         }
     };
-    let tokens = match crate::lexer::lex(&src) {
+    initialize_from_source(&src, path)
+}
+
+/// Phase 12 session 4: shared init path for both file-backed and
+/// embedded-bundle launches. Lexes / parses / runs top-level on the
+/// given source string; `label` is the diagnostic prefix
+/// (filesystem path or `<embedded>main.twe`).
+fn initialize_from_source(src: &str, label: &str) -> Result<Env, ()> {
+    let tokens = match crate::lexer::lex(src) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("{path}:{e}");
+            eprintln!("{label}:{e}");
             return Err(());
         }
     };
     let program = match crate::parser::parse(&tokens) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("{path}:{e}");
+            eprintln!("{label}:{e}");
             return Err(());
         }
     };
     let mut env = Env::new();
     crate::stdlib::install(&mut env);
     if let Err(e) = crate::eval::run_top_level(&mut env, &program) {
-        eprintln!("{path}: runtime error: {e}");
+        eprintln!("{label}: runtime error: {e}");
         return Err(());
     }
     Ok(env)

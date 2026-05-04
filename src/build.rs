@@ -302,28 +302,103 @@ pub fn run(args: BuildArgs) -> i32 {
         );
         return 0;
     }
-    // Phase 12 session 2: the non-dry-run path produces a real
-    // `.twebundle` (next to the resolved out path). Session 4
-    // replaces this branch with self-extracting-binary production
-    // — at that point the bundle gets appended to a runtime exe
-    // rather than written standalone. Until then a plain
-    // `.twebundle` is the artifact contributors can inspect.
-    let bundle_out = bundle_out_path(&out_path);
-    match write_bundle(&project, &bundle_out) {
-        Ok(bytes_written) => {
+    // Phase 12 session 4: produce a self-extracting `.exe` for
+    // Windows (host-only for now — sessions 6 / 7 add macOS / Linux
+    // targets, which need their own runtime binaries). For non-
+    // Windows targets we still ship the `.twebundle` artifact as a
+    // pre-session-6/7 deliverable; that's exactly what session 4's
+    // contract says — Windows is the EXIT-GATE platform.
+    match args.target {
+        BuildTarget::WindowsX86_64 if BuildTarget::host() == BuildTarget::WindowsX86_64 => {
+            build_self_extracting(&project, &out_path, &args)
+        }
+        _ => {
+            // Standalone bundle for other targets (and for cross-
+            // compile from non-Windows hosts to Windows, which is
+            // a session-6 / -7 follow-on).
+            let bundle_out = bundle_out_path(&out_path);
+            match write_bundle(&project, &bundle_out) {
+                Ok(bytes_written) => {
+                    eprintln!(
+                        "[twec build] wrote bundle: {} ({} bytes, {} entries)",
+                        bundle_out.display(),
+                        bytes_written,
+                        project.assets.len() + 1
+                    );
+                    eprintln!(
+                        "[twec build] note: real {} binary production lands in a later session; \
+                         the .twebundle is the artifact for now",
+                        args.target.label()
+                    );
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// Phase 12 session 4: produce a single self-extracting `.exe` by
+/// (a) encoding the bundle to memory, (b) copying the running
+/// `twec.exe` to the output path, (c) appending the bundle bytes +
+/// footer. The runtime detects the footer at startup via
+/// `bundle::detect_in_self`.
+fn build_self_extracting(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    _args: &BuildArgs,
+) -> i32 {
+    // Encode the bundle to memory (small enough — full survive.twe
+    // tree is ~1MB; v0.6 doesn't ship multi-GB games).
+    let bundle_bytes = match encode_bundle_to_vec(project) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let runtime = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot locate twec runtime binary: {e}");
+            return 1;
+        }
+    };
+    match crate::bundle::append_to_binary(&runtime, &bundle_bytes, out_path) {
+        Ok(bundle_offset) => {
             eprintln!(
-                "[twec build] wrote bundle: {} ({} bytes, {} entries)",
-                bundle_out.display(),
-                bytes_written,
-                project.assets.len() + 1
+                "[twec build] wrote {} (runtime {} bytes + bundle {} bytes; \
+                 bundle offset {})",
+                out_path.display(),
+                bundle_offset,
+                bundle_bytes.len(),
+                bundle_offset
             );
             0
         }
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: appending bundle to runtime: {e}");
             1
         }
     }
+}
+
+fn encode_bundle_to_vec(project: &DiscoveredProject) -> Result<Vec<u8>, String> {
+    let main_bytes = fs::read(&project.main)
+        .map_err(|e| format!("cannot read '{}': {e}", project.main.display()))?;
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(project.assets.len() + 1);
+    entries.push(("main.twe".to_string(), main_bytes));
+    for asset in &project.assets {
+        let bytes = fs::read(&asset.abs)
+            .map_err(|e| format!("cannot read '{}': {e}", asset.abs.display()))?;
+        entries.push((asset.bundle_key.clone(), bytes));
+    }
+    let mut buf = Vec::new();
+    crate::bundle::encode(&mut buf, &entries).map_err(|e| format!("encoding bundle: {e}"))?;
+    Ok(buf)
 }
 
 /// Output path for the standalone `.twebundle` artifact. Sessions

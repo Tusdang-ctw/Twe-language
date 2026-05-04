@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use twec::build::{discover_project, validate_project, write_bundle, BuildConfig, BuildTarget};
 use twec::bundle::{
-    clear_active_bundle, has_active_bundle, read_asset_bytes, set_active_bundle, BundleReader,
+    append_to_binary, clear_active_bundle, detect_in_file, has_active_bundle, read_asset_bytes,
+    set_active_bundle, BundleReader,
 };
 
 /// Serializes tests that mutate the process-global `ACTIVE_BUNDLE`
@@ -199,6 +200,68 @@ fn active_bundle_redirects_then_falls_through_to_filesystem() {
         .expect_err("missing path should error");
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn append_to_binary_round_trips_via_detect_in_file() {
+    // Phase 12 session 4: simulate a self-extracting `.exe` by
+    // appending a bundle to a fake runtime binary, then probe it
+    // back via `detect_in_file`. Verifies (a) the boot footer is
+    // written correctly, (b) `detect_in_file` returns Some(reader),
+    // (c) the recovered bundle hands back the original bytes.
+    let dir = temp_project("append_to_binary");
+    let runtime_path = dir.join("fake_runtime.exe");
+    // The "runtime" is just opaque bytes; nothing reads it as a PE
+    // because `detect_in_file` only inspects the trailing footer.
+    let runtime_bytes: Vec<u8> = (0u8..200u8).collect();
+    fs::write(&runtime_path, &runtime_bytes).unwrap();
+    fs::write(dir.join("main.twe"), "print(\"embedded\")\n").unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::write(dir.join("assets/a.txt"), b"alpha").unwrap();
+    let project = discover_project(&dir).expect("discover");
+
+    let mut bundle_buf = Vec::new();
+    let main_bytes = fs::read(&project.main).unwrap();
+    let asset_bytes = fs::read(&project.assets[0].abs).unwrap();
+    twec::bundle::encode(
+        &mut bundle_buf,
+        &[
+            ("main.twe".to_string(), main_bytes.clone()),
+            (project.assets[0].bundle_key.clone(), asset_bytes.clone()),
+        ],
+    )
+    .unwrap();
+
+    let out = dir.join("hosted.exe");
+    let bundle_offset = append_to_binary(&runtime_path, &bundle_buf, &out).unwrap();
+    assert_eq!(bundle_offset, runtime_bytes.len() as u64);
+
+    let detected = detect_in_file(&out).unwrap();
+    let mut reader = detected.expect("footer should be detected");
+    assert_eq!(reader.entry_count(), 2);
+    let main_back = reader.read("main.twe").unwrap().expect("main present");
+    assert_eq!(main_back, main_bytes);
+    let asset_back = reader
+        .read(&project.assets[0].bundle_key)
+        .unwrap()
+        .expect("asset present");
+    assert_eq!(asset_back, asset_bytes);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detect_in_file_returns_none_for_non_extracting_binary() {
+    // A file with no boot footer should produce Ok(None), not an
+    // error — the production path runs this check on every
+    // `twec.exe` startup, so a plain CLI binary must succeed.
+    let dir = temp_project("no_footer");
+    let plain = dir.join("no_footer.bin");
+    let bytes: Vec<u8> = (0u8..150u8).collect();
+    fs::write(&plain, bytes).unwrap();
+    let result = detect_in_file(&plain).unwrap();
+    assert!(result.is_none());
     let _ = fs::remove_dir_all(&dir);
 }
 

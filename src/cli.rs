@@ -36,6 +36,24 @@ impl Backend {
 
 pub fn run() {
     install_crash_reporter();
+    // Phase 12 session 4: if our binary has a bundle appended (via
+    // `twec build --target windows-x86_64`), launch the embedded
+    // game directly. The user double-clicked their `survive.exe`,
+    // not the Twe CLI. This path runs *before* arg parsing so an
+    // embedded-bundle binary ignores stray launcher arguments
+    // Steam / shells sometimes pass.
+    match crate::bundle::detect_in_self() {
+        Ok(Some(reader)) => {
+            process::exit(run_embedded(reader));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("[twec] warning: could not check for embedded bundle: {e}");
+            // Fall through to normal CLI. Don't kill the process —
+            // a transient `current_exe` failure shouldn't break the
+            // contributor's local `cargo run`.
+        }
+    }
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         print_version();
@@ -60,6 +78,34 @@ pub fn run() {
             process::exit(2);
         }
     }
+}
+
+/// Phase 12 session 4: launch a self-extracting binary's embedded
+/// game. Reads `main.twe` from the bundle, installs the bundle as
+/// the active asset source, hands the source string to
+/// `play::launch_embedded`. Returns the process exit code so
+/// `cli::run`'s caller can `process::exit(...)`.
+fn run_embedded(mut reader: crate::bundle::BundleReader) -> i32 {
+    let main = match reader.read("main.twe") {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            eprintln!("error: bundled game has no main.twe");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("error: could not read main.twe from bundle: {e}");
+            return 1;
+        }
+    };
+    let src = match String::from_utf8(main) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("error: main.twe in bundle is not valid UTF-8");
+            return 1;
+        }
+    };
+    crate::bundle::set_active_bundle(reader);
+    crate::play::launch_embedded(src)
 }
 
 fn handle_play(args: &[String]) -> i32 {

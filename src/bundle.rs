@@ -42,6 +42,20 @@ use std::sync::Mutex;
 pub const MAGIC: &[u8; 8] = b"TWEBUND1";
 pub const FORMAT_VERSION: u32 = 1;
 
+/// Phase 12 session 4: footer magic for the self-extracting `.exe`
+/// produced by `twec build`. The build pipeline copies a runtime
+/// binary, appends a `.twebundle`, and writes a 24-byte footer:
+///
+///   [ 8 bytes ] bundle offset u64 LE  (absolute, where TWEBUND1 starts)
+///   [ 8 bytes ] bundle length u64 LE
+///   [ 8 bytes ] magic "TWEBOOT1"
+///
+/// At runtime, `detect_in_self` checks the last 24 bytes of the
+/// running executable and, if the magic matches, opens the bundle
+/// at the recorded offset.
+pub const BOOT_MAGIC: &[u8; 8] = b"TWEBOOT1";
+pub const BOOT_FOOTER_SIZE: u64 = 24;
+
 /// One entry as it lives in the bundle index. The `body_offset` /
 /// `body_length` are absolute offsets from the file start, so a
 /// `BundleReader` can seek straight to a file body without rescanning
@@ -262,6 +276,82 @@ impl BundleReader {
         self.file.read_exact(&mut buf)?;
         Ok(Some(buf))
     }
+}
+
+// Phase 12 session 4: self-extracting binary helpers. Build pipeline
+// uses `append_to_binary` to glue a bundle onto a runtime exe;
+// runtime startup uses `detect_in_self` to find one if it's there.
+
+/// Copy a runtime executable into `out_path`, append `bundle_bytes`,
+/// and write the 24-byte boot footer. Returns the absolute offset
+/// in the output file where the bundle starts (== the runtime
+/// length).
+pub fn append_to_binary(
+    runtime_path: &Path,
+    bundle_bytes: &[u8],
+    out_path: &Path,
+) -> io::Result<u64> {
+    let runtime = std::fs::read(runtime_path)?;
+    let runtime_len = runtime.len() as u64;
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut out = File::create(out_path)?;
+    out.write_all(&runtime)?;
+    let bundle_offset = runtime_len;
+    out.write_all(bundle_bytes)?;
+    out.write_all(&bundle_offset.to_le_bytes())?;
+    out.write_all(&(bundle_bytes.len() as u64).to_le_bytes())?;
+    out.write_all(BOOT_MAGIC)?;
+    out.flush()?;
+    // Preserve the executable bit on Unix so the produced file is
+    // launchable. Windows ignores file mode for executability.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(out_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(out_path, perms)?;
+    }
+    Ok(bundle_offset)
+}
+
+/// Probe the running executable for an embedded bundle. Returns
+/// `Ok(None)` when no footer is present (the binary is a plain
+/// `twec.exe`); `Err` only when the executable path itself can't
+/// be read or the footer is malformed in a way that suggests
+/// corruption.
+pub fn detect_in_self() -> io::Result<Option<BundleReader>> {
+    let path = std::env::current_exe()?;
+    detect_in_file(&path)
+}
+
+pub fn detect_in_file(path: &Path) -> io::Result<Option<BundleReader>> {
+    let mut file = File::open(path)?;
+    let len = file.seek(SeekFrom::End(0))?;
+    if len < BOOT_FOOTER_SIZE {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::End(-(BOOT_FOOTER_SIZE as i64)))?;
+    let mut footer = [0u8; BOOT_FOOTER_SIZE as usize];
+    file.read_exact(&mut footer)?;
+    if &footer[16..24] != BOOT_MAGIC {
+        return Ok(None);
+    }
+    let bundle_offset = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+    let bundle_length = u64::from_le_bytes(footer[8..16].try_into().unwrap());
+    // Sanity-check the recorded region is inside the file.
+    if bundle_offset + bundle_length + BOOT_FOOTER_SIZE > len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "embedded bundle footer points outside the host file",
+        ));
+    }
+    drop(file);
+    let reader = BundleReader::open_at(path, bundle_offset)?;
+    Ok(Some(reader))
 }
 
 // Phase 12 session 3: process-global active-bundle slot. The
