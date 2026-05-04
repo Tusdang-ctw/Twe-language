@@ -113,6 +113,57 @@ fn runs_single_line_if() {
 }
 
 #[test]
+fn runs_if_expression_basic() {
+    // Phase 9 follow-on: if-expression form `if c: a else: b`. Closes
+    // the latent parser bug where `examples/gamepad_demo.twe` line 9
+    // (`let conn_color = if gamepad.connected: color.green else: color.red`)
+    // failed with "expected expression, got If."
+    let out =
+        run_program_str("let n = 5\nlet label = if n > 0: \"pos\" else: \"neg\"\nprint(label)\n")
+            .expect("program should run");
+    assert_eq!(out, "pos\n");
+}
+
+#[test]
+fn runs_if_expression_else_branch() {
+    let out =
+        run_program_str("let n = -2\nlet label = if n > 0: \"pos\" else: \"neg\"\nprint(label)\n")
+            .expect("program should run");
+    assert_eq!(out, "neg\n");
+}
+
+#[test]
+fn runs_if_expression_elif_chain() {
+    let src = r#"
+let x = 7
+let bucket = if x < 3: "small" elif x < 10: "medium" else: "large"
+print(bucket)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "medium\n");
+}
+
+#[test]
+fn if_expression_requires_else() {
+    let err = run_program_str("let x = if 1 == 1: \"yes\"\n").expect_err("should fail");
+    assert!(
+        err.contains("`else:`") || err.contains("else"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn if_expression_inside_call_arg_works() {
+    // Use as a function-call argument — the headline use case is
+    // `text("count: {x}", ..., color: if dark: color.white else: color.black)`.
+    let out = run_program_str(
+        "let dark = true\nprint(if dark: \"white\" else: \"black\")\n",
+    )
+    .expect("program should run");
+    assert_eq!(out, "white\n");
+}
+
+#[test]
 fn runs_example_1_three_frames() {
     let out =
         run_program_frames("tests/programs/example_1.twe", 3, 0.1).expect("program should run");
@@ -385,6 +436,90 @@ fn sprite_frame_outside_render_fails_clearly() {
         "let s = load(\"examples/assets/hero.png\")\nsprite_frame(s, (0, 0), 0)\n",
     )
     .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn button_outside_render_fails_clearly() {
+    // Phase 10 session 1: `button(at:, size:, label:) -> bool` is
+    // require_render-guarded — the rendering path can't run outside
+    // `on render():`. Hit-test logic + click latching are exercised
+    // by hand via `examples/button_demo.twe` (needs a real mouse +
+    // GL context); the pure point-in-rect helper has unit tests in
+    // `src/stdlib.rs`.
+    let err = run_program_str("button((0, 0), (100, 40), \"Resume\")\n")
+        .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn label_outside_render_fails_clearly() {
+    // Phase 10 session 2.
+    let err =
+        run_program_str("label((0, 0), (100, 40), \"Hello\")\n").expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn progress_bar_outside_render_fails_clearly() {
+    // Phase 10 session 2.
+    let err = run_program_str("progress_bar((0, 0), (100, 20), 0.5)\n")
+        .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn slider_outside_render_fails_clearly() {
+    // Phase 10 session 3.
+    let err = run_program_str("slider((0, 0), (200, 28), 0.5, 0.0, 1.0)\n")
+        .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn checkbox_outside_render_fails_clearly() {
+    // Phase 10 session 4.
+    let err =
+        run_program_str("checkbox((0, 0), (24, 24), true)\n").expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn dropdown_outside_render_fails_clearly() {
+    // Phase 10 session 4.
+    let err = run_program_str(
+        "dropdown((0, 0), (200, 28), [\"Low\", \"High\"], 0)\n",
+    )
+    .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn text_input_outside_render_fails_clearly() {
+    // Phase 10 session 5.
+    let err = run_program_str("text_input((0, 0), (200, 28), \"\")\n")
+        .expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"

@@ -275,7 +275,7 @@ Use case #1 from `README.md` ("2D systematic / RPG hybrid") drives prioritizatio
 
 ## Phase 8 — v0.2 — Foundations for shipping
 
-**Status:** substantively complete. Seven feature sessions shipped 2026-04-29 / 04-30:
+**Status:** **closed 2026-05-04** per `docs/changes/2026-05-04-phase-8-closeout.md`. All three roadmap exit criteria met. Seven feature sessions shipped 2026-04-29 / 04-30:
 
 | # | Surface | Session note |
 |---|---------|--------------|
@@ -345,7 +345,7 @@ Phase 8.5 inherits the runtime perf criteria:
 
 ## Phase 9 — v0.3 — Visuals + assets-for-UI
 
-**Status:** substantively complete. **Session 11 (2026-05-02) closed the exit gate:** `twec play_visual examples/visual_fire.twe` opens a wgpu window and renders Example 5's procedural fire shader fullscreen, driven by a system-clock time uniform. The WGSL emitted by session 10 validates through naga (wgpu's WGSL frontend) in CI without needing a GPU. Phase 9 has now shipped 11 sessions covering math (1), 2D camera (2), atlases (3), fonts (4), gamepad (5), color pipeline (6), particles doc-honesty (7), death event hook (7b), visual parser (8), visual subset checker (9), visual → WGSL codegen (10), and visual render integration (11).
+**Status:** **closed 2026-05-04** per `docs/changes/2026-05-04-phase-9-closeout.md`. Session 11 (2026-05-02) closed the exit gate: `twec play_visual examples/visual_fire.twe` opens a wgpu window and renders Example 5's procedural fire shader fullscreen, driven by a system-clock time uniform. The WGSL emitted by session 10 validates through naga (wgpu's WGSL frontend) in CI without needing a GPU. Phase 9 shipped 11 sessions covering math (1), 2D camera (2), atlases (3), fonts (4), gamepad (5), color pipeline (6), particles doc-honesty (7), death event hook (7b), visual parser (8), visual subset checker (9), visual → WGSL codegen (10), and visual render integration (11). Two sub-criteria slipped to ≤1-session follow-ons: real spritesheet-animation demo (asset bundling) and `examples/survive.twe` gamepad integration. The bytecode-VM mirror of the death-event hook also defers (mid-size session). **544 tests pass.**
 
 **Theme:** ship the headline differentiator (Pillar 3 from `README.md`) and the asset machinery UI in Phase 10 needs.
 
@@ -368,6 +368,8 @@ Phase 8.5 inherits the runtime perf criteria:
 ---
 
 ## Phase 10 — v0.4 — UI + game-shell primitives
+
+**Status:** sessions 1–5 shipped 2026-05-04. Session 1: `button(at:, size:, label:) -> bool`. Session 2: `label(at:, size:, text:)` + `progress_bar(at:, size:, value:)`. Session 3: `slider(at:, size:, value:, min:, max:) -> float` (drag state via thread-local `UI_STATE.active_slider`). Session 4: `checkbox(at:, size:, value:) -> bool` + `dropdown(at:, size:, options:, selected:) -> int` (open state). Session 5: `text_input(at:, size:, value:) -> string` (focus state, char-pressed drain, backspace, blinking cursor). Demos: `examples/button_demo.twe`, `examples/widgets_demo.twe`. As a Phase 9 follow-on rolled into this track, the if-expression form `let x = if cond: a else: b` is now parsed (closes the latent bug that broke `examples/gamepad_demo.twe:9`). Remaining sessions: layout primitives (`panel` / `flex` / `grid` / `scroll` / `stack`), settings system, localization, pause-on-window-blur, exit-gate pause-menu integration. **561 tests pass.**
 
 Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a Steam pause menu needs.
 
@@ -529,10 +531,10 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 5 — 3D + dialogue | (pre-v0.1) | L (closed at v0.1-min-viable) |
 | 6 — Tooling + docs | (pre-v0.1) | M (closed) |
 | 7 — Release engineering | v0.1 | M (active) |
-| 8 — Foundations for shipping | v0.2 | L (substantively complete; 7 sessions shipped) |
-| 8.5 — NaN tagging + tracing GC | v0.2 (perf) | L (designed; 9-session migration ahead) |
-| 9 — Visuals + assets-for-UI | v0.3 | L |
-| 10 — UI + game-shell | v0.4 | M (parallel with 9) |
+| 8 — Foundations for shipping | v0.2 | L (closed 2026-05-04; 7 sessions shipped) |
+| 8.5 — NaN tagging + tracing GC | v0.2 (perf) | L (closed 2026-05-01; 3× speedup criterion missed, follow-on perf phase pending) |
+| 9 — Visuals + assets-for-UI | v0.3 | L (closed 2026-05-04; 11 sessions shipped, 2 sub-criteria slipped to follow-ons) |
+| 10 — UI + game-shell | v0.4 | M (unblocked; can run in parallel with Phase 7 release engineering) |
 | 11 — Production hardening | v0.5 | M |
 | 12 — Asset pipeline + build | v0.6 | M |
 | 13 — Modules + type-system stability | v0.7 | L |

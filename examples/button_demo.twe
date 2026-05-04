@@ -1,0 +1,34 @@
+# Phase 10 session 1 — immediate-mode `button` widget.
+#
+# Run with `twec play examples/button_demo.twe`. Click the buttons
+# to interact:
+#   - "Increment" bumps the counter.
+#   - "Reset" zeroes it.
+#   - "Toggle pause" flips a flag the on-screen text reflects.
+#
+# `button(at:, size:, label:) -> bool` returns `true` on the frame
+# the user clicks inside the rect (mouse-press edge + hover). It
+# reads ambient `mouse.x` / `mouse.y` / `mouse_press.left` /
+# `mouse_held.left` internally — scripts don't have to thread state
+# through. Hover/active styling is baked in for v1.
+
+var count = 0
+var paused = false
+
+on render():
+    text("Phase 10 — buttons", at: (20, 30), size: 24, color: color.white)
+    text("Count: {count}", at: (20, 70), size: 18, color: color.yellow)
+
+    if paused:
+        text("Status: PAUSED", at: (20, 100), size: 18, color: color.cyan)
+    else:
+        text("Status: RUNNING", at: (20, 100), size: 18, color: color.cyan)
+
+    if button(at: (20, 140), size: (160, 40), label: "Increment"):
+        count = count + 1
+
+    if button(at: (200, 140), size: (160, 40), label: "Reset"):
+        count = 0
+
+    if button(at: (20, 200), size: (340, 40), label: "Toggle pause"):
+        paused = not paused

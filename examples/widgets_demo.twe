@@ -1,0 +1,41 @@
+# Phase 10 sessions 2 / 3 / 4 / 5 — widgets demo.
+#
+# Run with `twec play examples/widgets_demo.twe`. Exercises the
+# session-2/3/4/5 widget set:
+#   - `label`: stateless text inside a (w, h) box, centered.
+#   - `progress_bar`: 0..1 fill inside an outlined frame.
+#   - `slider`: drag-state widget; returns updated value.
+#   - `checkbox`: toggles a bool on click.
+#   - `dropdown`: click to open a list; click an option to select.
+#   - `text_input`: click to focus, type to append, backspace to delete.
+
+var volume = 0.5
+var music_on = true
+var hp = 0.7
+var quality = 0
+var name = ""
+
+on render():
+    label(at: (20, 20), size: (300, 30), text: "Phase 10 — widgets")
+
+    label(at: (20, 70), size: (120, 28), text: "Volume")
+    volume = slider(at: (160, 70), size: (200, 28), value: volume, min: 0.0, max: 1.0)
+    label(at: (380, 70), size: (60, 28), text: "{volume}")
+
+    label(at: (20, 110), size: (120, 28), text: "Music")
+    music_on = checkbox(at: (160, 110), size: (24, 24), value: music_on)
+
+    label(at: (20, 150), size: (120, 28), text: "Quality")
+    quality = dropdown(
+        at: (160, 150),
+        size: (200, 28),
+        options: ["Low", "Medium", "High", "Ultra"],
+        selected: quality
+    )
+
+    label(at: (20, 220), size: (120, 28), text: "Player name")
+    name = text_input(at: (160, 220), size: (240, 28), value: name)
+    label(at: (20, 260), size: (480, 24), text: "Hello, {name}")
+
+    label(at: (20, 320), size: (120, 28), text: "HP")
+    progress_bar(at: (160, 320), size: (240, 20), value: hp)

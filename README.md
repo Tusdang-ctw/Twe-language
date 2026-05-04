@@ -46,15 +46,16 @@ Three games Twe must be excellent at:
 - [x] Bytecode VM (Phase 3)
 - [x] Tooling: LSP, formatter, tree-sitter grammar, VS Code extension (Phases 3 + 6)
 - [x] Type system v1, non-strict + strict modes (Phases 4 + 6)
-- [x] 3D rendering surface — cubes, spheres, `.glb` meshes, hot reload (Phase 5 + v0.2 session 1)
-- [x] Cooperative fibers (`wait` works in nested blocks + functions, both backends — Phases 5 + v0.2 sessions 2a/2b/2c/7)
-- [x] Mouse input (v0.2 session 3)
-- [x] Save / load bottom layer (`save_to` / `load_from` stdlib builtins; v0.2 session 4)
-- [x] Audio v2 — volume / music looping / stop (v0.2 session 5)
-- [x] Tilemap (stdlib form: `tilemap(...)` + `tilemap_render` + collision queries; v0.2 session 6)
-- [~] NaN-tagged 64-bit values + tracing GC (Phase 8.5 — sessions 8a + 8b shipped, 8c–8i remain; see `docs/08-nan-tagging.md`)
-- [ ] **Phase 7: v0.1 release** — `cargo dist` binaries, VS Code marketplace, website, CONTRIBUTING.md, license decision (currently active)
-- [ ] **v0.3 → v1.0 plan** — Phases 9–16 in `docs/05-roadmap.md`. v1.0 = "ship a Vampire-Survivors-class commercial 2D game on Twe."
+- [x] 3D rendering surface — cubes, spheres, `.glb` meshes, hot reload (Phase 5 + Phase 8 session 1)
+- [x] Cooperative fibers (`wait` works in nested blocks + functions, both backends — Phases 5 + 8)
+- [x] **Phase 8 closed** (v0.2 — Foundations for shipping): mouse input, save/load bottom layer, audio v2, tilemap (stdlib form), `.glb` mesh import, function-body `wait` on the VM. See `docs/changes/2026-05-04-phase-8-closeout.md`.
+- [x] **Phase 8.5 closed** (NaN tagging + tracing GC): `TaggedValue` + thread-local mark+sweep tracing GC across both backends, with auto-collect safepoints. **502 tests pass.** The 3× speedup-vs-pre-tag-VM exit criterion is not met — see `docs/changes/2026-05-01-phase-8.5-closeout.md` for the perf gap and the follow-on tuning agenda.
+- [x] **Phase 9 closed** (v0.3 — Visuals + assets-for-UI): `visual` block → WGSL codegen + wgpu render driver (Pillar 3 is no longer a paper feature — `twec play_visual examples/visual_fire.twe` runs Example 5's procedural fire shader end-to-end), particles runtime on both backends, `on Class.death(e)` event hook (tree-walker), sprite atlases, TTF/OTF fonts, 2D camera, color pipeline, gamepad input, `noise()` / `smoothstep()` / `mix()` math stdlib. **544 tests pass.** See `docs/changes/2026-05-04-phase-9-closeout.md`.
+- [ ] **Phase 7: v0.1 release** — `cargo dist` binaries, VS Code marketplace, website, CONTRIBUTING.md, license decision. Active. (Codebase is now substantially beyond the original v0.1 surface; could retag as v0.2 / v0.3 at release time.)
+- [~] **Phase 10: v0.4 — UI + game-shell** — sessions 1–5 shipped 2026-05-04: `button`, `label`, `progress_bar`, `slider`, `checkbox`, `dropdown`, `text_input`. Demos at `examples/button_demo.twe` and `examples/widgets_demo.twe`. Also closed a latent parser bug: `if cond: a else: b` is now an expression, fixing `examples/gamepad_demo.twe:9`. Remaining sessions: layout primitives, settings system, localization, pause-on-window-blur, exit-gate pause-menu integration.
+- [ ] **Phase 9 follow-ons** (≤1-session each): real spritesheet-animation demo (asset bundling); `examples/survive.twe` gamepad integration; bytecode-VM mirror of the `on Class.death(e):` event hook.
+- [ ] **Bytecode-VM perf gap from Phase 8.5** — currently 1.1×–1.8× slower than pre-tag baseline on tight integer loops; closing the gap is captured as a follow-on perf phase (criterion harness, profile-guided tuning, dispatch-loop redesign).
+- [ ] **Phase 11–16 → v1.0** — production hardening, asset pipeline, modules + type-system stability, beta + dogfood, RC, stable. v1.0 = "ship a Vampire-Survivors-class commercial 2D game on Twe."
 
 See `docs/05-roadmap.md` for the detailed plan.
 

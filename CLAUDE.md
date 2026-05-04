@@ -81,7 +81,7 @@ These are unresolved. When you encounter them, flag explicitly and propose; do n
 - **Save *block* syntax** — `docs/07-save-system.md` design + the `save_to`/`load_from` stdlib bottom layer (v0.2 session 4) shipped. The language-level `save SaveSlot:` block + version migration syntax is still pending; that's a v0.3+ follow-on session per the roadmap.
 - **Input remapping UX** — keyboard / gamepad rebind UI (Phase 10) needs a design pass. Live-rebind vs. rebind-from-menu? Conflict resolution?
 - **Pause-on-focus-loss semantics** — fibers suspend by default on window blur (Phase 10), but per-state opt-out for always-running tasks (e.g., a level-streamer) needs a syntax. `state foo: persistent` flag? `pause: false` field? Deferred until first need.
-- **Visual block runtime** — documented as a v0.1 headline feature in `docs/01-examples.md` Example 5 and `README.md` Pillar 3, but not implemented. Phase 7 docs honesty fix demotes Pillar 3 to v0.3; Phase 9 ships the `visual` → WGSL compiler.
+- ~~**Visual block runtime**~~ — closed 2026-05-04 with Phase 9. `twec play_visual examples/visual_fire.twe` renders Example 5's procedural fire shader end-to-end via the `visual_check` → `visual_wgsl` → wgpu pipeline. See `docs/changes/2026-05-04-phase-9-closeout.md`.
 - See `docs/06-design-document.md` Appendix B for the canonical open-questions list.
 
 ---
@@ -107,40 +107,38 @@ Every conversation should end with the codebase in a working state. Like git com
 
 ### Phase discipline
 
-We are entering **Phase 7** (v0.1 public release) per `docs/05-roadmap.md`. Closed phases:
+The active line is **Phase 7 release engineering** (v0.1 public release) and **Phase 10 UI primitives** (v0.4 — session 1 shipped 2026-05-04, more sessions ahead). Closed phases:
 
 - **Phase 1** (tree-walking interpreter) — commits `844fd9a` through `7c4c06c`.
 - **Phase 2** (vertical-slice game) — closed 2026-04-28; five of six components shipped, cooperative fibers deferred per `docs/changes/2026-04-28-fibers-deferred-to-phase-3.md`. The 15-item frustration list at `docs/changes/2026-04-28-phase-2-frustration-list.md` drove Phase 3.
-- **Phase 3** (design corrections + bytecode VM + tooling) — closed 2026-04-29 per `docs/changes/2026-04-29-phase-3-and-4-closeout.md`. F1 / F4 / F5+F8 / F11 frustrations resolved; bytecode VM, `twec fmt`, tree-sitter grammar, and basic LSP all ship. NaN tagging, incremental tracing GC, computed-goto, and cooperative fibers were re-deferred — see the closeout note for reasons and target re-entry.
+- **Phase 3** (design corrections + bytecode VM + tooling) — closed 2026-04-29 per `docs/changes/2026-04-29-phase-3-and-4-closeout.md`. F1 / F4 / F5+F8 / F11 frustrations resolved; bytecode VM, `twec fmt`, tree-sitter grammar, and basic LSP all ship.
 - **Phase 4** (type system v1, non-strict) — closed 2026-04-29 in the same note. HM inference, structural class shapes, Optional / Union, dimensional unit checking, and LSP hover all ship.
-- **Phase 5** (3D + scenes + dialogue) — closed at v0.1-minimum-viable 2026-04-29 per `docs/changes/2026-04-29-phase-5-closeout.md`. LSP autocomplete + fibers + dialogue + predicate hooks + `twec play3d` with cubes / spheres / WASD / hot reload / Lambertian lighting. Tilemap and save schemas defer to v0.2 along with `.glb` import, bytecode VM 3D, mouse input, and `mat4`/`quat`.
-- **Phase 6** (tooling, polish, documentation) — closed 2026-04-29 per `docs/changes/2026-04-29-phase-6-closeout.md`. Strict mode (8 sessions, full enforcement on lets / function params / function returns / class fields / method params / method returns), `did_you_mean` for unknown idents / fields / states, tutorial draft, error-message polish, VS Code packaging readiness, `sphere()` primitive. Structural subtyping + Luau lax-strict widening deferred to v0.2. **427 tests pass.**
+- **Phase 5** (3D + scenes + dialogue) — closed at v0.1-minimum-viable 2026-04-29 per `docs/changes/2026-04-29-phase-5-closeout.md`. `twec play3d` with cubes / spheres / WASD / hot reload / Lambertian lighting; LSP autocomplete + fibers + dialogue + predicate hooks all ship.
+- **Phase 6** (tooling, polish, documentation) — closed 2026-04-29 per `docs/changes/2026-04-29-phase-6-closeout.md`. Strict mode, `did_you_mean`, tutorial draft, error-message polish, VS Code packaging readiness. **427 tests pass.**
+- **Phase 8** (v0.2 — Foundations for shipping) — closed 2026-05-04 per `docs/changes/2026-05-04-phase-8-closeout.md`. Seven feature sessions shipped: 1 (`.glb`), 2a / 2b / 2c (resumable wait + frame stack + VM nested-block parity), 3 (mouse input), 4 (save / load bottom layer), 5 (audio v2), 6 (tilemap), 7 (VM function-body wait via multi-frame fiber save). All three roadmap exit criteria met. The `save SaveSlot:` and `tilemap Dungeon:` block syntaxes deferred to v0.3+.
+- **Phase 8.5** (NaN tagging + tracing GC) — closed 2026-05-01 per `docs/changes/2026-05-01-phase-8.5-closeout.md`. All nine sub-sessions (8a–8i) shipped. Functional deliverables (NaN tagging, tracing GC with auto-collect at safepoints) are complete. The 3× speedup-vs-pre-tag-VM perf criterion is **not met** — currently 1.1×–1.8× *slower* than pre-tag baseline; bench numbers + follow-on perf-tuning agenda are in the closeout note. **502 tests pass.**
+- **Phase 9** (v0.3 — Visuals + assets-for-UI) — closed 2026-05-04 per `docs/changes/2026-05-04-phase-9-closeout.md`. Eleven sessions: math stdlib (1), 2D camera (2), atlases (3), fonts (4), gamepad (5), color pipeline (6), particles doc-honesty (7), `on Class.death(e)` event hook on tree-walker (7b), `visual` block lexer + parser + AST (8), subset typechecker (9), WGSL codegen (10), and the EXIT GATE wgpu render driver (11). **`twec play_visual examples/visual_fire.twe` renders Example 5's procedural fire shader end-to-end** — Pillar 3 is no longer a paper feature. **544 tests pass.** Two sub-criteria slipped to ≤1-session follow-ons: a real spritesheet-animation demo (asset bundling), and updating `examples/survive.twe` to read both keyboard and gamepad. The bytecode-VM mirror of the death-event hook also defers (a mid-size session).
 
 **Phase 7 plan** per `docs/05-roadmap.md` §"Phase 7":
 
 1. **GitHub Release with binaries** for Windows / macOS / Linux. `cargo dist` is the canonical Rust path.
 2. **VS Code marketplace publish** — packaging is ready (`vsce package` works); the publish itself rides the release tag and needs a publisher account.
 3. **Project website** with docs / playground / examples gallery. Static-site-generator route (mdBook for the docs, possibly a wgpu-in-browser playground later).
-4. **Show-HN-quality blog post + demo video.** The hello-3d demo is good content; the tutorial walkthrough is too.
+4. **Show-HN-quality blog post + demo video.** The hello-3d demo is good content; the tutorial walkthrough is too; **the procedural fire shader from Phase 9 is now headline-grade demo material.**
 5. **Contribution guide + governance model.** `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, license decision (`README.md` says TBD: MIT or Apache-2.0).
 6. **README polish** — hero image, "what is Twe in 60 seconds," install instructions, link to tutorial.
 
-These are mostly *non-code* sessions — release engineering, writing, packaging. The codebase itself doesn't need new features for v0.1.
+These are mostly *non-code* sessions — release engineering, writing, packaging. The codebase itself doesn't need new features for v0.1; in fact, with Phase 8 + 8.5 + 9 also closed, the v0.1 release would be carrying substantially more than the original v0.1 surface and could be retagged as v0.2 / v0.3 at release time.
 
-**Phase 7 had two pre-release additions** to keep v0.1 honest before tagging — both shipped 2026-04-29 / 04-30:
+**Active implicit-priority items** (not on a single phase, but open):
 
-1. ~~**Demote `visual` and `particles` blocks**~~ — done. `docs/01-examples.md` got a runtime-delivery status table; `README.md` Pillar 3 softened to "Coming in v0.3"; `docs/05-roadmap.md` Phase 9 owns the `visual` → WGSL compilation runtime.
-2. ~~**Author `docs/07-save-system.md`**~~ — done. Authored alongside the v1.0 roadmap commit. v0.2 session 4's `save_to`/`load_from` stdlib bottom layer ships against that design.
+- **The 3× bytecode-VM speedup gap** from Phase 8.5. Captured in its closeout with a follow-on agenda (criterion-style bench harness, profile-guided tuning, dispatch-loop redesign — possibly direct-threaded interpretation). Currently homeless on the roadmap; Phase 11 ("Production hardening") is the most natural absorbing phase but the gap should be closed before v0.5 if practical.
+- **Phase 9 follow-ons** (≤1-session each): bundle a walk-cycle PNG and write the spritesheet animation demo; update `examples/survive.twe` to also read `gamepad_axis.lx / ly` + `gamepad.a`; mirror the `on Class.death(e):` event hook on the bytecode VM (mid-size).
+- **Phase 10** (UI + game-shell primitives): **active.** Sessions 1–5 shipped 2026-05-04. Session 1: `button(at:, size:, label:) -> bool`. Session 2: `label(at:, size:, text:)` + `progress_bar(at:, size:, value:)`. Session 3: `slider(at:, size:, value:, min:, max:) -> float`. Session 4: `checkbox(at:, size:, value:) -> bool` + `dropdown(at:, size:, options:, selected:) -> int`. Session 5: `text_input(at:, size:, value:) -> string`. Stateful widgets (slider drag, dropdown open, text-input focus) share a single thread-local `UI_STATE` so multiple of each can coexist. Demos: `examples/button_demo.twe`, `examples/widgets_demo.twe`. The if-expression form `let x = if c: a else: b` is now parsed (closes the latent `gamepad_demo.twe:9` bug). Remaining: layout primitives (`panel` / `flex` / `grid` / `scroll` / `stack`), settings system, localization scaffolding, pause-on-window-blur, and the exit-gate pause-menu integration.
 
-Phase 7's remaining release-engineering items (license, `cargo dist`, VS Code marketplace, website, blog post, CONTRIBUTING.md) are *non-code* and listed above.
+**Post-v0.1 the canonical plan is `docs/05-roadmap.md` Phases 10–16.** Phase 9 has now joined Phases 8 + 8.5 in the closed column; the v1.0 thesis ("ship a Vampire-Survivors-class commercial 2D game on Twe") still drives prioritization. 3D is in maintenance mode, off the v1.0 critical path.
 
-**v0.2 work also runs in parallel** — Phase 8 in the roadmap. **Phase 8 is now substantively complete** as of 2026-04-30. Nine feature sessions shipped: 1 (`.glb`), 2a / 2b / 2c (resumable wait + frame stack + VM nested-block parity), 3 (mouse input), 4 (save / load bottom layer), 5 (audio v2), 6 (tilemap), 7 (VM function-body wait via multi-frame fiber save). The remaining line item — **NaN-tagged 64-bit values + tracing GC** — broke out as Phase 8.5 per `docs/08-nan-tagging.md`. **Phase 8.5 closed 2026-05-01** per `docs/changes/2026-05-01-phase-8.5-closeout.md`. All nine sub-sessions (8a–8i) shipped. Functional deliverables (NaN tagging, tracing GC with auto-collect at safepoints) are complete. The 3× speedup-vs-pre-tag-VM perf criterion is not met; bench numbers + follow-on perf-tuning agenda are in the closeout note. **502 tests pass; clippy clean under `-D warnings`; build zero warnings.**
-
-**Post-v0.1 the canonical plan is `docs/05-roadmap.md` Phases 8–16** (v0.2 → v1.0). Theme: "ship a Vampire-Survivors-class commercial 2D game on Twe." 3D is in maintenance mode, off the v1.0 critical path.
-
-Do not rabbit-hole into post-v0.1 items mid-Phase-7. If you find yourself thinking about UI primitives, native code generation, Tier-3 verified mode, or shader compilation while doing Phase 7 release prep, stop. Confirm the item is captured in `docs/05-roadmap.md` (or `notes/future-phases.md` for ad-hoc deferrals) and return to the release task in flight.
-
-**Phase boundaries are now closed with explicit closeout notes** in `docs/changes/`. Pattern: what shipped (against exit criteria), what slipped (explicit deferral decisions with reasons and target re-entry phase), doc edits applied. This is the only mechanism that keeps this brief honest.
+**Phase boundaries are closed with explicit closeout notes** in `docs/changes/`. Pattern: what shipped (against exit criteria), what slipped (explicit deferral decisions with reasons and target re-entry phase), doc edits applied. This is the only mechanism that keeps this brief honest. Phase 8 and Phase 9 both got their closeout notes on 2026-05-04 (a doc-discipline catch-up, since both phases had been "substantively complete" without a closeout for several days — exactly the drift the closeout-note pattern exists to prevent).
 
 ### Test discipline
 

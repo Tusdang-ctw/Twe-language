@@ -35,6 +35,32 @@ thread_local! {
         = RefCell::new(HashMap::new());
     static FONT_CACHE: RefCell<HashMap<String, macroquad::text::Font>>
         = RefCell::new(HashMap::new());
+    // Phase 10 sessions 3 / 4 / 5: per-frame UI focus state shared
+    // across the immediate-mode widget set. Sliders / dropdowns /
+    // text-inputs are the stateful widgets; only one of each can
+    // be "active" (dragging / open / focused) at a time, and the
+    // identity is the widget's screen rect (top-left + size). Rect
+    // coords come from script-side literals and are stable across
+    // frames as long as the script doesn't mutate the layout, which
+    // is the immediate-mode contract.
+    static UI_STATE: RefCell<UiState> = const { RefCell::new(UiState {
+        active_slider: None,
+        open_dropdown: None,
+        focused_text_input: None,
+    }) };
+}
+
+/// Widget rect identity. Comparing f64 bit-patterns is fine here
+/// because the values come from script literals or arithmetic on
+/// literals — same Twe expressions give the same bits — and a
+/// drifted rect signals a layout that's no longer the same widget.
+type RectId = (f64, f64, f64, f64);
+
+#[derive(Clone, Copy)]
+struct UiState {
+    active_slider: Option<RectId>,
+    open_dropdown: Option<RectId>,
+    focused_text_input: Option<RectId>,
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +98,12 @@ pub fn clear_asset_caches() {
         let mut s = c.borrow_mut();
         s.amplitude = 0.0;
         s.remaining = 0.0;
+    });
+    UI_STATE.with(|c| {
+        let mut s = c.borrow_mut();
+        s.active_slider = None;
+        s.open_dropdown = None;
+        s.focused_text_input = None;
     });
 }
 
@@ -2202,6 +2234,77 @@ fn install_draw(env: &mut Env) {
             draw_text_with_font,
         ),
     );
+    // Phase 10 session 1: immediate-mode `button` widget. Reads
+    // ambient mouse state (`mouse.x` / `mouse.y` / `mouse_press.left` /
+    // `mouse_held.left`) so scripts don't have to thread it through
+    // each call. Returns `true` on the frame the user clicks the
+    // button (mouse-press edge inside the rect). Hover/active styling
+    // is handled internally; theming knobs are deferred to a later
+    // session if real users push back.
+    env.set(
+        "button".to_string(),
+        Value::from_builtin("button", &["at", "size", "label"], draw_button),
+    );
+    // Phase 10 session 2: stateless display widgets. `label` renders
+    // text centered inside a (w, h) box — same call shape as `button`
+    // so they line up cleanly under a future layout primitive.
+    // `progress_bar` renders a 0..1 fill inside an outlined frame —
+    // useful for HP bars, loading screens, settings volume meters.
+    env.set(
+        "label".to_string(),
+        Value::from_builtin("label", &["at", "size", "text"], draw_label),
+    );
+    env.set(
+        "progress_bar".to_string(),
+        Value::from_builtin(
+            "progress_bar",
+            &["at", "size", "value"],
+            draw_progress_bar,
+        ),
+    );
+    // Phase 10 session 3: `slider(at:, size:, value:, min:, max:) -> float`.
+    // Drag-state widget: the user click-and-drags the knob; the builtin
+    // returns the updated value each frame. Only one slider can be
+    // dragging at a time — tracked via `UI_STATE.active_slider` so a
+    // second slider in the same scene doesn't fight for the cursor.
+    env.set(
+        "slider".to_string(),
+        Value::from_builtin(
+            "slider",
+            &["at", "size", "value", "min", "max"],
+            draw_slider,
+        ),
+    );
+    // Phase 10 session 4: selection widgets. `checkbox` is stateless
+    // (its boolean is owned by the script's `var`); `dropdown` carries
+    // open/closed state in `UI_STATE.open_dropdown` since the second
+    // frame after click needs to know which dropdown to expand.
+    env.set(
+        "checkbox".to_string(),
+        Value::from_builtin("checkbox", &["at", "size", "value"], draw_checkbox),
+    );
+    env.set(
+        "dropdown".to_string(),
+        Value::from_builtin(
+            "dropdown",
+            &["at", "size", "options", "selected"],
+            draw_dropdown,
+        ),
+    );
+    // Phase 10 session 5: `text_input(at:, size:, value:) -> string`.
+    // Click to focus, type characters to append, backspace to delete.
+    // Returns the (possibly edited) string each frame so the script
+    // does `name = text_input(at:, size:, value: name)`. Clipboard
+    // (`os.clipboard.read/write`) is a separate session 5b follow-on
+    // since it needs an OS-clipboard dependency.
+    env.set(
+        "text_input".to_string(),
+        Value::from_builtin(
+            "text_input",
+            &["at", "size", "value"],
+            draw_text_input,
+        ),
+    );
     // sprite() is variadic-style — 2 or 3 positional args, no kwargs in v0.1.
     // Add named-param support when the optional `size` slot has a clean
     // representation in bind_kwargs.
@@ -2811,6 +2914,575 @@ fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     Ok(Value::NIL)
 }
 
+/// Phase 10 session 1: immediate-mode `button(at:, size:, label:)` widget.
+///
+/// Reads ambient `mouse.x` / `mouse.y` / `mouse_press.left` / `mouse_held.left`,
+/// hit-tests against the button rect, draws state-styled background +
+/// centered label, and returns `true` on the frame the user clicks
+/// inside the rect. Idle / hover / active backgrounds and a hover
+/// border are baked in for v1; theming knobs (custom colors, fonts,
+/// padding) are deferred until the session-1 surface meets a real game.
+fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "button")?;
+    arity(args, 3, "button")?;
+    let (x, y) = xy_of(&args[0], "button.at")?;
+    let (w, h) = xy_of(&args[1], "button.size")?;
+    let label = {
+        let t = &args[2];
+        if t.is_str() {
+            t.as_string().clone()
+        } else {
+            (*t).display()
+        }
+    };
+
+    let (mx, my) = read_mouse_xy(env);
+    let pressed_now = read_mouse_button(env, "mouse_press", "left");
+    let held_now = read_mouse_button(env, "mouse_held", "left");
+    let hovered = point_in_rect(mx, my, x, y, w, h);
+
+    let bg = if hovered && held_now {
+        macroquad::color::Color::new(0.45, 0.45, 0.50, 1.0)
+    } else if hovered {
+        macroquad::color::Color::new(0.30, 0.30, 0.35, 1.0)
+    } else {
+        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+    };
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
+    if hovered {
+        macroquad::shapes::draw_rectangle_lines(
+            x as f32,
+            y as f32,
+            w as f32,
+            h as f32,
+            2.0,
+            macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0),
+        );
+    }
+
+    let font_size: f32 = 18.0;
+    let dim = macroquad::text::measure_text(&label, None, font_size as u16, 1.0);
+    let tx = x as f32 + (w as f32 - dim.width) / 2.0;
+    // measure_text reports `height` as the glyph height above the
+    // baseline; macroquad's draw_text takes the baseline y, so center
+    // by adding half the glyph height to the rect midline.
+    let ty = y as f32 + (h as f32 + dim.height) / 2.0;
+    macroquad::text::draw_text(
+        &label,
+        tx,
+        ty,
+        font_size,
+        macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0),
+    );
+
+    Ok(if hovered && pressed_now {
+        Value::TRUE
+    } else {
+        Value::FALSE
+    })
+}
+
+/// Inclusive-on-top-left, exclusive-on-bottom-right point-in-rect test.
+/// Pure helper kept separate so it's unit-testable without a render
+/// context; matches the semantics used by `draw_button`'s hit test.
+pub(crate) fn point_in_rect(px: f64, py: f64, rx: f64, ry: f64, rw: f64, rh: f64) -> bool {
+    px >= rx && px < rx + rw && py >= ry && py < ry + rh
+}
+
+/// Phase 10 session 2: `label(at:, size:, text:)` — render text
+/// centered inside a (w, h) box. No background, no border. Same call
+/// shape as `button` so the two compose visually under any future
+/// layout primitive.
+fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "label")?;
+    arity(args, 3, "label")?;
+    let (x, y) = xy_of(&args[0], "label.at")?;
+    let (w, h) = xy_of(&args[1], "label.size")?;
+    let text = {
+        let t = &args[2];
+        if t.is_str() {
+            t.as_string().clone()
+        } else {
+            (*t).display()
+        }
+    };
+    let font_size: f32 = 18.0;
+    let dim = macroquad::text::measure_text(&text, None, font_size as u16, 1.0);
+    let tx = x as f32 + (w as f32 - dim.width) / 2.0;
+    let ty = y as f32 + (h as f32 + dim.height) / 2.0;
+    macroquad::text::draw_text(
+        &text,
+        tx,
+        ty,
+        font_size,
+        macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0),
+    );
+    Ok(Value::NIL)
+}
+
+/// Phase 10 session 2: `progress_bar(at:, size:, value:)` — render a
+/// horizontal 0..1 fill inside an outlined frame. Values clamp to
+/// [0, 1] silently rather than erroring, since `progress_bar(value: hp / max_hp)`
+/// drifting slightly out of range due to float rounding shouldn't crash.
+fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "progress_bar")?;
+    arity(args, 3, "progress_bar")?;
+    let (x, y) = xy_of(&args[0], "progress_bar.at")?;
+    let (w, h) = xy_of(&args[1], "progress_bar.size")?;
+    let raw = number(&args[2], "progress_bar.value")?;
+    let value = raw.clamp(0.0, 1.0);
+
+    let frame_color = macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0);
+    let fill_color = macroquad::color::Color::new(0.30, 0.65, 0.85, 1.0);
+    let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
+
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, frame_color);
+    let fill_w = (w * value) as f32;
+    if fill_w > 0.0 {
+        macroquad::shapes::draw_rectangle(x as f32, y as f32, fill_w, h as f32, fill_color);
+    }
+    macroquad::shapes::draw_rectangle_lines(
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        2.0,
+        border_color,
+    );
+    Ok(Value::NIL)
+}
+
+/// Phase 10 session 3: `slider(at:, size:, value:, min:, max:) -> float`.
+/// Drag-state widget — click and drag the knob to scrub the value.
+/// While dragging, the value updates each frame from the cursor x
+/// position relative to the slider rect; otherwise the input value
+/// passes through unchanged (so the widget is *driven* by the script's
+/// `var` and stays in sync after, say, a "reset" button).
+fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "slider")?;
+    arity(args, 5, "slider")?;
+    let (x, y) = xy_of(&args[0], "slider.at")?;
+    let (w, h) = xy_of(&args[1], "slider.size")?;
+    let value_in = number(&args[2], "slider.value")?;
+    let min = number(&args[3], "slider.min")?;
+    let max = number(&args[4], "slider.max")?;
+
+    let id: RectId = (x, y, w, h);
+    let (mx, my) = read_mouse_xy(env);
+    let pressed_now = read_mouse_button(env, "mouse_press", "left");
+    let held_now = read_mouse_button(env, "mouse_held", "left");
+    let hovered = point_in_rect(mx, my, x, y, w, h);
+
+    // Drag-state transitions.
+    let active = UI_STATE.with(|s| s.borrow().active_slider == Some(id));
+    if hovered && pressed_now {
+        UI_STATE.with(|s| s.borrow_mut().active_slider = Some(id));
+    }
+    if !held_now && active {
+        UI_STATE.with(|s| s.borrow_mut().active_slider = None);
+    }
+    let active = UI_STATE.with(|s| s.borrow().active_slider == Some(id));
+
+    // Compute current value. While dragging, project mouse.x to
+    // [min, max]; otherwise pass the input through.
+    let value = if active && (max - min).abs() > f64::EPSILON {
+        let t = ((mx - x) / w).clamp(0.0, 1.0);
+        min + t * (max - min)
+    } else {
+        value_in
+    };
+
+    let track_color = macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0);
+    let knob_color = if active {
+        macroquad::color::Color::new(0.85, 0.85, 0.95, 1.0)
+    } else if hovered {
+        macroquad::color::Color::new(0.65, 0.65, 0.80, 1.0)
+    } else {
+        macroquad::color::Color::new(0.50, 0.50, 0.60, 1.0)
+    };
+    let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
+
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, track_color);
+    let t = if (max - min).abs() > f64::EPSILON {
+        ((value - min) / (max - min)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let knob_w = 12.0_f32;
+    let knob_x = x as f32 + (t as f32) * (w as f32 - knob_w);
+    macroquad::shapes::draw_rectangle(knob_x, y as f32, knob_w, h as f32, knob_color);
+    macroquad::shapes::draw_rectangle_lines(
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        2.0,
+        border_color,
+    );
+
+    Ok(Value::from_float(value))
+}
+
+/// Phase 10 session 4: `checkbox(at:, size:, value:) -> bool`. Returns
+/// the toggled value on the click frame; otherwise passes input
+/// through. The check mark is two short lines drawn inside the box
+/// when value is true — keeps the visual recognizable without bringing
+/// in glyph rendering.
+fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "checkbox")?;
+    arity(args, 3, "checkbox")?;
+    let (x, y) = xy_of(&args[0], "checkbox.at")?;
+    let (w, h) = xy_of(&args[1], "checkbox.size")?;
+    let value_in = {
+        let v = &args[2];
+        if v.is_bool() {
+            v.as_bool()
+        } else {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "checkbox.value expects a bool, got {}",
+                    (*v).type_name()
+                ),
+                help: Some("pass a `var` you toggle via the return value".to_string()),
+            });
+        }
+    };
+
+    let (mx, my) = read_mouse_xy(env);
+    let pressed_now = read_mouse_button(env, "mouse_press", "left");
+    let held_now = read_mouse_button(env, "mouse_held", "left");
+    let hovered = point_in_rect(mx, my, x, y, w, h);
+    let value = if hovered && pressed_now { !value_in } else { value_in };
+
+    let bg = if hovered && held_now {
+        macroquad::color::Color::new(0.45, 0.45, 0.50, 1.0)
+    } else if hovered {
+        macroquad::color::Color::new(0.30, 0.30, 0.35, 1.0)
+    } else {
+        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+    };
+    let border = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
+    let check = macroquad::color::Color::new(0.40, 0.85, 0.45, 1.0);
+
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
+    macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    if value {
+        // Two-segment check mark inside the box, padded by 25% of
+        // the smaller dimension so it visually fits any aspect.
+        let pad = (w.min(h) * 0.25) as f32;
+        let x0 = x as f32 + pad;
+        let y0 = y as f32 + (h as f32) * 0.55;
+        let x1 = x as f32 + (w as f32) * 0.42;
+        let y1 = y as f32 + (h as f32) - pad;
+        let x2 = x as f32 + (w as f32) - pad;
+        let y2 = y as f32 + pad;
+        macroquad::shapes::draw_line(x0, y0, x1, y1, 3.0, check);
+        macroquad::shapes::draw_line(x1, y1, x2, y2, 3.0, check);
+    }
+
+    Ok(Value::from_bool(value))
+}
+
+/// Phase 10 session 4: `dropdown(at:, size:, options:, selected:) -> int`.
+/// `options` is a list of strings, `selected` is the current 0-based
+/// index. When closed (the default), shows just the current option +
+/// a downward chevron. Click to open; click an option to select; click
+/// outside or pick the same option to close. Returns the new selected
+/// index. Stateful via `UI_STATE.open_dropdown` keyed by the rect.
+fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "dropdown")?;
+    arity(args, 4, "dropdown")?;
+    let (x, y) = xy_of(&args[0], "dropdown.at")?;
+    let (w, h) = xy_of(&args[1], "dropdown.size")?;
+    let options: Vec<String> = {
+        let v = &args[2];
+        if !v.is_list() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "dropdown.options expects a list of strings, got {}",
+                    (*v).type_name()
+                ),
+                help: None,
+            });
+        }
+        let rc = v.as_list();
+        let borrowed = rc.borrow();
+        borrowed
+            .iter()
+            .map(|item| {
+                if item.is_str() {
+                    item.as_string().clone()
+                } else {
+                    item.display()
+                }
+            })
+            .collect()
+    };
+    let selected_in = {
+        let v = &args[3];
+        if !v.is_int_or_boxed_int() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "dropdown.selected expects an int index, got {}",
+                    (*v).type_name()
+                ),
+                help: None,
+            });
+        }
+        v.as_int() as usize
+    };
+    let n = options.len();
+    if n == 0 {
+        return Ok(Value::from_int(0));
+    }
+
+    let id: RectId = (x, y, w, h);
+    let (mx, my) = read_mouse_xy(env);
+    let pressed_now = read_mouse_button(env, "mouse_press", "left");
+    let header_hovered = point_in_rect(mx, my, x, y, w, h);
+    let was_open = UI_STATE.with(|s| s.borrow().open_dropdown == Some(id));
+
+    // Determine new selection + open state.
+    let mut new_selected = selected_in.min(n - 1);
+    let mut open_after = was_open;
+    if header_hovered && pressed_now {
+        open_after = !was_open;
+    } else if was_open && pressed_now {
+        // Check option-list clicks. Options stack downward below
+        // the header at the same width and (h)-tall each.
+        for (i, _) in options.iter().enumerate() {
+            let oy = y + h + (i as f64) * h;
+            if point_in_rect(mx, my, x, oy, w, h) {
+                new_selected = i;
+                open_after = false;
+                break;
+            }
+        }
+        if open_after {
+            // Click landed outside both the header and any option —
+            // dismiss the panel without changing selection.
+            open_after = false;
+        }
+    }
+    UI_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if open_after {
+            st.open_dropdown = Some(id);
+        } else if was_open {
+            st.open_dropdown = None;
+        }
+    });
+
+    // Draw header.
+    let bg = if header_hovered {
+        macroquad::color::Color::new(0.30, 0.30, 0.35, 1.0)
+    } else {
+        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+    };
+    let border = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
+    let txt = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
+    macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    let label = &options[new_selected.min(n - 1)];
+    let font_size: f32 = 18.0;
+    let dim = macroquad::text::measure_text(label, None, font_size as u16, 1.0);
+    macroquad::text::draw_text(
+        label,
+        x as f32 + 8.0,
+        y as f32 + (h as f32 + dim.height) / 2.0,
+        font_size,
+        txt,
+    );
+    // Down-chevron at right edge.
+    let cx = x as f32 + w as f32 - 14.0;
+    let cy = y as f32 + h as f32 / 2.0 - 2.0;
+    macroquad::shapes::draw_line(cx, cy, cx + 4.0, cy + 5.0, 2.0, border);
+    macroquad::shapes::draw_line(cx + 4.0, cy + 5.0, cx + 8.0, cy, 2.0, border);
+
+    // Draw open list, if open.
+    if open_after {
+        for (i, opt) in options.iter().enumerate() {
+            let oy = y + h + (i as f64) * h;
+            let row_hovered = point_in_rect(mx, my, x, oy, w, h);
+            let row_bg = if row_hovered {
+                macroquad::color::Color::new(0.30, 0.30, 0.45, 1.0)
+            } else {
+                macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
+            };
+            macroquad::shapes::draw_rectangle(x as f32, oy as f32, w as f32, h as f32, row_bg);
+            let dim = macroquad::text::measure_text(opt, None, font_size as u16, 1.0);
+            macroquad::text::draw_text(
+                opt,
+                x as f32 + 8.0,
+                oy as f32 + (h as f32 + dim.height) / 2.0,
+                font_size,
+                txt,
+            );
+        }
+        // Outline the whole panel to keep visual unity.
+        let panel_h = h as f32 + (n as f32) * h as f32;
+        macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, panel_h, 2.0, border);
+    }
+
+    Ok(Value::from_int(new_selected as i64))
+}
+
+/// Phase 10 session 5: `text_input(at:, size:, value:) -> string`.
+/// Single-line text entry. Click inside the rect to focus; click
+/// elsewhere to unfocus. While focused, printable characters from
+/// macroquad's `get_char_pressed` queue are appended to the value
+/// and `Backspace` removes the last character. Returns the updated
+/// string each frame.
+fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "text_input")?;
+    arity(args, 3, "text_input")?;
+    let (x, y) = xy_of(&args[0], "text_input.at")?;
+    let (w, h) = xy_of(&args[1], "text_input.size")?;
+    let mut value = {
+        let v = &args[2];
+        if v.is_str() {
+            v.as_string().clone()
+        } else {
+            (*v).display()
+        }
+    };
+
+    let id: RectId = (x, y, w, h);
+    let (mx, my) = read_mouse_xy(env);
+    let pressed_now = read_mouse_button(env, "mouse_press", "left");
+    let hovered = point_in_rect(mx, my, x, y, w, h);
+
+    // Focus transitions. Click inside focuses. Click outside (anywhere
+    // else on the screen) unfocuses. Multiple text_inputs share the
+    // single focus slot, so clicking from one to another swaps cleanly.
+    let was_focused = UI_STATE.with(|s| s.borrow().focused_text_input == Some(id));
+    if pressed_now {
+        UI_STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            if hovered {
+                st.focused_text_input = Some(id);
+            } else if st.focused_text_input == Some(id) {
+                st.focused_text_input = None;
+            }
+        });
+    }
+    let focused = UI_STATE.with(|s| s.borrow().focused_text_input == Some(id));
+
+    // Consume input while focused. macroquad queues characters until
+    // drained; if no text_input is ever focused they'll just sit there
+    // until something focuses, which is acceptable (no infinite-growth
+    // bug since macroquad caps the queue internally).
+    if focused {
+        loop {
+            match macroquad::input::get_char_pressed() {
+                Some(ch) if !ch.is_control() => value.push(ch),
+                Some(_) => {}
+                None => break,
+            }
+        }
+        if macroquad::input::is_key_pressed(macroquad::input::KeyCode::Backspace) {
+            value.pop();
+        }
+    }
+    let _ = was_focused;
+
+    let bg = if focused {
+        macroquad::color::Color::new(0.10, 0.10, 0.14, 1.0)
+    } else if hovered {
+        macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
+    } else {
+        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+    };
+    let border_color = if focused {
+        macroquad::color::Color::new(0.40, 0.85, 0.45, 1.0)
+    } else {
+        macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0)
+    };
+    let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
+
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
+    macroquad::shapes::draw_rectangle_lines(
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        2.0,
+        border_color,
+    );
+
+    let font_size: f32 = 18.0;
+    let dim = macroquad::text::measure_text(&value, None, font_size as u16, 1.0);
+    let baseline_y = y as f32 + (h as f32 + dim.height) / 2.0;
+    macroquad::text::draw_text(&value, x as f32 + 8.0, baseline_y, font_size, txt_color);
+
+    if focused {
+        // 1Hz blink — `time::Instant` is overkill for a UI cursor.
+        // Use `macroquad::time::get_time()` (seconds since start).
+        let t = macroquad::time::get_time();
+        if t.fract() < 0.5 {
+            let cursor_x = x as f32 + 8.0 + dim.width + 1.0;
+            macroquad::shapes::draw_line(
+                cursor_x,
+                y as f32 + 4.0,
+                cursor_x,
+                y as f32 + h as f32 - 4.0,
+                2.0,
+                txt_color,
+            );
+        }
+    }
+
+    Ok(Value::from_string(value))
+}
+
+/// Read `mouse.x` / `mouse.y` from the env's `mouse` ambient. Returns
+/// (0, 0) if `mouse` is missing or shaped wrong (e.g. headless run
+/// after `install` but before the first `play` frame writes it). Used
+/// by `draw_button`'s hit test.
+fn read_mouse_xy(env: &Env) -> (f64, f64) {
+    let Some(m) = env.get("mouse") else {
+        return (0.0, 0.0);
+    };
+    if !m.is_object() {
+        return (0.0, 0.0);
+    }
+    let rc = m.as_object();
+    let o = rc.borrow();
+    let x = match o.get_field("x") {
+        Some(v) => number(&v, "mouse.x").unwrap_or(0.0),
+        None => 0.0,
+    };
+    let y = match o.get_field("y") {
+        Some(v) => number(&v, "mouse.y").unwrap_or(0.0),
+        None => 0.0,
+    };
+    (x, y)
+}
+
+/// Read a single boolean field off one of the `mouse_press` /
+/// `mouse_held` ambients. Returns `false` if either the ambient or
+/// the field is missing or not a bool.
+fn read_mouse_button(env: &Env, ambient: &str, field: &str) -> bool {
+    let Some(m) = env.get(ambient) else {
+        return false;
+    };
+    if !m.is_object() {
+        return false;
+    }
+    let rc = m.as_object();
+    let o = rc.borrow();
+    match o.get_field(field) {
+        Some(v) if v.is_bool() => v.as_bool(),
+        _ => false,
+    }
+}
+
 /// Decode the cached TTF bytes for `path` into a macroquad `Font`,
 /// caching the result. Returns Ok if the font is already cached or
 /// the parse succeeds. Errors if `load_font` was never called for
@@ -3231,5 +3903,45 @@ fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
             ),
             help: Some("use `color.red` etc. or build with `(r, g, b, a)` floats".to_string()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::point_in_rect;
+
+    #[test]
+    fn point_in_rect_inside_returns_true() {
+        assert!(point_in_rect(50.0, 50.0, 0.0, 0.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn point_in_rect_top_left_is_inclusive() {
+        assert!(point_in_rect(0.0, 0.0, 0.0, 0.0, 10.0, 10.0));
+    }
+
+    #[test]
+    fn point_in_rect_bottom_right_is_exclusive() {
+        // x = rx + rw and y = ry + rh sit on the boundary and count as outside,
+        // matching the standard half-open-rect convention used by most GUI
+        // toolkits. Two adjacent buttons sharing an edge don't both register
+        // the same hover/click frame.
+        assert!(!point_in_rect(10.0, 10.0, 0.0, 0.0, 10.0, 10.0));
+    }
+
+    #[test]
+    fn point_in_rect_outside_in_each_direction_returns_false() {
+        assert!(!point_in_rect(-1.0, 5.0, 0.0, 0.0, 10.0, 10.0)); // left
+        assert!(!point_in_rect(11.0, 5.0, 0.0, 0.0, 10.0, 10.0)); // right
+        assert!(!point_in_rect(5.0, -1.0, 0.0, 0.0, 10.0, 10.0)); // above
+        assert!(!point_in_rect(5.0, 11.0, 0.0, 0.0, 10.0, 10.0)); // below
+    }
+
+    #[test]
+    fn point_in_rect_handles_negative_origin() {
+        // Buttons placed in negative coordinates (e.g. a HUD panel anchored
+        // off-screen and slid in) still hit-test correctly.
+        assert!(point_in_rect(-50.0, -50.0, -100.0, -100.0, 60.0, 60.0));
+        assert!(!point_in_rect(0.0, 0.0, -100.0, -100.0, 60.0, 60.0));
     }
 }
