@@ -234,10 +234,14 @@ fn handle_build(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
+    let target_explicit = target.is_some();
+    let config_explicit = config.is_some();
     let args = BuildArgs {
         project_dir,
         target: target.unwrap_or_else(BuildTarget::host),
+        target_explicit,
         config: config.unwrap_or(BuildConfig::Release),
+        config_explicit,
         out,
         dry_run,
     };

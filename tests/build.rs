@@ -8,7 +8,10 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use twec::build::{discover_project, validate_project, write_bundle, BuildConfig, BuildTarget};
+use twec::build::{
+    discover_project, parse_manifest, resolve_config, validate_project, write_bundle, BuildConfig,
+    BuildTarget,
+};
 use twec::bundle::{
     append_to_binary, clear_active_bundle, detect_in_file, has_active_bundle, read_asset_bytes,
     set_active_bundle, BundleReader,
@@ -200,6 +203,129 @@ fn active_bundle_redirects_then_falls_through_to_filesystem() {
         .expect_err("missing path should error");
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manifest_parses_project_name_and_defaults() {
+    let dir = temp_project("manifest_parse");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        r#"
+[project]
+name = "survive"
+
+[build]
+default_target = "windows-x86_64"
+default_config = "release"
+
+[build.dev]
+hot_reload = true
+bundle_assets = false
+
+[build.release]
+hot_reload = false
+bundle_assets = true
+strip_debug = true
+
+[build.profile]
+profile = true
+"#,
+    )
+    .unwrap();
+    let manifest = parse_manifest(&dir.join("twe.toml")).expect("parse");
+    assert_eq!(manifest.project_name.as_deref(), Some("survive"));
+    assert_eq!(manifest.default_target, Some(BuildTarget::WindowsX86_64));
+    assert_eq!(manifest.default_config, Some(BuildConfig::Release));
+    assert_eq!(manifest.configs.len(), 3);
+    assert_eq!(
+        manifest.configs.get("dev").unwrap().hot_reload,
+        Some(true)
+    );
+    assert_eq!(
+        manifest.configs.get("profile").unwrap().profile,
+        Some(true)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manifest_parse_rejects_unknown_target_string() {
+    let dir = temp_project("manifest_bad_target");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        "[build]\ndefault_target = \"nope-x86_64\"\n",
+    )
+    .unwrap();
+    let err = parse_manifest(&dir.join("twe.toml")).expect_err("unknown target");
+    assert!(err.contains("default_target"), "got: {err}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn resolve_config_applies_manifest_overrides() {
+    use twec::build::ConfigOverride;
+    let mut manifest = twec::build::ProjectManifest::default();
+    manifest.configs.insert(
+        "release".to_string(),
+        ConfigOverride {
+            hot_reload: Some(true),  // override the builtin false
+            bundle_assets: None,
+            strip_debug: Some(false),
+            profile: None,
+        },
+    );
+    let resolved = resolve_config(Some(&manifest), BuildConfig::Release);
+    assert!(resolved.hot_reload, "manifest override applied");
+    // bundle_assets not overridden — should keep release default (true).
+    assert!(resolved.bundle_assets);
+    assert!(!resolved.strip_debug);
+    // profile not overridden — keeps release default false.
+    assert!(!resolved.profile);
+}
+
+#[test]
+fn resolve_config_uses_builtin_defaults_without_manifest() {
+    let dev = resolve_config(None, BuildConfig::Dev);
+    assert!(dev.hot_reload);
+    assert!(!dev.bundle_assets);
+
+    let release = resolve_config(None, BuildConfig::Release);
+    assert!(!release.hot_reload);
+    assert!(release.bundle_assets);
+    assert!(release.strip_debug);
+    assert!(!release.profile);
+
+    let profile = resolve_config(None, BuildConfig::Profile);
+    assert!(profile.bundle_assets);
+    assert!(profile.profile);
+}
+
+#[test]
+fn manifest_ignores_unknown_keys() {
+    // Forward-compat: an old twec running against a newer project's
+    // manifest should not blow up on keys it doesn't recognize.
+    let dir = temp_project("manifest_unknown");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        r#"
+[project]
+name = "x"
+some_future_key = 42
+
+[build]
+default_config = "release"
+
+[build.release]
+hot_reload = false
+some_future_flag = "yes please"
+"#,
+    )
+    .unwrap();
+    parse_manifest(&dir.join("twe.toml")).expect("should not fail on unknown keys");
     let _ = fs::remove_dir_all(&dir);
 }
 

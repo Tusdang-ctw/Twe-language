@@ -53,6 +53,15 @@ gilrs = "0.10"
 # on the Windows + macOS + Linux trio that v1.0 targets.
 arboard = "3"
 
+# Phase 12 session 5: `twe.toml` project manifest parsing. TOML is
+# the de-facto Rust config format and v1.0 will need it for several
+# more things (asset-pipeline rules, cross-platform build matrix,
+# Steam Depot config). `toml = "0.8"` is the canonical crate;
+# keeping defaults gives us the parse + display features. Pulls
+# serde transitively but serde is already in our build via wgpu /
+# gltf so the marginal cost is small.
+toml = "0.8"
+
 # Phase 11 follow-on (deeper): true auto-pause-on-window-blur. macroquad
 # 0.4 doesn't surface desktop focus events, so the play loop polls
 # `GetForegroundWindow` once per frame and compares the owning PID

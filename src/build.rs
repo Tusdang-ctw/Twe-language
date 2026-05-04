@@ -122,11 +122,164 @@ impl BuildConfig {
     }
 }
 
+/// Phase 12 session 5: parsed `twe.toml`. All fields optional — a
+/// project doesn't have to ship a manifest, and one that does can
+/// fill in any subset.
+#[derive(Clone, Debug, Default)]
+pub struct ProjectManifest {
+    pub project_name: Option<String>,
+    pub default_target: Option<BuildTarget>,
+    pub default_config: Option<BuildConfig>,
+    /// Per-config override map keyed on lowercased config label
+    /// (`"dev"` / `"release"` / `"profile"`). Configs not mentioned
+    /// in the manifest fall back to `ConfigOverride::default()` and
+    /// then to the builtin per-config defaults.
+    pub configs: std::collections::HashMap<String, ConfigOverride>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigOverride {
+    pub hot_reload: Option<bool>,
+    pub bundle_assets: Option<bool>,
+    pub strip_debug: Option<bool>,
+    pub profile: Option<bool>,
+}
+
+/// Resolved per-config flags. The build pipeline reads this after
+/// merging (a) the builtin defaults for the chosen config, (b) any
+/// `[build.<config>]` overrides from `twe.toml`. CLI flags don't
+/// override these today; if a project pressures it, an explicit
+/// `--no-bundle` / `--bundle` / `--profile` set lands as a follow-on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedConfig {
+    pub config: BuildConfig,
+    pub hot_reload: bool,
+    pub bundle_assets: bool,
+    pub strip_debug: bool,
+    pub profile: bool,
+}
+
+impl ResolvedConfig {
+    /// Builtin per-config defaults. Manifest overrides apply on
+    /// top via `apply_override`.
+    pub fn defaults_for(config: BuildConfig) -> Self {
+        match config {
+            BuildConfig::Dev => Self {
+                config,
+                // Dev config means "produce an .exe that behaves
+                // like a developer-loop launch": assets stay on
+                // disk so they're editable without rebuilding;
+                // hot reload tracks main.twe alongside the .exe.
+                hot_reload: true,
+                bundle_assets: false,
+                strip_debug: false,
+                profile: false,
+            },
+            BuildConfig::Release => Self {
+                config,
+                hot_reload: false,
+                bundle_assets: true,
+                strip_debug: true,
+                profile: false,
+            },
+            BuildConfig::Profile => Self {
+                config,
+                hot_reload: false,
+                bundle_assets: true,
+                strip_debug: true,
+                profile: true,
+            },
+        }
+    }
+
+    pub fn apply_override(&mut self, ovr: &ConfigOverride) {
+        if let Some(v) = ovr.hot_reload {
+            self.hot_reload = v;
+        }
+        if let Some(v) = ovr.bundle_assets {
+            self.bundle_assets = v;
+        }
+        if let Some(v) = ovr.strip_debug {
+            self.strip_debug = v;
+        }
+        if let Some(v) = ovr.profile {
+            self.profile = v;
+        }
+    }
+}
+
+/// Parse a `twe.toml` from disk. Errors carry the file path so
+/// diagnostics are clickable. Unknown keys are ignored — the manifest
+/// surface evolves over phases and old projects shouldn't break on
+/// new keys.
+pub fn parse_manifest(path: &Path) -> Result<ProjectManifest, String> {
+    let display = path.display().to_string();
+    let src = fs::read_to_string(path)
+        .map_err(|e| format!("cannot read '{display}': {e}"))?;
+    let value: toml::Value = src
+        .parse()
+        .map_err(|e| format!("{display}: invalid TOML: {e}"))?;
+    let mut manifest = ProjectManifest::default();
+    if let Some(project) = value.get("project").and_then(|v| v.as_table()) {
+        if let Some(name) = project.get("name").and_then(|v| v.as_str()) {
+            manifest.project_name = Some(name.to_string());
+        }
+    }
+    if let Some(build) = value.get("build").and_then(|v| v.as_table()) {
+        if let Some(t) = build.get("default_target").and_then(|v| v.as_str()) {
+            let parsed = BuildTarget::parse(t).ok_or_else(|| {
+                format!("{display}: build.default_target = '{t}' is not a known target")
+            })?;
+            manifest.default_target = Some(parsed);
+        }
+        if let Some(c) = build.get("default_config").and_then(|v| v.as_str()) {
+            let parsed = BuildConfig::parse(c).ok_or_else(|| {
+                format!("{display}: build.default_config = '{c}' is not a known config")
+            })?;
+            manifest.default_config = Some(parsed);
+        }
+        for (key, val) in build.iter() {
+            // Sub-tables `[build.dev]` / `[build.release]` /
+            // `[build.profile]` carry per-config overrides.
+            let Some(tbl) = val.as_table() else { continue };
+            if BuildConfig::parse(key).is_none() {
+                continue;
+            }
+            let ovr = ConfigOverride {
+                hot_reload: tbl.get("hot_reload").and_then(|v| v.as_bool()),
+                bundle_assets: tbl.get("bundle_assets").and_then(|v| v.as_bool()),
+                strip_debug: tbl.get("strip_debug").and_then(|v| v.as_bool()),
+                profile: tbl.get("profile").and_then(|v| v.as_bool()),
+            };
+            manifest.configs.insert(key.to_string(), ovr);
+        }
+    }
+    Ok(manifest)
+}
+
+/// Merge a manifest's per-config override (if any) into the builtin
+/// defaults for `config`. Manifest wins where it specifies a value;
+/// builtin defaults fill the gaps.
+pub fn resolve_config(manifest: Option<&ProjectManifest>, config: BuildConfig) -> ResolvedConfig {
+    let mut resolved = ResolvedConfig::defaults_for(config);
+    if let Some(m) = manifest {
+        if let Some(ovr) = m.configs.get(config.label()) {
+            resolved.apply_override(ovr);
+        }
+    }
+    resolved
+}
+
 #[derive(Clone, Debug)]
 pub struct BuildArgs {
     pub project_dir: PathBuf,
     pub target: BuildTarget,
+    /// True when `--target` was passed on the CLI; defaults from
+    /// `twe.toml` only apply when this is false.
+    pub target_explicit: bool,
     pub config: BuildConfig,
+    /// Same signal for `--config`.
+    pub config_explicit: bool,
     pub out: Option<PathBuf>,
     pub dry_run: bool,
 }
@@ -258,7 +411,7 @@ pub fn validate_project(project: &DiscoveredProject) -> Result<crate::ast::Progr
 
 /// `twec build` CLI entry. Returns the process exit code (0 on
 /// success, 2 on argument errors, 1 on build errors).
-pub fn run(args: BuildArgs) -> i32 {
+pub fn run(mut args: BuildArgs) -> i32 {
     let project = match discover_project(&args.project_dir) {
         Ok(p) => p,
         Err(e) => {
@@ -270,6 +423,34 @@ pub fn run(args: BuildArgs) -> i32 {
         eprintln!("error: {e}");
         return 1;
     }
+    // Phase 12 session 5: parse `twe.toml` if it exists; manifest
+    // defaults for `target` / `config` apply only when the CLI
+    // *didn't* pass an explicit value (the CLI signal carries
+    // `Some(_)` exactly when the flag was set).
+    let manifest = if let Some(p) = &project.manifest {
+        match parse_manifest(p) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(m) = &manifest {
+        if !args.target_explicit {
+            if let Some(t) = m.default_target {
+                args.target = t;
+            }
+        }
+        if !args.config_explicit {
+            if let Some(c) = m.default_config {
+                args.config = c;
+            }
+        }
+    }
+    let resolved = resolve_config(manifest.as_ref(), args.config);
     let out_path = match resolve_out_path(&project, &args) {
         Ok(p) => p,
         Err(e) => {
@@ -284,9 +465,14 @@ pub fn run(args: BuildArgs) -> i32 {
         if project.assets.len() == 1 { "" } else { "s" }
     );
     eprintln!(
-        "[twec build] target:  {}    config: {}",
+        "[twec build] target:  {}    config: {} \
+         (hot_reload={}, bundle_assets={}, strip_debug={}, profile={})",
         args.target.label(),
-        args.config.label()
+        args.config.label(),
+        resolved.hot_reload,
+        resolved.bundle_assets,
+        resolved.strip_debug,
+        resolved.profile,
     );
     eprintln!("[twec build] out:     {}", out_path.display());
     if let Some(m) = &project.manifest {
