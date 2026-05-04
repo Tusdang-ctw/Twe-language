@@ -1,0 +1,155 @@
+# Phase 10 session 11 — exit-gate pause menu.
+#
+# Run with `twec play examples/pause_menu_demo.twe`. Wires together
+# every Phase 10 primitive: pause / is_paused, the widget set
+# (button + label + slider + checkbox + dropdown + text_input),
+# layout helpers (panel + stack + flex + grid), settings persistence,
+# and localization. Closes the Phase 10 exit-gate criterion: a
+# complete pause menu (resume + save + quit) whose settings round-trip
+# across launches.
+#
+# First-launch defaults are seeded via `settings.set_default`; any
+# persisted file from a prior launch overlays them via
+# `settings.try_load` (which silently returns false on missing file
+# so the first run doesn't error). Switch language via the Language
+# dropdown — `lang.set_locale` flips the active bundle and every
+# `lang.t(...)` redraws in the new locale next frame.
+#
+# Press Esc (or click the Pause / Resume button) to toggle.
+
+settings.set_default("audio.master", 0.8)
+settings.set_default("audio.music", 0.6)
+settings.set_default("audio.sfx", 0.7)
+settings.set_default("display.fullscreen", false)
+settings.set_default("player.name", "Player")
+settings.set_default("locale", 0)
+
+settings.try_load("examples/pause_menu.save")
+
+lang.load("en", "examples/lang/en.json")
+lang.load("ja", "examples/lang/ja.json")
+if settings.get("locale") == 0:
+    lang.set_locale("en")
+else:
+    lang.set_locale("ja")
+
+var elapsed = 0.0
+
+on update(dt):
+    if not is_paused():
+        elapsed += dt
+    if key_press.escape:
+        pause(not is_paused())
+
+on render():
+    # Game world: a sine-wave-traveling square. Frozen while paused
+    # because `tick_frame` is skipped — proves the pause flag works.
+    rect(
+        at: (200 + math.sin(elapsed * 2.0) * 80, 200),
+        size: (40, 40),
+        color: color.green
+    )
+    let hud_label = lang.t("hud.elapsed")
+    text("{hud_label}: {elapsed}s",
+         at: (10, 10), size: 18, color: color.white)
+    text(lang.t("hud.hint"), at: (10, 36), size: 14, color: color.gray)
+
+    let toggle_label = lang.t("menu.resume")
+    if button(at: (520, 10), size: (110, 28), label: toggle_label):
+        pause(false)
+
+    if is_paused():
+        # Dim background.
+        rect(at: (0, 0), size: (640, 480), color: color.black)
+
+        panel(at: (140, 60), size: (360, 380))
+        label(at: (140, 60), size: (360, 50), text: lang.t("menu.title"))
+
+        let row0 = stack((160, 130), (320, 240), 5, 0, 8)
+        let row1 = stack((160, 130), (320, 240), 5, 1, 8)
+        let row2 = stack((160, 130), (320, 240), 5, 2, 8)
+        let row3 = stack((160, 130), (320, 240), 5, 3, 8)
+        let row4 = stack((160, 130), (320, 240), 5, 4, 8)
+
+        let lbl0 = flex(row0.at, row0.size, 2, 0, 8)
+        let ctl0 = flex(row0.at, row0.size, 2, 1, 8)
+        label(at: lbl0.at, size: lbl0.size, text: lang.t("settings.master"))
+        let new_master = slider(
+            at: ctl0.at,
+            size: ctl0.size,
+            value: settings.get("audio.master"),
+            min: 0.0,
+            max: 1.0
+        )
+        settings.set("audio.master", new_master)
+
+        let lbl1 = flex(row1.at, row1.size, 2, 0, 8)
+        let ctl1 = flex(row1.at, row1.size, 2, 1, 8)
+        label(at: lbl1.at, size: lbl1.size, text: lang.t("settings.music"))
+        let new_music = slider(
+            at: ctl1.at,
+            size: ctl1.size,
+            value: settings.get("audio.music"),
+            min: 0.0,
+            max: 1.0
+        )
+        settings.set("audio.music", new_music)
+
+        let lbl2 = flex(row2.at, row2.size, 2, 0, 8)
+        let ctl2 = flex(row2.at, row2.size, 2, 1, 8)
+        label(at: lbl2.at, size: lbl2.size, text: lang.t("settings.fullscreen"))
+        let new_fs = checkbox(
+            at: ctl2.at,
+            size: (28, 28),
+            value: settings.get("display.fullscreen")
+        )
+        settings.set("display.fullscreen", new_fs)
+
+        let lbl3 = flex(row3.at, row3.size, 2, 0, 8)
+        let ctl3 = flex(row3.at, row3.size, 2, 1, 8)
+        label(at: lbl3.at, size: lbl3.size, text: lang.t("settings.name"))
+        let new_name = text_input(
+            at: ctl3.at,
+            size: ctl3.size,
+            value: settings.get("player.name")
+        )
+        settings.set("player.name", new_name)
+
+        let lbl4 = flex(row4.at, row4.size, 2, 0, 8)
+        let ctl4 = flex(row4.at, row4.size, 2, 1, 8)
+        label(at: lbl4.at, size: lbl4.size, text: lang.t("settings.locale"))
+        let new_locale = dropdown(
+            at: ctl4.at,
+            size: ctl4.size,
+            options: ["English", "Japanese"],
+            selected: settings.get("locale")
+        )
+        if new_locale != settings.get("locale"):
+            settings.set("locale", new_locale)
+            if new_locale == 0:
+                lang.set_locale("en")
+            else:
+                lang.set_locale("ja")
+
+        # lang.tf greeting using the live player name.
+        label(
+            at: (160, 380),
+            size: (320, 24),
+            text: lang.tf("greet", [settings.get("player.name")])
+        )
+
+        # Action row.
+        let g0 = grid((160, 410), (320, 32), 3, 1, 0, 8)
+        let g1 = grid((160, 410), (320, 32), 3, 1, 1, 8)
+        let g2 = grid((160, 410), (320, 32), 3, 1, 2, 8)
+        if button(at: g0.at, size: g0.size, label: lang.t("menu.resume")):
+            pause(false)
+        if button(at: g1.at, size: g1.size, label: lang.t("menu.save")):
+            settings.save("examples/pause_menu.save")
+        if button(at: g2.at, size: g2.size, label: lang.t("menu.quit")):
+            settings.save("examples/pause_menu.save")
+            label(
+                at: (160, 444),
+                size: (320, 24),
+                text: lang.t("menu.saved")
+            )

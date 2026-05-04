@@ -47,6 +47,7 @@ thread_local! {
         active_slider: None,
         open_dropdown: None,
         focused_text_input: None,
+        focused_key_input: None,
         scroll_y: HashMap::new(),
     });
 }
@@ -66,6 +67,12 @@ struct UiState {
     active_slider: Option<RectId>,
     open_dropdown: Option<RectId>,
     focused_text_input: Option<RectId>,
+    /// Phase 10 session 11: focused key_input widget. Separate slot
+    /// from text_input because both can coexist on the same screen
+    /// (a name field and a "Bind right" field) — focus moves cleanly
+    /// between them via the standard click-inside / click-outside
+    /// transitions.
+    focused_key_input: Option<RectId>,
     /// Phase 10 session 7: per-scroll-rect Y offset in content
     /// coordinates. The `scroll` builtin reads / writes this
     /// across frames so the scroll position survives between
@@ -114,6 +121,7 @@ pub fn clear_asset_caches() {
         s.active_slider = None;
         s.open_dropdown = None;
         s.focused_text_input = None;
+        s.focused_key_input = None;
         s.scroll_y.clear();
     });
 }
@@ -247,6 +255,22 @@ pub fn install(env: &mut Env) {
         Value::from_builtin("load_from", &["path"], load_from_impl),
     );
 
+    // Phase 10 session 11: dynamic-name key lookup. The static
+    // `key.<name>` / `key_press.<name>` accessors are still the
+    // canonical surface; `key_held(name)` / `key_pressed(name)` are
+    // for cases where the name isn't a literal — typically a settings
+    // entry like `settings.get("keys.move_right")` driving rebindable
+    // controls. Returns false for unknown / unmapped names so the
+    // game keeps running when a binding hasn't been set.
+    env.set(
+        "key_held".to_string(),
+        Value::from_builtin("key_held", &["name"], key_held_impl),
+    );
+    env.set(
+        "key_pressed".to_string(),
+        Value::from_builtin("key_pressed", &["name"], key_pressed_impl),
+    );
+
     let key_names = [
         "right", "left", "up", "down", "space", "escape", "enter", "r", "w", "a", "s", "d",
     ];
@@ -375,6 +399,8 @@ pub fn install(env: &mut Env) {
     install_3d(env);
     install_tilemap(env);
     install_os(env);
+    install_settings(env);
+    install_lang(env);
     // Phase 10 session 8: explicit pause primitive. `pause(flag)`
     // toggles the runtime pause flag; `is_paused()` queries it.
     // While paused, the play loop skips `tick_frame` (no fibers
@@ -480,6 +506,480 @@ fn clipboard_write(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
     };
     let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
     Ok(Value::NIL)
+}
+
+fn key_held_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "key_held")?;
+    let name = string_arg(&args[0], "key_held", "name")?;
+    Ok(read_input_field(env, "key", &name))
+}
+
+fn key_pressed_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "key_pressed")?;
+    let name = string_arg(&args[0], "key_pressed", "name")?;
+    Ok(read_input_field(env, "key_press", &name))
+}
+
+fn read_input_field(env: &Env, ambient: &str, name: &str) -> Value {
+    let Some(obj) = env.get(ambient) else {
+        return Value::FALSE;
+    };
+    if !obj.is_object() {
+        return Value::FALSE;
+    }
+    let rc = obj.as_object();
+    let v = rc.borrow().get_field(name).unwrap_or(Value::FALSE);
+    v
+}
+
+/// Phase 10 session 9: settings system + persistence.
+///
+/// Surface: `settings.set(key, value)` / `.get(key)` / `.has(key)` /
+/// `.set_default(key, value)` / `.save(path)` / `.load(path)`. The
+/// data lives in a `settings.data` Object (kind: "save") so users
+/// can also introspect it directly via `settings.data.<field>` and
+/// so `settings.save` can hand it straight to `save_to_path` without
+/// a custom encoder. `set_default` only writes when the key is
+/// absent — the canonical pattern for first-launch defaults that
+/// shouldn't clobber a loaded config. `load` merges into the
+/// existing data (last-write-wins per key) instead of replacing
+/// wholesale, so calling `set_default` after `load` does the right
+/// thing across schema additions between launches.
+fn install_settings(env: &mut Env) {
+    let data = Value::from_object(Rc::new(RefCell::new(Object {
+        fields: HashMap::new(),
+        kind: "save",
+    })));
+    let mut settings = HashMap::new();
+    settings.insert("data".to_string(), data);
+    settings.insert(
+        "set".to_string(),
+        Value::from_builtin("settings.set", &["key", "value"], settings_set),
+    );
+    settings.insert(
+        "get".to_string(),
+        Value::from_builtin("settings.get", &["key"], settings_get),
+    );
+    settings.insert(
+        "has".to_string(),
+        Value::from_builtin("settings.has", &["key"], settings_has),
+    );
+    settings.insert(
+        "set_default".to_string(),
+        Value::from_builtin(
+            "settings.set_default",
+            &["key", "value"],
+            settings_set_default,
+        ),
+    );
+    settings.insert(
+        "save".to_string(),
+        Value::from_builtin("settings.save", &["path"], settings_save),
+    );
+    settings.insert(
+        "load".to_string(),
+        Value::from_builtin("settings.load", &["path"], settings_load),
+    );
+    // `try_load` is the graceful-first-launch variant: returns true
+    // when the file existed and merged in, false when it didn't, and
+    // errors only on real corruption (bad JSON, wrong shape). The
+    // typical bootstrap sequence is `set_default(...)` to seed
+    // defaults, then `try_load` to overlay any persisted overrides.
+    settings.insert(
+        "try_load".to_string(),
+        Value::from_builtin("settings.try_load", &["path"], settings_try_load),
+    );
+    env.set(
+        "settings".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: settings,
+            kind: "module",
+        }))),
+    );
+}
+
+fn settings_data_obj(env: &Env, op: &str) -> Result<Rc<RefCell<Object>>, RuntimeError> {
+    let s = env.get("settings").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{op}: `settings` ambient is missing"),
+        help: None,
+    })?;
+    if !s.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{op}: `settings` is not an object"),
+            help: None,
+        });
+    }
+    let rc = s.as_object();
+    let o = rc.borrow();
+    let data = o.get_field("data").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{op}: `settings.data` is missing"),
+        help: None,
+    })?;
+    if !data.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{op}: `settings.data` is not an object"),
+            help: None,
+        });
+    }
+    Ok(data.as_object())
+}
+
+fn string_arg(v: &Value, op: &str, label: &str) -> Result<String, RuntimeError> {
+    if v.is_str() {
+        Ok(v.as_string().clone())
+    } else {
+        Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{op} expects a string {label}, got {}", (*v).type_name()),
+            help: None,
+        })
+    }
+}
+
+fn settings_set(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "settings.set")?;
+    let key = string_arg(&args[0], "settings.set", "key")?;
+    let data = settings_data_obj(env, "settings.set")?;
+    data.borrow_mut().fields.insert(key, args[1]);
+    Ok(Value::NIL)
+}
+
+fn settings_get(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "settings.get")?;
+    let key = string_arg(&args[0], "settings.get", "key")?;
+    let data = settings_data_obj(env, "settings.get")?;
+    let val = data.borrow().get_field(&key).unwrap_or(Value::NIL);
+    Ok(val)
+}
+
+fn settings_has(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "settings.has")?;
+    let key = string_arg(&args[0], "settings.has", "key")?;
+    let data = settings_data_obj(env, "settings.has")?;
+    let present = data.borrow().fields.contains_key(&key);
+    Ok(Value::from_bool(present))
+}
+
+fn settings_set_default(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "settings.set_default")?;
+    let key = string_arg(&args[0], "settings.set_default", "key")?;
+    let data = settings_data_obj(env, "settings.set_default")?;
+    let mut o = data.borrow_mut();
+    o.fields.entry(key).or_insert(args[1]);
+    Ok(Value::NIL)
+}
+
+fn settings_save(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "settings.save")?;
+    let path = string_arg(&args[0], "settings.save", "path")?;
+    let data = settings_data_obj(env, "settings.save")?;
+    let value = Value::from_object(data);
+    crate::save::save_to_path(std::path::Path::new(&path), &value)
+        .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
+    Ok(Value::NIL)
+}
+
+fn settings_load(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "settings.load")?;
+    let path = string_arg(&args[0], "settings.load", "path")?;
+    let loaded = crate::save::load_from_path(std::path::Path::new(&path))
+        .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
+    merge_settings_data(env, "settings.load", &path, &loaded)?;
+    Ok(Value::NIL)
+}
+
+fn settings_try_load(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "settings.try_load")?;
+    let path = string_arg(&args[0], "settings.try_load", "path")?;
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Ok(Value::FALSE);
+    }
+    let loaded = crate::save::load_from_path(p)
+        .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
+    merge_settings_data(env, "settings.try_load", &path, &loaded)?;
+    Ok(Value::TRUE)
+}
+
+fn merge_settings_data(
+    env: &Env,
+    op: &str,
+    path: &str,
+    loaded: &Value,
+) -> Result<(), RuntimeError> {
+    if !loaded.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{op}: file at {path} is not an object, got {}",
+                loaded.type_name()
+            ),
+            help: Some("settings files are saved Objects of key:value pairs.".to_string()),
+        });
+    }
+    let data = settings_data_obj(env, op)?;
+    let loaded_rc = loaded.as_object();
+    let loaded_o = loaded_rc.borrow();
+    let mut data_o = data.borrow_mut();
+    for (k, v) in &loaded_o.fields {
+        data_o.fields.insert(k.clone(), *v);
+    }
+    Ok(())
+}
+
+/// Phase 10 session 10: localization scaffolding.
+///
+/// Surface: `lang.set_locale(name)` / `lang.locale()` / `lang.load(name,
+/// path)` / `lang.t(key)` / `lang.tf(key, args)`.
+///
+/// Bundles are JSON files of `{ "menu.resume": "Resume", ... }` —
+/// loaded via `load_from_path` (the same JSON path that backs save /
+/// load) and stored under `lang.bundles[name]` as a flat Object of
+/// key → string. `t(key)` looks up the key in the active bundle and
+/// returns the key itself as fallback when missing — silent fallback
+/// is the right default for shipping games (a missing translation
+/// shouldn't crash the menu). `tf(key, args)` does positional
+/// `{0}` / `{1}` / ... substitution from a List, so scripts can do
+/// `lang.tf("greet", ["Alice"])` against a template like
+/// `"Hi {0}!"`. Positional rather than named because Twe has no
+/// object-literal syntax — passing a list keeps the call site
+/// concise without forcing users to construct Objects from builtins.
+/// Two builtins (`t` and `tf`) instead of one because Twe's calling
+/// convention requires every kwarg supplied.
+fn install_lang(env: &mut Env) {
+    let mut lang = HashMap::new();
+    lang.insert(
+        "active".to_string(),
+        Value::from_string("en".to_string()),
+    );
+    lang.insert(
+        "bundles".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: HashMap::new(),
+            kind: "module",
+        }))),
+    );
+    lang.insert(
+        "set_locale".to_string(),
+        Value::from_builtin("lang.set_locale", &["name"], lang_set_locale),
+    );
+    lang.insert(
+        "locale".to_string(),
+        Value::from_builtin("lang.locale", &[], lang_locale),
+    );
+    lang.insert(
+        "load".to_string(),
+        Value::from_builtin("lang.load", &["name", "path"], lang_load),
+    );
+    lang.insert(
+        "t".to_string(),
+        Value::from_builtin("lang.t", &["key"], lang_t),
+    );
+    lang.insert(
+        "tf".to_string(),
+        Value::from_builtin("lang.tf", &["key", "args"], lang_tf),
+    );
+    env.set(
+        "lang".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: lang,
+            kind: "module",
+        }))),
+    );
+}
+
+fn lang_namespace(env: &Env, op: &str) -> Result<Rc<RefCell<Object>>, RuntimeError> {
+    let l = env.get("lang").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{op}: `lang` ambient is missing"),
+        help: None,
+    })?;
+    if !l.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{op}: `lang` is not an object"),
+            help: None,
+        });
+    }
+    Ok(l.as_object())
+}
+
+fn lang_set_locale(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "lang.set_locale")?;
+    let name = string_arg(&args[0], "lang.set_locale", "name")?;
+    let lang = lang_namespace(env, "lang.set_locale")?;
+    lang.borrow_mut()
+        .fields
+        .insert("active".to_string(), Value::from_string(name));
+    Ok(Value::NIL)
+}
+
+fn lang_locale(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "lang.locale")?;
+    let lang = lang_namespace(env, "lang.locale")?;
+    let active = lang
+        .borrow()
+        .get_field("active")
+        .filter(|v| v.is_str())
+        .map(|v| v.as_string().clone())
+        .unwrap_or_else(|| "en".to_string());
+    Ok(Value::from_string(active))
+}
+
+fn lang_load(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "lang.load")?;
+    let name = string_arg(&args[0], "lang.load", "name")?;
+    let path = string_arg(&args[1], "lang.load", "path")?;
+    let loaded = crate::save::load_from_path(std::path::Path::new(&path))
+        .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
+    if !loaded.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "lang.load: bundle at {path} is not an object, got {}",
+                loaded.type_name()
+            ),
+            help: Some(
+                "locale bundles are JSON Objects of key → string, e.g. {\"menu.resume\": \"Resume\"}."
+                    .to_string(),
+            ),
+        });
+    }
+    let lang = lang_namespace(env, "lang.load")?;
+    let bundles_v = lang.borrow().get_field("bundles").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: "lang.load: `lang.bundles` is missing".to_string(),
+        help: None,
+    })?;
+    if !bundles_v.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "lang.load: `lang.bundles` is not an object".to_string(),
+            help: None,
+        });
+    }
+    let bundles = bundles_v.as_object();
+    bundles.borrow_mut().fields.insert(name, loaded);
+    Ok(Value::NIL)
+}
+
+/// Look up a translation string in the active bundle. Returns
+/// `(found, string)` — `found = false` signals fallback to the key.
+fn lang_lookup(env: &Env, key: &str) -> (bool, String) {
+    let Ok(lang_rc) = lang_namespace(env, "lang.t") else {
+        return (false, key.to_string());
+    };
+    let lang_o = lang_rc.borrow();
+    let active = lang_o
+        .get_field("active")
+        .filter(|v| v.is_str())
+        .map(|v| v.as_string().clone())
+        .unwrap_or_else(|| "en".to_string());
+    let Some(bundles_v) = lang_o.get_field("bundles") else {
+        return (false, key.to_string());
+    };
+    if !bundles_v.is_object() {
+        return (false, key.to_string());
+    }
+    let bundles = bundles_v.as_object();
+    let bundles_o = bundles.borrow();
+    let Some(bundle_v) = bundles_o.get_field(&active) else {
+        return (false, key.to_string());
+    };
+    if !bundle_v.is_object() {
+        return (false, key.to_string());
+    }
+    let bundle = bundle_v.as_object();
+    let bundle_o = bundle.borrow();
+    let Some(s) = bundle_o.get_field(key) else {
+        return (false, key.to_string());
+    };
+    if s.is_str() {
+        (true, s.as_string().clone())
+    } else {
+        (false, key.to_string())
+    }
+}
+
+fn lang_t(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "lang.t")?;
+    let key = string_arg(&args[0], "lang.t", "key")?;
+    let (_, s) = lang_lookup(env, &key);
+    Ok(Value::from_string(s))
+}
+
+fn lang_tf(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "lang.tf")?;
+    let key = string_arg(&args[0], "lang.tf", "key")?;
+    let args_v = &args[1];
+    if !args_v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "lang.tf expects a list of positional args, got {}",
+                (*args_v).type_name()
+            ),
+            help: Some(
+                "pass a list, e.g. `lang.tf(\"greet\", [\"Alice\"])` against a template like \"Hi {0}!\"."
+                    .to_string(),
+            ),
+        });
+    }
+    let (_, template) = lang_lookup(env, &key);
+    let args_rc = args_v.as_list();
+    let args_v = args_rc.borrow();
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            let mut name = String::new();
+            let mut closed = false;
+            for c2 in chars.by_ref() {
+                if c2 == '}' {
+                    closed = true;
+                    break;
+                }
+                name.push(c2);
+            }
+            if !closed {
+                // Unterminated `{...` — emit literally so the user can spot it.
+                out.push('{');
+                out.push_str(&name);
+                continue;
+            }
+            match name.parse::<usize>() {
+                Ok(idx) if idx < args_v.len() => {
+                    out.push_str(&args_v[idx].display());
+                }
+                _ => {
+                    // Unknown index or non-numeric placeholder — emit
+                    // literally so the missing arg is visible at runtime.
+                    out.push('{');
+                    out.push_str(&name);
+                    out.push('}');
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(Value::from_string(out))
 }
 
 fn install_sound(env: &mut Env) {
@@ -2422,6 +2922,20 @@ fn install_draw(env: &mut Env) {
             draw_text_input,
         ),
     );
+    // Phase 10 session 11: `key_input(at:, size:, value:) -> string`.
+    // The keybind capture widget. Click to focus; the next key pressed
+    // becomes the binding. `value` is the current binding name (e.g.
+    // "right"); the widget returns the new binding next frame after a
+    // key is pressed, otherwise echoes the input unchanged. Driven off
+    // the existing `key_press` ambient — no separate input plumbing.
+    env.set(
+        "key_input".to_string(),
+        Value::from_builtin(
+            "key_input",
+            &["at", "size", "value"],
+            draw_key_input,
+        ),
+    );
     // Phase 10 session 6: layout primitives. `panel` is a UI-themed
     // background rect (the visual frame for grouped widgets).
     // `stack` and `flex` are positioning helpers — they don't draw,
@@ -3625,6 +4139,125 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             );
         }
     }
+
+    Ok(Value::from_string(value))
+}
+
+/// Phase 10 session 11: `key_input(at:, size:, value:) -> string`
+/// — the keybind capture widget. Click the rect to focus, then
+/// press any key in the `key_press` ambient's name set; the field
+/// name is returned as the new binding and focus is released.
+/// Clicks outside the rect cancel without rebinding. Used together
+/// with `key_held(name)` / `key_pressed(name)` so games can persist
+/// bindings via `settings` and read them back at runtime.
+fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "key_input")?;
+    arity(args, 3, "key_input")?;
+    let (x, y) = xy_of(&args[0], "key_input.at")?;
+    let (w, h) = xy_of(&args[1], "key_input.size")?;
+    let mut value = {
+        let v = &args[2];
+        if v.is_str() {
+            v.as_string().clone()
+        } else {
+            (*v).display()
+        }
+    };
+
+    let id = rect_id(x, y, w, h);
+    let (mx, my) = read_mouse_xy(env);
+    let pressed_now = read_mouse_button(env, "mouse_press", "left");
+    let hovered = point_in_rect(mx, my, x, y, w, h);
+
+    if pressed_now {
+        UI_STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            if hovered {
+                st.focused_key_input = Some(id);
+            } else if st.focused_key_input == Some(id) {
+                st.focused_key_input = None;
+            }
+        });
+    }
+    let focused = UI_STATE.with(|s| s.borrow().focused_key_input == Some(id));
+
+    if focused {
+        // Walk the `key_press` ambient looking for the first field
+        // that's true this frame. Iteration order is
+        // HashMap-arbitrary; the user is pressing one key at a time
+        // in practice, so collisions are rare. Skip "escape" so it
+        // can act as cancel.
+        let mut captured: Option<String> = None;
+        if let Some(kp) = env.get("key_press") {
+            if kp.is_object() {
+                let rc = kp.as_object();
+                let o = rc.borrow();
+                for (k, v) in &o.fields {
+                    if k == "escape" {
+                        continue;
+                    }
+                    if v.is_bool() && v.as_bool() {
+                        captured = Some(k.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(name) = captured {
+            value = name;
+            UI_STATE.with(|s| s.borrow_mut().focused_key_input = None);
+        } else {
+            // Cancel on Escape so a user can back out of capture.
+            let escape_pressed = env
+                .get("key_press")
+                .filter(|v| v.is_object())
+                .and_then(|v| {
+                    let rc = v.as_object();
+                    let o = rc.borrow();
+                    o.get_field("escape")
+                })
+                .map(|v| v.is_bool() && v.as_bool())
+                .unwrap_or(false);
+            if escape_pressed {
+                UI_STATE.with(|s| s.borrow_mut().focused_key_input = None);
+            }
+        }
+    }
+
+    let bg = if focused {
+        macroquad::color::Color::new(0.10, 0.10, 0.14, 1.0)
+    } else if hovered {
+        macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
+    } else {
+        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+    };
+    let border_color = if focused {
+        macroquad::color::Color::new(0.95, 0.75, 0.30, 1.0)
+    } else {
+        macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0)
+    };
+    let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
+
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
+    macroquad::shapes::draw_rectangle_lines(
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        2.0,
+        border_color,
+    );
+
+    let display = if focused {
+        "press a key...".to_string()
+    } else {
+        value.clone()
+    };
+    let font_size: f32 = 18.0;
+    let dim = macroquad::text::measure_text(&display, None, font_size as u16, 1.0);
+    let tx = x as f32 + (w as f32 - dim.width) / 2.0;
+    let ty = y as f32 + (h as f32 + dim.height) / 2.0;
+    macroquad::text::draw_text(&display, tx, ty, font_size, txt_color);
 
     Ok(Value::from_string(value))
 }

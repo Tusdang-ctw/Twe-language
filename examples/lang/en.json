@@ -1,0 +1,16 @@
+{
+  "menu.title": "Paused",
+  "menu.resume": "Resume",
+  "menu.save": "Save",
+  "menu.quit": "Save & Quit",
+  "menu.saved": "Settings saved.",
+  "settings.master": "Master",
+  "settings.music": "Music",
+  "settings.sfx": "SFX",
+  "settings.fullscreen": "Fullscreen",
+  "settings.name": "Name",
+  "settings.locale": "Language",
+  "hud.elapsed": "Time",
+  "hud.hint": "Press Esc to pause",
+  "greet": "Hello, {0}!"
+}

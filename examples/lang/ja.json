@@ -1,0 +1,16 @@
+{
+  "menu.title": "ポーズ中",
+  "menu.resume": "再開",
+  "menu.save": "保存",
+  "menu.quit": "保存して終了",
+  "menu.saved": "設定を保存しました。",
+  "settings.master": "マスター",
+  "settings.music": "音楽",
+  "settings.sfx": "効果音",
+  "settings.fullscreen": "フルスクリーン",
+  "settings.name": "名前",
+  "settings.locale": "言語",
+  "hud.elapsed": "時間",
+  "hud.hint": "Escでポーズ",
+  "greet": "こんにちは、{0}さん！"
+}

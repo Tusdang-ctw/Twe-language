@@ -13,8 +13,27 @@
 # tuple arithmetic, random, string interpolation, hot reload, and
 # entity queries (`entities.of(Class)`).
 #
-# ~120 lines. The roadmap's <500-line budget for the Phase 2 game
+# Phase 10 session 11: keys are now driven by `settings`. Defaults
+# are seeded with `settings.set_default(...)`; any persisted bindings
+# from `examples/survive.save` overlay them. The rebind UI lives in
+# the companion `examples/pause_menu_demo.twe` — drop a `survive.save`
+# next to this script (or run pause_menu_demo and click Save) to
+# customize the controls without editing the source.
+#
+# ~140 lines. The roadmap's <500-line budget for the Phase 2 game
 # (Lua/GDScript reference: 800–1000) holds with room to spare.
+
+settings.set_default("keys.right", "right")
+settings.set_default("keys.right_alt", "d")
+settings.set_default("keys.left", "left")
+settings.set_default("keys.left_alt", "a")
+settings.set_default("keys.up", "up")
+settings.set_default("keys.up_alt", "w")
+settings.set_default("keys.down", "down")
+settings.set_default("keys.down_alt", "s")
+settings.set_default("keys.fire", "space")
+settings.set_default("keys.restart", "r")
+settings.try_load("examples/survive.save")
 
 var player_x = 320.0
 var player_y = 240.0
@@ -35,10 +54,14 @@ scene Survive:
             elapsed += dt
 
             let speed = 200.0 * dt
-            if key.right or key.d: player_x += speed
-            if key.left  or key.a: player_x -= speed
-            if key.up    or key.w: player_y -= speed
-            if key.down  or key.s: player_y += speed
+            if key_held(settings.get("keys.right")) or key_held(settings.get("keys.right_alt")):
+                player_x += speed
+            if key_held(settings.get("keys.left")) or key_held(settings.get("keys.left_alt")):
+                player_x -= speed
+            if key_held(settings.get("keys.up")) or key_held(settings.get("keys.up_alt")):
+                player_y -= speed
+            if key_held(settings.get("keys.down")) or key_held(settings.get("keys.down_alt")):
+                player_y += speed
 
             spawn_timer += dt
             if spawn_timer >= 0.8:
@@ -54,7 +77,7 @@ scene Survive:
                     spawn Monster at (640, random.int(0..480))
 
             fire_timer += dt
-            if key.space and fire_timer >= 0.18:
+            if key_held(settings.get("keys.fire")) and fire_timer >= 0.18:
                 fire_timer = 0.0
                 spawn Bullet at (player_x, player_y - 20.0)
 
@@ -73,15 +96,16 @@ scene Survive:
             text("Kills: {kills}", at: (270, 280), size: 20, color: color.yellow)
             text("Press R to restart", at: (220, 320), size: 16, color: color.gray)
 
-        on key_press.r:
-            elapsed = 0.0
-            spawn_timer = 0.0
-            fire_timer = 0.0
-            alive = true
-            kills = 0
-            player_x = 320.0
-            player_y = 240.0
-            -> playing
+        every 16ms:
+            if key_pressed(settings.get("keys.restart")):
+                elapsed = 0.0
+                spawn_timer = 0.0
+                fire_timer = 0.0
+                alive = true
+                kills = 0
+                player_x = 320.0
+                player_y = 240.0
+                -> playing
 
 
 entity Monster:

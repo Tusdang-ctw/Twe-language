@@ -648,6 +648,201 @@ print(is_paused())
     assert_eq!(out, "false\ntrue\nfalse\n");
 }
 
+// --- Phase 10 session 9: settings system ---
+
+#[test]
+fn settings_set_get_round_trip() {
+    let src = r#"
+settings.set("audio.master", 0.8)
+settings.set("display.fullscreen", true)
+settings.set("player.name", "Hero")
+print(settings.get("audio.master"))
+print(settings.get("display.fullscreen"))
+print(settings.get("player.name"))
+print(settings.get("missing"))
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "0.8\ntrue\nHero\nnil\n");
+}
+
+#[test]
+fn settings_has_reports_presence() {
+    let src = r#"
+print(settings.has("k"))
+settings.set("k", 1)
+print(settings.has("k"))
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "false\ntrue\n");
+}
+
+#[test]
+fn settings_set_default_does_not_overwrite() {
+    let src = r#"
+settings.set("k", 1)
+settings.set_default("k", 99)
+print(settings.get("k"))
+settings.set_default("new_k", 7)
+print(settings.get("new_k"))
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "1\n7\n");
+}
+
+#[test]
+fn settings_save_and_load_round_trip() {
+    // Pick a unique path under temp_dir so concurrent test runs
+    // don't collide.
+    let dir = std::env::temp_dir();
+    let path = dir.join("twec_phase10_settings_round_trip.json");
+    let _ = std::fs::remove_file(&path);
+    let path_lit = path.display().to_string().replace('\\', "/");
+
+    let src = format!(
+        r#"
+settings.set("audio.master", 0.7)
+settings.set("display.fullscreen", true)
+settings.save("{path}")
+"#,
+        path = path_lit
+    );
+    run_program_str(&src).expect("save program should run");
+
+    // Fresh process state — settings start empty until load.
+    let src2 = format!(
+        r#"
+print(settings.has("audio.master"))
+settings.load("{path}")
+print(settings.get("audio.master"))
+print(settings.get("display.fullscreen"))
+"#,
+        path = path_lit
+    );
+    let out = run_program_str(&src2).expect("load program should run");
+    let _ = std::fs::remove_file(&path);
+    // The settings ambient is process-fresh per `eval::run`, so
+    // `has` is false before load. After load, the values come back.
+    assert_eq!(out, "false\n0.7\ntrue\n");
+}
+
+#[test]
+fn settings_load_missing_file_errors_clearly() {
+    let err = run_program_str("settings.load(\".twec_no_such_settings_file.json\")\n")
+        .expect_err("missing file should error");
+    assert!(err.contains("cannot read"), "got: {err}");
+}
+
+// --- Phase 10 session 10: localization scaffolding ---
+
+#[test]
+fn key_input_outside_render_fails_clearly() {
+    // Phase 10 session 11.
+    let err = run_program_str("key_input((0, 0), (160, 28), \"right\")\n")
+        .expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn key_held_dynamic_lookup_returns_bool() {
+    // Phase 10 session 11: dynamic key lookup. Headless `twec run`
+    // doesn't poll input, so every key reads false; the test only
+    // confirms the surface returns a bool and falls back to false
+    // for unknown names.
+    let src = r#"
+print(key_held("right"))
+print(key_held("not_a_real_key"))
+print(key_pressed("space"))
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "false\nfalse\nfalse\n");
+}
+
+#[test]
+fn lang_default_locale_is_en() {
+    let out = run_program_str("print(lang.locale())\n").expect("program should run");
+    assert_eq!(out, "en\n");
+}
+
+#[test]
+fn lang_set_locale_updates_active() {
+    let src = r#"
+lang.set_locale("ja")
+print(lang.locale())
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "ja\n");
+}
+
+#[test]
+fn lang_t_falls_back_to_key_when_no_bundle() {
+    let src = r#"
+print(lang.t("menu.resume"))
+"#;
+    let out = run_program_str(src).expect("program should run");
+    // No bundle loaded — fall back to the key itself.
+    assert_eq!(out, "menu.resume\n");
+}
+
+#[test]
+fn lang_load_and_translate_round_trip() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("twec_phase10_lang_en.json");
+    // Hand-write a minimal JSON bundle: it's just a flat object of
+    // key → string. Templates use positional `{0}`, `{1}`, etc.
+    std::fs::write(
+        &path,
+        r#"{"menu.resume":"Resume","menu.quit":"Quit","greet":"Hi {0}!"}"#,
+    )
+    .expect("write bundle");
+    let path_lit = path.display().to_string().replace('\\', "/");
+
+    let src = format!(
+        r#"
+lang.load("en", "{path}")
+lang.set_locale("en")
+print(lang.t("menu.resume"))
+print(lang.t("menu.quit"))
+print(lang.tf("greet", ["Alice"]))
+print(lang.t("not.in.bundle"))
+"#,
+        path = path_lit
+    );
+    let out = run_program_str(&src).expect("program should run");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(out, "Resume\nQuit\nHi Alice!\nnot.in.bundle\n");
+}
+
+#[test]
+fn lang_tf_unknown_placeholder_is_emitted_literally() {
+    // If a placeholder index isn't in the args list, emit it as
+    // `{2}` so missing-data is visible at runtime instead of
+    // silently dropped.
+    let dir = std::env::temp_dir();
+    let path = dir.join("twec_phase10_lang_tf_missing.json");
+    std::fs::write(&path, r#"{"hi":"Hello {0} and {1}"}"#).expect("write bundle");
+    let path_lit = path.display().to_string().replace('\\', "/");
+    let src = format!(
+        r#"
+lang.load("en", "{path}")
+print(lang.tf("hi", ["Alice"]))
+"#,
+        path = path_lit
+    );
+    let out = run_program_str(&src).expect("program should run");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(out, "Hello Alice and {1}\n");
+}
+
+#[test]
+fn lang_tf_requires_list_args() {
+    let err = run_program_str("lang.tf(\"k\", \"not a list\")\n")
+        .expect_err("should fail on non-list args");
+    assert!(err.contains("expects a list"), "got: {err}");
+}
+
 #[test]
 fn runs_camera_phase9_follow_shake_reset() {
     // Phase 9 session 2: 2D camera ambient shipped with pos/zoom +

@@ -369,7 +369,24 @@ Phase 8.5 inherits the runtime perf criteria:
 
 ## Phase 10 — v0.4 — UI + game-shell primitives
 
-**Status:** sessions 1–8 shipped 2026-05-04. Sessions 1–5 (widgets): `button`, `label`, `progress_bar`, `slider`, `checkbox`, `dropdown`, `text_input`. Session 5b: clipboard via the arboard crate (`os.clipboard.read` / `os.clipboard.write`, plus Ctrl+V paste hook in `text_input`). Session 6: `panel(at:, size:)` (UI-themed background) + `stack` + `flex` (positioning helpers returning `{at, size}`). Session 7: `grid` + `scroll` (per-rect scroll-y state via `UI_STATE.scroll_y` driven by `mouse.wheel`). Session 8: explicit `pause(flag)` / `is_paused()` primitives — the play loop skips `tick_frame` when paused. **Auto-pause-on-window-blur is deferred** because macroquad 0.4 has no public focus-event API; closing this needs a winit-integration follow-on. Per-state opt-out (`pause: false` / `state foo: persistent`) remains an open syntax question. The if-expression form `let x = if cond: a else: b` was a Phase 9 follow-on rolled into this track (closes the `examples/gamepad_demo.twe:9` latent bug). Demos: `examples/button_demo.twe`, `examples/widgets_demo.twe`, `examples/layout_demo.twe`, `examples/pause_demo.twe`. Remaining sessions: settings system + persistence (rides v0.2's `save_to`/`load_from`), localization scaffolding, auto-pause-on-blur, and the exit-gate pause-menu integration that closes the phase. **570 tests pass.**
+**Status:** **closed 2026-05-04** per `docs/changes/2026-05-04-phase-10-closeout.md`. All eleven sessions shipped:
+
+| # | Surface |
+|---|---------|
+| 1 | `button` |
+| 2 | `label`, `progress_bar` |
+| 3 | `slider` |
+| 4 | `checkbox`, `dropdown` |
+| 5 | `text_input` |
+| 5b | clipboard (`os.clipboard.read/write`, Ctrl+V paste in `text_input`) |
+| 6 | `panel`, `stack`, `flex` |
+| 7 | `grid`, `scroll` |
+| 8 | `pause(flag)` / `is_paused()` |
+| 9 | settings system (`settings.set/get/has/set_default/save/load/try_load`) |
+| 10 | localization scaffolding (`lang.set_locale/locale/load/t/tf`) |
+| 11 | exit gate — `key_input` widget + `key_held(name)` / `key_pressed(name)` + `examples/pause_menu_demo.twe` (resume / save / quit, multi-locale) + `examples/keybind_demo.twe` (key rebind UI) + `examples/survive.twe` rebound to read keys from `settings` |
+
+**All three exit criteria met.** Complete pause menu in `examples/`, settings round-trip across launches via the v0.2 save layer, and `examples/survive.twe` rebinds keys at runtime through the `key_input`-based UI in `examples/keybind_demo.twe`. **583 tests pass.** The if-expression form `let x = if cond: a else: b` was a Phase 9 follow-on rolled into this track (closes the `examples/gamepad_demo.twe:9` latent bug). Auto-pause-on-window-blur slipped (macroquad 0.4 has no public focus-event API; needs a winit-integration follow-on). Per-state opt-out (`pause: false` / `state foo: persistent`) remains an open syntax question.
 
 Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a Steam pause menu needs.
 
@@ -534,7 +551,7 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 8 — Foundations for shipping | v0.2 | L (closed 2026-05-04; 7 sessions shipped) |
 | 8.5 — NaN tagging + tracing GC | v0.2 (perf) | L (closed 2026-05-01; 3× speedup criterion missed, follow-on perf phase pending) |
 | 9 — Visuals + assets-for-UI | v0.3 | L (closed 2026-05-04; 11 sessions shipped, 2 sub-criteria slipped to follow-ons) |
-| 10 — UI + game-shell | v0.4 | M (unblocked; can run in parallel with Phase 7 release engineering) |
+| 10 — UI + game-shell | v0.4 | M (closed 2026-05-04; 11 sessions shipped, all 3 exit criteria met) |
 | 11 — Production hardening | v0.5 | M |
 | 12 — Asset pipeline + build | v0.6 | M |
 | 13 — Modules + type-system stability | v0.7 | L |

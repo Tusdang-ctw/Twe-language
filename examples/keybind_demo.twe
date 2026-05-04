@@ -1,0 +1,106 @@
+# Phase 10 session 11 — keybind UI for `examples/survive.twe`.
+#
+# Run with `twec play examples/keybind_demo.twe`. Click any binding
+# row to focus its `key_input` widget, then press the key you want
+# to bind. Esc cancels capture. Click Save to persist to
+# `examples/survive.save`; the next time you launch survive.twe its
+# `settings.try_load("examples/survive.save")` will pick up the new
+# bindings.
+#
+# Closes the Phase-10 exit-criterion bullet "examples/survive.twe
+# rebinds its keys at runtime via the settings UI" — the rebind UI
+# lives here as a companion script (running it inside survive.twe
+# would force survive.twe to grow a pause-menu state, which is a
+# separate game-loop concern). Read on, save, restart survive — the
+# rebind round-trips across launches.
+
+settings.set_default("keys.right", "right")
+settings.set_default("keys.right_alt", "d")
+settings.set_default("keys.left", "left")
+settings.set_default("keys.left_alt", "a")
+settings.set_default("keys.up", "up")
+settings.set_default("keys.up_alt", "w")
+settings.set_default("keys.down", "down")
+settings.set_default("keys.down_alt", "s")
+settings.set_default("keys.fire", "space")
+settings.set_default("keys.restart", "r")
+settings.try_load("examples/survive.save")
+
+let bindings = [
+    ("Right",     "keys.right"),
+    ("Right (alt)", "keys.right_alt"),
+    ("Left",      "keys.left"),
+    ("Left (alt)",  "keys.left_alt"),
+    ("Up",        "keys.up"),
+    ("Up (alt)",    "keys.up_alt"),
+    ("Down",      "keys.down"),
+    ("Down (alt)",  "keys.down_alt"),
+    ("Fire",      "keys.fire"),
+    ("Restart",   "keys.restart"),
+]
+
+on render():
+    panel(at: (40, 20), size: (560, 440))
+    label(at: (40, 20), size: (560, 36), text: "Survive — Key Bindings")
+    label(
+        at: (40, 56),
+        size: (560, 22),
+        text: "Click a row, press a key. Esc cancels."
+    )
+
+    let row0 = stack((60, 90), (520, 280), 5, 0, 8)
+    let row1 = stack((60, 90), (520, 280), 5, 1, 8)
+    let row2 = stack((60, 90), (520, 280), 5, 2, 8)
+    let row3 = stack((60, 90), (520, 280), 5, 3, 8)
+    let row4 = stack((60, 90), (520, 280), 5, 4, 8)
+
+    draw_binding_pair(row0, 0)
+    draw_binding_pair(row1, 2)
+    draw_binding_pair(row2, 4)
+    draw_binding_pair(row3, 6)
+    draw_binding_pair(row4, 8)
+
+    let g0 = grid((60, 400), (520, 36), 3, 1, 0, 12)
+    let g1 = grid((60, 400), (520, 36), 3, 1, 1, 12)
+    let g2 = grid((60, 400), (520, 36), 3, 1, 2, 12)
+    if button(at: g0.at, size: g0.size, label: "Save"):
+        settings.save("examples/survive.save")
+    if button(at: g1.at, size: g1.size, label: "Reset"):
+        settings.set("keys.right", "right")
+        settings.set("keys.right_alt", "d")
+        settings.set("keys.left", "left")
+        settings.set("keys.left_alt", "a")
+        settings.set("keys.up", "up")
+        settings.set("keys.up_alt", "w")
+        settings.set("keys.down", "down")
+        settings.set("keys.down_alt", "s")
+        settings.set("keys.fire", "space")
+        settings.set("keys.restart", "r")
+    if button(at: g2.at, size: g2.size, label: "Quit"):
+        settings.save("examples/survive.save")
+
+
+function draw_binding_pair(row, base_idx):
+    let left_pair = bindings[base_idx]
+    let right_pair = bindings[base_idx + 1]
+
+    let left_lbl = flex(row.at, row.size, 4, 0, 8)
+    let left_ctl = flex(row.at, row.size, 4, 1, 8)
+    let right_lbl = flex(row.at, row.size, 4, 2, 8)
+    let right_ctl = flex(row.at, row.size, 4, 3, 8)
+
+    label(at: left_lbl.at, size: left_lbl.size, text: left_pair.x)
+    let new_left = key_input(
+        at: left_ctl.at,
+        size: left_ctl.size,
+        value: settings.get(left_pair.y)
+    )
+    settings.set(left_pair.y, new_left)
+
+    label(at: right_lbl.at, size: right_lbl.size, text: right_pair.x)
+    let new_right = key_input(
+        at: right_ctl.at,
+        size: right_ctl.size,
+        value: settings.get(right_pair.y)
+    )
+    settings.set(right_pair.y, new_right)
