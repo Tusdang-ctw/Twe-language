@@ -7,7 +7,8 @@
 
 use std::fs;
 use std::path::PathBuf;
-use twec::build::{discover_project, validate_project, BuildConfig, BuildTarget};
+use twec::build::{discover_project, validate_project, write_bundle, BuildConfig, BuildTarget};
+use twec::bundle::BundleReader;
 
 fn temp_project(name: &str) -> PathBuf {
     let base = std::env::temp_dir().join(format!("twec_build_{}_{}", name, std::process::id()));
@@ -110,4 +111,39 @@ fn config_round_trips() {
     for c in [BuildConfig::Dev, BuildConfig::Release, BuildConfig::Profile] {
         assert_eq!(BuildConfig::parse(c.label()), Some(c));
     }
+}
+
+#[test]
+fn write_bundle_round_trips_main_and_assets() {
+    let dir = temp_project("write_bundle");
+    fs::write(dir.join("main.twe"), "print(\"hi\")\n").unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::write(dir.join("assets/walk.png"), b"\x89PNG demo").unwrap();
+    fs::write(dir.join("assets/audio.ogg"), b"OggS demo").unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let bundle_out = dir.join("out.twebundle");
+    let bytes = write_bundle(&project, &bundle_out).expect("write");
+    assert!(bytes > 0);
+    assert!(bundle_out.is_file());
+    let mut reader = BundleReader::open(&bundle_out).expect("open");
+    assert_eq!(reader.entry_count(), 3);
+    assert!(reader.has("main.twe"));
+    assert!(reader.has("assets/walk.png"));
+    assert!(reader.has("assets/audio.ogg"));
+    let main = reader.read("main.twe").unwrap().expect("present");
+    assert_eq!(main, b"print(\"hi\")\n");
+    let walk = reader.read("assets/walk.png").unwrap().expect("present");
+    assert_eq!(walk, b"\x89PNG demo");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn write_bundle_creates_missing_parent_dirs() {
+    let dir = temp_project("write_bundle_parents");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let nested_out = dir.join("does/not/exist/out.twebundle");
+    write_bundle(&project, &nested_out).expect("write");
+    assert!(nested_out.is_file());
+    let _ = fs::remove_dir_all(&dir);
 }

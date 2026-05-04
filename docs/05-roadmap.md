@@ -454,7 +454,7 @@ Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a
 | # | Session | State |
 |---|---------|-------|
 | 1 | `twec build` skeleton + project layout convention (`<dir>/main.twe` + `assets/` + optional `twe.toml`); validation + dry-run | shipped |
-| 2 | Asset bundling format v1 (`src/bundle.rs`, `twec bundle` CLI, encoder/decoder round-trip) | pending |
+| 2 | Asset bundling format v1 (`src/bundle.rs`, `twec bundle` CLI, encoder/decoder round-trip) | shipped |
 | 3 | `BundleReader` + path-redirected stdlib loaders (sprite / font / audio / glb) | pending |
 | 4 | `twec build --target windows-x86_64` end-to-end (self-extracting `.exe`) | pending |
 | 5 | Build configs (dev / release / profile) via `twe.toml` | pending |

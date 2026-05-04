@@ -302,17 +302,70 @@ pub fn run(args: BuildArgs) -> i32 {
         );
         return 0;
     }
-    // Sessions 2+ replace this with real bundling + binary
-    // production. Until then the non-dry-run path is the same as
-    // the dry-run path (validated, no artifact produced) but with
-    // a warning so callers know the binary they expected isn't
-    // there yet. Exit 0 keeps build scripts that depend on the
-    // surface working; the warning is the visible signal.
-    eprintln!(
-        "[twec build] note: bundle production lands in Phase 12 session 2; \
-         re-run with --dry-run to silence this notice for now"
-    );
-    0
+    // Phase 12 session 2: the non-dry-run path produces a real
+    // `.twebundle` (next to the resolved out path). Session 4
+    // replaces this branch with self-extracting-binary production
+    // — at that point the bundle gets appended to a runtime exe
+    // rather than written standalone. Until then a plain
+    // `.twebundle` is the artifact contributors can inspect.
+    let bundle_out = bundle_out_path(&out_path);
+    match write_bundle(&project, &bundle_out) {
+        Ok(bytes_written) => {
+            eprintln!(
+                "[twec build] wrote bundle: {} ({} bytes, {} entries)",
+                bundle_out.display(),
+                bytes_written,
+                project.assets.len() + 1
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// Output path for the standalone `.twebundle` artifact. Sessions
+/// 4+ retire this in favor of a proper binary, but for the
+/// session-2 / -3 / -5 milestones it's the artifact users see.
+fn bundle_out_path(out_path: &Path) -> PathBuf {
+    // If the user passed `--out foo.exe`, write `foo.twebundle`
+    // alongside; if they passed `--out foo`, write `foo.twebundle`.
+    let mut p = out_path.to_path_buf();
+    p.set_extension("twebundle");
+    p
+}
+
+/// Walk the project + write a `.twebundle` to `out_path`. Returns
+/// the number of bytes written. Used both by `twec build` and by
+/// the standalone `twec bundle` subcommand.
+pub fn write_bundle(
+    project: &DiscoveredProject,
+    out_path: &Path,
+) -> Result<u64, String> {
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create '{}': {e}", parent.display()))?;
+        }
+    }
+    let main_bytes = fs::read(&project.main)
+        .map_err(|e| format!("cannot read '{}': {e}", project.main.display()))?;
+    // Bundle entry layout: `main.twe` first (so the runtime entry
+    // point is found in the same well-known place every time), then
+    // assets in their already-sorted bundle-key order.
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(project.assets.len() + 1);
+    entries.push(("main.twe".to_string(), main_bytes));
+    for asset in &project.assets {
+        let bytes = fs::read(&asset.abs)
+            .map_err(|e| format!("cannot read '{}': {e}", asset.abs.display()))?;
+        entries.push((asset.bundle_key.clone(), bytes));
+    }
+    let mut file = fs::File::create(out_path)
+        .map_err(|e| format!("cannot create '{}': {e}", out_path.display()))?;
+    crate::bundle::encode(&mut file, &entries)
+        .map_err(|e| format!("encoding bundle: {e}"))
 }
 
 fn resolve_out_path(project: &DiscoveredProject, args: &BuildArgs) -> Result<PathBuf, String> {

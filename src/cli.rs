@@ -8,6 +8,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      play_visual <file> | \
      profile [--frames N] [-o trace.json] <file> | \
      build [--target T] [--config C] [--out PATH] [--dry-run] <project_dir> | \
+     bundle [-o PATH] <project_dir> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -45,6 +46,7 @@ pub fn run() {
         "play" => process::exit(handle_play(&args[2..])),
         "profile" => process::exit(handle_profile(&args[2..])),
         "build" => process::exit(handle_build(&args[2..])),
+        "bundle" => process::exit(handle_bundle(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -194,6 +196,81 @@ fn handle_build(args: &[String]) -> i32 {
         dry_run,
     };
     crate::build::run(args)
+}
+
+/// `twec bundle [-o PATH] <project_dir>` — Phase 12 session 2:
+/// emit a standalone `.twebundle` artifact for inspection / hand-
+/// shipping. Mirrors `twec build` discovery + validation but skips
+/// the binary-production step. Useful for diff-friendly review of
+/// what a build would package and for round-tripping through the
+/// reader in tools.
+fn handle_bundle(args: &[String]) -> i32 {
+    let mut out: Option<std::path::PathBuf> = None;
+    let mut project_dir: Option<std::path::PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--out" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `-o` needs a path");
+                    return 2;
+                };
+                out = Some(v.into());
+                i += 1;
+            }
+            other if other.starts_with("--") || other == "-o" => {
+                eprintln!("error: unknown flag '{other}'");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+            other => {
+                if project_dir.is_some() {
+                    eprintln!("error: `twec bundle` takes a single project directory");
+                    return 2;
+                }
+                project_dir = Some(other.into());
+                i += 1;
+            }
+        }
+    }
+    let Some(project_dir) = project_dir else {
+        eprintln!("error: `twec bundle` requires a project directory");
+        eprintln!("{USAGE}");
+        return 2;
+    };
+    let project = match crate::build::discover_project(&project_dir) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    if let Err(e) = crate::build::validate_project(&project) {
+        eprintln!("error: {e}");
+        return 1;
+    }
+    let out_path = out.unwrap_or_else(|| {
+        project
+            .root
+            .join("dist")
+            .join(format!("{}.twebundle", project.name))
+    });
+    match crate::build::write_bundle(&project, &out_path) {
+        Ok(bytes) => {
+            eprintln!(
+                "[twec bundle] wrote {} ({} bytes, {} entries)",
+                out_path.display(),
+                bytes,
+                project.assets.len() + 1
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
 }
 
 /// `twec play_visual <file>` — Phase 9 session 11: render the
