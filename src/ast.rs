@@ -395,6 +395,18 @@ pub enum Expr {
         line: u32,
         col: u32,
     },
+    /// Single-line `if cond: a elif d: e else: b` ternary form. The
+    /// statement-level `if cond: <block>` lives on `Stmt::If`; this
+    /// variant is the expression-position counterpart and demands a
+    /// mandatory `else` (no nullable expressions).
+    IfExpr {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        elifs: Vec<(Expr, Expr)>,
+        else_expr: Box<Expr>,
+        line: u32,
+        col: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,7 +452,8 @@ impl Expr {
             | Expr::Field { line, .. }
             | Expr::Call { line, .. }
             | Expr::Unary { line, .. }
-            | Expr::Binary { line, .. } => *line,
+            | Expr::Binary { line, .. }
+            | Expr::IfExpr { line, .. } => *line,
         }
     }
 
@@ -462,7 +475,8 @@ impl Expr {
             | Expr::Field { col, .. }
             | Expr::Call { col, .. }
             | Expr::Unary { col, .. }
-            | Expr::Binary { col, .. } => *col,
+            | Expr::Binary { col, .. }
+            | Expr::IfExpr { col, .. } => *col,
         }
     }
 }

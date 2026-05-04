@@ -316,6 +316,25 @@ fn check_expr(expr: &Expr, errors: &mut Vec<VisualError>) {
             check_expr(left, errors);
             check_expr(right, errors);
         }
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            ..
+        } => {
+            // WGSL has both `select(a, b, cond)` and ternary conditional
+            // expressions, so the if-expression form is GPU-safe — recurse
+            // into every branch to keep the existing per-construct checks
+            // (no allocation, no mutation, etc.) wired through.
+            check_expr(cond, errors);
+            check_expr(then_expr, errors);
+            for (c, e) in elifs {
+                check_expr(c, errors);
+                check_expr(e, errors);
+            }
+            check_expr(else_expr, errors);
+        }
         Expr::Unary { operand, .. } => check_expr(operand, errors),
         Expr::Field { object, .. } => {
             // The field-access form covers `uv.x`, `color.red`, and

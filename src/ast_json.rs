@@ -685,6 +685,34 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            line,
+            col,
+        } => {
+            s.push_str("{\"kind\":\"IfExpr\",\"cond\":");
+            write_expr(s, cond);
+            s.push_str(",\"then\":");
+            write_expr(s, then_expr);
+            s.push_str(",\"elifs\":[");
+            for (i, (c, e)) in elifs.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str("{\"cond\":");
+                write_expr(s, c);
+                s.push_str(",\"expr\":");
+                write_expr(s, e);
+                s.push('}');
+            }
+            s.push_str("],\"else\":");
+            write_expr(s, else_expr);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
     }
 }
 

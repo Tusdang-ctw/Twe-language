@@ -2103,6 +2103,25 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
         Expr::Int { value, .. } => Ok(Value::from_int(*value)),
         Expr::Float { value, .. } => Ok(Value::from_float(*value)),
         Expr::Bool { value, .. } => Ok(Value::from_bool(*value)),
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            ..
+        } => {
+            let c = eval_expr(env, cond)?;
+            if is_truthy(&c) {
+                return eval_expr(env, then_expr);
+            }
+            for (elif_cond, elif_expr) in elifs {
+                let v = eval_expr(env, elif_cond)?;
+                if is_truthy(&v) {
+                    return eval_expr(env, elif_expr);
+                }
+            }
+            eval_expr(env, else_expr)
+        }
         Expr::Percent { value, .. } => Ok(Value::from_percent(*value)),
         Expr::Quantity { value, unit, .. } => Ok(Value::from_quantity(*value, Rc::new(unit.clone()))),
         Expr::Ident { name, line, col } => lookup_name(env, name).ok_or_else(|| RuntimeError {

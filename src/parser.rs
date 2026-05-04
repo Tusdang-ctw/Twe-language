@@ -1446,6 +1446,13 @@ impl<'a> Parser<'a> {
             }),
             TokenKind::LParen => self.parse_paren_or_tuple(tok.line, tok.col),
             TokenKind::LBracket => self.parse_list(tok.line, tok.col),
+            // Single-line ternary `if cond: a [elif d: e]* else: b`. The
+            // statement-form `if cond:` followed by an indented block is
+            // parsed by `parse_if` from `parse_stmt`; this branch only
+            // fires when an `if` appears in expression position (RHS of
+            // `let`, function arg, return value, etc.). The else-arm is
+            // mandatory — expressions can't have a missing branch.
+            TokenKind::If => self.parse_if_expr(tok.line, tok.col),
             other => Err(ParseError {
                 line: tok.line,
                 col: tok.col,
@@ -1453,6 +1460,53 @@ impl<'a> Parser<'a> {
                 help: None,
             }),
         }
+    }
+
+    fn parse_if_expr(&mut self, line: u32, col: u32) -> Result<Expr, ParseError> {
+        let cond = Box::new(self.parse_expr()?);
+        self.expect(
+            TokenKind::Colon,
+            "expected ':' after `if` condition in expression",
+        )?;
+        let then_expr = Box::new(self.parse_expr()?);
+        let mut elifs = Vec::new();
+        while matches!(self.peek().kind, TokenKind::Elif) {
+            self.bump();
+            let elif_cond = self.parse_expr()?;
+            self.expect(
+                TokenKind::Colon,
+                "expected ':' after `elif` condition in expression",
+            )?;
+            let elif_expr = self.parse_expr()?;
+            elifs.push((elif_cond, elif_expr));
+        }
+        if !matches!(self.peek().kind, TokenKind::Else) {
+            let here = self.peek();
+            return Err(ParseError {
+                line: here.line,
+                col: here.col,
+                message: "expected `else:` to complete `if`-expression".to_string(),
+                help: Some(
+                    "expression-form `if` requires both branches; \
+                     write `if cond: a else: b` (or use a statement-form `if` for blocks)"
+                        .to_string(),
+                ),
+            });
+        }
+        self.bump();
+        self.expect(
+            TokenKind::Colon,
+            "expected ':' after `else` in if-expression",
+        )?;
+        let else_expr = Box::new(self.parse_expr()?);
+        Ok(Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            line,
+            col,
+        })
     }
 
     fn parse_list(&mut self, lb_line: u32, lb_col: u32) -> Result<Expr, ParseError> {
@@ -1663,6 +1717,23 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             op,
             left: Box::new(shift_expr(*left, line, col)),
             right: Box::new(shift_expr(*right, line, col)),
+            line,
+            col,
+        },
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            ..
+        } => Expr::IfExpr {
+            cond: Box::new(shift_expr(*cond, line, col)),
+            then_expr: Box::new(shift_expr(*then_expr, line, col)),
+            elifs: elifs
+                .into_iter()
+                .map(|(c, e)| (shift_expr(c, line, col), shift_expr(e, line, col)))
+                .collect(),
+            else_expr: Box::new(shift_expr(*else_expr, line, col)),
             line,
             col,
         },

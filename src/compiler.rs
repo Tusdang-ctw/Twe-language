@@ -889,6 +889,41 @@ impl Compiler {
                     .chunk
                     .write_op(if *value { OpCode::True } else { OpCode::False }, *line);
             }
+            Expr::IfExpr {
+                cond,
+                then_expr,
+                elifs,
+                else_expr,
+                line,
+                ..
+            } => {
+                // Single-line ternary lowering — same skeleton as the
+                // statement-form `if`, but each arm emits a single
+                // expression that pushes one value, and the convergent
+                // jumps land at the join point. Stack discipline: every
+                // path leaves exactly one value on top.
+                self.emit_expr(cond)?;
+                let mut next_patch = Some(self.emit_jump(OpCode::JumpIfFalse, *line));
+                self.emit_expr(then_expr)?;
+                let mut end_jumps = Vec::new();
+                end_jumps.push(self.emit_jump(OpCode::Jump, *line));
+                for (elif_cond, elif_expr) in elifs {
+                    if let Some(p) = next_patch.take() {
+                        self.patch_jump(p)?;
+                    }
+                    self.emit_expr(elif_cond)?;
+                    next_patch = Some(self.emit_jump(OpCode::JumpIfFalse, elif_cond.line()));
+                    self.emit_expr(elif_expr)?;
+                    end_jumps.push(self.emit_jump(OpCode::Jump, elif_cond.line()));
+                }
+                if let Some(p) = next_patch.take() {
+                    self.patch_jump(p)?;
+                }
+                self.emit_expr(else_expr)?;
+                for j in end_jumps {
+                    self.patch_jump(j)?;
+                }
+            }
             Expr::Str { value, line, .. } => {
                 let idx = self
                     .frame_mut()

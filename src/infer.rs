@@ -820,6 +820,33 @@ impl Inferer {
                 let r = self.expr_type(right);
                 self.binop_type(*op, &l, &r, *line, *col)
             }
+            Expr::IfExpr {
+                cond,
+                then_expr,
+                elifs,
+                else_expr,
+                line,
+                col,
+            } => {
+                // Cond must be Bool. Each branch is an expression; we
+                // unify them so a known concrete on any arm pins fresh
+                // vars on the others (mirrors `and`/`or` value-returning
+                // strategy from F11). Result type is the unified arm type.
+                let c = self.expr_type(cond);
+                self.try_unify(&c, &Type::Bool, *line, *col, "if-expression condition");
+                let t = self.expr_type(then_expr);
+                let mut acc = t;
+                for (elif_cond, elif_expr) in elifs {
+                    let ec = self.expr_type(elif_cond);
+                    self.try_unify(&ec, &Type::Bool, *line, *col, "elif-expression condition");
+                    let ev = self.expr_type(elif_expr);
+                    self.try_unify(&acc, &ev, *line, *col, "if-expression branches");
+                }
+                let e = self.expr_type(else_expr);
+                self.try_unify(&acc, &e, *line, *col, "if-expression branches");
+                acc = self.resolve(&acc);
+                acc
+            }
         }
     }
 

@@ -689,6 +689,37 @@ fn print_expr(out: &mut String, expr: &Expr, parent_prec: Prec) {
                 out.push(')');
             }
         }
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            ..
+        } => {
+            // Single-line ternary form is always parenthesised when
+            // emitted from a non-lowest precedence context, since the
+            // unbounded right-extent of `else: ...` could otherwise
+            // bind to surrounding operators.
+            let need_paren = parent_prec > Prec::Lowest;
+            if need_paren {
+                out.push('(');
+            }
+            out.push_str("if ");
+            print_expr(out, cond, Prec::Lowest);
+            out.push_str(": ");
+            print_expr(out, then_expr, Prec::Lowest);
+            for (ec, ee) in elifs {
+                out.push_str(" elif ");
+                print_expr(out, ec, Prec::Lowest);
+                out.push_str(": ");
+                print_expr(out, ee, Prec::Lowest);
+            }
+            out.push_str(" else: ");
+            print_expr(out, else_expr, Prec::Lowest);
+            if need_paren {
+                out.push(')');
+            }
+        }
     }
 }
 
