@@ -106,3 +106,23 @@ Phase 11 closed without new player-facing features, exactly the production-harde
 - **Bytecode/tree-walker behavioural parity** for the Phase-9 death-event hook.
 
 Phases 7, 8, 8.5, 9, 10, 11 are all closed. Phase 7 (release engineering) is the only line still standing between the codebase and a public release. Realistically the v0.1 tag at release will read v0.5 by then. Next on the critical path: Phase 12 — `twec build <my_game/> --target windows-x86_64` and the asset bundling format. That's where shipping a Steam-class binary actually starts.
+
+---
+
+## Follow-on closed: real auto-pause-on-window-blur (2026-05-04)
+
+The session-11 deferral closed in a follow-on session the same day. Approach (c) from the slipped-list above ("platform-specific `GetForegroundWindow` / `NSApp.isActive` polling layer") shipped on Windows; macOS / X11 / Wayland are stubbed `is_focused() = true` until a later session.
+
+**Surface added:**
+
+- `src/window_focus.rs` — `pub fn is_focused() -> bool`. On Windows, polls `GetForegroundWindow` + `GetWindowThreadProcessId` and compares to our PID. Stub on other platforms. Scoped `#![allow(unsafe_code)]` (only the second module after `tagged_value.rs` to take this carve-out; `Cargo.toml` lint comment updated to record it).
+- `auto_pause_on_blur(enabled)` Twe builtin — opt-in toggle (default off, mirroring `auto_pause_when_idle`). Rejects non-bool args.
+- `crate::stdlib::auto_pause_on_blur_enabled() -> bool` accessor.
+- `BlurAutoPause` state machine in `src/play.rs` (mirror of `IdleAutoPause`): tracks `last_focused` + `paused_by_us`, drives the pause flag on focus transitions, auto-resumes only the pauses *it* drove. Wired into both `run_loop` (eval) and `run_loop_bytecode` (VM).
+- `cfg(windows)` target-only dep `windows-sys = "0.59"` with the `Win32_UI_WindowsAndMessaging` feature — the smallest possible feature set that covers the two functions above. Builds vanish on non-Windows targets, so cross-compile cost is nil.
+
+**Tests added (3):** `auto_pause_on_blur_round_trips_flag`, `auto_pause_on_blur_rejects_non_bool`, `window_focus_is_focused_does_not_panic`.
+
+**Counts:** 606 tests pass (was 601 in the main Phase-11 closeout); `cargo build --release` zero warnings; `cargo clippy --release -- -D warnings` clean.
+
+**What's still pending:** the macOS (`NSApplication.isActive`) and Linux (X11 `_NET_ACTIVE_WINDOW` / Wayland `xdg-shell` activation) polling paths. Those land when (a) a contributor needs them or (b) Phase 12's cross-platform-build session ships, whichever comes first. The session is a sub-day's work each — vanishingly small compared to the macroquad-fork or winit-integration alternatives this follow-on avoided.

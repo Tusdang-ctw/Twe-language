@@ -23,3 +23,4 @@ pub mod value;
 pub mod visual_check;
 pub mod visual_wgsl;
 pub mod vm;
+pub mod window_focus;

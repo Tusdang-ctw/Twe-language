@@ -10,9 +10,12 @@ publish = false
 # `src/tagged_value.rs` can scope `#![allow(unsafe_code)]`. NaN
 # tagging requires bit-level pointer manipulation
 # (`Rc::into_raw` / `Rc::from_raw`) that Rust's safety model
-# can't express in safe code. The exception is intentionally
-# narrow: only `tagged_value.rs` may use unsafe; every other
-# module stays under the project-wide deny.
+# can't express in safe code. Phase 11 follow-on extends the
+# exception to `src/window_focus.rs` for `GetForegroundWindow`
+# / `GetWindowThreadProcessId` (auto-pause-on-window-blur).
+# The exception is intentionally narrow: only those two files
+# may use unsafe; every other module stays under the
+# project-wide deny.
 unsafe_code = "deny"
 
 [lints.clippy]
@@ -49,6 +52,16 @@ gilrs = "0.10"
 # (Win32, NSPasteboard, X11, Wayland) and adds no native build deps
 # on the Windows + macOS + Linux trio that v1.0 targets.
 arboard = "3"
+
+# Phase 11 follow-on (deeper): true auto-pause-on-window-blur. macroquad
+# 0.4 doesn't surface desktop focus events, so the play loop polls
+# `GetForegroundWindow` once per frame and compares the owning PID
+# to our own. windows-sys is the official low-level binding crate;
+# only `Win32_UI_WindowsAndMessaging` is enabled — the smallest
+# feature set that covers `GetForegroundWindow` /
+# `GetWindowThreadProcessId`. Builds vanish on non-Windows targets.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 insta = "1.41"

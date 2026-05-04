@@ -445,6 +445,16 @@ pub fn install(env: &mut Env) {
             auto_pause_when_idle_impl,
         ),
     );
+    // Phase 11 follow-on (deeper): opt-in pause-when-window-blurs.
+    // The play loop polls `window_focus::is_focused()` once per frame
+    // and the `BlurAutoPause` state machine drives the pause flag on
+    // focus transitions. Off by default (the existing examples assume
+    // unattended demo / kiosk runs are fine); enable with
+    // `auto_pause_on_blur(true)`. Disable with `auto_pause_on_blur(false)`.
+    env.set(
+        "auto_pause_on_blur".to_string(),
+        Value::from_builtin("auto_pause_on_blur", &["enabled"], auto_pause_on_blur_impl),
+    );
 }
 
 /// Phase 10 session 8: process-wide pause flag. Atomic + thread-local
@@ -499,6 +509,39 @@ fn auto_pause_when_idle_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Ru
         });
     }
     AUTO_PAUSE_IDLE_SECS.store(secs.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    Ok(Value::NIL)
+}
+
+/// Phase 11 follow-on (deeper): auto-pause-on-window-blur opt-in flag.
+/// The play loop reads this each frame; when enabled, focus loss drives
+/// the pause flag via `BlurAutoPause`. Defaulting off mirrors
+/// `auto_pause_when_idle` — neither feature should fire on kiosk /
+/// demo / CI runs that don't ask for it.
+static AUTO_PAUSE_ON_BLUR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn auto_pause_on_blur_enabled() -> bool {
+    AUTO_PAUSE_ON_BLUR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn auto_pause_on_blur_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "auto_pause_on_blur")?;
+    let v = &args[0];
+    if !v.is_bool() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "auto_pause_on_blur expects a bool, got {}",
+                (*v).type_name()
+            ),
+            help: Some(
+                "call `auto_pause_on_blur(true)` to enable; `auto_pause_on_blur(false)` to disable"
+                    .to_string(),
+            ),
+        });
+    }
+    AUTO_PAUSE_ON_BLUR.store(v.as_bool(), std::sync::atomic::Ordering::Relaxed);
     Ok(Value::NIL)
 }
 

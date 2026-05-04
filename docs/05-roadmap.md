@@ -423,10 +423,11 @@ Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a
 | 8 | Spritesheet animation demo + procedurally-generated `examples/assets/walk.png` |
 | 9 | `examples/survive.twe` gamepad integration (analog stick + d-pad + A/RT fire + Start restart) |
 | 10 | VM mirror of `on Class.death(e)` (new `OpCode::RegisterDeathHandler`, `BcDeathHandler`, `BcInstance.death_fired` flag, fire site in `VM::tick`) |
-| 11 | `auto_pause_when_idle(seconds)` — opt-in idle-pause primitive (real auto-pause-on-blur still deferred) |
+| 11 | `auto_pause_when_idle(seconds)` — opt-in idle-pause primitive |
 | 12 | Closeout |
+| 11+ (follow-on, same day) | True auto-pause-on-window-blur via `GetForegroundWindow` polling on Windows + `BlurAutoPause` state machine + opt-in `auto_pause_on_blur(true)` Twe builtin. macOS (`NSApplication.isActive`) and Linux (X11 `_NET_ACTIVE_WINDOW` / Wayland `xdg-shell`) focus paths still stubbed. New crate dep: `windows-sys` (cfg(windows) target-only). |
 
-**601 tests pass.** Crash reporter and ReloadGate exit criteria met; Luau-parity perf number is bench-measurable but not snapshotted (criterion is the canonical command). True auto-pause-on-window-blur still slips — macroquad 0.4 has no desktop focus events; the idle-timer approximation in session 11 is the practical workaround.
+**606 tests pass** (601 in main close + 3 in follow-on; +2 in unrelated drift). Crash reporter and ReloadGate exit criteria met; Luau-parity perf number is bench-measurable but not snapshotted (criterion is the canonical command). The follow-on closes the auto-pause-on-blur slip on Windows; macOS / Linux focus paths remain a sub-day session each whenever a contributor needs them.
 
 **Theme:** the things Valve or a player will hand back to the dev as a build-rejection.
 
@@ -571,7 +572,7 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 8.5 — NaN tagging + tracing GC | v0.2 (perf) | L (closed 2026-05-01; 3× speedup criterion missed, follow-on perf phase pending) |
 | 9 — Visuals + assets-for-UI | v0.3 | L (closed 2026-05-04; 11 sessions shipped, 2 sub-criteria slipped to follow-ons) |
 | 10 — UI + game-shell | v0.4 | M (closed 2026-05-04; 11 sessions shipped, all 3 exit criteria met) |
-| 11 — Production hardening | v0.5 | M (closed 2026-05-04; 12 sessions shipped, real auto-pause-on-blur deferred to a winit-integration follow-on) |
+| 11 — Production hardening | v0.5 | M (closed 2026-05-04; 12 sessions + same-day follow-on shipped real auto-pause-on-blur via `GetForegroundWindow` polling on Windows; macOS / Linux focus paths still stubbed) |
 | 12 — Asset pipeline + build | v0.6 | M |
 | 13 — Modules + type-system stability | v0.7 | L |
 | 14 — Beta + dogfood | v0.8 | XL (game-dependent) |

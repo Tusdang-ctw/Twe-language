@@ -785,6 +785,39 @@ fn auto_pause_when_idle_rejects_negative() {
 }
 
 #[test]
+fn auto_pause_on_blur_round_trips_flag() {
+    // Phase 11 follow-on (deeper): setting the bool and reading it via
+    // the public accessor should round-trip. Headless `twec run` has
+    // no play loop, so the `BlurAutoPause` state machine never fires;
+    // this test confirms the builtin / accessor surface and the
+    // disable path. Reset to default-off after we're done so we don't
+    // leak state to other tests in this binary.
+    twec::stdlib::set_paused(false);
+    run_program_str("auto_pause_on_blur(true)\n").expect("enable");
+    assert!(twec::stdlib::auto_pause_on_blur_enabled());
+    run_program_str("auto_pause_on_blur(false)\n").expect("disable");
+    assert!(!twec::stdlib::auto_pause_on_blur_enabled());
+}
+
+#[test]
+fn auto_pause_on_blur_rejects_non_bool() {
+    let err = run_program_str("auto_pause_on_blur(1)\n")
+        .expect_err("integer should error");
+    assert!(err.contains("bool"), "got: {err}");
+}
+
+#[test]
+fn window_focus_is_focused_does_not_panic() {
+    // Phase 11 follow-on (deeper): the focus poll should be safe to
+    // call from any thread on every supported platform. On Windows it
+    // hits Win32 (`GetForegroundWindow` + `GetWindowThreadProcessId`);
+    // on macOS / Linux it returns true unconditionally. We only check
+    // it doesn't panic — the actual focus state on a CI runner is
+    // platform-dependent and not assertable.
+    let _ = twec::window_focus::is_focused();
+}
+
+#[test]
 fn screenshot_queues_path_for_play_loop() {
     // Phase 11 session 1: `screenshot(path)` is a deferred call —
     // it queues the path in a thread-local that the play loop

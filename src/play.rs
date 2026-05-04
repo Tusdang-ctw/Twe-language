@@ -213,6 +213,7 @@ async fn run_loop(path: String) {
     };
     let mut gate = ReloadGate::new(current_mtime(&path_ref));
     let mut idle = IdleAutoPause::new();
+    let mut blur = BlurAutoPause::new();
     flush_output(&mut env);
 
     loop {
@@ -246,6 +247,7 @@ async fn run_loop(path: String) {
         hud_record(dt);
         idle.tick(dt);
         idle.apply();
+        blur.tick(crate::window_focus::is_focused());
         // Phase 10 session 8: when paused, skip `tick_frame` so no
         // fibers advance and no every-clocks fire, but keep the
         // render path live so a "PAUSED" overlay or settings menu
@@ -405,6 +407,63 @@ impl IdleAutoPause {
             crate::stdlib::set_paused(false);
             self.paused_by_us = false;
         }
+    }
+}
+
+// Phase 11 follow-on (deeper): the real auto-pause-on-window-blur
+// machinery the Phase-11 closeout punted on. macroquad 0.4 still has no
+// public focus-event API; this layer polls
+// `window_focus::is_focused()` (Win32 `GetForegroundWindow` on
+// Windows, `true` stub on other platforms) once per frame and drives
+// the pause flag on transitions. State-machine summary:
+//
+// * Off (auto_pause_on_blur(false)): paused_by_us cleared every frame
+//   so a manual pause never gets auto-resumed.
+// * Focused → Unfocused: if not already paused, set paused + remember
+//   we did it.
+// * Unfocused → Focused: if we drove the pause, clear it; otherwise
+//   the pause was set manually, leave it alone.
+//
+// Symmetry with `IdleAutoPause` is intentional — the two state
+// machines are independent and either can drive the pause flag, but
+// only the one that *did* drive it auto-resumes.
+struct BlurAutoPause {
+    /// Was the window focused last frame? Initial state is `true` so
+    /// startup-while-unfocused doesn't fire a spurious pause.
+    last_focused: bool,
+    /// True when we drove `pause(true)` — focus return will then drive
+    /// `pause(false)`. Manually set pause stays paused.
+    paused_by_us: bool,
+}
+
+impl BlurAutoPause {
+    fn new() -> Self {
+        Self {
+            last_focused: true,
+            paused_by_us: false,
+        }
+    }
+
+    fn tick(&mut self, focused: bool) {
+        if !crate::stdlib::auto_pause_on_blur_enabled() {
+            // Disabled — clear our flag so a previously-driven pause
+            // doesn't auto-resume after the script flips the toggle.
+            self.paused_by_us = false;
+            self.last_focused = focused;
+            return;
+        }
+        if self.last_focused && !focused {
+            // Focused → Unfocused.
+            if !crate::stdlib::is_paused() {
+                crate::stdlib::set_paused(true);
+                self.paused_by_us = true;
+            }
+        } else if !self.last_focused && focused && self.paused_by_us {
+            // Unfocused → Focused, and we drove the pause.
+            crate::stdlib::set_paused(false);
+            self.paused_by_us = false;
+        }
+        self.last_focused = focused;
     }
 }
 
@@ -664,6 +723,7 @@ async fn run_loop_bytecode(path: String) {
     };
     let mut gate = ReloadGate::new(current_mtime(&path_ref));
     let mut idle = IdleAutoPause::new();
+    let mut blur = BlurAutoPause::new();
     flush_vm_output(&mut vm);
 
     loop {
@@ -691,6 +751,7 @@ async fn run_loop_bytecode(path: String) {
         hud_record(dt);
         idle.tick(dt);
         idle.apply();
+        blur.tick(crate::window_focus::is_focused());
         if let Err(e) = vm.tick(dt) {
             eprintln!("{path_ref}: runtime error: {e}");
             break;
