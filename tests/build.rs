@@ -7,8 +7,16 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use twec::build::{discover_project, validate_project, write_bundle, BuildConfig, BuildTarget};
-use twec::bundle::BundleReader;
+use twec::bundle::{
+    clear_active_bundle, has_active_bundle, read_asset_bytes, set_active_bundle, BundleReader,
+};
+
+/// Serializes tests that mutate the process-global `ACTIVE_BUNDLE`
+/// slot. Cargo runs tests in parallel by default; without this
+/// guard two tests installing different bundles would race.
+static BUNDLE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn temp_project(name: &str) -> PathBuf {
     let base = std::env::temp_dir().join(format!("twec_build_{}_{}", name, std::process::id()));
@@ -145,5 +153,67 @@ fn write_bundle_creates_missing_parent_dirs() {
     let nested_out = dir.join("does/not/exist/out.twebundle");
     write_bundle(&project, &nested_out).expect("write");
     assert!(nested_out.is_file());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn active_bundle_redirects_then_falls_through_to_filesystem() {
+    // Phase 12 session 3: install a bundle, observe `read_asset_bytes`
+    // returning bundle bodies; clear the bundle, observe the same
+    // call falling through to the filesystem; verify a path that's
+    // in neither errors with NotFound.
+    let _guard = BUNDLE_TEST_LOCK.lock().expect("test lock poisoned");
+    clear_active_bundle();
+
+    let dir = temp_project("active_bundle");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::write(dir.join("assets/sprite.png"), b"BUNDLE_VERSION").unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let bundle_path = dir.join("out.twebundle");
+    write_bundle(&project, &bundle_path).expect("write");
+    let reader = BundleReader::open(&bundle_path).expect("open");
+    set_active_bundle(reader);
+    assert!(has_active_bundle());
+
+    // Bundle hit: returns the embedded bytes verbatim.
+    let bytes = read_asset_bytes("assets/sprite.png").expect("bundle hit");
+    assert_eq!(bytes, b"BUNDLE_VERSION");
+
+    // Bundle miss → filesystem fallback. We write a different
+    // version on disk to prove the path actually resolves to the
+    // installed bundle when the key matches.
+    fs::write(dir.join("assets/sprite.png"), b"DISK_VERSION").unwrap();
+    let bytes_after = read_asset_bytes("assets/sprite.png").expect("still hits bundle");
+    assert_eq!(bytes_after, b"BUNDLE_VERSION", "bundle wins over disk");
+
+    // Now clear: same call falls through to disk.
+    clear_active_bundle();
+    assert!(!has_active_bundle());
+    let bytes_disk = read_asset_bytes(dir.join("assets/sprite.png").to_str().unwrap())
+        .expect("filesystem fallback");
+    assert_eq!(bytes_disk, b"DISK_VERSION");
+
+    // Missing path errors with NotFound.
+    let err = read_asset_bytes("does_not_exist_anywhere.png")
+        .expect_err("missing path should error");
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn read_asset_bytes_falls_through_when_no_bundle_set() {
+    // Same fallthrough path as the cleared half of the previous
+    // test, run independently to avoid leaking state if that test
+    // races / aborts.
+    let _guard = BUNDLE_TEST_LOCK.lock().expect("test lock poisoned");
+    clear_active_bundle();
+    let dir = temp_project("fall_through");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(dir.join("hello.txt"), b"FROM_DISK").unwrap();
+    let bytes = read_asset_bytes(dir.join("hello.txt").to_str().unwrap())
+        .expect("filesystem read");
+    assert_eq!(bytes, b"FROM_DISK");
     let _ = fs::remove_dir_all(&dir);
 }

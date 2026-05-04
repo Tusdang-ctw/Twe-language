@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::Mutex;
 
 pub const MAGIC: &[u8; 8] = b"TWEBUND1";
 pub const FORMAT_VERSION: u32 = 1;
@@ -261,6 +262,61 @@ impl BundleReader {
         self.file.read_exact(&mut buf)?;
         Ok(Some(buf))
     }
+}
+
+// Phase 12 session 3: process-global active-bundle slot. The
+// runtime sets this once at startup (session 4 wires it from the
+// self-extracting `.exe` path; tests + future explicit `--bundle`
+// flags can install one directly). Stdlib loaders that previously
+// hit the filesystem now route through `read_asset_bytes`, which
+// tries the bundle first and falls back to disk.
+//
+// `Mutex<Option<...>>` over `OnceLock<Mutex<...>>` so tests can
+// install + clear repeatedly. The runtime is single-threaded so
+// contention is theoretical, but holding the mutex across a read
+// keeps the file cursor consistent if a future session ever runs
+// loaders off the play loop's thread.
+static ACTIVE_BUNDLE: Mutex<Option<BundleReader>> = Mutex::new(None);
+
+/// Install a bundle as the process's active asset source. Replaces
+/// any previously-installed bundle.
+pub fn set_active_bundle(reader: BundleReader) {
+    let mut guard = ACTIVE_BUNDLE.lock().expect("active bundle mutex poisoned");
+    *guard = Some(reader);
+}
+
+/// Drop any installed active bundle. After this returns,
+/// `read_asset_bytes` falls through to the filesystem only.
+pub fn clear_active_bundle() {
+    let mut guard = ACTIVE_BUNDLE.lock().expect("active bundle mutex poisoned");
+    *guard = None;
+}
+
+/// True when a bundle is installed.
+pub fn has_active_bundle() -> bool {
+    ACTIVE_BUNDLE
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
+}
+
+/// Resolve a path, trying the active bundle first and then the
+/// filesystem. The fallback preserves behavior for scripts run via
+/// `twec play` / `twec run` outside a bundle, and for paths the
+/// bundle doesn't include (e.g. assets the dev hasn't moved into
+/// `assets/` yet).
+pub fn read_asset_bytes(path: &str) -> io::Result<Vec<u8>> {
+    {
+        let mut guard = ACTIVE_BUNDLE
+            .lock()
+            .expect("active bundle mutex poisoned");
+        if let Some(reader) = guard.as_mut() {
+            if let Some(bytes) = reader.read(path)? {
+                return Ok(bytes);
+            }
+        }
+    }
+    std::fs::read(path)
 }
 
 fn read_u16<R: Read>(r: &mut R, ctx: &str) -> io::Result<u16> {

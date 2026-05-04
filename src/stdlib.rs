@@ -1337,7 +1337,9 @@ fn play_sound_path(
     SOUND_CACHE.with(|cache| -> Result<(), RuntimeError> {
         let mut c = cache.borrow_mut();
         if !c.contains_key(path) {
-            let bytes = std::fs::read(path).map_err(|e| RuntimeError {
+            // Phase 12 session 3: route through the active bundle
+            // first; falls through to filesystem otherwise.
+            let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!("{callee}: cannot read '{path}': {e}"),
@@ -1590,23 +1592,32 @@ fn load_font_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             });
         }
     };
-    if std::fs::metadata(&path).is_err() {
-        return Err(RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!("load_font: cannot find asset '{path}'"),
-            help: Some(
-                "the path is relative to the working directory; check spelling and case"
-                    .to_string(),
-            ),
-        });
-    }
-    let bytes = std::fs::read(&path).map_err(|e| RuntimeError {
-        line: 0,
-        col: 0,
-        message: format!("load_font: cannot read '{path}': {e}"),
-        help: None,
-    })?;
+    // Phase 12 session 3: check the active bundle first; if absent,
+    // fall through to the filesystem. NotFound from either path
+    // produces the original "cannot find asset" message so existing
+    // diagnostics survive.
+    let bytes = match crate::bundle::read_asset_bytes(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("load_font: cannot find asset '{path}'"),
+                help: Some(
+                    "the path is relative to the working directory; check spelling and case"
+                        .to_string(),
+                ),
+            });
+        }
+        Err(e) => {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("load_font: cannot read '{path}': {e}"),
+                help: None,
+            });
+        }
+    };
     if !is_ttf_or_otf(&bytes) {
         return Err(RuntimeError {
             line: 0,
@@ -3228,7 +3239,8 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
         let mut c = cache.borrow_mut();
         if !c.contains_key(&path) {
-            let bytes = std::fs::read(&path).map_err(|e| RuntimeError {
+            // Phase 12 session 3: bundle-first lookup, filesystem fallback.
+            let bytes = crate::bundle::read_asset_bytes(&path).map_err(|e| RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!("sprite: cannot read '{path}': {e}"),
@@ -3354,7 +3366,8 @@ where
     SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
         let mut c = cache.borrow_mut();
         if !c.contains_key(path) {
-            let bytes = std::fs::read(path).map_err(|e| RuntimeError {
+            // Phase 12 session 3: bundle-first lookup, filesystem fallback.
+            let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| RuntimeError {
                 line: 0,
                 col: 0,
                 message: format!("{callee}: cannot read '{path}': {e}"),

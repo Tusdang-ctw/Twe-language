@@ -993,7 +993,8 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 /// boundary because the upstream `gltf::Error` carries lifetimes
 /// we don't want to leak.
 fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>), String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    // Phase 12 session 3: bundle-first lookup, filesystem fallback.
+    let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| e.to_string())?;
     parse_glb_bytes(&bytes)
 }
 
