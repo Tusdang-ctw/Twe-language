@@ -43,24 +43,34 @@ thread_local! {
     // coords come from script-side literals and are stable across
     // frames as long as the script doesn't mutate the layout, which
     // is the immediate-mode contract.
-    static UI_STATE: RefCell<UiState> = const { RefCell::new(UiState {
+    static UI_STATE: RefCell<UiState> = RefCell::new(UiState {
         active_slider: None,
         open_dropdown: None,
         focused_text_input: None,
-    }) };
+        scroll_y: HashMap::new(),
+    });
 }
 
 /// Widget rect identity. Comparing f64 bit-patterns is fine here
 /// because the values come from script literals or arithmetic on
 /// literals — same Twe expressions give the same bits — and a
 /// drifted rect signals a layout that's no longer the same widget.
-type RectId = (f64, f64, f64, f64);
+type RectId = (u64, u64, u64, u64);
 
-#[derive(Clone, Copy)]
+fn rect_id(x: f64, y: f64, w: f64, h: f64) -> RectId {
+    (x.to_bits(), y.to_bits(), w.to_bits(), h.to_bits())
+}
+
+#[derive(Clone)]
 struct UiState {
     active_slider: Option<RectId>,
     open_dropdown: Option<RectId>,
     focused_text_input: Option<RectId>,
+    /// Phase 10 session 7: per-scroll-rect Y offset in content
+    /// coordinates. The `scroll` builtin reads / writes this
+    /// across frames so the scroll position survives between
+    /// renders. Cleared on hot reload via `clear_asset_caches`.
+    scroll_y: HashMap<RectId, f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -104,6 +114,7 @@ pub fn clear_asset_caches() {
         s.active_slider = None;
         s.open_dropdown = None;
         s.focused_text_input = None;
+        s.scroll_y.clear();
     });
 }
 
@@ -363,6 +374,112 @@ pub fn install(env: &mut Env) {
     install_sound(env);
     install_3d(env);
     install_tilemap(env);
+    install_os(env);
+    // Phase 10 session 8: explicit pause primitive. `pause(flag)`
+    // toggles the runtime pause flag; `is_paused()` queries it.
+    // While paused, the play loop skips `tick_frame` (no fibers
+    // advance, no every-clocks fire) but `render_frame` still runs
+    // so the scene stays visible — typical pause-menu behavior.
+    // The exit-criterion-driven auto-pause-on-window-blur defers
+    // to a winit-integration follow-on (macroquad 0.4 doesn't
+    // expose focus events; per-state `pause: false` opt-out also
+    // remains an open syntax question per CLAUDE.md "What is open").
+    env.set(
+        "pause".to_string(),
+        Value::from_builtin("pause", &["flag"], pause_set),
+    );
+    env.set(
+        "is_paused".to_string(),
+        Value::from_builtin("is_paused", &[], pause_get),
+    );
+}
+
+/// Phase 10 session 8: process-wide pause flag. Atomic + thread-local
+/// is overkill for a single-threaded interpreter, but using a static
+/// AtomicBool keeps `is_paused()` callable from the play loop without
+/// having to thread an Env handle through. Hot reload preserves the
+/// flag — a paused state survives a script edit; if that becomes
+/// surprising in practice we can clear it inside `clear_asset_caches`.
+static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn is_paused() -> bool {
+    PAUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn pause_set(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "pause")?;
+    let v = &args[0];
+    if !v.is_bool() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("pause expects a bool, got {}", (*v).type_name()),
+            help: Some("call `pause(true)` to halt; `pause(false)` to resume".to_string()),
+        });
+    }
+    PAUSED.store(v.as_bool(), std::sync::atomic::Ordering::Relaxed);
+    Ok(Value::NIL)
+}
+
+fn pause_get(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "is_paused")?;
+    Ok(Value::from_bool(is_paused()))
+}
+
+/// Phase 10 session 5b: `os` namespace. Currently houses
+/// `os.clipboard.read()` / `os.clipboard.write(text)` for cross-
+/// platform clipboard access via the arboard crate. Both fail
+/// silently when no clipboard is available (headless CI, sandboxed
+/// runtimes) — read returns the empty string, write drops — so
+/// games stay portable without forcing every script to wrap calls
+/// in error handling that doesn't yet exist as a language feature.
+fn install_os(env: &mut Env) {
+    let mut clipboard = HashMap::new();
+    clipboard.insert(
+        "read".to_string(),
+        Value::from_builtin("os.clipboard.read", &[], clipboard_read),
+    );
+    clipboard.insert(
+        "write".to_string(),
+        Value::from_builtin("os.clipboard.write", &["text"], clipboard_write),
+    );
+    let mut os_obj = HashMap::new();
+    os_obj.insert(
+        "clipboard".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: clipboard,
+            kind: "module",
+        }))),
+    );
+    env.set(
+        "os".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: os_obj,
+            kind: "module",
+        }))),
+    );
+}
+
+fn clipboard_read(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "os.clipboard.read")?;
+    let s = arboard::Clipboard::new()
+        .and_then(|mut c| c.get_text())
+        .unwrap_or_default();
+    Ok(Value::from_string(s))
+}
+
+fn clipboard_write(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "os.clipboard.write")?;
+    let text = {
+        let v = &args[0];
+        if v.is_str() {
+            v.as_string().clone()
+        } else {
+            (*v).display()
+        }
+    };
+    let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
+    Ok(Value::NIL)
 }
 
 fn install_sound(env: &mut Env) {
@@ -2305,6 +2422,59 @@ fn install_draw(env: &mut Env) {
             draw_text_input,
         ),
     );
+    // Phase 10 session 6: layout primitives. `panel` is a UI-themed
+    // background rect (the visual frame for grouped widgets).
+    // `stack` and `flex` are positioning helpers — they don't draw,
+    // they return a {at, size} object naming the rect of the i-th
+    // slot in a vertical (`stack`) or horizontal (`flex`) layout.
+    // The script then passes `slot.at` and `slot.size` as the `at:`
+    // and `size:` of a child widget. Same shape as the `mouse.pos`
+    // / `mouse.x` / `mouse.y` ambient pattern: layout returns
+    // structured data, the script destructures via field access.
+    env.set(
+        "panel".to_string(),
+        Value::from_builtin("panel", &["at", "size"], draw_panel),
+    );
+    env.set(
+        "stack".to_string(),
+        Value::from_builtin(
+            "stack",
+            &["at", "size", "count", "index", "gap"],
+            layout_stack,
+        ),
+    );
+    env.set(
+        "flex".to_string(),
+        Value::from_builtin(
+            "flex",
+            &["at", "size", "count", "index", "gap"],
+            layout_flex,
+        ),
+    );
+    // Phase 10 session 7: 2D layout (`grid`) and stateful clipping
+    // (`scroll`). `grid` is row-major: index 0 = top-left, index
+    // (cols-1) = top-right, index cols = next row's leftmost.
+    // `scroll` keeps a per-rect scroll-y state in `UI_STATE.scroll_y`,
+    // updates from `mouse.wheel` while hovered, and returns a
+    // `{at, size, scroll_y}` object so child widgets can apply the
+    // offset themselves (no implicit GL scissor in v1 — scripts
+    // place the children inside the visible band manually).
+    env.set(
+        "grid".to_string(),
+        Value::from_builtin(
+            "grid",
+            &["at", "size", "cols", "rows", "index", "gap"],
+            layout_grid,
+        ),
+    );
+    env.set(
+        "scroll".to_string(),
+        Value::from_builtin(
+            "scroll",
+            &["at", "size", "content_height"],
+            layout_scroll,
+        ),
+    );
     // sprite() is variadic-style — 2 or 3 positional args, no kwargs in v0.1.
     // Add named-param support when the optional `size` slot has a clean
     // representation in bind_kwargs.
@@ -3067,7 +3237,7 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let min = number(&args[3], "slider.min")?;
     let max = number(&args[4], "slider.max")?;
 
-    let id: RectId = (x, y, w, h);
+    let id = rect_id(x, y, w, h);
     let (mx, my) = read_mouse_xy(env);
     let pressed_now = read_mouse_button(env, "mouse_press", "left");
     let held_now = read_mouse_button(env, "mouse_held", "left");
@@ -3242,7 +3412,7 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         return Ok(Value::from_int(0));
     }
 
-    let id: RectId = (x, y, w, h);
+    let id = rect_id(x, y, w, h);
     let (mx, my) = read_mouse_xy(env);
     let pressed_now = read_mouse_button(env, "mouse_press", "left");
     let header_hovered = point_in_rect(mx, my, x, y, w, h);
@@ -3353,7 +3523,7 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         }
     };
 
-    let id: RectId = (x, y, w, h);
+    let id = rect_id(x, y, w, h);
     let (mx, my) = read_mouse_xy(env);
     let pressed_now = read_mouse_button(env, "mouse_press", "left");
     let hovered = point_in_rect(mx, my, x, y, w, h);
@@ -3379,6 +3549,24 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     // until something focuses, which is acceptable (no infinite-growth
     // bug since macroquad caps the queue internally).
     if focused {
+        // Ctrl+V paste lands first so it doesn't get swallowed by the
+        // char-press loop (some platforms also emit a `\u{16}` SYN
+        // char on Ctrl+V which the loop's is_control filter would
+        // drop, but we explicitly read the OS clipboard here for the
+        // human-readable text). Phase 10 session 5b.
+        let ctrl_held = macroquad::input::is_key_down(macroquad::input::KeyCode::LeftControl)
+            || macroquad::input::is_key_down(macroquad::input::KeyCode::RightControl);
+        if ctrl_held && macroquad::input::is_key_pressed(macroquad::input::KeyCode::V) {
+            if let Ok(mut c) = arboard::Clipboard::new() {
+                if let Ok(s) = c.get_text() {
+                    for ch in s.chars() {
+                        if !ch.is_control() {
+                            value.push(ch);
+                        }
+                    }
+                }
+            }
+        }
         loop {
             match macroquad::input::get_char_pressed() {
                 Some(ch) if !ch.is_control() => value.push(ch),
@@ -3439,6 +3627,205 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     }
 
     Ok(Value::from_string(value))
+}
+
+/// Phase 10 session 6: `panel(at:, size:)` — UI-themed background
+/// rect with border. Visual frame for grouped widgets (settings
+/// panels, dialog boxes, info cards). Slightly darker than the
+/// page background, with a thin neutral border. No state.
+fn draw_panel(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "panel")?;
+    arity(args, 2, "panel")?;
+    let (x, y) = xy_of(&args[0], "panel.at")?;
+    let (w, h) = xy_of(&args[1], "panel.size")?;
+    let bg = macroquad::color::Color::new(0.14, 0.14, 0.18, 1.0);
+    let border = macroquad::color::Color::new(0.65, 0.65, 0.72, 1.0);
+    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
+    macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    Ok(Value::NIL)
+}
+
+/// Build a layout-result Object with `.at` (2-tuple) and `.size`
+/// (2-tuple) fields. Used by `stack`, `flex`, `grid` so scripts can
+/// destructure with `slot.at` / `slot.size` — same access shape as
+/// the existing `mouse.pos` ambient.
+fn layout_slot(at_x: f64, at_y: f64, sz_w: f64, sz_h: f64) -> Value {
+    let at = Value::from_tuple(Rc::new(vec![
+        Value::from_float(at_x),
+        Value::from_float(at_y),
+    ]));
+    let size = Value::from_tuple(Rc::new(vec![
+        Value::from_float(sz_w),
+        Value::from_float(sz_h),
+    ]));
+    let mut fields = HashMap::new();
+    fields.insert("at".to_string(), at);
+    fields.insert("size".to_string(), size);
+    Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "layout",
+    })))
+}
+
+/// Pure helper: compute the rect of slot `index` in a stack of
+/// `count` evenly-spaced rows. Negative or out-of-range `index`
+/// is clamped — mirrors `progress_bar`'s value-clamp policy:
+/// avoid panics on float-rounding edge cases.
+pub(crate) fn stack_slot(
+    at_x: f64,
+    at_y: f64,
+    sz_w: f64,
+    sz_h: f64,
+    count: i64,
+    index: i64,
+    gap: f64,
+) -> (f64, f64, f64, f64) {
+    let n = count.max(1) as f64;
+    let i = index.clamp(0, count.max(1) - 1) as f64;
+    let total_gap = gap * (n - 1.0).max(0.0);
+    let slot_h = ((sz_h - total_gap) / n).max(0.0);
+    let slot_y = at_y + i * (slot_h + gap);
+    (at_x, slot_y, sz_w, slot_h)
+}
+
+pub(crate) fn flex_slot(
+    at_x: f64,
+    at_y: f64,
+    sz_w: f64,
+    sz_h: f64,
+    count: i64,
+    index: i64,
+    gap: f64,
+) -> (f64, f64, f64, f64) {
+    let n = count.max(1) as f64;
+    let i = index.clamp(0, count.max(1) - 1) as f64;
+    let total_gap = gap * (n - 1.0).max(0.0);
+    let slot_w = ((sz_w - total_gap) / n).max(0.0);
+    let slot_x = at_x + i * (slot_w + gap);
+    (slot_x, at_y, slot_w, sz_h)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grid_slot(
+    at_x: f64,
+    at_y: f64,
+    sz_w: f64,
+    sz_h: f64,
+    cols: i64,
+    rows: i64,
+    index: i64,
+    gap: f64,
+) -> (f64, f64, f64, f64) {
+    let c = cols.max(1);
+    let r = rows.max(1);
+    let i = index.clamp(0, c * r - 1);
+    let col = (i % c) as f64;
+    let row = (i / c) as f64;
+    let cf = c as f64;
+    let rf = r as f64;
+    let total_gap_x = gap * (cf - 1.0).max(0.0);
+    let total_gap_y = gap * (rf - 1.0).max(0.0);
+    let slot_w = ((sz_w - total_gap_x) / cf).max(0.0);
+    let slot_h = ((sz_h - total_gap_y) / rf).max(0.0);
+    let slot_x = at_x + col * (slot_w + gap);
+    let slot_y = at_y + row * (slot_h + gap);
+    (slot_x, slot_y, slot_w, slot_h)
+}
+
+fn layout_stack(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "stack")?;
+    let (x, y) = xy_of(&args[0], "stack.at")?;
+    let (w, h) = xy_of(&args[1], "stack.size")?;
+    let count = number(&args[2], "stack.count")? as i64;
+    let index = number(&args[3], "stack.index")? as i64;
+    let gap = number(&args[4], "stack.gap")?;
+    let (sx, sy, sw, sh) = stack_slot(x, y, w, h, count, index, gap);
+    Ok(layout_slot(sx, sy, sw, sh))
+}
+
+fn layout_flex(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "flex")?;
+    let (x, y) = xy_of(&args[0], "flex.at")?;
+    let (w, h) = xy_of(&args[1], "flex.size")?;
+    let count = number(&args[2], "flex.count")? as i64;
+    let index = number(&args[3], "flex.index")? as i64;
+    let gap = number(&args[4], "flex.gap")?;
+    let (sx, sy, sw, sh) = flex_slot(x, y, w, h, count, index, gap);
+    Ok(layout_slot(sx, sy, sw, sh))
+}
+
+fn layout_grid(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 6, "grid")?;
+    let (x, y) = xy_of(&args[0], "grid.at")?;
+    let (w, h) = xy_of(&args[1], "grid.size")?;
+    let cols = number(&args[2], "grid.cols")? as i64;
+    let rows = number(&args[3], "grid.rows")? as i64;
+    let index = number(&args[4], "grid.index")? as i64;
+    let gap = number(&args[5], "grid.gap")?;
+    let (sx, sy, sw, sh) = grid_slot(x, y, w, h, cols, rows, index, gap);
+    Ok(layout_slot(sx, sy, sw, sh))
+}
+
+/// Phase 10 session 7: `scroll(at:, size:, content_height:) -> {at, size, scroll_y}`.
+/// Stateful — keeps the current scroll-y per rect in `UI_STATE.scroll_y`.
+/// Reads `mouse.wheel` while hovered to scroll, clamping to
+/// `[0, content_height - size.y]`. Returns the scroll-y so children
+/// can draw at `slot.at.y - scroll_y` to appear scrolled. v1 doesn't
+/// clip with `set_scissor` — children that overflow the viewport
+/// just draw past the rect; scripts position them inside manually.
+fn layout_scroll(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "scroll")?;
+    let (x, y) = xy_of(&args[0], "scroll.at")?;
+    let (w, h) = xy_of(&args[1], "scroll.size")?;
+    let content_height = number(&args[2], "scroll.content_height")?;
+    let id = rect_id(x, y, w, h);
+
+    let (mx, my) = read_mouse_xy(env);
+    let hovered = point_in_rect(mx, my, x, y, w, h);
+    let wheel = if hovered { read_mouse_wheel(env) } else { 0.0 };
+
+    let max_scroll = (content_height - h).max(0.0);
+    let new_scroll = UI_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let cur = st.scroll_y.get(&id).copied().unwrap_or(0.0);
+        // macroquad reports +y up for the wheel; "scroll content
+        // down" reads as a negative wheel delta, hence the subtract.
+        let next = (cur - wheel * 24.0).clamp(0.0, max_scroll);
+        st.scroll_y.insert(id, next);
+        next
+    });
+
+    let mut fields = HashMap::new();
+    fields.insert(
+        "at".to_string(),
+        Value::from_tuple(Rc::new(vec![Value::from_float(x), Value::from_float(y)])),
+    );
+    fields.insert(
+        "size".to_string(),
+        Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
+    );
+    fields.insert("scroll_y".to_string(), Value::from_float(new_scroll));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "layout",
+    }))))
+}
+
+/// Read `mouse.wheel` from the env's `mouse` ambient. Returns 0.0
+/// if the field is missing or not a number. Used by `layout_scroll`.
+fn read_mouse_wheel(env: &Env) -> f64 {
+    let Some(m) = env.get("mouse") else {
+        return 0.0;
+    };
+    if !m.is_object() {
+        return 0.0;
+    }
+    let rc = m.as_object();
+    let o = rc.borrow();
+    match o.get_field("wheel") {
+        Some(v) => number(&v, "mouse.wheel").unwrap_or(0.0),
+        None => 0.0,
+    }
 }
 
 /// Read `mouse.x` / `mouse.y` from the env's `mouse` ambient. Returns

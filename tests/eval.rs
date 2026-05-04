@@ -526,6 +526,128 @@ fn text_input_outside_render_fails_clearly() {
     );
 }
 
+// Phase 10 session 5b: clipboard. Functional tests are skipped
+// because CI runners typically lack a display server / clipboard
+// daemon (X11 / Wayland / NSPasteboard). The `os.clipboard.read`
+// path returns the empty string in that case rather than erroring
+// — exercised here to confirm the surface is registered.
+#[test]
+fn clipboard_read_returns_string_or_empty() {
+    let out = run_program_str("print(os.clipboard.read())\n").expect("program should run");
+    // Either the runner has a clipboard with text in it (then
+    // `out` is whatever's there + newline) or it doesn't (then
+    // `out == "\n"`). Either way, the call returns a string and
+    // the program exits cleanly.
+    assert!(out.ends_with('\n'), "got: {out:?}");
+}
+
+#[test]
+fn clipboard_write_returns_nil() {
+    // Write succeeds-or-fails-silently; the return value is nil
+    // either way so the script can chain calls without checking.
+    let out = run_program_str("os.clipboard.write(\"hello\")\nprint(\"done\")\n")
+        .expect("program should run");
+    assert_eq!(out, "done\n");
+}
+
+#[test]
+fn panel_outside_render_fails_clearly() {
+    // Phase 10 session 6.
+    let err = run_program_str("panel((0, 0), (100, 50))\n").expect_err("should fail");
+    assert!(
+        err.contains("must be called from inside `on render():`"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn stack_returns_layout_object() {
+    // Phase 10 session 6: `stack(at:, size:, count:, index:, gap:)`
+    // returns a {at, size} object. `from_float` yields float-display
+    // (`10.0` not `10`) for whole values — that's the contract.
+    let src = r#"
+let slot = stack((10, 20), (200, 200), 4, 0, 4)
+print(slot.at)
+print(slot.size)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    // total_gap = 4 * 3 = 12, slot_h = (200-12)/4 = 47. y of slot 0 = 20.
+    assert!(out.contains("(10.0, 20.0)"), "got: {out:?}");
+    assert!(out.contains("(200.0, 47.0)"), "got: {out:?}");
+}
+
+#[test]
+fn flex_returns_layout_object() {
+    let src = r#"
+let slot = flex((10, 20), (300, 40), 3, 1, 8)
+print(slot.at)
+print(slot.size)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    // total_gap = 16, slot_w = (300-16)/3 = 94.666..., slot 1
+    // x = 10 + 1 * (slot_w + 8). We assert the height is 40 and
+    // y is the input y without pinning the slot_w float exactly.
+    assert!(out.contains(", 40.0)"), "got: {out:?}");
+    assert!(out.contains(", 20.0)"), "got: {out:?}");
+}
+
+#[test]
+fn grid_row_major_index_zero_is_top_left() {
+    let src = r#"
+let slot = grid((100, 200), (240, 120), 4, 2, 0, 0)
+print(slot.at)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert!(out.contains("(100.0, 200.0)"), "got: {out:?}");
+}
+
+#[test]
+fn grid_row_major_advances_by_row_then_column() {
+    // Phase 10 session 7: cols=4, rows=2, gap=0 means index 4 is the
+    // start of row 1 (i.e., directly below index 0 at y = 200 + h/2).
+    let src = r#"
+let slot = grid((100, 200), (240, 120), 4, 2, 4, 0)
+print(slot.at)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    // index 4 → col=0, row=1; slot_h = 120/2 = 60; y = 200 + 60 = 260.
+    assert!(out.contains("(100.0, 260.0)"), "got: {out:?}");
+}
+
+#[test]
+fn scroll_outside_render_works_returns_object() {
+    // `scroll` doesn't draw anything — it's a positioning helper
+    // backed by per-rect state. Unlike rendering widgets it works
+    // outside `on render():`; useful for non-graphical tests and
+    // for scripts that compute scroll math during update.
+    let src = r#"
+let s = scroll((10, 20), (200, 100), 500)
+print(s.at)
+print(s.size)
+print(s.scroll_y)
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert!(out.contains("(10.0, 20.0)"), "got: {out:?}");
+    assert!(out.contains("(200.0, 100.0)"), "got: {out:?}");
+    // Initial scroll is 0 — no wheel input under headless.
+    assert!(out.contains("0\n") || out.contains("0.0"), "got: {out:?}");
+}
+
+#[test]
+fn pause_round_trips() {
+    // Phase 10 session 8: pause primitives are runtime-state so
+    // they're testable without a render loop.
+    let src = r#"
+print(is_paused())
+pause(true)
+print(is_paused())
+pause(false)
+print(is_paused())
+"#;
+    let out = run_program_str(src).expect("program should run");
+    assert_eq!(out, "false\ntrue\nfalse\n");
+}
+
 #[test]
 fn runs_camera_phase9_follow_shake_reset() {
     // Phase 9 session 2: 2D camera ambient shipped with pos/zoom +

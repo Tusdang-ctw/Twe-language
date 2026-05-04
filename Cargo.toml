@@ -43,6 +43,12 @@ gltf = { version = "1", default-features = false, features = ["import", "utils"]
 # crate, uses XInput on Windows, evdev on Linux, IOKit on macOS. No
 # native build deps on any of the target platforms.
 gilrs = "0.10"
+# Phase 10 session 5b: cross-platform OS clipboard. Settings menus need
+# Ctrl+V paste in text inputs and the eventual share / export-link UI
+# will need write. arboard is the de-facto Rust clipboard crate
+# (Win32, NSPasteboard, X11, Wayland) and adds no native build deps
+# on the Windows + macOS + Linux trio that v1.0 targets.
+arboard = "3"
 
 [dev-dependencies]
 insta = "1.41"

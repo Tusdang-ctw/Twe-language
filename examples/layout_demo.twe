@@ -1,0 +1,80 @@
+# Phase 10 sessions 6 + 7 — layout primitives.
+#
+# Run with `twec play examples/layout_demo.twe`. Demonstrates how
+# the new layout helpers (`panel`, `stack`, `flex`, `grid`,
+# `scroll`) compose with the session-1-5 widget set:
+#   - `panel(at:, size:)` draws a UI-themed background frame.
+#   - `stack` returns the rect for the i-th vertical slot.
+#   - `flex`  returns the rect for the i-th horizontal slot.
+#   - `grid`  returns the rect for the i-th cell, row-major.
+#   - `scroll` returns `{at, size, scroll_y}` for a scrollable region.
+#
+# Each layout helper returns an object with `.at` and `.size` 2-tuples
+# so the script does `button(at: slot.at, size: slot.size, label: ...)`.
+
+var quality = 1
+var fullscreen = false
+var music_volume = 0.5
+var sfx_volume = 0.7
+var name = "Player"
+
+scene Demo:
+    initial: menu
+
+    state menu:
+        on render():
+            # A title panel + content panel.
+            panel(at: (40, 40), size: (520, 60))
+            label(at: (40, 40), size: (520, 60), text: "Settings")
+
+            panel(at: (40, 120), size: (520, 360))
+
+            # Stack: 4 evenly-spaced rows inside the content panel.
+            let row0 = stack((60, 140), (480, 320), 4, 0, 12)
+            let row1 = stack((60, 140), (480, 320), 4, 1, 12)
+            let row2 = stack((60, 140), (480, 320), 4, 2, 12)
+            let row3 = stack((60, 140), (480, 320), 4, 3, 12)
+
+            # Each row has 2 flex slots: label + control.
+            let lbl0 = flex(row0.at, row0.size, 2, 0, 8)
+            let ctl0 = flex(row0.at, row0.size, 2, 1, 8)
+            label(at: lbl0.at, size: lbl0.size, text: "Quality")
+            quality = dropdown(
+                at: ctl0.at,
+                size: ctl0.size,
+                options: ["Low", "Medium", "High", "Ultra"],
+                selected: quality
+            )
+
+            let lbl1 = flex(row1.at, row1.size, 2, 0, 8)
+            let ctl1 = flex(row1.at, row1.size, 2, 1, 8)
+            label(at: lbl1.at, size: lbl1.size, text: "Fullscreen")
+            fullscreen = checkbox(at: ctl1.at, size: (28, 28), value: fullscreen)
+
+            let lbl2 = flex(row2.at, row2.size, 2, 0, 8)
+            let ctl2 = flex(row2.at, row2.size, 2, 1, 8)
+            label(at: lbl2.at, size: lbl2.size, text: "Music")
+            music_volume = slider(at: ctl2.at, size: ctl2.size, value: music_volume, min: 0.0, max: 1.0)
+
+            let lbl3 = flex(row3.at, row3.size, 2, 0, 8)
+            let ctl3 = flex(row3.at, row3.size, 2, 1, 8)
+            label(at: lbl3.at, size: lbl3.size, text: "Player name")
+            name = text_input(at: ctl3.at, size: ctl3.size, value: name)
+
+            # Action row: 4 grid cells across the bottom.
+            let g0 = grid((40, 500), (520, 40), 4, 1, 0, 8)
+            let g1 = grid((40, 500), (520, 40), 4, 1, 1, 8)
+            let g2 = grid((40, 500), (520, 40), 4, 1, 2, 8)
+            let g3 = grid((40, 500), (520, 40), 4, 1, 3, 8)
+            if button(at: g0.at, size: g0.size, label: "Save"):
+                print("save: q={quality} fs={fullscreen} m={music_volume} sfx={sfx_volume} n={name}")
+            if button(at: g1.at, size: g1.size, label: "Reset"):
+                quality = 1
+                fullscreen = false
+                music_volume = 0.5
+                sfx_volume = 0.7
+                name = "Player"
+            if button(at: g2.at, size: g2.size, label: "Copy name"):
+                os.clipboard.write(name)
+            if button(at: g3.at, size: g3.size, label: "Close"):
+                pause(true)

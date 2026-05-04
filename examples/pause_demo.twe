@@ -1,0 +1,32 @@
+# Phase 10 session 8 — pause primitives.
+#
+# Run with `twec play examples/pause_demo.twe`. The `tick` counter
+# advances each frame in `every 16ms`. Click the Pause/Resume
+# button — `pause(true)` halts every-clocks and fiber updates,
+# but render still runs so the menu stays interactive. Click
+# Resume (or call `pause(false)`) to continue.
+#
+# Auto-pause-on-window-blur (the original Phase 10 exit-criterion
+# bullet) defers to a winit-integration follow-on session — macroquad
+# 0.4 doesn't expose focus events.
+
+scene Demo:
+    var tick = 0
+
+    initial: counting
+
+    state counting:
+        every 16ms:
+            tick += 1
+
+        on render():
+            text("tick: {tick}", at: (20, 30), size: 24, color: color.yellow)
+
+            if is_paused():
+                text("PAUSED", at: (20, 70), size: 36, color: color.red)
+                if button(at: (20, 130), size: (160, 40), label: "Resume"):
+                    pause(false)
+            else:
+                text("RUNNING", at: (20, 70), size: 36, color: color.green)
+                if button(at: (20, 130), size: (160, 40), label: "Pause"):
+                    pause(true)

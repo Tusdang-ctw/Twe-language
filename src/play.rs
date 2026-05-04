@@ -170,9 +170,16 @@ async fn run_loop(path: String) {
 
         update_key_state(&mut env);
         let dt = get_frame_time() as f64;
-        if let Err(e) = crate::eval::tick_frame(&mut env, dt) {
-            eprintln!("{path_ref}: runtime error: {e}");
-            break;
+        // Phase 10 session 8: when paused, skip `tick_frame` so no
+        // fibers advance and no every-clocks fire, but keep the
+        // render path live so a "PAUSED" overlay or settings menu
+        // can draw. Render-side `button` / `slider` etc. read mouse
+        // state directly so the pause menu still interacts.
+        if !crate::stdlib::is_paused() {
+            if let Err(e) = crate::eval::tick_frame(&mut env, dt) {
+                eprintln!("{path_ref}: runtime error: {e}");
+                break;
+            }
         }
         flush_output(&mut env);
 
