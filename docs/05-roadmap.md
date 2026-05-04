@@ -449,6 +449,23 @@ Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a
 
 ## Phase 12 — v0.6 — Asset pipeline + cross-platform build
 
+**Status:** **active.** Session breakdown (twelve, mirroring Phase 10 / 11 cadence):
+
+| # | Session | State |
+|---|---------|-------|
+| 1 | `twec build` skeleton + project layout convention (`<dir>/main.twe` + `assets/` + optional `twe.toml`); validation + dry-run | shipped |
+| 2 | Asset bundling format v1 (`src/bundle.rs`, `twec bundle` CLI, encoder/decoder round-trip) | pending |
+| 3 | `BundleReader` + path-redirected stdlib loaders (sprite / font / audio / glb) | pending |
+| 4 | `twec build --target windows-x86_64` end-to-end (self-extracting `.exe`) | pending |
+| 5 | Build configs (dev / release / profile) via `twe.toml` | pending |
+| 6 | `twec build --target macos-aarch64` (.app skeleton, host-only first) | pending |
+| 7 | `twec build --target linux-x86_64` + AppImage scaffolding | pending |
+| 8 | Bundle compression (zstd) | pending |
+| 9 | Steam SDK redistributable layout (`steam_appid.txt`, Depot manifest stub) | pending |
+| 10 | Build provenance + `twec build --info <bundle.exe>` | pending |
+| 11 | EXIT GATE — `examples/survive` ships as a Steam-class `.exe` | pending |
+| 12 | Closeout | pending |
+
 **Theme:** `twec build my_game/ --target windows-x86_64` produces a single distributable.
 
 **Components:**

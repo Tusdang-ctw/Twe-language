@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod ast_json;
+pub mod build;
 pub mod bytecode;
 pub mod cli;
 pub mod compiler;

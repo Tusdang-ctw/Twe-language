@@ -7,6 +7,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      play3d <file> | \
      play_visual <file> | \
      profile [--frames N] [-o trace.json] <file> | \
+     build [--target T] [--config C] [--out PATH] [--dry-run] <project_dir> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -43,6 +44,7 @@ pub fn run() {
         "run" => process::exit(handle_run(&args[2..])),
         "play" => process::exit(handle_play(&args[2..])),
         "profile" => process::exit(handle_profile(&args[2..])),
+        "build" => process::exit(handle_build(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -105,6 +107,93 @@ fn handle_play3d(args: &[String]) -> i32 {
     }
     let path = path.expect("non-empty args + no flags ⇒ at least one positional");
     crate::play3d::launch(path)
+}
+
+/// `twec build [--target T] [--config C] [--out PATH] [--dry-run]
+/// <project_dir>` — Phase 12: produce a redistributable for a
+/// project tree. Session 1 ships the validation skeleton
+/// (`<dir>/main.twe` required + `<dir>/assets/` walked + optional
+/// `twe.toml`); sessions 2+ fill in real bundle production +
+/// per-target binary output.
+fn handle_build(args: &[String]) -> i32 {
+    use crate::build::{BuildArgs, BuildConfig, BuildTarget};
+    let mut target: Option<BuildTarget> = None;
+    let mut config: Option<BuildConfig> = None;
+    let mut out: Option<std::path::PathBuf> = None;
+    let mut dry_run = false;
+    let mut project_dir: Option<std::path::PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `--target` needs a value");
+                    return 2;
+                };
+                let Some(t) = BuildTarget::parse(v) else {
+                    eprintln!(
+                        "error: unknown target '{v}' (try windows-x86_64, macos-aarch64, macos-x86_64, linux-x86_64)"
+                    );
+                    return 2;
+                };
+                target = Some(t);
+                i += 1;
+            }
+            "--config" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `--config` needs a value");
+                    return 2;
+                };
+                let Some(c) = BuildConfig::parse(v) else {
+                    eprintln!("error: unknown config '{v}' (try dev, release, profile)");
+                    return 2;
+                };
+                config = Some(c);
+                i += 1;
+            }
+            "--out" | "-o" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `--out` needs a path");
+                    return 2;
+                };
+                out = Some(v.into());
+                i += 1;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            other if other.starts_with("--") => {
+                eprintln!("error: unknown flag '{other}'");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+            other => {
+                if project_dir.is_some() {
+                    eprintln!("error: `twec build` takes a single project directory");
+                    return 2;
+                }
+                project_dir = Some(other.into());
+                i += 1;
+            }
+        }
+    }
+    let Some(project_dir) = project_dir else {
+        eprintln!("error: `twec build` requires a project directory");
+        eprintln!("{USAGE}");
+        return 2;
+    };
+    let args = BuildArgs {
+        project_dir,
+        target: target.unwrap_or_else(BuildTarget::host),
+        config: config.unwrap_or(BuildConfig::Release),
+        out,
+        dry_run,
+    };
+    crate::build::run(args)
 }
 
 /// `twec play_visual <file>` — Phase 9 session 11: render the

@@ -50,7 +50,7 @@ fn render_frame(buf: &mut [u8], frame: u32) {
     let torso_color = hsv_to_rgba(hue, 0.85, 0.85, 255);
 
     // Head: 8x8 square that bobs ±1 px on alternating frames.
-    let head_y_offset: u32 = if frame % 2 == 0 { 0 } else { 1 };
+    let head_y_offset: u32 = if frame.is_multiple_of(2) { 0 } else { 1 };
     fill_rect(
         buf,
         fx + 12,
