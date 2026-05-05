@@ -1,0 +1,37 @@
+# Phase 12 session 11 — EXIT GATE.
+#
+# `twec build examples/survive_demo/` produces a single Steam-class
+# `.exe` (or `.app` / `.AppDir` on macOS / Linux) that launches into
+# this game with no Twe install on the player's machine.
+#
+# The full Phase-2 vertical slice lives in `examples/survive.twe`
+# and stays the canonical-game reference. This demo trims it to the
+# minimum that still shows off the build pipeline shipping a
+# loadable asset alongside main.twe — that's the EXIT-GATE evidence.
+
+let hero = sprite.load("assets/hero.png")
+
+var player_x = 320.0
+var player_y = 240.0
+var elapsed = 0.0
+
+scene SurviveDemo:
+    initial: playing
+
+    state playing:
+        every 16ms:
+            let dt = time.dt
+            elapsed += dt
+            if key_held("right") or key_held("d"):
+                player_x += 220.0 * dt
+            if key_held("left") or key_held("a"):
+                player_x -= 220.0 * dt
+            if key_held("up") or key_held("w"):
+                player_y -= 220.0 * dt
+            if key_held("down") or key_held("s"):
+                player_y += 220.0 * dt
+
+        on render():
+            draw_color(0.08, 0.08, 0.12, 1.0)
+            draw_text("Survive Demo  —  t=" + str(elapsed), 16, 24)
+            draw_sprite(hero, player_x, player_y)

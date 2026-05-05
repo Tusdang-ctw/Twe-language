@@ -744,6 +744,85 @@ fn run_info_errors_on_non_bundle_file() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+// ---------- Phase 12 session 11: EXIT GATE — survive_demo end-to-end ----------
+
+#[test]
+fn survive_demo_project_validates() {
+    // The EXIT GATE deliverable. `examples/survive_demo/` is a real
+    // on-disk project tree (`main.twe` + `twe.toml` + `assets/`). The
+    // discovery + validation path is the same pipeline `twec build`
+    // runs before producing an artifact, so this test catches
+    // regressions that would prevent the demo shipping.
+    let demo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/survive_demo");
+    assert!(demo.is_dir(), "survive_demo project missing at {}", demo.display());
+    assert!(demo.join("main.twe").is_file());
+    assert!(demo.join("twe.toml").is_file());
+    assert!(demo.join("assets/hero.png").is_file());
+
+    let project = discover_project(&demo).expect("discover");
+    assert_eq!(project.name, "survive_demo");
+    assert!(
+        project.assets.iter().any(|a| a.bundle_key == "assets/hero.png"),
+        "hero asset must be picked up"
+    );
+    let manifest_path = project.manifest.as_ref().expect("manifest").clone();
+    let manifest = parse_manifest(&manifest_path).expect("parse manifest");
+    assert_eq!(manifest.default_config, Some(BuildConfig::Release));
+    let steam = manifest.steam.as_ref().expect("steam manifest set");
+    assert!(steam.enabled);
+    validate_project(&project).expect("survive_demo main.twe must validate");
+}
+
+#[test]
+fn survive_demo_round_trips_through_bundle_pipeline() {
+    // End-to-end: encode the demo project's bundle, write it to a
+    // tempfile, read it back through the public `twec info` path
+    // (`run_info`), and confirm the provenance + entry layout match
+    // what a Steam-class build would deliver.
+    let demo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/survive_demo");
+    let project = discover_project(&demo).expect("discover");
+    let bytes = encode_bundle_to_vec(
+        &project,
+        true,
+        BuildTarget::WindowsX86_64,
+        BuildConfig::Release,
+    )
+    .expect("encode");
+    let out_dir = std::env::temp_dir().join(format!(
+        "twec_survive_demo_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&out_dir).unwrap();
+    let bundle_path = out_dir.join("survive_demo.twebundle");
+    fs::write(&bundle_path, &bytes).unwrap();
+
+    let mut reader = BundleReader::open(&bundle_path).expect("open");
+    assert!(reader.has("main.twe"));
+    assert!(reader.has("assets/hero.png"));
+    assert!(reader.has(PROVENANCE_KEY));
+    assert_eq!(reader.header.flags & FLAG_ZSTD, FLAG_ZSTD);
+
+    let prov_bytes = reader.read(PROVENANCE_KEY).unwrap().expect("present");
+    let toml = std::str::from_utf8(&prov_bytes).unwrap();
+    let prov = BundleProvenance::from_toml(toml).expect("parse provenance");
+    assert_eq!(prov.project_name, "survive_demo");
+    assert_eq!(prov.target, "windows-x86_64");
+    assert_eq!(prov.config, "release");
+    assert!(prov.compress);
+    // 2 user-facing entries: main.twe + assets/hero.png.
+    assert_eq!(prov.entry_count, 2);
+
+    let exit = twec::build::run_info(&bundle_path);
+    assert_eq!(exit, 0);
+    let _ = fs::remove_dir_all(&out_dir);
+}
+
 #[test]
 fn read_asset_bytes_falls_through_when_no_bundle_set() {
     // Same fallthrough path as the cleared half of the previous

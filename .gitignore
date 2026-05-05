@@ -4,3 +4,11 @@ Cargo.lock.bak
 **/*.snap.new
 .idea/
 .vscode/
+
+# Phase 12: build artifacts produced by `twec build` (per-target
+# .exe / .app / .AppDir + Steam Depot layout). Reproducible from
+# source; not source.
+examples/*/dist/
+
+# Phase 11 crash dumps land at the repo root by default.
+twec-crash-*.log

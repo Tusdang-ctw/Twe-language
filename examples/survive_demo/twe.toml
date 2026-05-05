@@ -1,0 +1,23 @@
+# Phase 12 session 11 — EXIT GATE manifest. `twec build` reads this
+# to pick defaults so `twec build examples/survive_demo` does the
+# right thing without per-invocation flags.
+
+[project]
+name = "survive_demo"
+
+[build]
+default_config = "release"
+
+[build.release]
+# release is already (compress=true, bundle_assets=true, strip_debug=true)
+# by default; this section exists so a contributor can tweak per-build
+# behavior without touching the source tree.
+
+[steam]
+# Spacewar (480 / 481) until the game claims real ids — `twec build
+# --steam` produces a Depot layout that round-trips through `steamcmd`
+# even with these placeholder values.
+enabled = true
+app_id = 480
+depot_id = 481
+depot_description = "Twe survive demo (EXIT GATE)"
