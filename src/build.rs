@@ -135,6 +135,23 @@ pub struct ProjectManifest {
     /// in the manifest fall back to `ConfigOverride::default()` and
     /// then to the builtin per-config defaults.
     pub configs: std::collections::HashMap<String, ConfigOverride>,
+    /// Phase 12 session 9: Steam Depot integration. Populated from
+    /// `[steam]` in `twe.toml`. When present + `--steam` is passed
+    /// (or `[steam] enabled = true`), `twec build` produces a
+    /// Depot-shaped layout next to the regular artifact.
+    pub steam: Option<SteamManifest>,
+}
+
+/// Phase 12 session 9: per-project Steam configuration. App and
+/// depot ids default to Spacewar (`480` / `481`) — Valve's public
+/// test app — so a project that hasn't claimed real ids yet still
+/// produces a layout that round-trips through `steamcmd`.
+#[derive(Clone, Debug, Default)]
+pub struct SteamManifest {
+    pub enabled: bool,
+    pub app_id: Option<u32>,
+    pub depot_id: Option<u32>,
+    pub depot_description: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -268,6 +285,34 @@ pub fn parse_manifest(path: &Path) -> Result<ProjectManifest, String> {
             manifest.configs.insert(key.to_string(), ovr);
         }
     }
+    if let Some(steam) = value.get("steam").and_then(|v| v.as_table()) {
+        let mut s = SteamManifest::default();
+        if let Some(b) = steam.get("enabled").and_then(|v| v.as_bool()) {
+            s.enabled = b;
+        }
+        if let Some(id) = steam.get("app_id").and_then(|v| v.as_integer()) {
+            if id < 0 || id > u32::MAX as i64 {
+                return Err(format!(
+                    "{display}: steam.app_id = {id} is out of range (0..{})",
+                    u32::MAX
+                ));
+            }
+            s.app_id = Some(id as u32);
+        }
+        if let Some(id) = steam.get("depot_id").and_then(|v| v.as_integer()) {
+            if id < 0 || id > u32::MAX as i64 {
+                return Err(format!(
+                    "{display}: steam.depot_id = {id} is out of range (0..{})",
+                    u32::MAX
+                ));
+            }
+            s.depot_id = Some(id as u32);
+        }
+        if let Some(d) = steam.get("depot_description").and_then(|v| v.as_str()) {
+            s.depot_description = Some(d.to_string());
+        }
+        manifest.steam = Some(s);
+    }
     Ok(manifest)
 }
 
@@ -296,6 +341,11 @@ pub struct BuildArgs {
     pub config_explicit: bool,
     pub out: Option<PathBuf>,
     pub dry_run: bool,
+    /// Phase 12 session 9: when true, `twec build` produces a Steam
+    /// Depot layout (`<dist>/<name>.steam/`) next to the per-target
+    /// artifact. CLI flag `--steam`; manifest equivalent
+    /// `[steam] enabled = true`.
+    pub steam: bool,
 }
 
 #[derive(Debug)]
@@ -509,7 +559,16 @@ pub fn run(mut args: BuildArgs) -> i32 {
     // Windows targets we still ship the `.twebundle` artifact as a
     // pre-session-6/7 deliverable; that's exactly what session 4's
     // contract says — Windows is the EXIT-GATE platform.
-    match args.target {
+    // Phase 12 session 9: Steam Depot layout. Resolve the `--steam`
+    // flag against the manifest's `[steam] enabled` so a project can
+    // make Steam packaging the default once they've claimed an app id.
+    let steam_enabled = args.steam
+        || manifest
+            .as_ref()
+            .and_then(|m| m.steam.as_ref())
+            .map(|s| s.enabled)
+            .unwrap_or(false);
+    let exit = match args.target {
         BuildTarget::WindowsX86_64 if BuildTarget::host() == BuildTarget::WindowsX86_64 => {
             build_self_extracting(&project, &out_path, &args, &resolved)
         }
@@ -548,7 +607,140 @@ pub fn run(mut args: BuildArgs) -> i32 {
                 }
             }
         }
+    };
+    if exit == 0 && steam_enabled {
+        if let Err(e) = write_steam_layout(&project, &out_path, manifest.as_ref(), &args) {
+            eprintln!("error: writing Steam layout: {e}");
+            return 1;
+        }
     }
+    exit
+}
+
+/// Phase 12 session 9: produce a Steam Depot layout at
+/// `<out_path-parent>/<name>.steam/`. Layout follows the `steamcmd`
+/// + `depot_build` convention:
+///
+/// ```text
+/// <name>.steam/
+///   steam_appid.txt           — used by the Steamworks SDK to
+///                                connect a build to its app id
+///   app_build_<app_id>.vdf    — `steamcmd app_build` script
+///   depot_build_<depot_id>.vdf — depot manifest stub
+///   content/                  — DepotContentRoot. The artifact
+///                                produced by the per-target build
+///                                is what users on `steamcmd` push.
+/// ```
+///
+/// The `content/` directory is created empty (so layout tools can
+/// inspect a freshly-built project), and a `README.txt` explains
+/// what to drop in. Wiring per-target artifact copies in lands as
+/// a follow-on once `examples/survive` actually goes through the
+/// layout end-to-end (Phase 12 session 11 — EXIT GATE).
+pub fn write_steam_layout(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    manifest: Option<&ProjectManifest>,
+    _args: &BuildArgs,
+) -> Result<(), String> {
+    let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
+    let steam_dir = parent.join(format!("{}.steam", project.name));
+    let content_dir = steam_dir.join("content");
+    fs::create_dir_all(&content_dir)
+        .map_err(|e| format!("cannot create '{}': {e}", content_dir.display()))?;
+
+    let steam = manifest.and_then(|m| m.steam.as_ref());
+    // Spacewar (480 / 481) is Valve's public test app — running
+    // `steamcmd app_build` against it produces no real depot, but
+    // the layout round-trips through Steamworks tooling. Real
+    // projects override via `[steam] app_id = ...` in twe.toml.
+    let app_id = steam.and_then(|s| s.app_id).unwrap_or(480);
+    let depot_id = steam.and_then(|s| s.depot_id).unwrap_or(481);
+    let description = steam
+        .and_then(|s| s.depot_description.clone())
+        .unwrap_or_else(|| format!("{} build", project.name));
+
+    fs::write(steam_dir.join("steam_appid.txt"), format!("{app_id}\n"))
+        .map_err(|e| format!("cannot write steam_appid.txt: {e}"))?;
+
+    let app_build = render_app_build_vdf(app_id, depot_id, &description);
+    fs::write(
+        steam_dir.join(format!("app_build_{app_id}.vdf")),
+        app_build,
+    )
+    .map_err(|e| format!("cannot write app_build vdf: {e}"))?;
+
+    let depot_build = render_depot_build_vdf(depot_id);
+    fs::write(
+        steam_dir.join(format!("depot_build_{depot_id}.vdf")),
+        depot_build,
+    )
+    .map_err(|e| format!("cannot write depot_build vdf: {e}"))?;
+
+    let readme = format!(
+        "Steam Depot layout for `{name}` (app {app_id}, depot {depot_id}).\n\n\
+         Drop the per-target build artifact (the `.exe` / `.app` / `.AppDir`)\n\
+         into `content/` before running `steamcmd +run_app_build app_build_{app_id}.vdf`.\n\n\
+         Override the app/depot ids by adding `[steam]` to your twe.toml:\n\n\
+         \t[steam]\n\
+         \tenabled = true\n\
+         \tapp_id = 1234560\n\
+         \tdepot_id = 1234561\n",
+        name = project.name,
+    );
+    fs::write(steam_dir.join("README.txt"), readme)
+        .map_err(|e| format!("cannot write README.txt: {e}"))?;
+
+    eprintln!(
+        "[twec build] wrote Steam Depot layout: {} (app {}, depot {})",
+        steam_dir.display(),
+        app_id,
+        depot_id
+    );
+    Ok(())
+}
+
+/// Render the `app_build_<appid>.vdf` Steamworks build script. The
+/// VDF format is Valve's KeyValues — a brace-delimited tree of
+/// quoted key/value pairs. The minimal app_build includes:
+/// `appid`, `desc`, `contentroot`, `buildoutput`, `depots` table.
+pub fn render_app_build_vdf(app_id: u32, depot_id: u32, description: &str) -> String {
+    let escaped = description.replace('"', "\\\"");
+    format!(
+        "\"appbuild\"\n\
+         {{\n\
+         \t\"appid\" \"{app_id}\"\n\
+         \t\"desc\" \"{escaped}\"\n\
+         \t\"buildoutput\" \"output\"\n\
+         \t\"contentroot\" \"content\"\n\
+         \t\"setlive\" \"\"\n\
+         \t\"preview\" \"0\"\n\
+         \t\"local\" \"\"\n\
+         \t\"depots\"\n\
+         \t{{\n\
+         \t\t\"{depot_id}\" \"depot_build_{depot_id}.vdf\"\n\
+         \t}}\n\
+         }}\n"
+    )
+}
+
+/// Render the per-depot VDF. A depot manifest at minimum names the
+/// content root and the file mapping (`*` = pick up everything).
+pub fn render_depot_build_vdf(depot_id: u32) -> String {
+    format!(
+        "\"DepotBuildConfig\"\n\
+         {{\n\
+         \t\"DepotID\" \"{depot_id}\"\n\
+         \t\"ContentRoot\" \"content\"\n\
+         \t\"FileMapping\"\n\
+         \t{{\n\
+         \t\t\"LocalPath\" \"*\"\n\
+         \t\t\"DepotPath\" \".\"\n\
+         \t\t\"recursive\" \"1\"\n\
+         \t}}\n\
+         \t\"FileExclusion\" \"*.pdb\"\n\
+         }}\n"
+    )
 }
 
 /// Phase 12 session 4: produce a single self-extracting `.exe` by

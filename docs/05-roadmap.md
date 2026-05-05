@@ -458,10 +458,10 @@ Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a
 | 3 | `BundleReader` + path-redirected stdlib loaders (sprite / font / audio / glb) | shipped |
 | 4 | `twec build --target windows-x86_64` end-to-end (self-extracting `.exe`) | shipped |
 | 5 | Build configs (dev / release / profile) via `twe.toml` | shipped |
-| 6 | `twec build --target macos-aarch64` (.app skeleton, host-only first) | pending |
-| 7 | `twec build --target linux-x86_64` + AppImage scaffolding | pending |
-| 8 | Bundle compression (zstd) | pending |
-| 9 | Steam SDK redistributable layout (`steam_appid.txt`, Depot manifest stub) | pending |
+| 6 | `twec build --target macos-aarch64` (.app skeleton, host-only first) | shipped |
+| 7 | `twec build --target linux-x86_64` + AppImage scaffolding | shipped |
+| 8 | Bundle compression (zstd) | shipped |
+| 9 | Steam SDK redistributable layout (`steam_appid.txt`, Depot manifest stub) | shipped |
 | 10 | Build provenance + `twec build --info <bundle.exe>` | pending |
 | 11 | EXIT GATE — `examples/survive` ships as a Steam-class `.exe` | pending |
 | 12 | Closeout | pending |

@@ -7,7 +7,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      play3d <file> | \
      play_visual <file> | \
      profile [--frames N] [-o trace.json] <file> | \
-     build [--target T] [--config C] [--out PATH] [--dry-run] <project_dir> | \
+     build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] <project_dir> | \
      bundle [-o PATH] <project_dir> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
@@ -169,6 +169,7 @@ fn handle_build(args: &[String]) -> i32 {
     let mut config: Option<BuildConfig> = None;
     let mut out: Option<std::path::PathBuf> = None;
     let mut dry_run = false;
+    let mut steam = false;
     let mut project_dir: Option<std::path::PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -214,6 +215,10 @@ fn handle_build(args: &[String]) -> i32 {
                 dry_run = true;
                 i += 1;
             }
+            "--steam" => {
+                steam = true;
+                i += 1;
+            }
             other if other.starts_with("--") => {
                 eprintln!("error: unknown flag '{other}'");
                 eprintln!("{USAGE}");
@@ -244,6 +249,7 @@ fn handle_build(args: &[String]) -> i32 {
         config_explicit,
         out,
         dry_run,
+        steam,
     };
     crate::build::run(args)
 }

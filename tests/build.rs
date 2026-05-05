@@ -9,8 +9,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use twec::build::{
-    discover_project, parse_manifest, render_apprun_script, render_desktop_entry,
-    render_info_plist, resolve_config, validate_project, write_bundle, write_bundle_with_options,
+    discover_project, parse_manifest, render_app_build_vdf, render_apprun_script,
+    render_depot_build_vdf, render_desktop_entry, render_info_plist, resolve_config,
+    validate_project, write_bundle, write_bundle_with_options, write_steam_layout, BuildArgs,
     BuildConfig, BuildTarget,
 };
 use twec::bundle::{
@@ -527,6 +528,103 @@ fn manifest_compress_override_round_trips() {
     let resolved = resolve_config(Some(&manifest), BuildConfig::Release);
     assert!(!resolved.compress, "manifest override should disable compression");
     assert!(resolved.bundle_assets);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------- Phase 12 session 9: Steam Depot layout ----------
+
+#[test]
+fn app_build_vdf_has_required_keys() {
+    let vdf = render_app_build_vdf(480, 481, "test build");
+    assert!(vdf.contains("\"appbuild\""));
+    assert!(vdf.contains("\"appid\" \"480\""));
+    assert!(vdf.contains("\"depots\""));
+    assert!(vdf.contains("\"481\" \"depot_build_481.vdf\""));
+    assert!(vdf.contains("\"contentroot\" \"content\""));
+}
+
+#[test]
+fn depot_build_vdf_has_required_keys() {
+    let vdf = render_depot_build_vdf(481);
+    assert!(vdf.contains("\"DepotBuildConfig\""));
+    assert!(vdf.contains("\"DepotID\" \"481\""));
+    assert!(vdf.contains("\"FileMapping\""));
+    assert!(vdf.contains("\"recursive\" \"1\""));
+}
+
+#[test]
+fn write_steam_layout_creates_expected_files() {
+    let dir = temp_project("steam_layout");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let out_path = dir.join("dist").join(&project.name);
+    fs::create_dir_all(out_path.parent().unwrap()).unwrap();
+    let args = BuildArgs {
+        project_dir: dir.clone(),
+        target: BuildTarget::host(),
+        target_explicit: false,
+        config: BuildConfig::Release,
+        config_explicit: false,
+        out: None,
+        dry_run: false,
+        steam: true,
+    };
+    write_steam_layout(&project, &out_path, None, &args).expect("layout");
+    let steam_dir = out_path
+        .parent()
+        .unwrap()
+        .join(format!("{}.steam", project.name));
+    assert!(steam_dir.is_dir());
+    assert!(steam_dir.join("steam_appid.txt").is_file());
+    assert!(steam_dir.join("content").is_dir());
+    assert!(steam_dir.join("README.txt").is_file());
+    let appid = fs::read_to_string(steam_dir.join("steam_appid.txt")).unwrap();
+    assert_eq!(appid.trim(), "480");
+    assert!(steam_dir.join("app_build_480.vdf").is_file());
+    assert!(steam_dir.join("depot_build_481.vdf").is_file());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn steam_manifest_overrides_app_id() {
+    let dir = temp_project("steam_manifest");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        "[steam]\nenabled = true\napp_id = 1234560\ndepot_id = 1234561\ndepot_description = \"survive v0.6\"\n",
+    )
+    .unwrap();
+    let manifest = parse_manifest(&dir.join("twe.toml")).expect("parse");
+    let steam = manifest.steam.as_ref().expect("steam manifest parsed");
+    assert!(steam.enabled);
+    assert_eq!(steam.app_id, Some(1234560));
+    assert_eq!(steam.depot_id, Some(1234561));
+    assert_eq!(steam.depot_description.as_deref(), Some("survive v0.6"));
+
+    let project = discover_project(&dir).expect("discover");
+    let out_path = dir.join("dist").join(&project.name);
+    fs::create_dir_all(out_path.parent().unwrap()).unwrap();
+    let args = BuildArgs {
+        project_dir: dir.clone(),
+        target: BuildTarget::host(),
+        target_explicit: false,
+        config: BuildConfig::Release,
+        config_explicit: false,
+        out: None,
+        dry_run: false,
+        steam: true,
+    };
+    write_steam_layout(&project, &out_path, Some(&manifest), &args).expect("layout");
+    let steam_dir = out_path
+        .parent()
+        .unwrap()
+        .join(format!("{}.steam", project.name));
+    let appid = fs::read_to_string(steam_dir.join("steam_appid.txt")).unwrap();
+    assert_eq!(appid.trim(), "1234560");
+    assert!(steam_dir.join("app_build_1234560.vdf").is_file());
+    let app_build = fs::read_to_string(steam_dir.join("app_build_1234560.vdf")).unwrap();
+    assert!(app_build.contains("\"1234561\" \"depot_build_1234561.vdf\""));
+    assert!(app_build.contains("survive v0.6"));
     let _ = fs::remove_dir_all(&dir);
 }
 
