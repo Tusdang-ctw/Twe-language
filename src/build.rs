@@ -143,6 +143,9 @@ pub struct ConfigOverride {
     pub bundle_assets: Option<bool>,
     pub strip_debug: Option<bool>,
     pub profile: Option<bool>,
+    /// Phase 12 session 8: opt into zstd-compressed bundle bodies.
+    /// Manifest key `compress` (`[build.<config>] compress = true`).
+    pub compress: Option<bool>,
 }
 
 /// Resolved per-config flags. The build pipeline reads this after
@@ -157,6 +160,10 @@ pub struct ResolvedConfig {
     pub bundle_assets: bool,
     pub strip_debug: bool,
     pub profile: bool,
+    /// Phase 12 session 8: zstd-compress bundle bodies. `dev` skips
+    /// it (faster builds, no ratio benefit during inner-loop), `release`
+    /// and `profile` enable.
+    pub compress: bool,
 }
 
 impl ResolvedConfig {
@@ -174,6 +181,7 @@ impl ResolvedConfig {
                 bundle_assets: false,
                 strip_debug: false,
                 profile: false,
+                compress: false,
             },
             BuildConfig::Release => Self {
                 config,
@@ -181,6 +189,7 @@ impl ResolvedConfig {
                 bundle_assets: true,
                 strip_debug: true,
                 profile: false,
+                compress: true,
             },
             BuildConfig::Profile => Self {
                 config,
@@ -188,6 +197,7 @@ impl ResolvedConfig {
                 bundle_assets: true,
                 strip_debug: true,
                 profile: true,
+                compress: true,
             },
         }
     }
@@ -204,6 +214,9 @@ impl ResolvedConfig {
         }
         if let Some(v) = ovr.profile {
             self.profile = v;
+        }
+        if let Some(v) = ovr.compress {
+            self.compress = v;
         }
     }
 }
@@ -250,6 +263,7 @@ pub fn parse_manifest(path: &Path) -> Result<ProjectManifest, String> {
                 bundle_assets: tbl.get("bundle_assets").and_then(|v| v.as_bool()),
                 strip_debug: tbl.get("strip_debug").and_then(|v| v.as_bool()),
                 profile: tbl.get("profile").and_then(|v| v.as_bool()),
+                compress: tbl.get("compress").and_then(|v| v.as_bool()),
             };
             manifest.configs.insert(key.to_string(), ovr);
         }
@@ -466,13 +480,14 @@ pub fn run(mut args: BuildArgs) -> i32 {
     );
     eprintln!(
         "[twec build] target:  {}    config: {} \
-         (hot_reload={}, bundle_assets={}, strip_debug={}, profile={})",
+         (hot_reload={}, bundle_assets={}, strip_debug={}, profile={}, compress={})",
         args.target.label(),
         args.config.label(),
         resolved.hot_reload,
         resolved.bundle_assets,
         resolved.strip_debug,
         resolved.profile,
+        resolved.compress,
     );
     eprintln!("[twec build] out:     {}", out_path.display());
     if let Some(m) = &project.manifest {
@@ -496,25 +511,29 @@ pub fn run(mut args: BuildArgs) -> i32 {
     // contract says — Windows is the EXIT-GATE platform.
     match args.target {
         BuildTarget::WindowsX86_64 if BuildTarget::host() == BuildTarget::WindowsX86_64 => {
-            build_self_extracting(&project, &out_path, &args)
+            build_self_extracting(&project, &out_path, &args, &resolved)
         }
         BuildTarget::MacOsAarch64 | BuildTarget::MacOsX86_64 => {
-            build_macos_app(&project, &out_path, &args)
+            build_macos_app(&project, &out_path, &args, &resolved)
         }
-        BuildTarget::LinuxX86_64 => build_linux_appdir(&project, &out_path, &args),
+        BuildTarget::LinuxX86_64 => build_linux_appdir(&project, &out_path, &args, &resolved),
         #[allow(unreachable_patterns)]
         _ => {
             // Standalone bundle as the universal fallback. Today
             // every BuildTarget variant has its own arm above; this
             // arm exists so future targets land safely.
             let bundle_out = bundle_out_path(&out_path);
-            match write_bundle(&project, &bundle_out) {
+            let opts = crate::bundle::EncodeOptions {
+                compress: resolved.compress,
+            };
+            match write_bundle_with_options(&project, &bundle_out, opts) {
                 Ok(bytes_written) => {
                     eprintln!(
-                        "[twec build] wrote bundle: {} ({} bytes, {} entries)",
+                        "[twec build] wrote bundle: {} ({} bytes, {} entries{})",
                         bundle_out.display(),
                         bytes_written,
-                        project.assets.len() + 1
+                        project.assets.len() + 1,
+                        if resolved.compress { ", zstd" } else { "" }
                     );
                     eprintln!(
                         "[twec build] note: real {} binary production lands in a later session; \
@@ -541,10 +560,11 @@ fn build_self_extracting(
     project: &DiscoveredProject,
     out_path: &Path,
     _args: &BuildArgs,
+    resolved: &ResolvedConfig,
 ) -> i32 {
     // Encode the bundle to memory (small enough — full survive.twe
     // tree is ~1MB; v0.6 doesn't ship multi-GB games).
-    let bundle_bytes = match encode_bundle_to_vec(project) {
+    let bundle_bytes = match encode_bundle_to_vec(project, resolved.compress) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -577,7 +597,10 @@ fn build_self_extracting(
     }
 }
 
-fn encode_bundle_to_vec(project: &DiscoveredProject) -> Result<Vec<u8>, String> {
+fn encode_bundle_to_vec(
+    project: &DiscoveredProject,
+    compress: bool,
+) -> Result<Vec<u8>, String> {
     let main_bytes = fs::read(&project.main)
         .map_err(|e| format!("cannot read '{}': {e}", project.main.display()))?;
     let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(project.assets.len() + 1);
@@ -588,7 +611,9 @@ fn encode_bundle_to_vec(project: &DiscoveredProject) -> Result<Vec<u8>, String> 
         entries.push((asset.bundle_key.clone(), bytes));
     }
     let mut buf = Vec::new();
-    crate::bundle::encode(&mut buf, &entries).map_err(|e| format!("encoding bundle: {e}"))?;
+    let opts = crate::bundle::EncodeOptions { compress };
+    crate::bundle::encode_with_options(&mut buf, &entries, opts)
+        .map_err(|e| format!("encoding bundle: {e}"))?;
     Ok(buf)
 }
 
@@ -605,10 +630,23 @@ fn bundle_out_path(out_path: &Path) -> PathBuf {
 
 /// Walk the project + write a `.twebundle` to `out_path`. Returns
 /// the number of bytes written. Used both by `twec build` and by
-/// the standalone `twec bundle` subcommand.
+/// the standalone `twec bundle` subcommand. Defaults to no
+/// compression — call `write_bundle_with_options` to opt in.
 pub fn write_bundle(
     project: &DiscoveredProject,
     out_path: &Path,
+) -> Result<u64, String> {
+    write_bundle_with_options(project, out_path, crate::bundle::EncodeOptions::default())
+}
+
+/// Phase 12 session 8: variant of `write_bundle` that takes
+/// `EncodeOptions`. The build pipeline picks compression based on
+/// the resolved config; the `twec bundle` subcommand defaults to
+/// uncompressed for diff-friendly review.
+pub fn write_bundle_with_options(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    opts: crate::bundle::EncodeOptions,
 ) -> Result<u64, String> {
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -630,7 +668,7 @@ pub fn write_bundle(
     }
     let mut file = fs::File::create(out_path)
         .map_err(|e| format!("cannot create '{}': {e}", out_path.display()))?;
-    crate::bundle::encode(&mut file, &entries)
+    crate::bundle::encode_with_options(&mut file, &entries, opts)
         .map_err(|e| format!("encoding bundle: {e}"))
 }
 
@@ -653,7 +691,12 @@ pub fn write_bundle(
 /// produce the directory layout but drop a `.twebundle` next to a
 /// stub README — a real .app needs a Mach-O runtime and we don't
 /// have a cross-compiled one yet (session 11 / cargo-dist territory).
-fn build_macos_app(project: &DiscoveredProject, out_path: &Path, _args: &BuildArgs) -> i32 {
+fn build_macos_app(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    _args: &BuildArgs,
+    resolved: &ResolvedConfig,
+) -> i32 {
     // Force `.app` extension for the output directory so the layout
     // matches macOS expectations even when `--out` skipped it.
     let app_dir = if out_path.extension().and_then(|s| s.to_str()) == Some("app") {
@@ -678,7 +721,7 @@ fn build_macos_app(project: &DiscoveredProject, out_path: &Path, _args: &BuildAr
         eprintln!("error: cannot write '{}': {e}", plist_path.display());
         return 1;
     }
-    let bundle_bytes = match encode_bundle_to_vec(project) {
+    let bundle_bytes = match encode_bundle_to_vec(project, resolved.compress) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -799,7 +842,12 @@ pub fn render_info_plist(exec_name: &str, version: &str) -> String {
 /// path). On any other host we drop a `.twebundle` next to a stub
 /// README — packaging into a real AppImage requires `appimagetool`
 /// (off-tree) and a Linux-native Twe runtime.
-fn build_linux_appdir(project: &DiscoveredProject, out_path: &Path, _args: &BuildArgs) -> i32 {
+fn build_linux_appdir(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    _args: &BuildArgs,
+    resolved: &ResolvedConfig,
+) -> i32 {
     let appdir = if out_path.extension().and_then(|s| s.to_str()) == Some("AppDir") {
         out_path.to_path_buf()
     } else {
@@ -833,7 +881,7 @@ fn build_linux_appdir(project: &DiscoveredProject, out_path: &Path, _args: &Buil
             let _ = fs::set_permissions(&apprun_path, perms);
         }
     }
-    let bundle_bytes = match encode_bundle_to_vec(project) {
+    let bundle_bytes = match encode_bundle_to_vec(project, resolved.compress) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");

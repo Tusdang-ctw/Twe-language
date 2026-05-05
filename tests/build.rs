@@ -10,11 +10,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use twec::build::{
     discover_project, parse_manifest, render_apprun_script, render_desktop_entry,
-    render_info_plist, resolve_config, validate_project, write_bundle, BuildConfig, BuildTarget,
+    render_info_plist, resolve_config, validate_project, write_bundle, write_bundle_with_options,
+    BuildConfig, BuildTarget,
 };
 use twec::bundle::{
-    append_to_binary, clear_active_bundle, detect_in_file, has_active_bundle, read_asset_bytes,
-    set_active_bundle, BundleReader,
+    append_to_binary, clear_active_bundle, detect_in_file, encode_with_options, has_active_bundle,
+    read_asset_bytes, set_active_bundle, BundleReader, EncodeOptions, FLAG_ZSTD,
 };
 
 /// Serializes tests that mutate the process-global `ACTIVE_BUNDLE`
@@ -275,6 +276,7 @@ fn resolve_config_applies_manifest_overrides() {
             bundle_assets: None,
             strip_debug: Some(false),
             profile: None,
+            compress: None,
         },
     );
     let resolved = resolve_config(Some(&manifest), BuildConfig::Release);
@@ -444,6 +446,88 @@ fn apprun_script_resolves_relative_to_self() {
         "must exec the AppDir binary"
     );
     assert!(script.contains("\"$@\""), "must forward arguments");
+}
+
+// ---------- Phase 12 session 8: zstd bundle compression ----------
+
+#[test]
+fn compressed_bundle_round_trips() {
+    let dir = temp_project("zstd_round_trip");
+    let bundle_path = dir.join("compressed.twebundle");
+    let body: Vec<u8> = std::iter::repeat_n(b'A', 16 * 1024).collect();
+    let entries = vec![
+        ("main.twe".to_string(), b"print(1)\n".to_vec()),
+        ("assets/big.txt".to_string(), body.clone()),
+    ];
+    let mut compressed_buf = Vec::new();
+    encode_with_options(
+        &mut compressed_buf,
+        &entries,
+        EncodeOptions { compress: true },
+    )
+    .unwrap();
+    let mut raw_buf = Vec::new();
+    encode_with_options(&mut raw_buf, &entries, EncodeOptions::default()).unwrap();
+    assert!(
+        compressed_buf.len() < raw_buf.len() / 2,
+        "compressed ({}) should be far smaller than raw ({})",
+        compressed_buf.len(),
+        raw_buf.len()
+    );
+    fs::write(&bundle_path, &compressed_buf).unwrap();
+    let mut reader = BundleReader::open(&bundle_path).expect("open");
+    assert_eq!(reader.header.flags & FLAG_ZSTD, FLAG_ZSTD);
+    let main = reader.read("main.twe").unwrap().expect("present");
+    assert_eq!(main, b"print(1)\n");
+    let big = reader.read("assets/big.txt").unwrap().expect("present");
+    assert_eq!(big, body, "decompressed body mismatches input");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn write_bundle_with_options_compress_flag_round_trips_through_reader() {
+    let dir = temp_project("zstd_pipeline");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    let asset_body: Vec<u8> = std::iter::repeat_n(b'X', 8 * 1024).collect();
+    fs::write(dir.join("assets/blob.bin"), &asset_body).unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let out = dir.join("out.twebundle");
+    write_bundle_with_options(&project, &out, EncodeOptions { compress: true })
+        .expect("write compressed");
+    let mut reader = BundleReader::open(&out).expect("open");
+    assert_eq!(reader.header.flags & FLAG_ZSTD, FLAG_ZSTD);
+    assert_eq!(
+        reader.read("assets/blob.bin").unwrap().expect("present"),
+        asset_body
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn release_config_default_compresses() {
+    let release = resolve_config(None, BuildConfig::Release);
+    assert!(release.compress, "release should compress by default");
+    let dev = resolve_config(None, BuildConfig::Dev);
+    assert!(!dev.compress, "dev should skip compression");
+    let profile = resolve_config(None, BuildConfig::Profile);
+    assert!(profile.compress, "profile should compress");
+}
+
+#[test]
+fn manifest_compress_override_round_trips() {
+    let dir = temp_project("compress_override");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        "[build.release]\ncompress = false\n",
+    )
+    .unwrap();
+    let manifest = parse_manifest(&dir.join("twe.toml")).expect("parse");
+    let resolved = resolve_config(Some(&manifest), BuildConfig::Release);
+    assert!(!resolved.compress, "manifest override should disable compression");
+    assert!(resolved.bundle_assets);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

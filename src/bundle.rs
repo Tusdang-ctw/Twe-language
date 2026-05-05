@@ -42,6 +42,21 @@ use std::sync::Mutex;
 pub const MAGIC: &[u8; 8] = b"TWEBUND1";
 pub const FORMAT_VERSION: u32 = 1;
 
+/// Phase 12 session 8: bundle-flags bit 0 — when set, every entry's
+/// body region holds a complete zstd frame and `body_length` is the
+/// compressed size on disk. The reader runs `zstd::decode_all` to
+/// recover the original bytes; zstd frames carry their own
+/// uncompressed-size hint so we don't need a separate field per
+/// entry. Bit cleared (the v1 default) means bodies are stored raw.
+pub const FLAG_ZSTD: u32 = 1 << 0;
+
+/// Encoder options. Today only the compress switch — sessions 9+ may
+/// add per-target tuning (compression level, dictionary).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EncodeOptions {
+    pub compress: bool,
+}
+
 /// Phase 12 session 4: footer magic for the self-extracting `.exe`
 /// produced by `twec build`. The build pipeline copies a runtime
 /// binary, appends a `.twebundle`, and writes a 24-byte footer:
@@ -82,11 +97,22 @@ impl BundleHeader {
     }
 }
 
-/// Encode a bundle from an in-memory list of (path, body) pairs. The
-/// caller owns ordering — entries are written in iteration order;
-/// the build pipeline sorts upstream so the on-disk order is
-/// reproducible. Returns the number of bytes written.
+/// Encode a bundle from an in-memory list of (path, body) pairs.
+/// Defaults to the uncompressed path; call `encode_with_options` to
+/// turn on zstd. Returns the number of bytes written.
 pub fn encode<W: Write>(w: &mut W, files: &[(String, Vec<u8>)]) -> io::Result<u64> {
+    encode_with_options(w, files, EncodeOptions::default())
+}
+
+/// Phase 12 session 8: same as `encode`, parameterized over
+/// `EncodeOptions`. When `opts.compress` is set, every body is run
+/// through `zstd::encode_all` and bit 0 of the bundle flags is
+/// raised; `BundleReader::read` decompresses transparently.
+pub fn encode_with_options<W: Write>(
+    w: &mut W,
+    files: &[(String, Vec<u8>)],
+    opts: EncodeOptions,
+) -> io::Result<u64> {
     if files.len() > u32::MAX as usize {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -108,6 +134,26 @@ pub fn encode<W: Write>(w: &mut W, files: &[(String, Vec<u8>)]) -> io::Result<u6
         }
     }
 
+    // Pre-compress all bodies up front so we know each one's on-disk
+    // length before writing the index. The encode pass otherwise
+    // can't know offsets for entry N+1 until entry N is finalized.
+    // Tiny v0.6-scale projects (<1MB) make this trivial to hold in
+    // memory; multi-GB bundles aren't on the v1.0 critical path.
+    let on_disk: Vec<Vec<u8>> = if opts.compress {
+        files
+            .iter()
+            .map(|(_, body)| {
+                // Level 3 is zstd's CLI default — good ratio/speed
+                // balance, and Steam's depot tooling lands in the
+                // same neighborhood. A `level` knob is post-v0.6.
+                zstd::encode_all(body.as_slice(), 3)
+            })
+            .collect::<io::Result<Vec<_>>>()?
+    } else {
+        files.iter().map(|(_, b)| b.clone()).collect()
+    };
+    let flags: u32 = if opts.compress { FLAG_ZSTD } else { 0 };
+
     // Compute the body region offset: 8 magic + 4 version + 4 flags
     // + 4 count + 4 body_offset + sum(per-entry index size).
     let header_size: u64 = 8 + 4 + 4 + 4 + 4;
@@ -121,13 +167,13 @@ pub fn encode<W: Write>(w: &mut W, files: &[(String, Vec<u8>)]) -> io::Result<u6
     // Header.
     w.write_all(MAGIC)?;
     w.write_all(&FORMAT_VERSION.to_le_bytes())?;
-    w.write_all(&0u32.to_le_bytes())?;
+    w.write_all(&flags.to_le_bytes())?;
     w.write_all(&(files.len() as u32).to_le_bytes())?;
     w.write_all(&(body_offset as u32).to_le_bytes())?;
 
     // Index — assigns absolute body offsets ahead of writing any body.
     let mut cursor = body_offset;
-    for (path, body) in files {
+    for ((path, _), body) in files.iter().zip(on_disk.iter()) {
         w.write_all(&(path.len() as u16).to_le_bytes())?;
         w.write_all(path.as_bytes())?;
         w.write_all(&cursor.to_le_bytes())?;
@@ -138,7 +184,7 @@ pub fn encode<W: Write>(w: &mut W, files: &[(String, Vec<u8>)]) -> io::Result<u6
     }
 
     // Bodies — concatenated, no padding.
-    for (_, body) in files {
+    for body in &on_disk {
         w.write_all(body)?;
     }
 
@@ -266,7 +312,9 @@ impl BundleReader {
     }
 
     /// Read a file body by path. Returns `None` if the path isn't in
-    /// the index; an `Err` only on actual IO failure.
+    /// the index; an `Err` only on actual IO failure. Phase 12
+    /// session 8: when the bundle's `FLAG_ZSTD` is set, the on-disk
+    /// body is run through `zstd::decode_all` before returning.
     pub fn read(&mut self, path: &str) -> io::Result<Option<Vec<u8>>> {
         let Some(&(off, len)) = self.index.get(path) else {
             return Ok(None);
@@ -274,6 +322,10 @@ impl BundleReader {
         self.file.seek(SeekFrom::Start(self.base_offset + off))?;
         let mut buf = vec![0u8; len as usize];
         self.file.read_exact(&mut buf)?;
+        if self.header.flags & FLAG_ZSTD != 0 {
+            let decoded = zstd::decode_all(buf.as_slice())?;
+            return Ok(Some(decoded));
+        }
         Ok(Some(buf))
     }
 }

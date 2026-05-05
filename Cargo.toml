@@ -53,6 +53,14 @@ gilrs = "0.10"
 # on the Windows + macOS + Linux trio that v1.0 targets.
 arboard = "3"
 
+# Phase 12 session 8: zstd bundle-body compression. Roadmap names
+# zstd specifically — it's the modern speed/ratio sweet spot and
+# what Steam Depot uses internally. The `zstd` crate vendors libzstd
+# via cc, so no external native dep on Windows / macOS / Linux. Only
+# enabled via the bundle's `flags` bit 0; uncompressed bundles still
+# round-trip without touching the codec.
+zstd = "0.13"
+
 # Phase 12 session 5: `twe.toml` project manifest parsing. TOML is
 # the de-facto Rust config format and v1.0 will need it for several
 # more things (asset-pipeline rules, cross-platform build matrix,
