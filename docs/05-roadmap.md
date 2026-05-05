@@ -449,7 +449,9 @@ Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a
 
 ## Phase 12 — v0.6 — Asset pipeline + cross-platform build
 
-**Status:** **active.** Session breakdown (twelve, mirroring Phase 10 / 11 cadence):
+**Status:** **closed 2026-05-05** per `docs/changes/2026-05-05-phase-12-closeout.md`. All twelve sessions shipped; `twec build examples/survive_demo` produces a self-extracting Windows `.exe` that mounts its embedded bundle at startup and launches the game with no Twe install on the target machine. Cross-compile to macOS / Linux ships the `.app` / `.AppDir` directory layouts; the Mach-O / ELF runtime that fills them is Phase-7 release-engineering work. **654 tests pass.**
+
+Session breakdown (twelve, mirroring Phase 10 / 11 cadence):
 
 | # | Session | State |
 |---|---------|-------|
@@ -462,9 +464,9 @@ Runs in parallel with Phase 9 once fonts + atlases land. **Theme:** everything a
 | 7 | `twec build --target linux-x86_64` + AppImage scaffolding | shipped |
 | 8 | Bundle compression (zstd) | shipped |
 | 9 | Steam SDK redistributable layout (`steam_appid.txt`, Depot manifest stub) | shipped |
-| 10 | Build provenance + `twec build --info <bundle.exe>` | pending |
-| 11 | EXIT GATE — `examples/survive` ships as a Steam-class `.exe` | pending |
-| 12 | Closeout | pending |
+| 10 | Build provenance + `twec info <path>` | shipped |
+| 11 | EXIT GATE — `examples/survive_demo` ships as a Steam-class `.exe` | shipped |
+| 12 | Closeout | shipped |
 
 **Theme:** `twec build my_game/ --target windows-x86_64` produces a single distributable.
 
