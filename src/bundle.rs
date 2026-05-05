@@ -57,6 +57,111 @@ pub struct EncodeOptions {
     pub compress: bool,
 }
 
+/// Phase 12 session 10: well-known bundle entry key for build
+/// provenance. The build pipeline writes a TOML-encoded
+/// `BundleProvenance` here; `twec info <path>` reads it back. The
+/// dot-prefixed `_twec/` namespace keeps it from colliding with
+/// user-authored asset paths (which always start with `assets/`).
+pub const PROVENANCE_KEY: &str = "_twec/provenance.toml";
+
+/// Phase 12 session 10: build provenance recorded inside every
+/// bundle the `twec build` pipeline produces. The fields are the
+/// minimal set a player / packager needs to answer "what did I
+/// just receive?": which twec produced it, on what host, when,
+/// for which target / config, and how many entries followed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundleProvenance {
+    pub twec_version: String,
+    pub host_os: String,
+    pub host_arch: String,
+    pub build_unix_secs: u64,
+    pub project_name: String,
+    pub target: String,
+    pub config: String,
+    pub compress: bool,
+    /// User-facing entry count — excludes the provenance entry itself.
+    pub entry_count: u32,
+}
+
+impl BundleProvenance {
+    /// Serialize to a stable TOML form. Hand-written rather than
+    /// going through `toml::ser` because the schema is fixed and
+    /// the dependency surface stays smaller — `toml::de` is the
+    /// only side we need from the toml crate today.
+    pub fn to_toml(&self) -> String {
+        format!(
+            "# twec build provenance — written by `twec build`.\n\
+             # Read by `twec info <path>`.\n\
+             [provenance]\n\
+             twec_version = \"{ver}\"\n\
+             host_os = \"{os}\"\n\
+             host_arch = \"{arch}\"\n\
+             build_unix_secs = {secs}\n\
+             project_name = \"{name}\"\n\
+             target = \"{tgt}\"\n\
+             config = \"{cfg}\"\n\
+             compress = {compress}\n\
+             entry_count = {count}\n",
+            ver = self.twec_version,
+            os = self.host_os,
+            arch = self.host_arch,
+            secs = self.build_unix_secs,
+            name = escape_toml_string(&self.project_name),
+            tgt = self.target,
+            cfg = self.config,
+            compress = self.compress,
+            count = self.entry_count,
+        )
+    }
+
+    /// Parse the TOML produced by `to_toml`. Forward-compatible:
+    /// unknown keys are ignored. Missing required keys produce an
+    /// `Err` with the bad key named.
+    pub fn from_toml(src: &str) -> Result<Self, String> {
+        let value: toml::Value = src
+            .parse()
+            .map_err(|e| format!("provenance: invalid TOML: {e}"))?;
+        let table = value
+            .get("provenance")
+            .and_then(|v| v.as_table())
+            .ok_or_else(|| "provenance: missing [provenance] table".to_string())?;
+        let s = |k: &str| -> Result<String, String> {
+            table
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| format!("provenance: missing string key '{k}'"))
+        };
+        let i = |k: &str| -> Result<i64, String> {
+            table
+                .get(k)
+                .and_then(|v| v.as_integer())
+                .ok_or_else(|| format!("provenance: missing integer key '{k}'"))
+        };
+        let b = |k: &str| -> Result<bool, String> {
+            table
+                .get(k)
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| format!("provenance: missing boolean key '{k}'"))
+        };
+        Ok(Self {
+            twec_version: s("twec_version")?,
+            host_os: s("host_os")?,
+            host_arch: s("host_arch")?,
+            build_unix_secs: i("build_unix_secs")?.max(0) as u64,
+            project_name: s("project_name")?,
+            target: s("target")?,
+            config: s("config")?,
+            compress: b("compress")?,
+            entry_count: i("entry_count")?.max(0) as u32,
+        })
+    }
+}
+
+fn escape_toml_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Phase 12 session 4: footer magic for the self-extracting `.exe`
 /// produced by `twec build`. The build pipeline copies a runtime
 /// binary, appends a `.twebundle`, and writes a 24-byte footer:

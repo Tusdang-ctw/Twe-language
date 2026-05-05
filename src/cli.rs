@@ -9,6 +9,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      profile [--frames N] [-o trace.json] <file> | \
      build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] <project_dir> | \
      bundle [-o PATH] <project_dir> | \
+     info <bundle-or-exe> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -65,6 +66,7 @@ pub fn run() {
         "profile" => process::exit(handle_profile(&args[2..])),
         "build" => process::exit(handle_build(&args[2..])),
         "bundle" => process::exit(handle_bundle(&args[2..])),
+        "info" => process::exit(handle_info(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -327,6 +329,31 @@ fn handle_bundle(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// `twec info <path>` — Phase 12 session 10: print build provenance
+/// + entry list for a `.twebundle` or self-extracting binary.
+fn handle_info(args: &[String]) -> i32 {
+    if args.is_empty() {
+        eprintln!("error: `twec info` requires a path");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    let mut path: Option<&str> = None;
+    for a in args {
+        if a.starts_with('-') {
+            eprintln!("error: unknown flag for `info`: {a}");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+        if path.is_some() {
+            eprintln!("error: `twec info` takes one path");
+            return 2;
+        }
+        path = Some(a.as_str());
+    }
+    let path = path.expect("non-empty args + no flags ⇒ at least one positional");
+    crate::build::run_info(std::path::Path::new(path))
 }
 
 /// `twec play_visual <file>` — Phase 9 session 11: render the

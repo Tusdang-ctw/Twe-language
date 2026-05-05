@@ -617,6 +617,96 @@ pub fn run(mut args: BuildArgs) -> i32 {
     exit
 }
 
+/// Phase 12 session 10: read a bundle's provenance + entry list and
+/// print a human-readable summary. Accepts either a standalone
+/// `.twebundle` or a self-extracting binary (the same probe
+/// `cli::run` does at startup); the path argument tells us which.
+pub fn run_info(path: &Path) -> i32 {
+    // Try the embedded-bundle path first (works for `.exe` and any
+    // future host-runtime layout). If no footer is present, fall
+    // back to opening the file as a plain `.twebundle`.
+    let mut reader = match crate::bundle::detect_in_file(path) {
+        Ok(Some(r)) => r,
+        Ok(None) => match crate::bundle::BundleReader::open(path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: '{}' is not a twebundle or self-extracting binary: {e}",
+                    path.display());
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprintln!("error: probing '{}': {e}", path.display());
+            return 1;
+        }
+    };
+    println!("twec info: {}", path.display());
+    println!();
+    let prov_bytes = match reader.read(crate::bundle::PROVENANCE_KEY) {
+        Ok(Some(b)) => Some(b),
+        Ok(None) => None,
+        Err(e) => {
+            eprintln!("error: reading provenance: {e}");
+            return 1;
+        }
+    };
+    if let Some(bytes) = prov_bytes {
+        let toml_src = match std::str::from_utf8(&bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("error: provenance entry is not valid UTF-8");
+                return 1;
+            }
+        };
+        match crate::bundle::BundleProvenance::from_toml(toml_src) {
+            Ok(p) => print_provenance(&p),
+            Err(e) => {
+                eprintln!("warning: could not parse provenance: {e}");
+                println!("(provenance entry present but malformed)");
+            }
+        }
+    } else {
+        println!("Provenance: (none — bundle predates session 10 or was hand-built)");
+    }
+    println!();
+    let mut keys: Vec<String> = reader.keys().map(|s| s.to_string()).collect();
+    keys.sort();
+    let user_count = keys
+        .iter()
+        .filter(|k| k.as_str() != crate::bundle::PROVENANCE_KEY)
+        .count();
+    let compressed = reader.header.flags & crate::bundle::FLAG_ZSTD != 0;
+    println!(
+        "Entries ({user_count}{}):",
+        if compressed { ", zstd-compressed" } else { "" }
+    );
+    for key in &keys {
+        if key == crate::bundle::PROVENANCE_KEY {
+            continue;
+        }
+        // Look up the on-disk size from the header.
+        let size = reader
+            .header
+            .find(key)
+            .map(|e| e.body_length)
+            .unwrap_or(0);
+        println!("  {key:<40} {size} bytes");
+    }
+    0
+}
+
+fn print_provenance(p: &crate::bundle::BundleProvenance) {
+    println!("Provenance:");
+    println!("  twec_version:    {}", p.twec_version);
+    println!("  built on host:   {}-{}", p.host_os, p.host_arch);
+    println!("  built unix-secs: {}", p.build_unix_secs);
+    println!("  project:         {}", p.project_name);
+    println!("  target:          {}", p.target);
+    println!("  config:          {}", p.config);
+    println!("  compress:        {}", p.compress);
+    println!("  entry_count:     {}", p.entry_count);
+}
+
 /// Phase 12 session 9: produce a Steam Depot layout at
 /// `<out_path-parent>/<name>.steam/`. Layout follows the `steamcmd`
 /// + `depot_build` convention:
@@ -751,12 +841,17 @@ pub fn render_depot_build_vdf(depot_id: u32) -> String {
 fn build_self_extracting(
     project: &DiscoveredProject,
     out_path: &Path,
-    _args: &BuildArgs,
+    args: &BuildArgs,
     resolved: &ResolvedConfig,
 ) -> i32 {
     // Encode the bundle to memory (small enough — full survive.twe
     // tree is ~1MB; v0.6 doesn't ship multi-GB games).
-    let bundle_bytes = match encode_bundle_to_vec(project, resolved.compress) {
+    let bundle_bytes = match encode_bundle_to_vec(
+        project,
+        resolved.compress,
+        args.target,
+        args.config,
+    ) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -789,24 +884,63 @@ fn build_self_extracting(
     }
 }
 
-fn encode_bundle_to_vec(
+/// Encode a project + provenance into an in-memory bundle. Used by
+/// the per-target build paths (Windows / macOS / Linux) and by the
+/// session 10 / 11 integration tests. Adds the provenance entry as
+/// the trailing record so `entry_count` (user-facing entries) stays
+/// honest.
+pub fn encode_bundle_to_vec(
     project: &DiscoveredProject,
     compress: bool,
+    target: BuildTarget,
+    config: BuildConfig,
 ) -> Result<Vec<u8>, String> {
     let main_bytes = fs::read(&project.main)
         .map_err(|e| format!("cannot read '{}': {e}", project.main.display()))?;
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(project.assets.len() + 1);
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(project.assets.len() + 2);
     entries.push(("main.twe".to_string(), main_bytes));
     for asset in &project.assets {
         let bytes = fs::read(&asset.abs)
             .map_err(|e| format!("cannot read '{}': {e}", asset.abs.display()))?;
         entries.push((asset.bundle_key.clone(), bytes));
     }
+    // Phase 12 session 10: append the provenance entry last so the
+    // recorded `entry_count` (user-facing entries: main.twe + assets)
+    // is the one truth.
+    let prov = build_provenance(project, target, config, compress, entries.len() as u32);
+    entries.push((
+        crate::bundle::PROVENANCE_KEY.to_string(),
+        prov.to_toml().into_bytes(),
+    ));
     let mut buf = Vec::new();
     let opts = crate::bundle::EncodeOptions { compress };
     crate::bundle::encode_with_options(&mut buf, &entries, opts)
         .map_err(|e| format!("encoding bundle: {e}"))?;
     Ok(buf)
+}
+
+fn build_provenance(
+    project: &DiscoveredProject,
+    target: BuildTarget,
+    config: BuildConfig,
+    compress: bool,
+    entry_count: u32,
+) -> crate::bundle::BundleProvenance {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    crate::bundle::BundleProvenance {
+        twec_version: env!("CARGO_PKG_VERSION").to_string(),
+        host_os: std::env::consts::OS.to_string(),
+        host_arch: std::env::consts::ARCH.to_string(),
+        build_unix_secs: secs,
+        project_name: project.name.clone(),
+        target: target.label().to_string(),
+        config: config.label().to_string(),
+        compress,
+        entry_count,
+    }
 }
 
 /// Output path for the standalone `.twebundle` artifact. Sessions
@@ -886,7 +1020,7 @@ pub fn write_bundle_with_options(
 fn build_macos_app(
     project: &DiscoveredProject,
     out_path: &Path,
-    _args: &BuildArgs,
+    args: &BuildArgs,
     resolved: &ResolvedConfig,
 ) -> i32 {
     // Force `.app` extension for the output directory so the layout
@@ -913,7 +1047,12 @@ fn build_macos_app(
         eprintln!("error: cannot write '{}': {e}", plist_path.display());
         return 1;
     }
-    let bundle_bytes = match encode_bundle_to_vec(project, resolved.compress) {
+    let bundle_bytes = match encode_bundle_to_vec(
+        project,
+        resolved.compress,
+        args.target,
+        args.config,
+    ) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1037,7 +1176,7 @@ pub fn render_info_plist(exec_name: &str, version: &str) -> String {
 fn build_linux_appdir(
     project: &DiscoveredProject,
     out_path: &Path,
-    _args: &BuildArgs,
+    args: &BuildArgs,
     resolved: &ResolvedConfig,
 ) -> i32 {
     let appdir = if out_path.extension().and_then(|s| s.to_str()) == Some("AppDir") {
@@ -1073,7 +1212,12 @@ fn build_linux_appdir(
             let _ = fs::set_permissions(&apprun_path, perms);
         }
     }
-    let bundle_bytes = match encode_bundle_to_vec(project, resolved.compress) {
+    let bundle_bytes = match encode_bundle_to_vec(
+        project,
+        resolved.compress,
+        args.target,
+        args.config,
+    ) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");

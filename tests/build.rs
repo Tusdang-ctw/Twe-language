@@ -9,14 +9,15 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use twec::build::{
-    discover_project, parse_manifest, render_app_build_vdf, render_apprun_script,
-    render_depot_build_vdf, render_desktop_entry, render_info_plist, resolve_config,
-    validate_project, write_bundle, write_bundle_with_options, write_steam_layout, BuildArgs,
-    BuildConfig, BuildTarget,
+    discover_project, encode_bundle_to_vec, parse_manifest, render_app_build_vdf,
+    render_apprun_script, render_depot_build_vdf, render_desktop_entry, render_info_plist,
+    resolve_config, validate_project, write_bundle, write_bundle_with_options,
+    write_steam_layout, BuildArgs, BuildConfig, BuildTarget,
 };
 use twec::bundle::{
     append_to_binary, clear_active_bundle, detect_in_file, encode_with_options, has_active_bundle,
-    read_asset_bytes, set_active_bundle, BundleReader, EncodeOptions, FLAG_ZSTD,
+    read_asset_bytes, set_active_bundle, BundleProvenance, BundleReader, EncodeOptions, FLAG_ZSTD,
+    PROVENANCE_KEY,
 };
 
 /// Serializes tests that mutate the process-global `ACTIVE_BUNDLE`
@@ -625,6 +626,121 @@ fn steam_manifest_overrides_app_id() {
     let app_build = fs::read_to_string(steam_dir.join("app_build_1234560.vdf")).unwrap();
     assert!(app_build.contains("\"1234561\" \"depot_build_1234561.vdf\""));
     assert!(app_build.contains("survive v0.6"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------- Phase 12 session 10: build provenance + twec info ----------
+
+#[test]
+fn provenance_round_trips_through_toml() {
+    let original = BundleProvenance {
+        twec_version: "0.1.0-pre".to_string(),
+        host_os: "windows".to_string(),
+        host_arch: "x86_64".to_string(),
+        build_unix_secs: 1_700_000_000,
+        project_name: "survive_demo".to_string(),
+        target: "windows-x86_64".to_string(),
+        config: "release".to_string(),
+        compress: true,
+        entry_count: 42,
+    };
+    let toml = original.to_toml();
+    let parsed = BundleProvenance::from_toml(&toml).expect("parse");
+    assert_eq!(original, parsed);
+}
+
+#[test]
+fn provenance_from_toml_rejects_missing_keys() {
+    // Drop the `twec_version` line — should fail with a key-named error.
+    let bad = "[provenance]\n\
+               host_os = \"linux\"\n\
+               host_arch = \"x86_64\"\n\
+               build_unix_secs = 1\n\
+               project_name = \"x\"\n\
+               target = \"linux-x86_64\"\n\
+               config = \"dev\"\n\
+               compress = false\n\
+               entry_count = 0\n";
+    let err = BundleProvenance::from_toml(bad).expect_err("missing key");
+    assert!(err.contains("twec_version"), "got: {err}");
+}
+
+#[test]
+fn provenance_escapes_quotes_in_project_name() {
+    let p = BundleProvenance {
+        twec_version: "0".to_string(),
+        host_os: "linux".to_string(),
+        host_arch: "x86_64".to_string(),
+        build_unix_secs: 0,
+        project_name: "weird \"quoted\" name".to_string(),
+        target: "linux-x86_64".to_string(),
+        config: "dev".to_string(),
+        compress: false,
+        entry_count: 0,
+    };
+    let toml = p.to_toml();
+    let parsed = BundleProvenance::from_toml(&toml).expect("round-trip");
+    assert_eq!(parsed.project_name, "weird \"quoted\" name");
+}
+
+#[test]
+fn build_pipeline_writes_provenance_entry() {
+    let dir = temp_project("prov_pipeline");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::write(dir.join("assets/sprite.png"), b"PNGFAKE").unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let bundle_bytes = encode_bundle_to_vec(
+        &project,
+        false,
+        BuildTarget::WindowsX86_64,
+        BuildConfig::Release,
+    )
+    .expect("encode");
+    let bundle_path = dir.join("p.twebundle");
+    fs::write(&bundle_path, &bundle_bytes).unwrap();
+    let mut reader = BundleReader::open(&bundle_path).expect("open");
+    let prov_bytes = reader
+        .read(PROVENANCE_KEY)
+        .unwrap()
+        .expect("provenance entry present");
+    let toml = std::str::from_utf8(&prov_bytes).expect("utf8");
+    let p = BundleProvenance::from_toml(toml).expect("parse");
+    assert_eq!(p.target, "windows-x86_64");
+    assert_eq!(p.config, "release");
+    assert!(!p.compress);
+    // 2 user-facing entries (main.twe + assets/sprite.png).
+    assert_eq!(p.entry_count, 2);
+    assert_eq!(p.project_name, project.name);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_info_succeeds_on_built_bundle() {
+    let dir = temp_project("info_smoke");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let bundle_bytes = encode_bundle_to_vec(
+        &project,
+        true,
+        BuildTarget::LinuxX86_64,
+        BuildConfig::Profile,
+    )
+    .expect("encode");
+    let bundle_path = dir.join("info.twebundle");
+    fs::write(&bundle_path, &bundle_bytes).unwrap();
+    let exit = twec::build::run_info(&bundle_path);
+    assert_eq!(exit, 0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_info_errors_on_non_bundle_file() {
+    let dir = temp_project("info_garbage");
+    let path = dir.join("not_a_bundle.bin");
+    fs::write(&path, b"this is not a bundle").unwrap();
+    let exit = twec::build::run_info(&path);
+    assert_ne!(exit, 0, "info should fail on garbage input");
     let _ = fs::remove_dir_all(&dir);
 }
 
