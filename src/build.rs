@@ -501,9 +501,12 @@ pub fn run(mut args: BuildArgs) -> i32 {
         BuildTarget::MacOsAarch64 | BuildTarget::MacOsX86_64 => {
             build_macos_app(&project, &out_path, &args)
         }
+        BuildTarget::LinuxX86_64 => build_linux_appdir(&project, &out_path, &args),
+        #[allow(unreachable_patterns)]
         _ => {
-            // Standalone bundle for non-Windows / non-macOS targets.
-            // Linux scaffolding is still session 7's job.
+            // Standalone bundle as the universal fallback. Today
+            // every BuildTarget variant has its own arm above; this
+            // arm exists so future targets land safely.
             let bundle_out = bundle_out_path(&out_path);
             match write_bundle(&project, &bundle_out) {
                 Ok(bytes_written) => {
@@ -774,6 +777,148 @@ pub fn render_info_plist(exec_name: &str, version: &str) -> String {
          \t<true/>\n\
          </dict>\n\
          </plist>\n"
+    )
+}
+
+/// Phase 12 session 7: produce a Linux AppDir layout at `out_path`.
+/// AppDir is the input format for `appimagetool`; producing the
+/// directory itself doesn't need any external tool, which is what
+/// makes session 7 host-agnostic.
+///
+/// Layout:
+///
+/// ```text
+/// <name>.AppDir/
+///   AppRun                — entry-point shell script (chmod +x on Unix)
+///   <name>.desktop        — XDG desktop entry
+///   usr/bin/<name>        — runtime binary (host-only) OR <name>.twebundle
+/// ```
+///
+/// On a Linux host we copy the running `twec` binary into
+/// `usr/bin/<name>` and append the bundle (mirrors the Windows
+/// path). On any other host we drop a `.twebundle` next to a stub
+/// README — packaging into a real AppImage requires `appimagetool`
+/// (off-tree) and a Linux-native Twe runtime.
+fn build_linux_appdir(project: &DiscoveredProject, out_path: &Path, _args: &BuildArgs) -> i32 {
+    let appdir = if out_path.extension().and_then(|s| s.to_str()) == Some("AppDir") {
+        out_path.to_path_buf()
+    } else {
+        let mut p = out_path.to_path_buf();
+        p.set_extension("AppDir");
+        p
+    };
+    if let Err(e) = fs::create_dir_all(appdir.join("usr/bin")) {
+        eprintln!("error: cannot create '{}': {e}", appdir.display());
+        return 1;
+    }
+    let exec_name = project.name.clone();
+    let desktop_path = appdir.join(format!("{exec_name}.desktop"));
+    if let Err(e) = fs::write(&desktop_path, render_desktop_entry(&exec_name)) {
+        eprintln!("error: cannot write '{}': {e}", desktop_path.display());
+        return 1;
+    }
+    let apprun_path = appdir.join("AppRun");
+    if let Err(e) = fs::write(&apprun_path, render_apprun_script(&exec_name)) {
+        eprintln!("error: cannot write '{}': {e}", apprun_path.display());
+        return 1;
+    }
+    // `AppRun` must be executable for AppImage runtime to invoke it.
+    // On non-Unix hosts we still write the file — the contributor is
+    // expected to package on Linux later, where chmod is available.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(mut perms) = fs::metadata(&apprun_path).map(|m| m.permissions()) {
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&apprun_path, perms);
+        }
+    }
+    let bundle_bytes = match encode_bundle_to_vec(project) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let exec_path = appdir.join("usr/bin").join(&exec_name);
+    let host_is_linux = BuildTarget::host() == BuildTarget::LinuxX86_64;
+    if host_is_linux {
+        let runtime = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: cannot locate twec runtime binary: {e}");
+                return 1;
+            }
+        };
+        match crate::bundle::append_to_binary(&runtime, &bundle_bytes, &exec_path) {
+            Ok(offset) => {
+                eprintln!(
+                    "[twec build] wrote {} (runtime {} bytes + bundle {} bytes; \
+                     run `appimagetool {}` on a Linux host to package)",
+                    appdir.display(),
+                    offset,
+                    bundle_bytes.len(),
+                    appdir.display()
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: appending bundle to runtime: {e}");
+                1
+            }
+        }
+    } else {
+        let bundle_path = appdir
+            .join("usr/bin")
+            .join(format!("{exec_name}.twebundle"));
+        if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
+            eprintln!("error: cannot write '{}': {e}", bundle_path.display());
+            return 1;
+        }
+        let readme = appdir.join("usr/bin/README.txt");
+        let body = format!(
+            "This AppDir was produced on a non-Linux host ({}). \
+             usr/bin/{exec_name} is missing — produce one by running \
+             `twec build --target linux-x86_64` on a Linux host, or \
+             ship the bundle through cargo-dist's release machinery.\n",
+            BuildTarget::host().label()
+        );
+        let _ = fs::write(&readme, body);
+        eprintln!(
+            "[twec build] wrote {} ({} bundle bytes; cross-compile — \
+             host '{}' cannot package an ELF runtime yet)",
+            appdir.display(),
+            bundle_bytes.len(),
+            BuildTarget::host().label()
+        );
+        0
+    }
+}
+
+/// XDG `.desktop` entry for the AppDir. Minimal — `Type`, `Name`,
+/// `Exec`, `Icon`, `Categories`. `appimagetool` requires `Categories`
+/// to be non-empty.
+pub fn render_desktop_entry(exec_name: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name={exec_name}\n\
+         Exec={exec_name}\n\
+         Icon={exec_name}\n\
+         Categories=Game;\n\
+         Terminal=false\n"
+    )
+}
+
+/// `AppRun` shell script. Resolves the AppDir's location at runtime
+/// via `readlink -f` so the produced binary is relocatable, then
+/// `exec`s the real binary under `usr/bin/`. Forwards all arguments
+/// (`"$@"`) so launcher integrations can pass flags through.
+pub fn render_apprun_script(exec_name: &str) -> String {
+    format!(
+        "#!/bin/sh\n\
+         HERE=$(dirname \"$(readlink -f \"$0\")\")\n\
+         exec \"$HERE/usr/bin/{exec_name}\" \"$@\"\n"
     )
 }
 

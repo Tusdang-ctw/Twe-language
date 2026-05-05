@@ -9,8 +9,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use twec::build::{
-    discover_project, parse_manifest, render_info_plist, resolve_config, validate_project,
-    write_bundle, BuildConfig, BuildTarget,
+    discover_project, parse_manifest, render_apprun_script, render_desktop_entry,
+    render_info_plist, resolve_config, validate_project, write_bundle, BuildConfig, BuildTarget,
 };
 use twec::bundle::{
     append_to_binary, clear_active_bundle, detect_in_file, has_active_bundle, read_asset_bytes,
@@ -420,6 +420,30 @@ fn info_plist_sanitizes_identifier() {
         plist.contains("<string>dev.twe.my-game-v2--beta-</string>"),
         "got: {plist}"
     );
+}
+
+// ---------- Phase 12 session 7: Linux AppDir layout ----------
+
+#[test]
+fn desktop_entry_has_required_xdg_keys() {
+    let entry = render_desktop_entry("survive");
+    for key in ["[Desktop Entry]", "Type=", "Name=", "Exec=", "Categories="] {
+        assert!(entry.contains(key), "entry missing {key}: {entry}");
+    }
+    assert!(entry.contains("Name=survive"));
+    assert!(entry.contains("Exec=survive"));
+}
+
+#[test]
+fn apprun_script_resolves_relative_to_self() {
+    let script = render_apprun_script("survive");
+    assert!(script.starts_with("#!/bin/sh\n"), "got: {script}");
+    assert!(script.contains("readlink -f"), "must resolve symlinks");
+    assert!(
+        script.contains("usr/bin/survive"),
+        "must exec the AppDir binary"
+    );
+    assert!(script.contains("\"$@\""), "must forward arguments");
 }
 
 #[test]
