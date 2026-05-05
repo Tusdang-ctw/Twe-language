@@ -498,10 +498,12 @@ pub fn run(mut args: BuildArgs) -> i32 {
         BuildTarget::WindowsX86_64 if BuildTarget::host() == BuildTarget::WindowsX86_64 => {
             build_self_extracting(&project, &out_path, &args)
         }
+        BuildTarget::MacOsAarch64 | BuildTarget::MacOsX86_64 => {
+            build_macos_app(&project, &out_path, &args)
+        }
         _ => {
-            // Standalone bundle for other targets (and for cross-
-            // compile from non-Windows hosts to Windows, which is
-            // a session-6 / -7 follow-on).
+            // Standalone bundle for non-Windows / non-macOS targets.
+            // Linux scaffolding is still session 7's job.
             let bundle_out = bundle_out_path(&out_path);
             match write_bundle(&project, &bundle_out) {
                 Ok(bytes_written) => {
@@ -627,6 +629,173 @@ pub fn write_bundle(
         .map_err(|e| format!("cannot create '{}': {e}", out_path.display()))?;
     crate::bundle::encode(&mut file, &entries)
         .map_err(|e| format!("encoding bundle: {e}"))
+}
+
+/// Phase 12 session 6: produce a macOS `.app` bundle skeleton at
+/// `out_path` (which the caller picks; default is
+/// `<project>/dist/<name>.app`). The layout is:
+///
+/// ```text
+/// <name>.app/
+///   Contents/
+///     Info.plist        — minimal CFBundle keys
+///     MacOS/
+///       <name>          — runtime binary (host-only) OR <name>.twebundle (cross-compile)
+///     Resources/        — empty placeholder; reserved for icon / nibs
+/// ```
+///
+/// When the host is macOS we copy the running `twec` binary into
+/// `MacOS/<name>` and append the bundle (mirrors the Windows
+/// self-extracting path). When the host is anything else we still
+/// produce the directory layout but drop a `.twebundle` next to a
+/// stub README — a real .app needs a Mach-O runtime and we don't
+/// have a cross-compiled one yet (session 11 / cargo-dist territory).
+fn build_macos_app(project: &DiscoveredProject, out_path: &Path, _args: &BuildArgs) -> i32 {
+    // Force `.app` extension for the output directory so the layout
+    // matches macOS expectations even when `--out` skipped it.
+    let app_dir = if out_path.extension().and_then(|s| s.to_str()) == Some("app") {
+        out_path.to_path_buf()
+    } else {
+        let mut p = out_path.to_path_buf();
+        p.set_extension("app");
+        p
+    };
+    if let Err(e) = fs::create_dir_all(app_dir.join("Contents/MacOS")) {
+        eprintln!("error: cannot create '{}': {e}", app_dir.display());
+        return 1;
+    }
+    if let Err(e) = fs::create_dir_all(app_dir.join("Contents/Resources")) {
+        eprintln!("error: cannot create Resources dir: {e}");
+        return 1;
+    }
+    let exec_name = project.name.clone();
+    let info_plist = render_info_plist(&exec_name, env!("CARGO_PKG_VERSION"));
+    let plist_path = app_dir.join("Contents/Info.plist");
+    if let Err(e) = fs::write(&plist_path, info_plist) {
+        eprintln!("error: cannot write '{}': {e}", plist_path.display());
+        return 1;
+    }
+    let bundle_bytes = match encode_bundle_to_vec(project) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let exec_path = app_dir.join("Contents/MacOS").join(&exec_name);
+    let host = BuildTarget::host();
+    let host_is_macos =
+        host == BuildTarget::MacOsAarch64 || host == BuildTarget::MacOsX86_64;
+    if host_is_macos {
+        let runtime = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: cannot locate twec runtime binary: {e}");
+                return 1;
+            }
+        };
+        match crate::bundle::append_to_binary(&runtime, &bundle_bytes, &exec_path) {
+            Ok(offset) => {
+                eprintln!(
+                    "[twec build] wrote {} (runtime {} bytes + bundle {} bytes)",
+                    app_dir.display(),
+                    offset,
+                    bundle_bytes.len()
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: appending bundle to runtime: {e}");
+                1
+            }
+        }
+    } else {
+        // Cross-compile: drop the bundle alongside a placeholder
+        // README so the layout is recognizable but obviously not
+        // signable yet. Producing a real Mach-O requires either
+        // (a) a pre-built per-target twec runtime that ships
+        // alongside the build, or (b) cargo-dist-driven release
+        // artifacts. Either route lands as a follow-on; today's
+        // session 6 ships the layout.
+        let bundle_path = app_dir
+            .join("Contents/MacOS")
+            .join(format!("{exec_name}.twebundle"));
+        if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
+            eprintln!("error: cannot write '{}': {e}", bundle_path.display());
+            return 1;
+        }
+        let readme = app_dir.join("Contents/MacOS/README.txt");
+        let body = format!(
+            "This .app skeleton was produced on a non-macOS host \
+             ({}). The Mach-O runtime binary is missing; ship the \
+             bundle through a macOS host's `twec build` to produce \
+             a launchable .app.\n",
+            host.label()
+        );
+        let _ = fs::write(&readme, body);
+        eprintln!(
+            "[twec build] wrote {} ({} bundle bytes; cross-compile — \
+             host '{}' cannot package a Mach-O runtime yet)",
+            app_dir.display(),
+            bundle_bytes.len(),
+            host.label()
+        );
+        0
+    }
+}
+
+/// Minimal `Info.plist` for the macOS `.app` skeleton. The plist
+/// hand-emit avoids pulling a plist crate in for one file. macOS
+/// only requires a small core set of keys to recognize the bundle:
+/// `CFBundleExecutable` (the binary in `MacOS/`),
+/// `CFBundleIdentifier` (reverse-DNS), `CFBundleName`,
+/// `CFBundlePackageType` = `APPL`, plus version keys.
+pub fn render_info_plist(exec_name: &str, version: &str) -> String {
+    let identifier = format!("dev.twe.{}", sanitize_identifier(exec_name));
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         \t<key>CFBundleExecutable</key>\n\
+         \t<string>{exec_name}</string>\n\
+         \t<key>CFBundleIdentifier</key>\n\
+         \t<string>{identifier}</string>\n\
+         \t<key>CFBundleName</key>\n\
+         \t<string>{exec_name}</string>\n\
+         \t<key>CFBundlePackageType</key>\n\
+         \t<string>APPL</string>\n\
+         \t<key>CFBundleShortVersionString</key>\n\
+         \t<string>{version}</string>\n\
+         \t<key>CFBundleVersion</key>\n\
+         \t<string>{version}</string>\n\
+         \t<key>NSHighResolutionCapable</key>\n\
+         \t<true/>\n\
+         </dict>\n\
+         </plist>\n"
+    )
+}
+
+/// Reverse-DNS-friendly identifier slug. Strip anything not in
+/// `[a-zA-Z0-9-]` (CFBundleIdentifier's character set) and lower-
+/// case the result.
+fn sanitize_identifier(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if s.is_empty() {
+        "twe-game".to_string()
+    } else {
+        s
+    }
 }
 
 fn resolve_out_path(project: &DiscoveredProject, args: &BuildArgs) -> Result<PathBuf, String> {

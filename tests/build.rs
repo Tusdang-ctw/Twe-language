@@ -9,8 +9,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use twec::build::{
-    discover_project, parse_manifest, resolve_config, validate_project, write_bundle, BuildConfig,
-    BuildTarget,
+    discover_project, parse_manifest, render_info_plist, resolve_config, validate_project,
+    write_bundle, BuildConfig, BuildTarget,
 };
 use twec::bundle::{
     append_to_binary, clear_active_bundle, detect_in_file, has_active_bundle, read_asset_bytes,
@@ -389,6 +389,37 @@ fn detect_in_file_returns_none_for_non_extracting_binary() {
     let result = detect_in_file(&plain).unwrap();
     assert!(result.is_none());
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------- Phase 12 session 6: macOS .app skeleton ----------
+
+#[test]
+fn info_plist_contains_required_bundle_keys() {
+    let plist = render_info_plist("survive", "0.1.0-pre");
+    for key in [
+        "CFBundleExecutable",
+        "CFBundleIdentifier",
+        "CFBundleName",
+        "CFBundlePackageType",
+        "CFBundleShortVersionString",
+        "CFBundleVersion",
+    ] {
+        assert!(plist.contains(key), "plist missing {key}: {plist}");
+    }
+    assert!(plist.contains("<string>survive</string>"));
+    assert!(plist.contains("<string>APPL</string>"));
+    assert!(plist.contains("<string>0.1.0-pre</string>"));
+}
+
+#[test]
+fn info_plist_sanitizes_identifier() {
+    // Spaces / underscores / non-ASCII chars must come out as `-`
+    // because CFBundleIdentifier rejects them.
+    let plist = render_info_plist("My Game_v2 (beta)", "1.0");
+    assert!(
+        plist.contains("<string>dev.twe.my-game-v2--beta-</string>"),
+        "got: {plist}"
+    );
 }
 
 #[test]
