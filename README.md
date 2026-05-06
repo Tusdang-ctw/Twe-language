@@ -2,63 +2,179 @@
 
 > A game-first programming language designed for the AI-collaboration era.
 
-Twe is a scripting language being designed from scratch for 2D and 3D game development, with a runtime that will eventually be co-designed with a custom game engine. It is currently in the **design phase** — no implementation exists yet. The goal of this repository is to lock in the design decisions before any code is written.
+Twe is a scripting language for 2D and 3D game development. Game concepts — `entity`, `state`, `visual`, `dialogue`, `particles`, `scene` — are first-class language constructs, not library calls. The runtime compiles Twe to bytecode and runs it; `twec build` bundles a game into a self-extracting Windows `.exe`.
 
-## Why another language?
+```twe
+entity Slime:
+    var pos = (0.0, 0.0)
 
-The honest answer to "why not just use Lua?" is documented in `docs/03-runtime.md`. The short version: the Godot team tried embedding Lua, Python, and Squirrel in their engine for over a decade and abandoned all of them in favor of a custom language (GDScript) because none of them could be cleanly integrated with native vector types, garbage collection budgets, class extension, and editor tooling. Twe takes that lesson seriously.
+    function update(dt):
+        let dx = player_x - pos.x
+        let dy = player_y - pos.y
+        let d = math.sqrt(dx*dx + dy*dy)
+        pos = (pos.x + dx/d * 40.0 * dt,
+               pos.y + dy/d * 40.0 * dt)
 
-The design principles, in order of priority:
+    function render():
+        rect(at: (pos.x - 10, pos.y - 10), size: (20, 20), color: color.cyan)
+```
 
-1. **Game concepts are first-class.** `entity`, `state`, `visual`, `dialogue` are language constructs, not library calls.
-2. **One obvious way per concept.** Regularity is what makes a language easy for both humans and LLMs.
-3. **No silent footguns.** 0-indexed, explicit nil, block-scoped, dimensional units, errors that suggest fixes.
-4. **AI-legible by design.** Predictable grammar, structured diagnostics, round-trippable AST.
-5. **Engine-native.** Twe's runtime *is* the engine's runtime. No FFI dance.
+## What ships with Twe
 
-## Target use cases
+| Feature | Status |
+|---------|--------|
+| Hand-written recursive-descent parser | v0.1 |
+| Tree-walking interpreter + bytecode VM | v0.1 / v0.2 |
+| NaN-tagged 64-bit values + tracing GC | v0.2 |
+| `twec play` (2D macroquad runtime) | v0.1 |
+| `twec play3d` (3D wgpu runtime) | v0.1 |
+| `twec play_visual` (procedural shader runtime) | v0.3 |
+| `visual` block → WGSL compilation | v0.3 |
+| UI widget set (button, slider, dropdown, …) | v0.4 |
+| Settings, localization, pause, rebindable keys | v0.4 |
+| Crash reporter + screenshot + profiler | v0.5 |
+| `twec build` → self-extracting Windows `.exe` | v0.6 |
+| Module system + `import` | v0.7 |
+| Strict mode + verified mode (LLM JSON output) | v0.7 |
+| `@deprecated` annotations + 12-month cycle | v0.7 |
+| Survive Beta — Vampire-Survivors clone | v0.8 |
+| Tutorial v2 (Pong → Survivors → RPG) | v0.8 |
+| Steam SDK integration (`--features steam`) | v0.9 |
+| RPG demo — second first-party game | v1.0 |
 
-Three games Twe must be excellent at:
+**732 tests pass. `cargo clippy -- -D warnings` clean.**
 
-1. **2D systematic / RPG hybrid** (Vampire Survivors meets Diablo): item systems, modifiers, inventories, progression trees. **This is the v1.0 success criterion** — see `docs/05-roadmap.md` for the v1.0 thesis.
-2. **3D RPG** (small-scale Tunic / BotW): scene management, NPC AI, dialogue, quests, save/load. v0.1 ships cubes/spheres/`.glb` import; full polish (animation, physics, materials) is post-v1.0.
-3. **Physics + visual showcase** (Noita / shader-driven games): pure-code visuals, particle systems, procedural graphics with no texture assets required. **Coming in v0.3** — the `visual` block → WGSL shader compilation runtime ships in Phase 9 of the roadmap. (v0.1's `visual` keyword is not yet wired to a real compiler; the Phase 7 docs honesty pass demoted this from a v0.1 claim.)
+## Install
 
-## Documents
+```
+cargo install --git https://github.com/your-org/twe-language twec
+```
 
-| # | Doc | Purpose |
-|---|-----|---------|
-| 1 | [`docs/01-examples.md`](docs/01-examples.md) | Ten example programs that imply ~80% of the language design |
-| 2 | [`docs/02-type-system.md`](docs/02-type-system.md) | Type system position, drawn from Roblox's Luau |
-| 3 | [`docs/03-runtime.md`](docs/03-runtime.md) | Runtime architecture (Wren + Bevy ECS) and pitfalls to avoid |
-| 4 | [`docs/04-reading-list.md`](docs/04-reading-list.md) | Curated reading list for the implementer |
-| 5 | [`docs/05-roadmap.md`](docs/05-roadmap.md) | Phased roadmap from spec to v1.0 |
-| 6 | [`docs/06-design-document.md`](docs/06-design-document.md) | Formal language specification (principles, lexical, grammar, semantics) |
+Or clone and build:
 
-## Status
+```
+git clone https://github.com/your-org/twe-language
+cd twe-language
+cargo build --release
+./target/release/twec version
+```
 
-- [x] Research phase complete (Lua, Luau, Wren, GDScript, Bevy, fantasy consoles, AI-friendly grammar)
-- [x] Design principles drafted
-- [x] Eleven example programs written (`docs/01-examples.md` + `docs/example-11-snake.md`)
-- [x] Formal grammar in EBNF (`docs/06-design-document.md` §3)
-- [x] Tree-walking interpreter (Phase 1, closed)
-- [x] Vertical-slice game built in Twe (`examples/survive.twe`, Phase 2)
-- [x] Bytecode VM (Phase 3)
-- [x] Tooling: LSP, formatter, tree-sitter grammar, VS Code extension (Phases 3 + 6)
-- [x] Type system v1, non-strict + strict modes (Phases 4 + 6)
-- [x] 3D rendering surface — cubes, spheres, `.glb` meshes, hot reload (Phase 5 + Phase 8 session 1)
-- [x] Cooperative fibers (`wait` works in nested blocks + functions, both backends — Phases 5 + 8)
-- [x] **Phase 8 closed** (v0.2 — Foundations for shipping): mouse input, save/load bottom layer, audio v2, tilemap (stdlib form), `.glb` mesh import, function-body `wait` on the VM. See `docs/changes/2026-05-04-phase-8-closeout.md`.
-- [x] **Phase 8.5 closed** (NaN tagging + tracing GC): `TaggedValue` + thread-local mark+sweep tracing GC across both backends, with auto-collect safepoints. **502 tests pass.** The 3× speedup-vs-pre-tag-VM exit criterion is not met — see `docs/changes/2026-05-01-phase-8.5-closeout.md` for the perf gap and the follow-on tuning agenda.
-- [x] **Phase 9 closed** (v0.3 — Visuals + assets-for-UI): `visual` block → WGSL codegen + wgpu render driver (Pillar 3 is no longer a paper feature — `twec play_visual examples/visual_fire.twe` runs Example 5's procedural fire shader end-to-end), particles runtime on both backends, `on Class.death(e)` event hook (tree-walker), sprite atlases, TTF/OTF fonts, 2D camera, color pipeline, gamepad input, `noise()` / `smoothstep()` / `mix()` math stdlib. **544 tests pass.** See `docs/changes/2026-05-04-phase-9-closeout.md`.
-- [ ] **Phase 7: v0.1 release** — `cargo dist` binaries, VS Code marketplace, website, CONTRIBUTING.md, license decision. Active. (Codebase is now substantially beyond the original v0.1 surface; could retag as v0.2 / v0.3 at release time.)
-- [x] **Phase 10 closed** (v0.4 — UI + game-shell primitives): widgets (`button`, `label`, `progress_bar`, `slider`, `checkbox`, `dropdown`, `text_input`, `key_input`), clipboard (`os.clipboard.read/write`), layout (`panel`, `stack`, `flex`, `grid`, `scroll`), pause primitives (`pause(flag)` / `is_paused()`), settings system (`settings.set/get/save/load/try_load`), localization scaffolding (`lang.set_locale/load/t/tf`), and an exit-gate pause menu in `examples/pause_menu_demo.twe` plus the rebind UI in `examples/keybind_demo.twe`. `examples/survive.twe` rebound to read keys via `settings`. **583 tests pass.** Auto-pause-on-window-blur deferred (winit-integration follow-on). See `docs/changes/2026-05-04-phase-10-closeout.md`.
-- [x] **Phase 11 closed** (v0.5 — Production hardening): `screenshot(path)` + F12 hotkey, F3 frame-time HUD, panic-hook crash reporter with dump bundle, debounced hot-reload (`ReloadGate`), `twec profile` Chrome-trace JSON output, criterion bench harness (`benches/vm.rs`), bytecode dispatch tuning (in-place stack peek + hoisted int+int / float+float fast paths in `binary_arith` / `compare`), procedurally-generated walk-cycle spritesheet demo, `examples/survive.twe` gamepad integration, VM mirror of `on Class.death(e)`, opt-in `auto_pause_when_idle(seconds)` primitive. **601 tests pass.** See `docs/changes/2026-05-04-phase-11-closeout.md`.
-- [x] **Phase 11 follow-on closed** (deeper): true auto-pause-on-window-blur via `GetForegroundWindow` polling on Windows + `BlurAutoPause` state machine in the play loop, opt-in `auto_pause_on_blur(true)` Twe builtin. macOS / Linux focus paths still stubbed. **606 tests pass.** Same closeout note, "Follow-on closed" addendum.
-- [ ] **Phase 12–16 → v1.0** — asset pipeline + cross-platform build, modules + type-system stability, beta + dogfood, RC, stable. v1.0 = "ship a Vampire-Survivors-class commercial 2D game on Twe."
+## Quick start
 
-See `docs/05-roadmap.md` for the detailed plan.
+```
+twec play examples/pong.twe          # Pong (player vs AI)
+twec play examples/survive_beta/main.twe  # Vampire Survivors clone
+twec play examples/rpg_demo/main.twe      # Dialogue RPG
+twec play_visual examples/visual_fire.twe # Procedural fire shader
+```
+
+Build a redistributable:
+
+```
+twec build examples/survive_beta
+# → examples/survive_beta/dist/survive_beta.exe (self-extracting, no Twe required)
+```
+
+## Examples gallery
+
+28 runnable examples covering every major surface:
+
+| File | What it shows |
+|------|--------------|
+| `examples/pong.twe` | Paddles, ball physics, AI, state machine |
+| `examples/snake.twe` | Classic Snake — entity-less version |
+| `examples/survive_beta/` | Full Vampire-Survivors clone (1300 lines) |
+| `examples/rpg_demo/` | Dialogue, rooms, pickups, save/load |
+| `examples/visual_fire.twe` | Procedural fire via `visual` → WGSL |
+| `examples/particles_demo.twe` | Particle systems |
+| `examples/pause_menu_demo.twe` | Pause stack + settings save |
+| `examples/keybind_demo.twe` | Live key rebinding UI |
+| `examples/dialogue_demo.twe` | Branching dialogue script |
+| `examples/tilemap_demo.twe` | Tile rendering + collision |
+| `examples/atlas_demo.twe` | Spritesheet animation |
+| `examples/widgets_demo.twe` | Full widget gallery |
+| `examples/modular_math_demo/` | Multi-file modules |
+| … 15 more | Audio, camera, gamepad, fonts, mouse, save, layout, … |
+
+## Language in 60 seconds
+
+```twe
+# Scenes hold state. States handle behavior.
+scene Pong:
+    var ball_x = 320.0
+    var ball_vx = 300.0
+
+    initial: playing
+
+    state playing:
+        on update(dt):
+            ball_x += ball_vx * dt
+            if ball_x < 0 or ball_x > 640:
+                ball_vx = -ball_vx
+
+        on render():
+            rect(at: (ball_x - 5, 235), size: (10, 10), color: color.white)
+
+# Entities have update + render lifecycle.
+entity Bullet:
+    var pos = (0.0, 0.0)
+    var vel = (0.0, -400.0)
+
+    function update(dt):
+        pos = (pos.x + vel.x * dt, pos.y + vel.y * dt)
+        if pos.y < 0:
+            despawn self
+
+    function render():
+        rect(at: (pos.x - 3, pos.y - 3), size: (6, 6), color: color.yellow)
+
+spawn Bullet at (320, 400)
+
+# Dialogue is a first-class block.
+dialogue Merchant:
+    say "Looking to trade?"
+    choice:
+        "Yes": say "Here's what I have."
+        "No":  say "Safe travels."
+
+Merchant()
+```
+
+Key design choices: 0-indexed arrays, indentation-based syntax (no braces), only `false` is falsy, `let`/`var` immutable/mutable split, gradual typing (non-strict default → `# strict` → `# verified` for LLM JSON output).
+
+## Design principles
+
+In strict priority order:
+
+1. **Game concepts are first-class.** `entity`, `state`, `visual`, `dialogue`, `particles`, `scene` are language constructs.
+2. **One obvious way per concept.** Single inheritance, one method-call syntax. Regularity helps humans and LLMs equally.
+3. **No silent footguns.** 0-indexed, only `false` is falsy, dimensional units enforced, errors suggest fixes.
+4. **AI-legible by design.** Predictable LL(1)-ish grammar, structured JSON diagnostics, round-trippable AST.
+5. **Engine-native.** The runtime *is* the engine. Engine objects are first-class Twe values.
+
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [`docs/tutorial.md`](docs/tutorial.md) | Hands-on tutorial: Pong from scratch, Survivors read-along, mini-RPG |
+| [`docs/06-design-document.md`](docs/06-design-document.md) | Formal grammar, semantics, full stdlib reference |
+| [`docs/02-type-system.md`](docs/02-type-system.md) | Gradual typing, strict mode, verified mode |
+| [`docs/03-runtime.md`](docs/03-runtime.md) | Runtime architecture + explicit list of footguns avoided |
+| [`docs/05-roadmap.md`](docs/05-roadmap.md) | Phase-by-phase plan from v0.1 through v1.0 |
+
+## Shipped on Twe
+
+| Game | Author | Version |
+|------|--------|---------|
+| [Survive Beta](examples/survive_beta/) — Vampire Survivors clone | First-party | v0.8 |
+| [RPG Demo](examples/rpg_demo/) — Dialogue-driven adventure | First-party | v1.0 |
+
+*Ship a game with Twe? Open a PR to add it here.*
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). The short version: one thing per PR, tests first, docs in the same commit. Read [`CLAUDE.md`](CLAUDE.md) before proposing anything — it records every locked decision.
 
 ## License
 
-TBD. The intent is permissive (MIT or Apache-2.0).
+MIT — see [`LICENSE`](LICENSE).
