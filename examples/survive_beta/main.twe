@@ -52,9 +52,60 @@ var kills = 0
 var xp = 0
 var xp_to_next_level = 5
 var magnetic_radius = 100.0
+# Auto-attack pacing. v1 fires one bolt every 0.6s — session 6's
+# upgrade picker mutates `attack_interval` (and player_speed,
+# magnetic_radius, player_max_hp). Hoisted to a global so the
+# top-level `apply_upgrade` helper can write it; scene fields
+# aren't reachable from a free function.
+var attack_interval = 0.6
+# Level-up modal state. `in_levelup` gates Slime / Projectile /
+# XPGem updates so the world freezes while the picker is open.
+# `level` is the player's level (display-only); `pick_a/b/c` are
+# the three rolled upgrade IDs the picker shows.
+var level = 1
+var in_levelup = false
+var pick_a = 0
+var pick_b = 1
+var pick_c = 2
 
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
+
+
+# ---------------------------------------------------------------
+# Upgrade pool. `pick_a/b/c` index into this 5-entry catalogue.
+# `upgrade_name` returns the picker label; `apply_upgrade` mutates
+# the relevant globals. Both are top-level functions so the
+# scene's level_up state can call them — scene fields aren't
+# reachable from free functions, which is why `attack_interval`
+# / `magnetic_radius` / `player_speed` / `player_max_hp` all live
+# at file scope.
+# ---------------------------------------------------------------
+function upgrade_name(id):
+    if id == 0:
+        return "Faster Attack  (-15% cooldown)"
+    elif id == 1:
+        return "Wider Magnet   (+30 range)"
+    elif id == 2:
+        return "Tougher Hide   (+20 max HP)"
+    elif id == 3:
+        return "Swift Feet     (+30 move speed)"
+    return "Quick Heal     (full HP)"
+
+function apply_upgrade(id):
+    if id == 0:
+        attack_interval *= 0.85
+        if attack_interval < 0.1:
+            attack_interval = 0.1
+    elif id == 1:
+        magnetic_radius += 30.0
+    elif id == 2:
+        player_max_hp += 20.0
+        player_hp += 20.0
+    elif id == 3:
+        player_speed += 30.0
+    else:
+        player_hp = player_max_hp
 
 
 # ---------------------------------------------------------------
@@ -71,6 +122,12 @@ entity Slime:
     var damage = 8.0
 
     function update(dt):
+        # Soft-pause during level-up modal. Engine-level pause()
+        # would also stop the level_up state's input handlers
+        # (every-clocks halt); the in_levelup flag freezes only
+        # entity ticks while keeping the modal interactive.
+        if in_levelup:
+            return
         # Chase the player. Same vector-toward-target shape as
         # survive.twe's Monster, lifted into a per-class field so
         # session 8's bat / skeleton can override `speed` /
@@ -119,6 +176,8 @@ entity Projectile:
     var lifetime = 1.5
 
     function update(dt):
+        if in_levelup:
+            return
         if not target_set:
             target_set = true
             var found = false
@@ -180,6 +239,8 @@ entity XPGem:
     var value = 1
 
     function update(dt):
+        if in_levelup:
+            return
         let dx = player_x - pos.x
         let dy = player_y - pos.y
         let d2 = dx * dx + dy * dy
@@ -233,7 +294,6 @@ scene SurviveBeta:
     # 5 + 6 will let the player upgrade `attack_interval` (and
     # eventually `bolts_per_attack`, multiple weapons, etc.).
     var attack_timer = 0.0
-    var attack_interval = 0.6
 
     initial: playing
 
@@ -373,6 +433,29 @@ scene SurviveBeta:
             if player_hp <= 0.0:
                 -> game_over
 
+            # ---- Level-up detection. XP threshold met → roll
+            # three upgrade picks, raise the in_levelup flag (the
+            # entities check it and freeze in place), and
+            # transition to the modal state. ----
+            if xp >= xp_to_next_level:
+                xp -= xp_to_next_level
+                level += 1
+                # Threshold ramps so each level takes more XP than
+                # the last. Linear-ish curve; session 8 can tune.
+                xp_to_next_level = xp_to_next_level + 3 + level
+                let i = random.int(0..<5)
+                var j = i + 1
+                if j >= 5:
+                    j -= 5
+                var k = i + 2
+                if k >= 5:
+                    k -= 5
+                pick_a = i
+                pick_b = j
+                pick_c = k
+                in_levelup = true
+                -> level_up
+
         on render():
             # Background grid. 80px tiles, drawn in world space and
             # offset by the camera. The cheap-but-effective trick:
@@ -438,6 +521,7 @@ scene SurviveBeta:
             text("Time: {elapsed}s", at: (10, 20), size: 18, color: color.white)
             let display_wave = wave_index + 1
             text("Wave {display_wave}", at: (540, 20), size: 18, color: color.yellow)
+            text("Lv {level}", at: (300, 20), size: 18, color: color.cyan)
             # HP bar: 200px wide, scaled to current_hp / max_hp.
             rect(at: (10, 50), size: (204, 16), color: color.gray)
             let hp_w = 200.0 * (player_hp / player_max_hp)
@@ -456,6 +540,43 @@ scene SurviveBeta:
                 size: 12,
                 color: color.white
             )
+
+    state level_up:
+        on render():
+            # Dim overlay across the whole viewport. `color.black`
+            # is opaque in v0.4 — there's no per-rect alpha
+            # widget — but the player only loses ~half a second
+            # of game-state visibility for a level pick, which
+            # is genre-canonical anyway.
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            text(
+                "LEVEL UP!  (Lv {level})",
+                at: (180, 60),
+                size: 28,
+                color: color.yellow
+            )
+            text(
+                "choose an upgrade",
+                at: (220, 100),
+                size: 16,
+                color: color.gray
+            )
+            # Three upgrade buttons. button() returns truthy on
+            # click; on commit we apply the upgrade, lower the
+            # in_levelup gate (entities tick again), and
+            # transition back to the playing state.
+            if button(at: (160, 150), size: (320, 50), label: upgrade_name(pick_a)):
+                apply_upgrade(pick_a)
+                in_levelup = false
+                -> playing
+            if button(at: (160, 220), size: (320, 50), label: upgrade_name(pick_b)):
+                apply_upgrade(pick_b)
+                in_levelup = false
+                -> playing
+            if button(at: (160, 290), size: (320, 50), label: upgrade_name(pick_c)):
+                apply_upgrade(pick_c)
+                in_levelup = false
+                -> playing
 
     state game_over:
         on render():
@@ -493,12 +614,18 @@ scene SurviveBeta:
                     despawn gem
                 player_x = 1200.0
                 player_y = 900.0
-                player_hp = player_max_hp
+                player_hp = 100.0
+                player_max_hp = 100.0
+                player_speed = 220.0
                 player_iframes = 0.0
                 elapsed = 0.0
                 kills = 0
                 xp = 0
                 xp_to_next_level = 5
+                level = 1
+                in_levelup = false
+                magnetic_radius = 100.0
+                attack_interval = 0.6
                 wave_index = 0
                 wave_timer = 0.0
                 spawn_interval = 1.5
