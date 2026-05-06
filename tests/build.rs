@@ -846,6 +846,61 @@ fn survive_beta_project_validates() {
 }
 
 #[test]
+fn survive_beta_round_trips_through_bundle_pipeline() {
+    // Phase 14 session 12 — the EXIT GATE for the production
+    // Vampire-Survivors clone. Same shape as Phase 12's
+    // survive_demo round-trip: encode the project bundle, write
+    // it to a tempfile, read it back through `twec info`'s public
+    // path (`run_info`), and confirm the provenance + entry
+    // layout match what a Steam-class build would deliver. The
+    // session 1 build test pinned discovery; this one pins the
+    // full bundle path.
+    let beta = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/survive_beta");
+    let project = discover_project(&beta).expect("discover");
+    let bytes = encode_bundle_to_vec(
+        &project,
+        true,
+        BuildTarget::WindowsX86_64,
+        BuildConfig::Release,
+    )
+    .expect("encode");
+    let out_dir = std::env::temp_dir().join(format!(
+        "twec_survive_beta_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&out_dir).unwrap();
+    let bundle_path = out_dir.join("survive_beta.twebundle");
+    fs::write(&bundle_path, &bytes).unwrap();
+
+    let mut reader = BundleReader::open(&bundle_path).expect("open");
+    assert!(reader.has("main.twe"));
+    assert!(reader.has(PROVENANCE_KEY));
+    assert_eq!(reader.header.flags & FLAG_ZSTD, FLAG_ZSTD);
+
+    let prov_bytes = reader.read(PROVENANCE_KEY).unwrap().expect("present");
+    let toml = std::str::from_utf8(&prov_bytes).unwrap();
+    let prov = BundleProvenance::from_toml(toml).expect("parse provenance");
+    assert_eq!(prov.project_name, "survive_beta");
+    assert_eq!(prov.target, "windows-x86_64");
+    assert_eq!(prov.config, "release");
+    assert!(prov.compress);
+    // 1 user-facing entry: main.twe (no assets in v1 — the
+    // `silence.wav` audio surface deferred per session 10's
+    // closeout note. Adding `assets/...` files would just bump
+    // this counter and the bundle would still build).
+    assert_eq!(prov.entry_count, 1);
+
+    let exit = twec::build::run_info(&bundle_path);
+    assert_eq!(exit, 0);
+    let _ = fs::remove_dir_all(&out_dir);
+}
+
+#[test]
 fn manifest_parses_dependencies_string_form() {
     // Phase 13 session 4: `[dependencies] mathlib = "1.2.3"` parses
     // as a version pin with no path. Path-less entries don't
