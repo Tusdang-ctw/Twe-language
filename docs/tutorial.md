@@ -227,14 +227,304 @@ The directive is a magic comment on one of the first ten lines: `# strict` (or `
 
 What strict mode flags today: comparison operators between mismatched types, arithmetic between non-numeric types, function-call args that disagree with parameter annotations, return values that disagree with the annotated return type, `let` annotations that disagree with the inferred value type. Annotations on classes and methods are session-3+ work; using them in v0.1 is silent (the inferer parses but doesn't yet enforce them).
 
+# Part II — Three games
+
+The first half of this tutorial covered the pieces. The rest of it builds three games end-to-end. Each chapter ends with a runnable file in `examples/`; if you get stuck, diff your file against the reference.
+
+The chapters get progressively bigger:
+
+- **Pong** — paddles, a ball, a score. About 200 lines. Touches everything in Part I.
+- **Survivors** — the Vampire-Survivors clone we ship in `examples/survive_beta/`. Entities, waves, weapons, level-up, save-load. Around 1300 lines; we'll read it, not type it.
+- **Mini-RPG** — dialogue trees, scenes, gradual typing in anger. Smaller than Survivors but uses the parts neither of the other two reach.
+
+If you only have an hour, do Pong. If you have an afternoon, do Pong and Survivors.
+
+## Building Pong
+
+Pong is a deceptively rich first game: it has input, real-time physics, AI, scoring, and a state machine that loops. Every piece you'll need for a bigger game is here in miniature. We'll write `examples/pong.twe` from scratch.
+
+### The scaffold
+
+Open a new file `pong.twe` and start with the dimensions and constants:
+
+```twe
+let view_w = 640.0
+let view_h = 480.0
+
+let paddle_w = 12.0
+let paddle_h = 80.0
+let paddle_speed = 360.0
+
+let ball_size = 10.0
+let ball_speed = 320.0
+
+let win_score = 5
+```
+
+Top-level `let` bindings are immutable — declare-once constants. Pong has a small handful, so they live at the top of the file rather than inside the scene. The 640×480 viewport matches the default `twec play` window.
+
+Next, the scene shell:
+
+```twe
+scene Pong:
+    var left_y = 200.0
+    var right_y = 200.0
+    var ball_x = 320.0
+    var ball_y = 240.0
+    var ball_vx = 320.0
+    var ball_vy = 192.0
+    var left_score = 0
+    var right_score = 0
+    var serve_timer = 0.0
+
+    initial: playing
+
+    state playing:
+        on render():
+            text("pong", at: (300, 220), size: 24, color: color.white)
+```
+
+`scene Pong:` opens the scene declaration. Each `var` line declares a mutable field — these are the only places we can store changing state in Pong. (`let` would refuse mutation; we'd never be able to move the paddle.)
+
+A subtlety v0.1 enforces: **scene field defaults must be literal constants**. We can't write `var left_y = view_h * 0.5 - paddle_h * 0.5` here even though the math is constant — the bytecode VM rejects non-literal initializers. So we hard-code the centered values: `200.0` is `(480 - 80) / 2`, `320.0` is `640 / 2`, etc. The `let` constants up top still drive the rest of the file.
+
+`initial: playing` says the scene boots in the `playing` state. `state playing:` declares it. The `on render():` block is what fires every frame in the play window. Run it now:
+
+```
+twec play pong.twe
+```
+
+You should see "pong" centered on a black 640×480 window. We have a working scene; the rest is filling in behavior.
+
+### Paddle input
+
+Pong's left paddle responds to W/S. Add an `on update(dt):` block to the `playing` state, above `on render`:
+
+```twe
+    state playing:
+        on update(dt):
+            if key.w:
+                left_y -= paddle_speed * dt
+            if key.s:
+                left_y += paddle_speed * dt
+            if left_y < 0.0:
+                left_y = 0.0
+            if left_y > view_h - paddle_h:
+                left_y = view_h - paddle_h
+```
+
+`on update(dt):` runs every simulation tick with the real-time delta. `key.w` reads the W key as a held bool — `true` while the player is holding it down, `false` when released. Multiplying speed by `dt` makes the motion frame-rate-independent: 360 units per second whether your machine renders at 60 fps or 144.
+
+The two clamps after pin the paddle to the playfield: `left_y = 0.0` if it tries to leave the top, `view_h - paddle_h` if it tries to leave the bottom. Without them the paddle drifts off-screen.
+
+Now draw the paddle. Replace the placeholder `text(...)` in `on render()`:
+
+```twe
+        on render():
+            rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
+```
+
+`rect(at:, size:, color:)` is one of the core stdlib drawing primitives. Coordinates are top-left-origin, +y down. Re-run `twec play pong.twe` — you should see a white paddle on the left edge that responds to W/S.
+
+### The AI paddle
+
+The right paddle should track the ball. Add to `on update(dt):` after the player block:
+
+```twe
+            let target = ball_y - paddle_h * 0.5
+            let ai_speed = paddle_speed * 0.8
+            if right_y < target:
+                right_y += ai_speed * dt
+                if right_y > target:
+                    right_y = target
+            elif right_y > target:
+                right_y -= ai_speed * dt
+                if right_y < target:
+                    right_y = target
+            if right_y < 0.0:
+                right_y = 0.0
+            if right_y > view_h - paddle_h:
+                right_y = view_h - paddle_h
+```
+
+`target` is the y the paddle would need to be at to put the ball at its center. The AI moves toward `target` at 80% of the player's speed — a perfect tracker is unbeatable, and 80% is the genre-canonical "fair but firm" feel. The inner `if` guards prevent overshoot when the AI is close enough to snap to target this frame.
+
+And draw it. Append to `on render()`:
+
+```twe
+            rect(
+                at: (view_w - paddle_w, right_y),
+                size: (paddle_w, paddle_h),
+                color: color.white,
+            )
+```
+
+Note the trailing comma after `color.white` — Twe accepts (and `twec fmt` keeps) trailing commas in multi-line lists. They make the next addition a one-line diff.
+
+### The ball
+
+Ball physics are velocity-integration plus four collision tests. Append to `on update(dt):`:
+
+```twe
+            ball_x += ball_vx * dt
+            ball_y += ball_vy * dt
+
+            if ball_y < 0.0:
+                ball_y = 0.0
+                ball_vy = -ball_vy
+            if ball_y > view_h - ball_size:
+                ball_y = view_h - ball_size
+                ball_vy = -ball_vy
+```
+
+The first two lines are Euler integration: position += velocity × time. The next four lines are wall bounces — when the ball passes the top or bottom edge, snap it back inside the wall and flip the y-velocity sign. Snapping is important: without it the ball can stay overlapping the wall on the next frame, flip its velocity again, and get stuck oscillating in place.
+
+For paddle collisions, we'll do AABB overlap (Axis-Aligned Bounding Box):
+
+```twe
+            if ball_x < paddle_w and ball_vx < 0.0:
+                if ball_y + ball_size > left_y and ball_y < left_y + paddle_h:
+                    ball_x = paddle_w
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (left_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+
+            if ball_x > view_w - paddle_w - ball_size and ball_vx > 0.0:
+                if ball_y + ball_size > right_y and ball_y < right_y + paddle_h:
+                    ball_x = view_w - paddle_w - ball_size
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (right_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+```
+
+Two things are happening per paddle. The outer `if` checks "is the ball inside the paddle's x-column AND moving toward it?" — the velocity check stops the ball from re-colliding on the frame *after* a successful bounce. The inner `if` checks the y-overlap. If both pass: snap the ball out, flip x-velocity, and **adjust y-velocity by the offset from paddle center**. That last line is what makes Pong skill-based: you aim by hitting the ball with the edge of your paddle.
+
+Draw the ball:
+
+```twe
+            rect(
+                at: (ball_x, ball_y),
+                size: (ball_size, ball_size),
+                color: color.white,
+            )
+```
+
+Run it. The ball should bounce off paddles and walls and (eventually) escape past one of the paddles into the void. We're missing the score reset.
+
+### Scoring and the `scored` state
+
+When the ball leaves the playfield, we want a brief pause before the next serve so the player registers the point. That's a second state. Append to the bottom of the scene:
+
+```twe
+    state scored:
+        on update(dt):
+            serve_timer -= dt
+            if serve_timer <= 0.0:
+                serve_timer = 0.8
+                ball_x = 315.0
+                ball_y = 235.0
+                if right_score > left_score:
+                    ball_vx = -ball_speed
+                else:
+                    ball_vx = ball_speed
+                ball_vy = ball_speed * 0.6
+                if left_score >= win_score or right_score >= win_score:
+                    -> game_over
+                else:
+                    -> playing
+
+        on render():
+            rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
+            rect(
+                at: (view_w - paddle_w, right_y),
+                size: (paddle_w, paddle_h),
+                color: color.white,
+            )
+            text("POINT", at: (270, 220), size: 36, color: color.yellow)
+```
+
+`scored` ticks down `serve_timer` until it hits zero, then resets the ball, picks a serve direction (toward whoever just lost), and either ends the game (if someone hit the win threshold) or hops back to `playing`. The `->` token is a state transition: `-> game_over` schedules a transition that fires after the current handler returns.
+
+Now wire the scoring transitions in `playing.on_update`. Append at the end:
+
+```twe
+            if ball_x < -ball_size:
+                right_score += 1
+                -> scored
+            if ball_x > view_w:
+                left_score += 1
+                -> scored
+```
+
+And display the scores in `playing.on_render`:
+
+```twe
+            text("{left_score}", at: (160, 60), size: 48, color: color.white)
+            text("{right_score}", at: (456, 60), size: 48, color: color.white)
+```
+
+`"{left_score}"` is a string interpolation — Twe builds the formatted string at runtime. Not `format!()`, not `+`-concatenation, not `printf` — interpolation is part of literal syntax.
+
+### `game_over` and restart
+
+The last state. Append:
+
+```twe
+    state game_over:
+        on update(dt):
+            if key_press.r:
+                left_score = 0
+                right_score = 0
+                ball_x = 320.0
+                ball_y = 240.0
+                ball_vx = 320.0
+                ball_vy = 192.0
+                -> playing
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            if left_score >= win_score:
+                text("You win!", at: (230, 180), size: 48, color: color.green)
+            else:
+                text("AI wins", at: (240, 180), size: 48, color: color.red)
+            text(
+                "Final  {left_score} - {right_score}",
+                at: (230, 250),
+                size: 24,
+                color: color.white,
+            )
+            text(
+                "Press R to play again",
+                at: (210, 320),
+                size: 18,
+                color: color.gray,
+            )
+```
+
+Two things to call out. `key_press.r` (not `key.r`) is edge-triggered — `true` only on the single frame the key was first pressed. We use it for one-shot actions like "restart"; `key.*` is for held input like paddle movement. Mixing them up is a common Twe footgun: held-`r` would restart-loop forever as long as the player held R.
+
+The opaque black rect draws first to dim the playfield behind the end-screen text.
+
+### What you've shipped
+
+You've built a complete Pong in a few hundred lines: input, real-time physics, AI, scoring, win condition, restart. Some things to notice:
+
+- **No setup, no event loop, no allocator.** The scene is the unit. State machines are the control flow.
+- **No nullable types, no `Option`.** Every `var` always has a value because the field default is required.
+- **No type annotations needed.** The inferer figured out everything from your initial values. You can add `: float` etc. and they'll be checked, but the bare program runs.
+- **Hot reload works.** Edit `pong.twe` while the window is open and the change appears next frame. Your scores reset because the scene is rebooted, but the game state is captured in scene fields — a future session could persist them across reloads.
+
+The reference file is in [`examples/pong.twe`](../examples/pong.twe). If yours differs, diff and figure out which version you prefer.
+
+Next chapter walks through `examples/survive_beta/` — same shape, twenty times the surface. (Coming up.)
+
 ## Where to go next
 
-- **`docs/01-examples.md`** — the eleven example programs the language design is held against. Ten are working; the eleventh (Snake) is the original integration test.
+- **`docs/01-examples.md`** — the eleven example programs the language design is held against.
 - **`docs/06-design-document.md`** — the formal grammar + semantics. Read this when you want to know exactly what Twe does in a corner case.
-- **`docs/02-type-system.md`** — the gradual / strict / verified type-system design. Explains the Luau influence and the three-tier model.
+- **`docs/02-type-system.md`** — the gradual / strict / verified type-system design.
 - **`docs/03-runtime.md`** — the runtime architecture and the explicit list of footguns Twe doesn't replicate (per-language pitfalls from Lua, Wren, GDScript).
-- **`docs/05-roadmap.md`** — the phase-by-phase plan from "design document" to v0.1.
-
-A handful of what v0.1 doesn't yet ship: `.glb` mesh import, tilemap rendering, save/load schemas, function-body `wait`, mouse input. These land in v0.2 alongside the bytecode-VM 3D path. See `notes/future-phases.md` "Carried into v0.2" for the running list.
+- **`docs/05-roadmap.md`** — the phase-by-phase plan from "design document" through v1.0.
 
 Have fun.
+

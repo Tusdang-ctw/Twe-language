@@ -1,0 +1,235 @@
+# Pong — the canonical first game.
+#
+# Run with:  twec play examples/pong.twe
+#
+# Two paddles, a bouncing ball, first to five wins. Player on the
+# left (W / S to move), AI on the right. The whole thing is one
+# scene with three states (playing / scored / game_over) and uses
+# only the Phase-1-through-Phase-10 surface — no entities, no
+# fibers, no audio. The tutorial in `docs/tutorial.md` walks
+# through writing this file from scratch.
+
+let view_w = 640.0
+let view_h = 480.0
+
+# Paddle geometry. Both paddles are the same size; only their X
+# columns differ. A `let` binding here promises "this never
+# changes mid-run" — the inferer can fold these into constants.
+let paddle_w = 12.0
+let paddle_h = 80.0
+let paddle_speed = 360.0
+
+# Ball geometry + speed. `ball_speed` is the magnitude only — the
+# direction lives in `ball_vx` / `ball_vy`. Splitting them keeps
+# the bounce math (which only flips sign) trivial.
+let ball_size = 10.0
+let ball_speed = 320.0
+
+# Win condition. Five points is short enough to playtest in a
+# minute and long enough that a single misclick doesn't decide it.
+let win_score = 5
+
+scene Pong:
+    # Mutable state lives at the scene level — every `state` block
+    # below reads and writes these fields. Twe doesn't have global
+    # variables in the C sense; scene fields are the closest thing.
+    # v0.1 limits scene-field defaults to literal constants, so we
+    # hard-code the centered start values; the `let` constants up
+    # top still drive the play logic below.
+    var left_y = 200.0
+    var right_y = 200.0
+    var ball_x = 320.0
+    var ball_y = 240.0
+    var ball_vx = 320.0
+    var ball_vy = 192.0
+    var left_score = 0
+    var right_score = 0
+    # `serve_timer` counts down before the ball launches after a
+    # point. Gives the player a beat to reset; without it the ball
+    # spawns mid-rally feel.
+    var serve_timer = 0.0
+
+    initial: playing
+
+    state playing:
+        on update(dt):
+            # ---- Player paddle (left). W / S held moves it. ----
+            if key.w:
+                left_y -= paddle_speed * dt
+            if key.s:
+                left_y += paddle_speed * dt
+            # Clamp so the paddle can't leave the playfield.
+            if left_y < 0.0:
+                left_y = 0.0
+            if left_y > view_h - paddle_h:
+                left_y = view_h - paddle_h
+
+            # ---- AI paddle (right). Tracks the ball's y with a
+            # softer max speed so it can be beaten. A perfect
+            # follower is unbeatable; 80% paddle speed is the
+            # genre-standard "fair but firm" feel. ----
+            let target = ball_y - paddle_h * 0.5
+            let ai_speed = paddle_speed * 0.8
+            if right_y < target:
+                right_y += ai_speed * dt
+                if right_y > target:
+                    right_y = target
+            elif right_y > target:
+                right_y -= ai_speed * dt
+                if right_y < target:
+                    right_y = target
+            if right_y < 0.0:
+                right_y = 0.0
+            if right_y > view_h - paddle_h:
+                right_y = view_h - paddle_h
+
+            # ---- Ball physics. ----
+            ball_x += ball_vx * dt
+            ball_y += ball_vy * dt
+
+            # Top / bottom wall bounce. Flip the sign and snap
+            # back inside the wall so we don't get stuck in a
+            # double-bounce on the next frame.
+            if ball_y < 0.0:
+                ball_y = 0.0
+                ball_vy = -ball_vy
+            if ball_y > view_h - ball_size:
+                ball_y = view_h - ball_size
+                ball_vy = -ball_vy
+
+            # Left paddle collision. AABB overlap, then flip vx.
+            # We also nudge vy by the offset from paddle center so
+            # the player can aim by hitting with the paddle edge —
+            # this is the load-bearing skill mechanic in Pong.
+            if ball_x < paddle_w and ball_vx < 0.0:
+                if ball_y + ball_size > left_y and ball_y < left_y + paddle_h:
+                    ball_x = paddle_w
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (left_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+
+            # Right paddle collision. Same pattern, mirrored.
+            if ball_x > view_w - paddle_w - ball_size and ball_vx > 0.0:
+                if ball_y + ball_size > right_y and ball_y < right_y + paddle_h:
+                    ball_x = view_w - paddle_w - ball_size
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (right_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+
+            # Score. Off the left edge → right scores, and vice versa.
+            if ball_x < -ball_size:
+                right_score += 1
+                -> scored
+            if ball_x > view_w:
+                left_score += 1
+                -> scored
+
+        on render():
+            # Center dashed line — ten dashes, gap-equal-dash. Pure
+            # decoration; the playfield reads cleanly without it but
+            # the dashes are part of the genre's identity.
+            var i = 0
+            while i < 10:
+                rect(
+                    at: (view_w * 0.5 - 1.0, i * 48.0 + 8.0),
+                    size: (2, 24),
+                    color: color.gray,
+                )
+                i += 1
+            # Paddles.
+            rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
+            rect(
+                at: (view_w - paddle_w, right_y),
+                size: (paddle_w, paddle_h),
+                color: color.white,
+            )
+            # Ball.
+            rect(
+                at: (ball_x, ball_y),
+                size: (ball_size, ball_size),
+                color: color.white,
+            )
+            # Scores. Centered-ish above each side; size 48 reads
+            # from across the room which matters for spectating.
+            text("{left_score}", at: (view_w * 0.25, 60), size: 48, color: color.white)
+            text("{right_score}", at: (view_w * 0.75 - 24, 60), size: 48, color: color.white)
+
+    state scored:
+        # Brief intermission so the player registers the point. Once
+        # `serve_timer` hits zero we reset the ball position, flip
+        # who serves next, and either end the run (if a side hit
+        # the win threshold) or hop back to playing.
+        on update(dt):
+            serve_timer -= dt
+            if serve_timer <= 0.0:
+                serve_timer = 0.8
+                ball_x = view_w * 0.5 - ball_size * 0.5
+                ball_y = view_h * 0.5 - ball_size * 0.5
+                # Serve toward whoever just scored against — the
+                # standard "loser serves" rule.
+                if right_score > left_score:
+                    ball_vx = -ball_speed
+                else:
+                    ball_vx = ball_speed
+                ball_vy = ball_speed * 0.6
+                if left_score >= win_score or right_score >= win_score:
+                    -> game_over
+                else:
+                    -> playing
+
+        on render():
+            # Keep the playfield visible behind the scored banner so
+            # the player remembers the rally that just ended. Same
+            # draws as `playing.on_render` — duplicated rather than
+            # extracted because v0.1 doesn't have scene-local helper
+            # functions and a top-level helper would need every
+            # field passed in.
+            rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
+            rect(
+                at: (view_w - paddle_w, right_y),
+                size: (paddle_w, paddle_h),
+                color: color.white,
+            )
+            text("{left_score}", at: (view_w * 0.25, 60), size: 48, color: color.yellow)
+            text("{right_score}", at: (view_w * 0.75 - 24, 60), size: 48, color: color.yellow)
+            text("POINT", at: (view_w * 0.5 - 50, 220), size: 36, color: color.yellow)
+
+    state game_over:
+        on update(dt):
+            if key_press.r:
+                left_score = 0
+                right_score = 0
+                ball_x = view_w * 0.5
+                ball_y = view_h * 0.5
+                ball_vx = ball_speed
+                ball_vy = ball_speed * 0.6
+                -> playing
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            if left_score >= win_score:
+                text(
+                    "You win!",
+                    at: (view_w * 0.5 - 90, 180),
+                    size: 48,
+                    color: color.green,
+                )
+            else:
+                text(
+                    "AI wins",
+                    at: (view_w * 0.5 - 80, 180),
+                    size: 48,
+                    color: color.red,
+                )
+            text(
+                "Final  {left_score} - {right_score}",
+                at: (view_w * 0.5 - 90, 250),
+                size: 24,
+                color: color.white,
+            )
+            text(
+                "Press R to play again",
+                at: (view_w * 0.5 - 110, 320),
+                size: 18,
+                color: color.gray,
+            )
