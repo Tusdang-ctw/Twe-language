@@ -267,6 +267,26 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
                 print_block(out, body, depth + 2);
             }
         }
+        Stmt::Import { path, alias, .. } => {
+            push_indent(out, depth);
+            out.push_str("import \"");
+            // Path strings are forward-slash logical paths; they
+            // never contain quote chars in practice but escape
+            // defensively so `twec fmt` round-trips arbitrary input.
+            for ch in path.chars() {
+                match ch {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    _ => out.push(ch),
+                }
+            }
+            out.push('"');
+            if let Some(name) = alias {
+                out.push_str(" as ");
+                out.push_str(name);
+            }
+            out.push('\n');
+        }
         Stmt::Expr(e) => {
             push_indent(out, depth);
             print_expr(out, e, Prec::Lowest);

@@ -268,3 +268,32 @@ fn lexes_nested_indent() {
     let tokens = lex(NESTED_INDENT).expect("lex should succeed");
     assert_debug_snapshot!(tokens);
 }
+
+#[test]
+fn import_is_a_keyword() {
+    // Phase 13 session 1: `import` must lex to its own kind so the
+    // parser can dispatch on it. Surface chosen as a fresh
+    // keyword (not a contextual identifier) because top-of-file
+    // imports are a load-bearing concept and a misspelled `imprt`
+    // should error like a typo, not parse as a function call.
+    let tokens = lex("import \"math/vec2\"").expect("lex should succeed");
+    assert!(
+        matches!(tokens[0].kind, TokenKind::Import),
+        "expected TokenKind::Import, got {:?}",
+        tokens[0].kind
+    );
+}
+
+#[test]
+fn as_remains_an_identifier() {
+    // `as` is matched contextually inside `parse_import` rather than
+    // burning a reserved keyword. This test pins that decision: any
+    // `as` outside an import context still reaches the parser as an
+    // ordinary identifier.
+    let tokens = lex("as").expect("lex should succeed");
+    assert!(
+        matches!(&tokens[0].kind, TokenKind::Ident(s) if s == "as"),
+        "expected Ident(\"as\"), got {:?}",
+        tokens[0].kind
+    );
+}

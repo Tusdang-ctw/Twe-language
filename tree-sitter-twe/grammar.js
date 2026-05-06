@@ -74,7 +74,21 @@ module.exports = grammar({
       $.despawn_statement,
       $.transition_statement,
       $.on_update_statement,
+      $.import_statement,
       $.expression_statement,
+    ),
+
+    // `import "module/path" [as Alias]` — Phase 13 session 1.
+    // The path is a string literal so module names can include
+    // forward-slash subpaths and characters that aren't valid
+    // identifiers. `as` is contextual (matched as an identifier in
+    // the Rust parser), so the grammar mirrors that by treating it
+    // as a literal token here rather than reserving a keyword.
+    import_statement: $ => seq(
+      'import',
+      field('path', $.string),
+      optional(seq('as', field('alias', $.identifier))),
+      $._newline,
     ),
 
     let_statement: $ => seq(

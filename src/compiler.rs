@@ -101,7 +101,8 @@ fn stmt_line(s: &Stmt) -> u32 {
         | Stmt::Say { line, .. }
         | Stmt::Choice { line, .. }
         | Stmt::OnRender { line, .. }
-        | Stmt::OnClassEvent { line, .. } => *line,
+        | Stmt::OnClassEvent { line, .. }
+        | Stmt::Import { line, .. } => *line,
         Stmt::Expr(e) => e.line(),
     }
 }
@@ -528,6 +529,15 @@ impl Compiler {
                     *line,
                     *col,
                 ));
+            }
+            Stmt::Import { .. } => {
+                // Phase 13 session 1 ships the syntax only; the
+                // module loader (session 2) and cross-module name
+                // resolution (session 3) lift imports out of the
+                // statement stream before compilation. At this
+                // stage `import` is a no-op for the bytecode
+                // emitter — the AST node is here so `twec fmt`
+                // and the LSP can round-trip it.
             }
         }
         Ok(())

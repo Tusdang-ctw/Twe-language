@@ -331,6 +331,22 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Stmt::Import {
+            path,
+            alias,
+            line,
+            col,
+        } => {
+            s.push_str("{\"kind\":\"Import\",\"path\":");
+            write_str_value(s, path);
+            s.push_str(",\"alias\":");
+            match alias {
+                Some(name) => write_str_value(s, name),
+                None => s.push_str("null"),
+            }
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Stmt::Expr(e) => {
             s.push_str("{\"kind\":\"ExprStmt\",\"expr\":");
             write_expr(s, e);

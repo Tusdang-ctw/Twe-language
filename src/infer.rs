@@ -416,7 +416,8 @@ impl Inferer {
             | Stmt::Continue { .. }
             | Stmt::Transition { .. }
             | Stmt::Spawn { .. }
-            | Stmt::Despawn { .. } => {}
+            | Stmt::Despawn { .. }
+            | Stmt::Import { .. } => {}
         }
     }
 

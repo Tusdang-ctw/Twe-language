@@ -759,6 +759,7 @@ const TWE_KEYWORDS: &[&str] = &[
     "for",
     "function",
     "if",
+    "import",
     "in",
     "initial",
     "inventory",

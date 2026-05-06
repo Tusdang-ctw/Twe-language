@@ -54,6 +54,11 @@ pub enum TokenKind {
     /// `actor <name> = <expr>` — alias for `let` inside dialogue
     /// bodies (Example 3 surface). Phase 5 task 3.
     Actor,
+    /// `import "<path>"` — module-system import statement. Phase 13
+    /// session 1 ships the keyword + AST + parser only; the loader
+    /// (read the referenced file, parse it, return its AST) is
+    /// session 2; cross-module name resolution is session 3.
+    Import,
     Ident(String),
     Int(i64),
     Float(f64),
@@ -1017,6 +1022,7 @@ impl<'a> Lexer<'a> {
             "say" => TokenKind::Say,
             "choice" => TokenKind::Choice,
             "actor" => TokenKind::Actor,
+            "import" => TokenKind::Import,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }

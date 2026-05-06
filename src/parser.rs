@@ -111,6 +111,7 @@ impl<'a> Parser<'a> {
             TokenKind::Dialogue => return self.parse_dialogue_decl(),
             TokenKind::Say => return self.parse_say(),
             TokenKind::Choice => return self.parse_choice(),
+            TokenKind::Import => return self.parse_import(),
             _ => {}
         }
         let expr = self.parse_expr()?;
@@ -343,6 +344,45 @@ impl<'a> Parser<'a> {
         self.expect_stmt_end()?;
         Ok(Stmt::Despawn {
             target,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    /// `import "<path>" [as <alias>]` — Phase 13 session 1 grammar:
+    ///   import_stmt := "import" string_literal ("as" identifier)?
+    /// The path is a string literal so module names need not be valid
+    /// identifiers (forward-slash subpaths, hyphens, etc. all work).
+    /// `as` is matched contextually as `Ident("as")` to avoid burning
+    /// a reserved keyword the rest of the language never needs.
+    fn parse_import(&mut self) -> Result<Stmt, ParseError> {
+        let kw = self.bump().clone();
+        let path_tok = self.bump().clone();
+        let path = match path_tok.kind {
+            TokenKind::Str(s) => s,
+            other => {
+                return Err(ParseError {
+                    line: path_tok.line,
+                    col: path_tok.col,
+                    message: format!("expected string literal after `import`, got {other:?}"),
+                    help: Some("`import \"math/vec2\"` brings the module into scope".to_string()),
+                });
+            }
+        };
+        let alias = if let TokenKind::Ident(name) = &self.peek().kind {
+            if name == "as" {
+                self.bump();
+                Some(self.expect_ident("expected identifier after `as`")?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        self.expect_stmt_end()?;
+        Ok(Stmt::Import {
+            path,
+            alias,
             line: kw.line,
             col: kw.col,
         })

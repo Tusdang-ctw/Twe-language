@@ -295,6 +295,16 @@ fn check_stmt(stmt: &Stmt, errors: &mut Vec<VisualError>) {
             line: *line,
             col: *col,
         }),
+        Stmt::Import { line, col, .. } => errors.push(VisualError {
+            message: "`import` statements aren't allowed inside a `visual` body"
+                .to_string(),
+            help: Some(
+                "move the `import` to the top of the script and reference the module from there"
+                    .to_string(),
+            ),
+            line: *line,
+            col: *col,
+        }),
     }
 }
 
@@ -511,7 +521,8 @@ fn stmt_line(stmt: &Stmt) -> u32 {
         | Stmt::OnRender { line, .. }
         | Stmt::OnClassEvent { line, .. }
         | Stmt::Decl { line, .. }
-        | Stmt::FunctionDecl { line, .. } => *line,
+        | Stmt::FunctionDecl { line, .. }
+        | Stmt::Import { line, .. } => *line,
         Stmt::Expr(e) => e.line(),
     }
 }
@@ -537,7 +548,8 @@ fn stmt_col(stmt: &Stmt) -> u32 {
         | Stmt::OnRender { col, .. }
         | Stmt::OnClassEvent { col, .. }
         | Stmt::Decl { col, .. }
-        | Stmt::FunctionDecl { col, .. } => *col,
+        | Stmt::FunctionDecl { col, .. }
+        | Stmt::Import { col, .. } => *col,
         Stmt::Expr(e) => e.col(),
     }
 }

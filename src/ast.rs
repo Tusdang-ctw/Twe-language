@@ -166,6 +166,20 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    /// `import "<path>" [as <alias>]` — module-system import. Phase
+    /// 13 session 1 parses the syntax only; session 2 wires the
+    /// loader; session 3 wires cross-module name resolution. The
+    /// `path` is a forward-slash logical path (e.g. `"math/vec2"`)
+    /// which the resolver maps to a real file. The `alias`, when
+    /// present, is the name the imported module is bound to in the
+    /// current scope; when absent the resolver defaults to the last
+    /// path segment.
+    Import {
+        path: String,
+        alias: Option<String>,
+        line: u32,
+        col: u32,
+    },
     Expr(Expr),
 }
 

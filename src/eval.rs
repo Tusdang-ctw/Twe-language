@@ -1515,6 +1515,7 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
         Stmt::DialogueDecl { .. } => "dialogue",
         Stmt::Say { .. } => "say",
         Stmt::Choice { .. } => "choice",
+        Stmt::Import { .. } => "import",
         Stmt::Expr(_) => "expression",
     }
 }
@@ -1924,6 +1925,15 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             line,
             col,
         } => eval_decl(env, *kind, name, parent.as_deref(), members, *line, *col),
+        Stmt::Import { .. } => {
+            // Phase 13 session 1 ships only the lexer + parser + AST
+            // for `import`. Module loading (session 2) lifts these
+            // statements out of the program before evaluation, so
+            // any import that survives to here is a no-op until the
+            // loader lands. Round-tripping through `twec fmt` and
+            // the LSP still works.
+            Ok(())
+        }
         Stmt::Expr(e) => {
             eval_expr(env, e)?;
             Ok(())
