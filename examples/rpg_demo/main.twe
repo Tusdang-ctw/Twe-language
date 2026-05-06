@@ -1,0 +1,278 @@
+# RPG demo — the second first-party Twe game.
+#
+# Run with:  twec play examples/rpg_demo/main.twe
+# Build:     twec build examples/rpg_demo
+#
+# A small dialogue-driven RPG: walk between two rooms, talk to
+# an NPC, discover a key, unlock a chest, win. Uses the parts
+# that survive_beta doesn't touch: scenes-as-rooms, dialogue
+# blocks, settings persistence, entities for pickups.
+#
+# This game is the Phase-16 "second first-party game" — it
+# exercises a different quadrant of the Twe surface from
+# survive_beta and serves as the RPG-pillar reference.
+
+settings.set_default("player.hp", 10)
+settings.set_default("player.has_key", false)
+settings.set_default("player.chest_open", false)
+settings.try_load("examples/rpg_demo/rpg.save")
+
+# ---------------------------------------------------------------
+# World constants
+# ---------------------------------------------------------------
+let view_w = 640.0
+let view_h = 480.0
+let tile   = 32.0
+let spd    = 120.0
+
+# Player state — shared across scenes via top-level vars.
+var px = 320.0
+var py = 300.0
+var player_hp      = settings.get("player.hp")
+var has_key        = settings.get("player.has_key")
+var chest_open     = settings.get("player.chest_open")
+
+# ---------------------------------------------------------------
+# Dialogue scripts
+# ---------------------------------------------------------------
+
+dialogue GuardGreet:
+    say Guard: "Hold it. This wing is restricted."
+    choice:
+        "I just need to pass through.":
+            say Guard: "Everyone does. Turn back."
+        "I have business in the east room.":
+            say Guard: "Business, eh? The chest key is somewhere in here."
+            say Guard: "Find it — maybe I'll let you by."
+        "Never mind.":
+            say Guard: "Wise choice."
+
+dialogue GuardLetThrough:
+    say Guard: "You found the key. East room is open."
+
+dialogue ChestDialogue:
+    say "You open the chest. Inside: a worn journal and a faint shimmer."
+    say "The journal reads: 'The exit key was here all along.'"
+
+dialogue WinDialogue:
+    say "You step through the glowing door."
+    say "The world outside is bright, vast, and yours to explore."
+    say "                — fin —"
+
+# ---------------------------------------------------------------
+# Entities
+# ---------------------------------------------------------------
+
+entity KeyPickup:
+    var pos = (0.0, 0.0)
+    var collected = false
+
+    function update(dt):
+        if collected:
+            return
+        let dx = px - pos.x
+        let dy = py - pos.y
+        if dx * dx + dy * dy < 24.0 * 24.0:
+            collected = true
+            has_key = true
+            settings.set("player.has_key", true)
+            settings.save("examples/rpg_demo/rpg.save")
+            despawn self
+
+    function render():
+        if collected:
+            return
+        rect(
+            at: (pos.x - 8, pos.y - 8),
+            size: (16, 16),
+            color: color.yellow,
+        )
+        text("KEY", at: (pos.x - 10, pos.y - 20), size: 10, color: color.yellow)
+
+# ---------------------------------------------------------------
+# Shared HUD drawing helper (top-level function, reads globals)
+# ---------------------------------------------------------------
+
+function draw_hud():
+    text("HP: {player_hp}", at: (10, 10), size: 16, color: color.white)
+    if has_key:
+        text("[KEY]", at: (view_w - 70, 10), size: 16, color: color.yellow)
+
+# ---------------------------------------------------------------
+# Scene: Entry room
+# ---------------------------------------------------------------
+
+scene EntryRoom:
+    # Floor tile count: 20 × 15 @ tile=32px = 640×480.
+    var talking = false
+    var talk_cooldown = 0.0
+
+    initial: exploring
+
+    state exploring:
+        on update(dt):
+            # Movement — four directions, no diagonal.
+            var dx = 0.0
+            var dy = 0.0
+            if key.w or key.up:    dy -= 1.0
+            if key.s or key.down:  dy += 1.0
+            if key.a or key.left:  dx -= 1.0
+            if key.d or key.right: dx += 1.0
+            let mag = dx * dx + dy * dy
+            if mag > 0.0:
+                let m = math.sqrt(mag)
+                px += dx / m * spd * dt
+                py += dy / m * spd * dt
+            # Clamp inside room.
+            if px < tile: px = tile
+            if px > view_w - tile: px = view_w - tile
+            if py < tile * 2: py = tile * 2
+            if py > view_h - tile: py = view_h - tile
+
+            # Talk to the guard (NPC at 480, 200).
+            let gdx = px - 480.0
+            let gdy = py - 200.0
+            talk_cooldown -= dt
+            if gdx * gdx + gdy * gdy < 48.0 * 48.0:
+                if key_press.e and talk_cooldown <= 0.0:
+                    talk_cooldown = 0.6
+                    if has_key:
+                        GuardLetThrough()
+                    else:
+                        GuardGreet()
+
+            # Door to east room — right edge, mid-height.
+            if px > view_w - tile - 8 and py > 200 and py < 280:
+                if has_key:
+                    # Transition: move player to west edge of east room.
+                    px = tile + 16
+                    py = 240.0
+                    # Launch east room scene (conceptually — in v0.8 we
+                    # use a flag and a second top-level scene decl).
+                    -> in_east_room
+
+        on render():
+            # Floor.
+            rect(at: (0, 0), size: (view_w, view_h), color: (0.12, 0.10, 0.09, 1.0))
+            # Walls.
+            rect(at: (0, 0), size: (view_w, tile), color: color.gray)
+            rect(at: (0, view_h - tile), size: (view_w, tile), color: color.gray)
+            rect(at: (0, 0), size: (tile, view_h), color: color.gray)
+            # East wall with door gap.
+            rect(at: (view_w - tile, 0), size: (tile, 200), color: color.gray)
+            rect(at: (view_w - tile, 280), size: (tile, view_h - 280), color: color.gray)
+            if has_key:
+                rect(
+                    at: (view_w - tile, 200),
+                    size: (tile, 80),
+                    color: color.green,
+                )
+                text("OPEN", at: (view_w - tile + 2, 232), size: 10, color: color.black)
+            else:
+                rect(
+                    at: (view_w - tile, 200),
+                    size: (tile, 80),
+                    color: color.red,
+                )
+                text("LOCK", at: (view_w - tile + 2, 232), size: 10, color: color.black)
+            # Guard NPC.
+            rect(at: (468, 180), size: (24, 40), color: color.cyan)
+            text("Guard", at: (460, 172), size: 10, color: color.cyan)
+            let gdx2 = px - 480.0
+            let gdy2 = py - 200.0
+            if gdx2 * gdx2 + gdy2 * gdy2 < 48.0 * 48.0:
+                text("[E] Talk", at: (440, 155), size: 12, color: color.white)
+            # Player.
+            rect(at: (px - 12, py - 16), size: (24, 32), color: color.green)
+            draw_hud()
+            text("Find the key — east door opens.", at: (140, 450), size: 13, color: color.gray)
+
+    # Fake "in east room" by using a second state rather than a
+    # real scene transition — clean multi-scene routing lands when
+    # the scene.enter() API ships in Phase 17+.
+    state in_east_room:
+        on update(dt):
+            var dx = 0.0
+            var dy = 0.0
+            if key.w or key.up:    dy -= 1.0
+            if key.s or key.down:  dy += 1.0
+            if key.a or key.left:  dx -= 1.0
+            if key.d or key.right: dx += 1.0
+            let mag = dx * dx + dy * dy
+            if mag > 0.0:
+                let m = math.sqrt(mag)
+                px += dx / m * spd * dt
+                py += dy / m * spd * dt
+            if px < tile: px = tile
+            if px > view_w - tile: px = view_w - tile
+            if py < tile * 2: py = tile * 2
+            if py > view_h - tile: py = view_h - tile
+
+            # Return west.
+            if px < tile + 8 and py > 200 and py < 280:
+                px = view_w - tile - 20
+                -> exploring
+
+            # Interact with chest at (480, 200).
+            let cdx = px - 480.0
+            let cdy = py - 220.0
+            if cdx * cdx + cdy * cdy < 48.0 * 48.0:
+                if key_press.e and not chest_open:
+                    chest_open = true
+                    settings.set("player.chest_open", true)
+                    settings.save("examples/rpg_demo/rpg.save")
+                    ChestDialogue()
+                elif key_press.e and chest_open:
+                    -> win
+
+        on render():
+            # East room floor.
+            rect(at: (0, 0), size: (view_w, view_h), color: (0.09, 0.10, 0.14, 1.0))
+            rect(at: (0, 0), size: (view_w, tile), color: color.gray)
+            rect(at: (0, view_h - tile), size: (view_w, tile), color: color.gray)
+            rect(at: (view_w - tile, 0), size: (tile, view_h), color: color.gray)
+            # West wall with door.
+            rect(at: (0, 0), size: (tile, 200), color: color.gray)
+            rect(at: (0, 280), size: (tile, view_h - 280), color: color.gray)
+            rect(at: (0, 200), size: (tile, 80), color: color.green)
+            text("BACK", at: (2, 232), size: 10, color: color.black)
+            # Chest.
+            let chest_col = if chest_open: color.gray else: color.orange
+            rect(at: (460, 196), size: (48, 48), color: chest_col)
+            text("CHEST", at: (462, 186), size: 10, color: chest_col)
+            let cdx2 = px - 480.0
+            let cdy2 = py - 220.0
+            if cdx2 * cdx2 + cdy2 * cdy2 < 48.0 * 48.0:
+                let hint = if chest_open: "[E] Open again" else: "[E] Open chest"
+                text(hint, at: (430, 170), size: 12, color: color.white)
+            # Player.
+            rect(at: (px - 12, py - 16), size: (24, 32), color: color.green)
+            draw_hud()
+            text("East Room — find the chest.", at: (180, 450), size: 13, color: color.gray)
+
+    state win:
+        on update(dt):
+            if key_press.r:
+                # Reset save and restart.
+                has_key = false
+                chest_open = false
+                player_hp = 10
+                settings.set("player.has_key", false)
+                settings.set("player.chest_open", false)
+                settings.save("examples/rpg_demo/rpg.save")
+                px = 320.0
+                py = 300.0
+                -> exploring
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            WinDialogue()
+            text(
+                "Press R to play again",
+                at: (220, 380),
+                size: 18,
+                color: color.gray,
+            )
+
+# Spawn the key pickup in the entry room at a fixed position.
+spawn KeyPickup at (220.0, 360.0)
