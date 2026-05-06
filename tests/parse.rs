@@ -85,6 +85,45 @@ fn import_requires_string_literal_path() {
 }
 
 #[test]
+fn parses_record_type_in_let_annotation() {
+    // Phase 13 session 5: `let v: {x: int, y: int} = ...`. The
+    // annotation lands on Stmt::Let.ty and round-trips through
+    // the inferer (where it powers structural width-subtyping).
+    let src = "let p: {x: int, y: int} = something\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    match &program.stmts[0] {
+        twec::ast::Stmt::Let { ty, .. } => {
+            let ty = ty.as_ref().expect("annotation present");
+            match ty {
+                twec::types::Type::Record(fields) => {
+                    assert_eq!(fields.len(), 2);
+                    assert!(fields.contains_key("x"));
+                    assert!(fields.contains_key("y"));
+                }
+                other => panic!("expected Record, got {other:?}"),
+            }
+        }
+        other => panic!("expected let, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_empty_record_type() {
+    // `{}` is reserved for a future "top type" spelling and should
+    // surface a help that points at `?` and at "list at least one
+    // field" so the user knows both options.
+    let src = "let p: {} = x\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let err = parser::parse(&tokens).expect_err("parse should fail");
+    assert!(
+        err.message.contains("empty record"),
+        "expected empty-record mention in {:?}",
+        err.message
+    );
+}
+
+#[test]
 fn import_round_trips_through_fmt() {
     // `twec fmt` (printer) must reproduce both forms verbatim so
     // session-1 imports survive a save / re-format cycle once the

@@ -196,6 +196,23 @@ impl Inferer {
             return;
         }
         if let Err(e) = result {
+            // Phase 13 session 5: structural width-subtyping
+            // rescue. If one side is a Record and the other is a
+            // class Instance whose shape supplies all the record's
+            // fields with compatible types, suppress the
+            // mismatch — the value is structurally assignable.
+            // Sides aren't symmetric: a Record(R) is the *expected*
+            // contract; the Instance is the *provided* value. We
+            // try both orientations because `try_unify` is called
+            // with arbitrary argument order across the inferer.
+            let resolved_a = crate::types::apply_subst(&self.subst, a);
+            let resolved_b = crate::types::apply_subst(&self.subst, b);
+            let shapes_lookup = |name: &str| self.class_shapes.get(name).cloned();
+            if crate::types::is_record_subtype_of(&resolved_a, &resolved_b, &shapes_lookup)
+                || crate::types::is_record_subtype_of(&resolved_b, &resolved_a, &shapes_lookup)
+            {
+                return;
+            }
             let (a_str, b_str) = match &e {
                 crate::types::UnifyError::Mismatch { a, b } => (a.clone(), b.clone()),
                 crate::types::UnifyError::OccursCheck { var, ty } => {

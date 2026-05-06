@@ -99,6 +99,12 @@ pub fn apply_subst(subst: &Substitution, t: &Type) -> Type {
         },
         Type::Optional(inner) => Type::Optional(Rc::new(apply_subst(subst, inner))),
         Type::Union(parts) => Type::Union(parts.iter().map(|p| apply_subst(subst, p)).collect()),
+        Type::Record(fields) => Type::Record(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), apply_subst(subst, v)))
+                .collect(),
+        ),
         // Scalar / nominal types have nothing to substitute.
         _ => t.clone(),
     }
@@ -255,6 +261,24 @@ pub fn unify(a: &Type, b: &Type, subst: &mut Substitution) -> Result<(), UnifyEr
             }
             unify(ar, br, subst)
         }
+        // Phase 13 session 5: structural records. Two records are
+        // equal under unification when they have the *exact* same
+        // field set with unifiable types. Width subtyping
+        // (`Instance(C)` matches a smaller `Record(R)`) lives in the
+        // separate `is_subtype_of` relation, *not* in `unify` —
+        // mixing the two would let unification accidentally narrow
+        // a class to a record that doesn't actually exist as a
+        // value.
+        (Type::Record(fa), Type::Record(fb)) => {
+            if fa.len() != fb.len() {
+                return Err(mismatch(&a, &b));
+            }
+            for (k, ta) in fa.iter() {
+                let tb = fb.get(k).ok_or_else(|| mismatch(&a, &b))?;
+                unify(ta, tb, subst)?;
+            }
+            Ok(())
+        }
         _ => Err(mismatch(&a, &b)),
     }
 }
@@ -279,6 +303,7 @@ fn occurs_in(id: TypeVarId, t: &Type) -> bool {
         }
         Type::Optional(inner) => occurs_in(id, inner),
         Type::Union(parts) => parts.iter().any(|p| occurs_in(id, p)),
+        Type::Record(fields) => fields.values().any(|t| occurs_in(id, t)),
         _ => false,
     }
 }
@@ -354,6 +379,17 @@ pub enum Type {
     /// in source order; equality is order-sensitive (canonical
     /// form is the responsibility of the constructor).
     Union(Vec<Type>),
+    /// Phase 13 session 5: structural record type.
+    /// `{ x: int, y: int }` — a "duck type" whose membership
+    /// rule is "has these named fields with compatible types".
+    /// A nominal `Instance(C)` is *width-subtyped* to a
+    /// `Record(R)` when the inferer can prove every field in R
+    /// has a compatible type in C's class shape; a `Record(R1)`
+    /// is compatible with `Record(R2)` when R1's fields are a
+    /// superset of R2's. Sorted-key ordering (`BTreeMap`) gives
+    /// a canonical form so two records with the same fields
+    /// compare equal regardless of source-order.
+    Record(std::collections::BTreeMap<String, Type>),
 }
 
 impl Type {
@@ -502,8 +538,69 @@ impl Type {
             (Type::Union(parts), other) | (other, Type::Union(parts)) => {
                 parts.iter().any(|p| p.is_compatible_with(other))
             }
+            // Record: equality compat. Width-subtyping (`Instance(C)`
+            // satisfies a smaller record `R`) goes through
+            // `is_record_subtype_of` so it has access to the class
+            // shape; `is_compatible_with` is class-shape-blind.
+            (Type::Record(a), Type::Record(b)) => {
+                a.len() == b.len()
+                    && a.iter().all(|(k, ta)| {
+                        b.get(k).is_some_and(|tb| ta.is_compatible_with(tb))
+                    })
+            }
             _ => false,
         }
+    }
+}
+
+/// Phase 13 session 5: structural width-subtyping check.
+/// Returns true when a value of type `provided` can stand in
+/// where a value of `expected: Record(R)` is required. The
+/// `class_shapes` callback maps a class name to its field shape;
+/// strict-mode callers pass the inferer's `class_shapes`, tests
+/// pass an inline closure.
+///
+/// Rule: every field in `expected` must be present in `provided`
+/// with a compatible type. Extra fields on `provided` are fine
+/// (width subtyping). Class names without a shape entry fall
+/// through to false — we won't pretend an unknown class matches.
+pub fn is_record_subtype_of(
+    provided: &Type,
+    expected: &Type,
+    class_shapes: &dyn Fn(&str) -> Option<std::collections::BTreeMap<String, Type>>,
+) -> bool {
+    let expected_fields = match expected {
+        Type::Record(f) => f,
+        _ => return false,
+    };
+    match provided {
+        Type::Record(provided_fields) => {
+            for (k, expected_t) in expected_fields {
+                let Some(provided_t) = provided_fields.get(k) else {
+                    return false;
+                };
+                if !provided_t.is_compatible_with(expected_t) {
+                    return false;
+                }
+            }
+            true
+        }
+        Type::Instance(name) => {
+            let shape = match class_shapes(name) {
+                Some(s) => s,
+                None => return false,
+            };
+            for (k, expected_t) in expected_fields {
+                let Some(provided_t) = shape.get(k) else {
+                    return false;
+                };
+                if !provided_t.is_compatible_with(expected_t) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
     }
 }
 
@@ -576,6 +673,16 @@ impl fmt::Display for Type {
                     }
                 }
                 Ok(())
+            }
+            Type::Record(fields) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
             }
         }
     }
@@ -977,5 +1084,126 @@ mod tests {
         unify(&u, &Type::Int, &mut s).unwrap();
         unify(&u, &Type::Str, &mut s).unwrap();
         assert!(unify(&u, &Type::Bool, &mut s).is_err());
+    }
+
+    // ----- Phase 13 session 5: structural records. -----
+
+    fn record(fields: &[(&str, Type)]) -> Type {
+        let mut m = std::collections::BTreeMap::new();
+        for (k, v) in fields {
+            m.insert((*k).to_string(), v.clone());
+        }
+        Type::Record(m)
+    }
+
+    #[test]
+    fn display_record_uses_brace_syntax() {
+        let r = record(&[("x", Type::Int), ("y", Type::Int)]);
+        assert_eq!(r.to_string(), "{x: int, y: int}");
+    }
+
+    #[test]
+    fn unify_records_with_same_fields_succeeds() {
+        let mut s = Substitution::new();
+        let a = record(&[("x", Type::Int), ("y", Type::Int)]);
+        let b = record(&[("x", Type::Int), ("y", Type::Int)]);
+        unify(&a, &b, &mut s).unwrap();
+    }
+
+    #[test]
+    fn unify_records_with_different_fields_errors() {
+        // Width subtyping is *not* part of unify — that's
+        // is_record_subtype_of's job. Two records that differ in
+        // their field set must fail unification cleanly.
+        let mut s = Substitution::new();
+        let a = record(&[("x", Type::Int), ("y", Type::Int)]);
+        let b = record(&[("x", Type::Int)]);
+        assert!(unify(&a, &b, &mut s).is_err());
+    }
+
+    #[test]
+    fn unify_records_with_mismatched_value_types_errors() {
+        let mut s = Substitution::new();
+        let a = record(&[("x", Type::Int)]);
+        let b = record(&[("x", Type::Str)]);
+        assert!(unify(&a, &b, &mut s).is_err());
+    }
+
+    #[test]
+    fn record_subtype_accepts_extra_fields_on_provided() {
+        // Provided record has {x, y, z}; expected record has {x, y}.
+        // Provided is a width-subtype of expected — extra `z` is
+        // fine; the contract only asks for x and y.
+        let provided = record(&[
+            ("x", Type::Int),
+            ("y", Type::Int),
+            ("z", Type::Str),
+        ]);
+        let expected = record(&[("x", Type::Int), ("y", Type::Int)]);
+        let no_classes = |_: &str| None;
+        assert!(is_record_subtype_of(&provided, &expected, &no_classes));
+    }
+
+    #[test]
+    fn record_subtype_rejects_missing_fields_on_provided() {
+        let provided = record(&[("x", Type::Int)]);
+        let expected = record(&[("x", Type::Int), ("y", Type::Int)]);
+        let no_classes = |_: &str| None;
+        assert!(!is_record_subtype_of(&provided, &expected, &no_classes));
+    }
+
+    #[test]
+    fn record_subtype_rejects_incompatible_value_type() {
+        let provided = record(&[("x", Type::Str)]);
+        let expected = record(&[("x", Type::Int)]);
+        let no_classes = |_: &str| None;
+        assert!(!is_record_subtype_of(&provided, &expected, &no_classes));
+    }
+
+    #[test]
+    fn instance_satisfies_record_when_class_shape_supplies_fields() {
+        // Instance(Hero) where the class shape says
+        // Hero = { x: int, y: int, name: str }. The expected
+        // record { x: int, y: int } is satisfied — width subtyping.
+        let provided = Type::Instance(Rc::new("Hero".to_string()));
+        let expected = record(&[("x", Type::Int), ("y", Type::Int)]);
+        let lookup = |name: &str| {
+            if name == "Hero" {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert("x".to_string(), Type::Int);
+                m.insert("y".to_string(), Type::Int);
+                m.insert("name".to_string(), Type::Str);
+                Some(m)
+            } else {
+                None
+            }
+        };
+        assert!(is_record_subtype_of(&provided, &expected, &lookup));
+    }
+
+    #[test]
+    fn instance_does_not_satisfy_record_when_field_missing() {
+        let provided = Type::Instance(Rc::new("Bare".to_string()));
+        let expected = record(&[("x", Type::Int), ("y", Type::Int)]);
+        let lookup = |name: &str| {
+            if name == "Bare" {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert("x".to_string(), Type::Int);
+                Some(m)
+            } else {
+                None
+            }
+        };
+        assert!(!is_record_subtype_of(&provided, &expected, &lookup));
+    }
+
+    #[test]
+    fn instance_with_unknown_class_does_not_match_record() {
+        // No shape entry for the class -> we can't pretend it
+        // matches.
+        let provided = Type::Instance(Rc::new("Mystery".to_string()));
+        let expected = record(&[("x", Type::Int)]);
+        let no_classes = |_: &str| None;
+        assert!(!is_record_subtype_of(&provided, &expected, &no_classes));
     }
 }

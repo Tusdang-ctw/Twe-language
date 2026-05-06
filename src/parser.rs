@@ -1075,8 +1075,11 @@ impl<'a> Parser<'a> {
         //   type := identifier ("." identifier)*
         //         | "list" "of" type
         //         | "map" "of" type "=>" type
+        // Phase 13 session 5: structural-record syntax —
+        //   type := "{" ident ":" type ("," ident ":" type)* "}"
         let tok = self.peek().clone();
         match tok.kind {
+            TokenKind::LBrace => self.parse_record_type(tok.line, tok.col),
             TokenKind::Ident(name) => {
                 self.bump();
                 let mut qualified = false;
@@ -1095,11 +1098,70 @@ impl<'a> Parser<'a> {
                 col: tok.col,
                 message: format!("expected type, got {other:?}"),
                 help: Some(
-                    "v0.1 type annotations accept identifiers like `int`, `Hero`, or `vector`"
+                    "v0.1 type annotations accept identifiers like `int`, `Hero`, or `vector`; v0.7 adds `{x: int, y: int}` records"
                         .to_string(),
                 ),
             }),
         }
+    }
+
+    /// Phase 13 session 5: `{ x: int, y: int }` structural-record
+    /// type. Empty `{}` is rejected — an empty record is the top
+    /// type and is currently spelled with `?` (Type::Unknown), not
+    /// with this syntax. Trailing comma is permitted.
+    fn parse_record_type(
+        &mut self,
+        line: u32,
+        col: u32,
+    ) -> Result<Option<crate::types::Type>, ParseError> {
+        self.bump(); // `{`
+        let mut fields: std::collections::BTreeMap<String, crate::types::Type> =
+            std::collections::BTreeMap::new();
+        let mut any_unmapped = false;
+        loop {
+            if matches!(self.peek().kind, TokenKind::RBrace) {
+                break;
+            }
+            let name = self.expect_ident("expected field name in record type")?;
+            self.expect(TokenKind::Colon, "expected ':' after field name")?;
+            let ty_opt = self.parse_type()?;
+            // If the parsed type was unmapped (returned None), we
+            // can't keep it in a Record; bail to None (the same
+            // graceful-degrade signal the rest of `parse_type` uses).
+            match ty_opt {
+                Some(t) => {
+                    fields.insert(name, t);
+                }
+                None => {
+                    any_unmapped = true;
+                }
+            }
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "expected '}' to close record type")?;
+        if any_unmapped {
+            // One or more field types weren't recognised primitives;
+            // degrade to None so non-strict mode doesn't accidentally
+            // build a partially-typed record. Strict mode will see
+            // the unmapped field at the value site and report there.
+            return Ok(None);
+        }
+        if fields.is_empty() {
+            return Err(ParseError {
+                line,
+                col,
+                message: "empty record type `{}` is not supported".to_string(),
+                help: Some(
+                    "spell the top type with `?` (Unknown) or list at least one field"
+                        .to_string(),
+                ),
+            });
+        }
+        Ok(Some(crate::types::Type::Record(fields)))
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
