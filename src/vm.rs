@@ -1151,7 +1151,13 @@ Err(RuntimeError {
             };
             if let Some(body) = body {
                 self.invoke_method_value(body, Value::from_bc_instance(scene.clone()), &[])?;
-                self.transitioning.take();
+            }
+            // Apply state transitions raised during on_render — modal
+            // states like a level-up picker put their button widgets
+            // in render and rely on `-> playing` to dismiss themselves
+            // (mirror of eval::render_frame).
+            if let Some(target) = self.transitioning.take() {
+                self.enter_state(&scene, &target)?;
             }
         }
         let entities = self.active_entities.clone();

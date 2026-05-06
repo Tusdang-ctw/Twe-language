@@ -207,6 +207,8 @@ entity Slime:
                 hit_flash = 0.1
 
     function render():
+        if in_levelup:
+            return
         # Slime sprites stub: a 20×20 cyan square. Session 10's
         # polish pass swaps in a real PNG once the asset's drawn.
         rect(
@@ -256,6 +258,8 @@ entity Bat:
                 hit_flash = 0.1
 
     function render():
+        if in_levelup:
+            return
         rect(
             at: (pos.x - camera_x - 8, pos.y - camera_y - 8),
             size: (16, 16),
@@ -296,6 +300,8 @@ entity Skeleton:
             spawn SkeletonBolt at pos
 
     function render():
+        if in_levelup:
+            return
         rect(
             at: (pos.x - camera_x - 10, pos.y - camera_y - 14),
             size: (20, 28),
@@ -341,6 +347,8 @@ entity SkeletonBolt:
             despawn self
 
     function render():
+        if in_levelup:
+            return
         rect(
             at: (pos.x - camera_x - 3, pos.y - camera_y - 3),
             size: (6, 6),
@@ -383,6 +391,8 @@ entity Boss:
                 hit_flash = 0.1
 
     function render():
+        if in_levelup:
+            return
         # 48×48 orange body — bigger and warmer than the normal
         # enemy palette so it's instantly readable as a threat.
         rect(
@@ -493,6 +503,8 @@ entity Projectile:
                 return
 
     function render():
+        if in_levelup:
+            return
         rect(
             at: (pos.x - camera_x - 3, pos.y - camera_y - 3),
             size: (6, 6),
@@ -560,6 +572,8 @@ entity Blade:
                     kills += 1
 
     function render():
+        if in_levelup:
+            return
         rect(
             at: (pos.x - camera_x - 6, pos.y - camera_y - 6),
             size: (12, 12),
@@ -617,6 +631,13 @@ entity Aura:
                         kills += 1
 
     function render():
+        # Skip while the level-up modal is open. Engine render order
+        # is state-on-render first, then every entity's render(); the
+        # modal's opaque black rect runs first and these strokes draw
+        # on top of it, so without this gate the cyan ring leaks over
+        # the upgrade picker.
+        if in_levelup:
+            return
         # Cyan ring around the player. 32-segment circle would
         # be nicer but `circle()` filled-only doesn't outline; an
         # outline is what we want so it doesn't paint over the
@@ -666,6 +687,8 @@ entity Spark:
             despawn self
 
     function render():
+        if in_levelup:
+            return
         # Fades in size from full → 0 across lifetime, so the
         # effect reads as "puff outward then dissipate" without
         # an alpha-blending step the engine doesn't yet expose.
@@ -715,13 +738,15 @@ entity XPGem:
             )
 
     function render():
-        # Bright magenta diamond so it reads against cyan slimes
-        # and yellow projectiles. 8×8 — small enough not to
-        # crowd the screen at high kill counts.
+        if in_levelup:
+            return
+        # Bright blue diamond so it reads against cyan slimes,
+        # yellow projectiles, and purple bats. 8×8 — small enough
+        # not to crowd the screen at high kill counts.
         rect(
             at: (pos.x - camera_x - 4, pos.y - camera_y - 4),
             size: (8, 8),
-            color: color.magenta
+            color: color.blue
         )
 
 
@@ -1066,11 +1091,11 @@ scene SurviveBeta:
             text("HP {player_hp}/{player_max_hp}", at: (10, 70), size: 12, color: color.white)
             text("Kills: {kills}", at: (540, 44), size: 16, color: color.yellow)
             # XP bar: along the bottom edge, 600px wide, scaled to
-            # current XP / requirement. Magenta to match the gem
+            # current XP / requirement. Blue to match the gem
             # color so the link is visible.
             rect(at: (20, 460), size: (604, 12), color: color.gray)
             let xp_w = 600.0 * (xp / xp_to_next_level)
-            rect(at: (22, 462), size: (xp_w, 8), color: color.magenta)
+            rect(at: (22, 462), size: (xp_w, 8), color: color.blue)
             text(
                 "XP {xp} / {xp_to_next_level}",
                 at: (260, 444),

@@ -203,14 +203,22 @@ pub fn launch_embedded(source: String) -> i32 {
 }
 
 fn window_conf() -> Conf {
+    // high_dpi=false keeps the GL surface at the requested 640×480
+    // physical pixels — with high_dpi=true on a HiDPI display the
+    // surface scales up but draw calls stay in the configured 640×480
+    // logical box, leaving the rest of the window black. Same reason
+    // window_resizable=false: an enlarged window paints the world in
+    // the top-left and stretches mouse coords past the button rects.
+    // The trade-off is fuzzier text on Retina; a proper letterboxed
+    // render-target is a Phase 14+ polish session.
     Conf {
         window_title: "Twec play".to_string(),
         window_width: 640,
         window_height: 480,
-        high_dpi: true,
+        high_dpi: false,
         fullscreen: false,
         sample_count: 1,
-        window_resizable: true,
+        window_resizable: false,
         platform: Default::default(),
         icon: None,
     }

@@ -558,11 +558,17 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
                 .and_then(|state| state.on_render.clone())
         };
         if let Some(body) = body {
-            let prev_self = env.self_value.replace(Value::from_instance(scene));
+            let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
             run_block(env, &body)?;
             env.self_value = prev_self;
         }
-        env.transitioning.take();
+        // Apply state transitions raised during on_render — modal
+        // states like a level-up picker put their button widgets
+        // in render and rely on `-> playing` to dismiss themselves
+        // (same pattern as the pause menu's Resume button).
+        if let Some(target) = env.transitioning.take() {
+            enter_state(env, &scene, &target)?;
+        }
     }
     let entities = env.active_entities.clone();
     for entity in entities {
