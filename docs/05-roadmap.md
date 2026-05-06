@@ -596,11 +596,32 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 11 — Production hardening | v0.5 | M (closed 2026-05-04; 12 sessions + same-day follow-on shipped real auto-pause-on-blur via `GetForegroundWindow` polling on Windows; macOS / Linux focus paths still stubbed) |
 | 12 — Asset pipeline + build | v0.6 | M |
 | 13 — Modules + type-system stability | v0.7 | L (closed 2026-05-06; 12 sessions shipped, all 3 exit criteria met) |
-| 14 — Beta + dogfood | v0.8 | XL (game-dependent) |
-| 15 — Release candidate | v0.9 | M |
-| 16 — Stable | v1.0 | S (mostly non-code) |
+| 14 — Beta + dogfood | v0.8 | XL (codebase-closed 2026-05-06; itch.io ship + reviews pending) |
+| 15 — Release candidate | v0.9 | M (codebase-closed 2026-05-06; Steam AppID test + crash-report criterion pending) |
+| 16 — Stable | v1.0 | S (codebase-closed 2026-05-06; 6-month API stability window begins; itch.io ships pending) |
 
 The realistic v1.0 ETA is *whenever the beta and RC games ship*, not a wall-clock date. Don't promise dates.
+
+---
+
+## v1.x roadmap scratch
+
+*This section replaces the v0.x roadmap for post-v1.0 planning. v0.x is history above.*
+
+The LTS commitment begins at v1.0: security and critical fixes backport to the `v1.x` branch for 12 months minimum. Breaking changes to the public Twe language surface or `twec` CLI require a `@deprecated` cycle.
+
+**Open post-v1.0 work items** (prioritised by real game pressure, not speculation):
+
+| Item | Driver |
+|------|--------|
+| macOS / Linux auto-pause-on-blur | `NSApplication.isActive` / `_NET_ACTIVE_WINDOW` paths; Windows ships |
+| Bytecode VM kwarg-builtin support | All widget-using examples fall back to tree-walker; closes a known limitation |
+| 3× bytecode-VM speedup gap from Phase 8.5 | Criterion bench harness ships; perf tuning driven by profiling |
+| `save SaveSlot:` block syntax | v0.3+ follow-on from Phase 8; key/value layer ships |
+| `tilemap Dungeon:` block syntax | v0.3+ follow-on from Phase 8 |
+| Per-state pause opt-out (`pause: false`) | Open syntax question |
+| 3D rendering polish (textures, animation, physics) | Post-v1.0 per the roadmap |
+| Community game support | Link + track third-party games in the README gallery |
 
 ---
 
