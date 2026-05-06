@@ -2971,6 +2971,14 @@ fn install_draw(env: &mut Env) {
         Value::from_builtin("circle", &["at", "radius", "color"], draw_circle),
     );
     env.set(
+        "circle_outline".to_string(),
+        Value::from_builtin(
+            "circle_outline",
+            &["at", "radius", "thickness", "color"],
+            draw_circle_outline,
+        ),
+    );
+    env.set(
         "line".to_string(),
         Value::from_builtin("line", &["from", "to", "width", "color"], draw_line),
     );
@@ -3567,6 +3575,17 @@ fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let radius = number(&args[1], "circle.radius")? as f32;
     let color = color_of(&args[2], "circle.color")?;
     macroquad::shapes::draw_circle(x as f32, y as f32, radius, color);
+    Ok(Value::NIL)
+}
+
+fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "circle_outline")?;
+    arity(args, 4, "circle_outline")?;
+    let (x, y) = xy_of(&args[0], "circle_outline.at")?;
+    let radius = number(&args[1], "circle_outline.radius")? as f32;
+    let thickness = number(&args[2], "circle_outline.thickness")? as f32;
+    let color = color_of(&args[3], "circle_outline.color")?;
+    macroquad::shapes::draw_circle_lines(x as f32, y as f32, radius, thickness, color);
     Ok(Value::NIL)
 }
 

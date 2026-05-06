@@ -438,9 +438,37 @@ entity Projectile:
             var best_dx = 0.0
             var best_dy = 0.0
             var best_d2 = 0.0
+            # Scan all enemy classes for the nearest target.
             for slime in entities.of(Slime):
                 let dx = slime.pos.x - pos.x
                 let dy = slime.pos.y - pos.y
+                let d2 = dx * dx + dy * dy
+                if not found or d2 < best_d2:
+                    found = true
+                    best_d2 = d2
+                    best_dx = dx
+                    best_dy = dy
+            for bat in entities.of(Bat):
+                let dx = bat.pos.x - pos.x
+                let dy = bat.pos.y - pos.y
+                let d2 = dx * dx + dy * dy
+                if not found or d2 < best_d2:
+                    found = true
+                    best_d2 = d2
+                    best_dx = dx
+                    best_dy = dy
+            for sk in entities.of(Skeleton):
+                let dx = sk.pos.x - pos.x
+                let dy = sk.pos.y - pos.y
+                let d2 = dx * dx + dy * dy
+                if not found or d2 < best_d2:
+                    found = true
+                    best_d2 = d2
+                    best_dx = dx
+                    best_dy = dy
+            for boss in entities.of(Boss):
+                let dx = boss.pos.x - pos.x
+                let dy = boss.pos.y - pos.y
                 let d2 = dx * dx + dy * dy
                 if not found or d2 < best_d2:
                     found = true
@@ -452,7 +480,7 @@ entity Projectile:
                 vx = best_dx / mag * 600.0
                 vy = best_dy / mag * 600.0
             else:
-                # No targets in flight — drift upward and expire.
+                # No targets alive — drift upward and expire.
                 vy = -600.0
 
         pos = (pos.x + vx * dt, pos.y + vy * dt)
@@ -638,31 +666,10 @@ entity Aura:
         # the upgrade picker.
         if in_levelup:
             return
-        # Cyan ring around the player. 32-segment circle would
-        # be nicer but `circle()` filled-only doesn't outline; an
-        # outline is what we want so it doesn't paint over the
-        # arena. Use four rect strokes as a square-ish outline —
-        # session 10's polish pass can promote to a circle once
-        # the engine grows a stroke-circle primitive.
-        let r = radius
-        rect(
-            at: (player_x - camera_x - r, player_y - camera_y - r),
-            size: (r * 2, 2),
-            color: color.cyan,
-        )
-        rect(
-            at: (player_x - camera_x - r, player_y - camera_y + r - 2),
-            size: (r * 2, 2),
-            color: color.cyan,
-        )
-        rect(
-            at: (player_x - camera_x - r, player_y - camera_y - r),
-            size: (2, r * 2),
-            color: color.cyan,
-        )
-        rect(
-            at: (player_x - camera_x + r - 2, player_y - camera_y - r),
-            size: (2, r * 2),
+        circle_outline(
+            at: (player_x - camera_x, player_y - camera_y),
+            radius: radius,
+            thickness: 2.0,
             color: color.cyan,
         )
 
