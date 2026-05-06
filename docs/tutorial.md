@@ -516,7 +516,211 @@ You've built a complete Pong in a few hundred lines: input, real-time physics, A
 
 The reference file is in [`examples/pong.twe`](../examples/pong.twe). If yours differs, diff and figure out which version you prefer.
 
-Next chapter walks through `examples/survive_beta/` — same shape, twenty times the surface. (Coming up.)
+## Reading Survivors
+
+Now we step up. [`examples/survive_beta/main.twe`](../examples/survive_beta/main.twe) is a 1264-line Vampire-Survivors clone — the production beta we ship with v0.8 and the first-party game targeting itch.io. Open the file in your editor and follow along; we won't retype it, we'll *read* it.
+
+If Pong taught you the shape, Survivors teaches you the surface area: entities, waves, weapons that compose, level-up trees, save/load, gamepad, particles, pause stack. Every Phase 8 → Phase 13 feature is in here.
+
+### The shape, from 30,000 feet
+
+```
+settings + persistent globals    (lines  1– 98)
+upgrade pool (top-level fns)     (      99–172)
+entity Slime                     (     173–226)
+entity Bat                       (     227–276)
+entity Skeleton + SkeletonBolt   (     277–365)
+entity Boss                      (     366–424)
+entity Projectile                (     425–523)
+entity Blade                     (     524–590)
+entity Aura                      (     591–676)
+entity Spark                     (     677–712)
+entity XPGem                     (     713–787)
+scene SurviveBeta                (     788–end)
+  state playing
+  state paused
+  state level_up
+  state game_over
+```
+
+That's it. **One scene, ten entities, four states.** The complexity is in how they compose, not in any individual piece. Pong's whole architecture survives here — it's just been split across more files of behavior.
+
+### Globals and why they exist
+
+Lines 33–87 declare the world state: `arena_w`, `player_x`, `player_hp`, `xp`, `level`, `attack_interval`, `magnetic_radius`, etc. These are **top-level `var`s** — file-scope mutable bindings.
+
+Why aren't these scene fields like Pong's `left_y`? Two reasons:
+
+1. **Top-level functions can't reach scene fields.** `apply_upgrade(id)` (line 125) is a free function called from the level-up modal. It needs to bump `attack_interval`. Free functions can't see `scene.field` — they can see top-level bindings. So `attack_interval` lives at the top.
+2. **Entities can't reach scene fields either.** A `Slime`'s `update(dt)` reads `player_x` to chase. If `player_x` were a scene field, the slime would need a back-reference to the scene. Top-level `var` is the simpler path.
+
+This is the v0.1 trade-off: scenes have their own data, but cross-cutting state lives at file scope. For a game this size it's manageable; if it grew to ten files we'd want module-scoped state, which is what Phase 13 lays groundwork for.
+
+### Entities are just classes with `update` and `render`
+
+Look at `entity Slime:` at line 173. It's three things:
+
+```twe
+entity Slime:
+    var pos = (0.0, 0.0)
+    var hp = 1
+    # ...
+
+    function update(dt):
+        if in_levelup:
+            return
+        # chase player; check contact damage
+        # ...
+
+    function render():
+        if in_levelup:
+            return
+        rect(at: ..., size: (20, 20), color: color.cyan)
+```
+
+That's the whole entity contract: **fields + update(dt) + render()**. The runtime spawns instances via `spawn Slime at (x, y)`, ticks each one's `update` per frame, and draws each one's `render`. There's no virtual dispatch table to register, no `extends GameObject`. The compiler sees `entity Slime:` and that's the entire ceremony.
+
+`entities.of(Slime)` is how you iterate them — `for slime in entities.of(Slime):` works in any context. It's not a list; it's a query. The runtime maintains the index for free.
+
+### Spawning, despawning, and death hooks
+
+Look at the wave spawner inside `scene SurviveBeta` (around lines 830–880). It picks an enemy class and:
+
+```twe
+spawn Slime at (sx, sy)
+```
+
+`spawn` returns the new instance; `at` is the only required keyword for entity spawn. Fields default to whatever `var` initializers the entity declared.
+
+Despawning happens with `despawn self` (inside the entity's own method) or `despawn slime` (from outside). Once despawned, the runtime stops ticking the entity and skips it in `entities.of(...)` queries.
+
+What about effects when something dies? Survivors uses a **death hook**:
+
+```twe
+on Slime.death(s):
+    spawn Spark at (s.pos.x, s.pos.y)
+```
+
+The hook fires on every despawn. The argument `s` is the slime instance just before it goes away — its fields are still valid. This is how a Spark particle gets spawned without coupling the spark logic to the kill site (the projectile, the blade, the aura, the boss bullet — every kill path automatically gets the effect).
+
+### Composing weapons
+
+Pong had one collision check. Survivors has three weapons and four enemy classes — twelve interaction pairs. The pattern that keeps it manageable:
+
+> **Each weapon owns its own collision pass against every enemy class.**
+
+Look at `Projectile.update` (around line 432). It iterates `entities.of(Slime)`, then `entities.of(Bat)`, then `entities.of(Skeleton)`, then `entities.of(Boss)` — four overlap checks per projectile, despawning on the first hit. The `Blade` does the same; the `Aura` does the same.
+
+This duplicates loops, but the duplication is honest: when you add a new enemy, you grep for `entities.of(` and add it to every weapon. That's a deliberate friction — it forces you to think about whether the new enemy should actually take damage from each weapon (and a boss often shouldn't from a one-shot projectile, but should from an aura tick).
+
+Cleverer dispatch — a `damageable` interface, a base `Enemy` class, a global event bus — is a footgun at this scale. Per Principle 2 (one obvious way), Twe doesn't ship the abstractions to express it.
+
+### The level-up modal pattern
+
+This is the most interesting state in the file. `state level_up:` has only an `on render():` block. No update, no every-clock. Yet it's the screen the player interacts with most.
+
+The pattern:
+
+```twe
+state level_up:
+    on render():
+        rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+        text("LEVEL UP!  (Lv {level})", at: ..., size: 28, color: color.yellow)
+        if button(at: (160, 150), size: (320, 50), label: upgrade_name(pick_a)):
+            apply_upgrade(pick_a)
+            in_levelup = false
+            -> playing
+```
+
+Two things to notice:
+
+1. **`button(...)` is an immediate-mode widget** — it draws AND hit-tests AND returns truthy on click, all in one call from inside `on render`. There's no `on_click` callback to register. The whole pause menu, the whole upgrade picker, the keybind UI in `examples/keybind_demo.twe` — all of them are inline in render.
+2. **State transitions inside `on render` are honored** — the engine applies `-> playing` after the render block returns. (This was historically broken for modal-state buttons; v0.8 session 13 fixed it.) The pause menu uses the same pattern.
+
+`in_levelup = false` is a top-level flag every entity reads. It's redundant with the state transition — in_levelup is true while the modal is open, false otherwise — but it lets entities gate their `update` without checking which state the scene is in. It's the cheap way to say "freeze the world while the picker is open."
+
+### Save and load
+
+Lines 18–26 set up keybind defaults; line 26 calls `settings.try_load(...)`:
+
+```twe
+settings.set_default("keys.right", "right")
+# ...
+settings.try_load("examples/survive_beta/survive_beta.save")
+```
+
+`settings` is the Phase 10 stdlib facility for persistent named values. `set_default(key, value)` registers a fallback; `try_load(path)` reads a save file that may or may not exist (silently ignores missing). Inside the pause menu, the "Save Bindings" button calls `settings.save(path)` to write the current values.
+
+This is the bottom layer of the save system — key/value persistence. Full structured save (snapshot the entire game state) is the `save SaveSlot:` block syntax that lands in v0.3+; v0.8 ships only the layer Survivors actually needs.
+
+### Pausing
+
+`pause(true)` is an engine primitive that halts every-clock and entity ticks. The `paused` state's `on render` fires (so the menu can draw and accept input), but no other behavior runs — slimes freeze, bolts hang in mid-air, the wave spawner stops counting.
+
+```twe
+if key_pressed("escape") or gamepad_press.b:
+    pause(true)
+    -> paused
+```
+
+Note `key_pressed(name)` — a runtime dispatch by name string — versus Pong's `key_press.r`, an edge-triggered field on the `key_press` ambient. Both work. `key_pressed(name)` is the path you use when the binding comes from a settings file (`settings.get("keys.up")` is a string at runtime).
+
+### The bigger lesson
+
+Survivors looks intimidating because it's long, but every section is one of a handful of patterns:
+
+- **Top-level `var` for cross-cutting world state.** Not best practice in a 50-class engine; the right call for a one-file game.
+- **`entity` for anything with its own update/render lifecycle.** Even purely visual things (Spark) earn an entity if they have their own lifetime.
+- **`entities.of(Class)` for queries** — read-only, multi-class loops are how weapons interact with enemies.
+- **One scene, many states.** Each state is a screen: playing, paused, level-up, game-over. Buttons and key handlers are inline in `on render` / `on update`.
+- **Top-level functions for things that mutate top-level state.** `apply_upgrade(id)` works because `attack_interval` is a top-level `var`.
+
+If you can read this file — really read it, line by line — you can write it. We'll do a smaller third game next.
+
+## Building a mini-RPG
+
+The third chapter is the smallest. We'll write a tiny dialogue script using Twe's `dialogue` block — a feature neither Pong nor Survivors touched. The reference file is [`examples/dialogue_demo.twe`](../examples/dialogue_demo.twe).
+
+A `dialogue` block is a top-level callable that runs a sequenced script: `say` lines and `choice:` branches. It compiles like a function and you invoke it by name.
+
+```twe
+dialogue Greet:
+    say "You enter the Stag's Head. The bartender looks up."
+    say "Bartender": "Bit late for travelers. What'll it be?"
+    choice:
+        "Ale":
+            say "Bartender": "On the house. Stay safe out there."
+            say "The ale is warm. The fire is warmer."
+        "Information about the cave to the north":
+            say "Bartender": "Don't go. Last party didn't come back."
+            say "He won't say more."
+        "Just looking around":
+            say "Bartender": "Suit yourself."
+
+Greet()
+```
+
+Save and run with `twec run examples/dialogue_demo.twe` (headless — the dialogue runtime prints to stdout in v0.8). You'll see the bartender greet you, the choice list, and the first branch's lines. v0.1 picks the first branch deterministically — interactive selection rides the UI surface, but the dialogue runtime doesn't wire to it yet. To follow a different branch, comment the choices above the one you want.
+
+What's happening line-by-line:
+
+- `dialogue Greet:` declares a top-level callable named `Greet`. The body runs when you call `Greet()`.
+- `say <text>` prints a line.
+- `say <Actor>: <text>` prefixes with the actor's name. The actor can be a string literal (`"Bartender"`) or any expression that evaluates to a string or instance — for an instance, the class name is used.
+- `choice:` lists branches; each branch's body is its indented block.
+
+That's the whole dialogue surface for v0.8: `say`, `say <actor>:`, `choice:`. It's intentionally austere. Two limits to know about now:
+
+- **`wait` inside a dialogue body is a runtime error in v0.8.** Dialogue blocks don't yet integrate with the fiber scheduler. (They will — once the UI surface for interactive choices lands, the engine will need fiber suspension anyway.)
+- **`dialogue:` is a top-level declaration only.** You can't nest one inside a `state` block. To run a dialogue from a state, declare the dialogue at file scope and call it: `Greet()` from inside an `on update(dt):` body. The first call advances the script.
+
+For a real RPG you'd compose the dialogue with the rest of the surface: an inventory `var`, a `quests` list of strings, persistent flags via `settings.set("flags.met_bartender", true)`, a tilemap world to walk between scenes. The dialogue block carries the actor lines and the branching; everything else is the surface we already covered.
+
+## What you've shipped
+
+Three games — Pong from scratch, Survivors as a reading exercise, a mini-RPG to use the dialogue block. Combined, they exercise: scenes, states, transitions, `update` / `render`, `key.*` and `key_press.*` and `key_pressed(name)`, gamepad, `every-clock`s, `wait`, entities + `update` + `render` + `entities.of(...)`, `spawn` / `despawn`, death hooks, top-level functions, top-level `var`s, the immediate-mode widget set, `settings`, `pause(...)`, `dialogue:` + `say` + `choice:`, and string interpolation.
+
+What's left? Modules (covered in `examples/modular_*_demo/`), strict + verified type modes (`docs/02-type-system.md`), procedural visuals (`examples/visual_fire.twe`), tilemaps and physics for serious games. Each is a self-contained surface; pick the one your next project needs.
 
 ## Where to go next
 

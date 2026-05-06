@@ -1,0 +1,30 @@
+# Dialogue demo — the Phase 5 `dialogue:` block.
+#
+# Run with:  twec run examples/dialogue_demo.twe
+#
+# A top-level `dialogue Name:` declaration is a callable that runs
+# a sequenced script: `say` lines and `choice:` branches. The runtime
+# prints to stdout. v0.1 picks the first `choice:` branch
+# deterministically — interactive selection rides the UI surface,
+# which v0.4 shipped but the dialogue runtime doesn't yet wire to.
+# To follow a different branch, comment out the lines above the one
+# you want.
+#
+# v0.8 limitation: `wait` inside a dialogue body is a runtime error,
+# and `dialogue:` is a top-level decl (you can't nest one inside a
+# `state` block yet — call the dialogue from a state instead).
+
+dialogue Greet:
+    say "You enter the Stag's Head. The bartender looks up."
+    say "Bartender": "Bit late for travelers. What'll it be?"
+    choice:
+        "Ale":
+            say "Bartender": "On the house. Stay safe out there."
+            say "The ale is warm. The fire is warmer."
+        "Information about the cave to the north":
+            say "Bartender": "Don't go. Last party didn't come back."
+            say "He won't say more."
+        "Just looking around":
+            say "Bartender": "Suit yourself."
+
+Greet()
