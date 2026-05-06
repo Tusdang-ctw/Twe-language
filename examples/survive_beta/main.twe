@@ -81,6 +81,18 @@ var best_time = 0.0
 # Boss spawn cadence. Counts up every wave roll; on hitting 5,
 # spawns one boss and resets. Wave 5 is the first boss wave.
 var boss_wave_counter = 0
+# Hit-flash overlay timer. When >0, the playing render draws a
+# semi-bright red layer on top of the world. Set to 0.1s every
+# time the player takes damage, decremented each frame.
+var hit_flash = 0.0
+# Audio: deferred. `sound.load` requires the macroquad thread
+# context to be initialized, which only happens inside
+# `twec play` — top-level loads break headless tooling like
+# `twec run --frames N` and the build pipeline's headless
+# parse-and-infer pass. The visual feedback (Spark death-poof
+# + hit_flash overlay) carries the Game Feel for v1; audio
+# wiring rides a Phase 14 polish follow-on once we have a
+# play-loop-detected helper or a dedicated `audio.lazy_load`.
 
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
@@ -192,6 +204,7 @@ entity Slime:
             if player_iframes <= 0.0:
                 player_hp -= damage
                 player_iframes = 0.6
+                hit_flash = 0.1
 
     function render():
         # Slime sprites stub: a 20×20 cyan square. Session 10's
@@ -240,6 +253,7 @@ entity Bat:
             if player_iframes <= 0.0:
                 player_hp -= damage
                 player_iframes = 0.6
+                hit_flash = 0.1
 
     function render():
         rect(
@@ -323,6 +337,7 @@ entity SkeletonBolt:
             if player_iframes <= 0.0:
                 player_hp -= 12.0
                 player_iframes = 0.6
+                hit_flash = 0.1
             despawn self
 
     function render():
@@ -365,6 +380,7 @@ entity Boss:
             if player_iframes <= 0.0:
                 player_hp -= damage
                 player_iframes = 0.6
+                hit_flash = 0.1
 
     function render():
         # 48×48 orange body — bigger and warmer than the normal
@@ -631,6 +647,41 @@ entity Aura:
 
 
 # ---------------------------------------------------------------
+# Spark — the death-poof effect. Spawned from `on <Enemy>.death`
+# hooks; expands then fades out across `lifetime`. Pure visual
+# decoration: no collision, no game-state interaction. Decoupling
+# the effect from the kill site (via the death hook) means every
+# enemy class gets the effect for free.
+# ---------------------------------------------------------------
+entity Spark:
+    var pos = (0.0, 0.0)
+    var lifetime = 0.3
+    var max_lifetime = 0.3
+
+    function update(dt):
+        if in_levelup:
+            return
+        lifetime -= dt
+        if lifetime <= 0.0:
+            despawn self
+
+    function render():
+        # Fades in size from full → 0 across lifetime, so the
+        # effect reads as "puff outward then dissipate" without
+        # an alpha-blending step the engine doesn't yet expose.
+        let t = lifetime / max_lifetime
+        let size = 28.0 * t
+        rect(
+            at: (
+                pos.x - camera_x - size * 0.5,
+                pos.y - camera_y - size * 0.5,
+            ),
+            size: (size, size),
+            color: color.white,
+        )
+
+
+# ---------------------------------------------------------------
 # XPGem — drops on slime death. Pulls toward the player within
 # `magnetic_radius` and collects on overlap. The pickup-on-touch
 # pattern is genre-canonical: the player is incentivised to weave
@@ -685,22 +736,28 @@ entity XPGem:
 # low-skill swat with a Blade or Aura sweep).
 on Slime.death(s):
     spawn XPGem at s.pos
+    spawn Spark at s.pos
 
 on Bat.death(b):
     spawn XPGem at b.pos
+    spawn Spark at b.pos
 
 on Skeleton.death(sk):
     spawn XPGem at sk.pos
     # Bonus drop — second gem at the same spot for net +2 XP.
     spawn XPGem at sk.pos
+    spawn Spark at sk.pos
 
 on Boss.death(b):
     # Boss kill is a level-up moment in itself: 10 gems → instant
     # +10 XP, which guarantees at least one level-up at typical
     # XP curves. Players land in the upgrade modal as the reward
-    # beat for the boss fight.
+    # beat for the boss fight. Three sparks for emphasis.
     for i in 0..<10:
         spawn XPGem at b.pos
+    spawn Spark at b.pos
+    spawn Spark at b.pos
+    spawn Spark at b.pos
 
 
 scene SurviveBeta:
@@ -737,6 +794,8 @@ scene SurviveBeta:
             weapon_time += dt
             if player_iframes > 0.0:
                 player_iframes -= dt
+            if hit_flash > 0.0:
+                hit_flash -= dt
 
             # ---- Wave pacing. Index rolls every 30s. Each new wave
             # tightens the spawn cadence by 0.15s (floor 0.4s) and
@@ -974,6 +1033,18 @@ scene SurviveBeta:
                 color: px_color
             )
 
+            # Hit flash. Renders a red full-viewport overlay for
+            # 100ms after the player takes damage; the i-frames
+            # tint on the player itself isn't always visible
+            # (player can be off-camera-clamped near walls), so a
+            # screen-edge tint is the load-bearing feedback.
+            if hit_flash > 0.0:
+                rect(
+                    at: (0, 0),
+                    size: (view_w, view_h),
+                    color: color.red,
+                )
+
             # HUD.
             text("Time: {elapsed}s", at: (10, 20), size: 18, color: color.white)
             let display_wave = wave_index + 1
@@ -1109,12 +1180,15 @@ scene SurviveBeta:
                     despawn b
                 for a in entities.of(Aura):
                     despawn a
+                for sp in entities.of(Spark):
+                    despawn sp
                 player_x = 1200.0
                 player_y = 900.0
                 player_hp = 100.0
                 player_max_hp = 100.0
                 player_speed = 220.0
                 player_iframes = 0.0
+                hit_flash = 0.0
                 elapsed = 0.0
                 kills = 0
                 xp = 0
