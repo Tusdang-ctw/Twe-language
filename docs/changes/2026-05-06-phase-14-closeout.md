@@ -1,6 +1,6 @@
 # Phase 14 closeout — Beta + dogfood (v0.8)
 
-**Date:** 2026-05-06.
+**Date:** 2026-05-06 (updated after sessions 17–19).
 **Status:** **codebase-closed; ship + telemetry pending.**
 **Roadmap reference:** `docs/05-roadmap.md` §"Phase 14".
 
@@ -28,6 +28,9 @@ Phase 14 ran in sixteen sessions — twelve building survive_beta, three tutoria
 | 14 | tutorial v2 chapter 1 + pong example | `examples/pong.twe` (200-line player-vs-AI Pong), `docs/tutorial.md` Part II opens with the Pong walkthrough — paddles, input, AI tracker, ball physics + paddle-edge skill mechanic, scoring, `scored` intermission state, restart on R. |
 | 15 | tutorial v2 chapters 2 + 3 + dialogue example | Chapter 2 = read-along of `examples/survive_beta/main.twe` (1264 lines mapped to 5 patterns). Chapter 3 = `dialogue:` block primer + `examples/dialogue_demo.twe` reference. Honest about v0.8 dialogue limits (top-level decl only; `wait` inside body is a runtime error). |
 | 16 | closeout | This note + CLAUDE.md sync. |
+| 17 | aura circle + projectile all-enemy targeting | Second playtest session surfaced two bugs: Aura rendered as a square (four rect strokes). Added `circle_outline(at:, radius:, thickness:, color:)` to stdlib wrapping macroquad's `draw_circle_lines`. Projectile target-scan only checked `entities.of(Slime)`; bats/skeletons/boss were never aimed at. Fixed to scan all four enemy classes. |
+| 18 | HUD float display polish | All elapsed/HP floats printed full IEEE-754 precision. Fixed via `math.floor` at every HUD display site: time, HP label, game-over summary, best-time tracker. |
+| 19 | closeout update | Updated this note to reflect sessions 17–18. |
 
 ---
 
