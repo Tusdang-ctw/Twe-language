@@ -10,7 +10,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] <project_dir> | \
      bundle [-o PATH] <project_dir> | \
      info <bundle-or-exe> | \
-     verify <file> | \
+     verify [--warn-deprecated] <file> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -371,19 +371,31 @@ fn handle_verify(args: &[String]) -> i32 {
         return 2;
     }
     let mut path: Option<&str> = None;
+    let mut warn_deprecated = false;
     for a in args {
-        if a.starts_with('-') {
-            eprintln!("error: unknown flag for `verify`: {a}");
-            eprintln!("{USAGE}");
-            return 2;
+        match a.as_str() {
+            "--warn-deprecated" => {
+                warn_deprecated = true;
+            }
+            s if s.starts_with('-') => {
+                eprintln!("error: unknown flag for `verify`: {a}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+            _ => {
+                if path.is_some() {
+                    eprintln!("error: `twec verify` takes one file path");
+                    return 2;
+                }
+                path = Some(a.as_str());
+            }
         }
-        if path.is_some() {
-            eprintln!("error: `twec verify` takes one file path");
-            return 2;
-        }
-        path = Some(a.as_str());
     }
-    let path = path.expect("non-empty args + no flags ⇒ at least one positional");
+    let Some(path) = path else {
+        eprintln!("error: `twec verify` requires a file path");
+        eprintln!("{USAGE}");
+        return 2;
+    };
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -408,7 +420,8 @@ fn handle_verify(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let report = crate::verify::verify_program_with_path(&source, Some(path));
+    let options = crate::verify::VerifyOptions { warn_deprecated };
+    let report = crate::verify::verify_program_with_options(&source, Some(path), &options);
     println!("{}", report.to_json());
     if report.ok() {
         0

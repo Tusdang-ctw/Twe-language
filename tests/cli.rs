@@ -311,6 +311,55 @@ fn verify_subcommand_missing_file_emits_io_error_diagnostic() {
 }
 
 #[test]
+fn verify_warn_deprecated_flag_emits_warning() {
+    // Phase 13 session 10: `--warn-deprecated` surfaces a
+    // `deprecation` warning per use site of a `@deprecated` symbol.
+    // Exit code stays 0 because warnings aren't errors.
+    let dir = std::env::temp_dir().join(format!("twec-verify-dep-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("dep.twe");
+    std::fs::write(
+        &file,
+        "@deprecated(\"since v0.7\")\nfunction old(): return 1\nlet x = old()\n",
+    )
+    .unwrap();
+    let output = Command::new(twec_bin())
+        .args(["verify", "--warn-deprecated", file.to_str().unwrap()])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Exit 0 because warnings only — no errors.
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    assert!(stdout.contains("\"warnings\":1"), "stdout: {stdout}");
+    assert!(stdout.contains("\"kind\":\"deprecation\""), "stdout: {stdout}");
+    assert!(stdout.contains("`old` is deprecated"), "stdout: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_without_warn_deprecated_omits_deprecation_warnings() {
+    // Symmetry check: without the flag, the same input produces
+    // no deprecation warnings.
+    let dir = std::env::temp_dir().join(format!("twec-verify-nodep-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("dep.twe");
+    std::fs::write(
+        &file,
+        "@deprecated(\"since v0.7\")\nfunction old(): return 1\nlet x = old()\n",
+    )
+    .unwrap();
+    let output = Command::new(twec_bin())
+        .args(["verify", file.to_str().unwrap()])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout.contains("\"warnings\":0"), "stdout: {stdout}");
+    assert!(stdout.contains("\"diagnostics\":[]"), "stdout: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn verify_subcommand_no_args_errors() {
     let output = Command::new(twec_bin())
         .arg("verify")

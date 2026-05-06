@@ -25,6 +25,7 @@
 //! file, and re-run `twec verify` — the rules are stable across
 //! the loop because the underlying inferer is.
 
+use crate::ast::{Deprecation, Expr, Stmt};
 use crate::infer;
 use crate::lexer;
 use crate::parser;
@@ -148,11 +149,29 @@ impl VerifyReport {
     }
 }
 
+/// Phase 13 session 10: caller-tunable verify options. `warn_deprecated`
+/// scans the program for use sites of `@deprecated` symbols and
+/// emits a `deprecation` warning per reference.
+#[derive(Clone, Debug, Default)]
+pub struct VerifyOptions {
+    pub warn_deprecated: bool,
+}
+
 /// Run lex + parse + strict-lax inference on `source`. Errors at
 /// any stage become diagnostics in the report. The `file` field is
 /// populated from the optional `path` argument; pass `None` for
 /// stdin / playground / tests.
 pub fn verify_program_with_path(source: &str, path: Option<&str>) -> VerifyReport {
+    verify_program_with_options(source, path, &VerifyOptions::default())
+}
+
+/// Variant of `verify_program_with_path` that consumes a
+/// `VerifyOptions`. Phase 13 session 10.
+pub fn verify_program_with_options(
+    source: &str,
+    path: Option<&str>,
+    options: &VerifyOptions,
+) -> VerifyReport {
     let strict = infer::detect_strict(source) || detect_verified(source);
     let verified = detect_verified(source);
     let file = path.map(|p| p.to_string());
@@ -194,7 +213,7 @@ pub fn verify_program_with_path(source: &str, path: Option<&str>) -> VerifyRepor
         }
     };
     let (_bindings, errors) = infer::infer_program_strict(&program, strict);
-    let diagnostics = errors
+    let mut diagnostics: Vec<VerifyDiagnostic> = errors
         .into_iter()
         .map(|e| VerifyDiagnostic {
             kind: classify_kind(&e.message),
@@ -205,11 +224,205 @@ pub fn verify_program_with_path(source: &str, path: Option<&str>) -> VerifyRepor
             help: e.help,
         })
         .collect();
+    if options.warn_deprecated {
+        let mut deprecation_warnings = collect_deprecated_uses(&program);
+        diagnostics.append(&mut deprecation_warnings);
+    }
+    diagnostics.sort_by_key(|d| (d.line, d.col));
     VerifyReport {
         file,
         strict,
         verified,
         diagnostics,
+    }
+}
+
+/// Phase 13 session 10: walk `program`, collect every top-level
+/// `@deprecated` declaration's name + annotation info, then walk
+/// again to find use sites of those names. Each use site becomes
+/// a `Severity::Warning` diagnostic with a `deprecation` kind tag.
+///
+/// Use-site detection is *bare-name* matching today: an `Expr::Ident`
+/// whose name is in the deprecated set produces a warning. Field
+/// accesses on a deprecated module / class don't propagate — that's
+/// a session-12-or-later refinement.
+fn collect_deprecated_uses(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> {
+    let deprecated = collect_deprecated_decls(&program.stmts);
+    if deprecated.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    walk_for_uses(&program.stmts, &deprecated, &mut out);
+    out
+}
+
+fn collect_deprecated_decls(stmts: &[Stmt]) -> std::collections::HashMap<String, Deprecation> {
+    let mut m = std::collections::HashMap::new();
+    for stmt in stmts {
+        match stmt {
+            Stmt::FunctionDecl {
+                name,
+                deprecation: Some(d),
+                ..
+            }
+            | Stmt::Decl {
+                name,
+                deprecation: Some(d),
+                ..
+            } => {
+                m.insert(name.clone(), d.clone());
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
+fn walk_for_uses(
+    stmts: &[Stmt],
+    deprecated: &std::collections::HashMap<String, Deprecation>,
+    out: &mut Vec<VerifyDiagnostic>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let { value, .. } => walk_expr(value, deprecated, out),
+            Stmt::Assign { value, .. } => walk_expr(value, deprecated, out),
+            Stmt::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                walk_expr(cond, deprecated, out);
+                walk_for_uses(then_body, deprecated, out);
+                for (c, body) in elifs {
+                    walk_expr(c, deprecated, out);
+                    walk_for_uses(body, deprecated, out);
+                }
+                if let Some(eb) = else_body {
+                    walk_for_uses(eb, deprecated, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                walk_expr(cond, deprecated, out);
+                walk_for_uses(body, deprecated, out);
+            }
+            Stmt::For { iter, body, .. } => {
+                walk_expr(iter, deprecated, out);
+                walk_for_uses(body, deprecated, out);
+            }
+            Stmt::Return { value: Some(v), .. } => walk_expr(v, deprecated, out),
+            Stmt::Expr(e) => walk_expr(e, deprecated, out),
+            Stmt::FunctionDecl { body, .. } => {
+                walk_for_uses(body, deprecated, out);
+            }
+            // `Spawn`, `Despawn`, `Wait`, `OnUpdate`, `OnRender`,
+            // `Decl`, etc. carry expressions / blocks too. v0.7
+            // session 10 ships the most-trafficked subset; the
+            // long tail rides a follow-on if a real LLM-authored
+            // codebase pressures it.
+            _ => {}
+        }
+    }
+}
+
+fn walk_expr(
+    expr: &Expr,
+    deprecated: &std::collections::HashMap<String, Deprecation>,
+    out: &mut Vec<VerifyDiagnostic>,
+) {
+    match expr {
+        Expr::Ident { name, line, col } => {
+            if let Some(dep) = deprecated.get(name) {
+                let since = dep
+                    .since
+                    .as_deref()
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                out.push(VerifyDiagnostic {
+                    kind: "deprecation".to_string(),
+                    severity: Severity::Warning,
+                    line: *line,
+                    col: *col,
+                    message: format!("`{name}` is deprecated{since}"),
+                    help: Some(
+                        "deprecated symbols still work in v0.7 but are scheduled for removal in v1.0; consult CHANGELOG for the replacement"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+        Expr::Call {
+            callee,
+            args,
+            kwargs,
+            ..
+        } => {
+            walk_expr(callee, deprecated, out);
+            for a in args {
+                walk_expr(a, deprecated, out);
+            }
+            for (_, e) in kwargs {
+                walk_expr(e, deprecated, out);
+            }
+        }
+        Expr::Field { object, .. } => walk_expr(object, deprecated, out),
+        Expr::Index { object, index, .. } => {
+            walk_expr(object, deprecated, out);
+            walk_expr(index, deprecated, out);
+        }
+        Expr::Binary { left, right, .. } => {
+            walk_expr(left, deprecated, out);
+            walk_expr(right, deprecated, out);
+        }
+        Expr::Unary { operand, .. } => walk_expr(operand, deprecated, out),
+        Expr::Tuple { elems, .. } => {
+            for e in elems {
+                walk_expr(e, deprecated, out);
+            }
+        }
+        Expr::List { elems, .. } => {
+            for e in elems {
+                walk_expr(e, deprecated, out);
+            }
+        }
+        Expr::Range { start, end, .. } => {
+            walk_expr(start, deprecated, out);
+            walk_expr(end, deprecated, out);
+        }
+        Expr::Interp { exprs, .. } => {
+            // Interp's exprs are stored as raw source strings,
+            // not parsed Expr nodes — they're evaluated lazily.
+            // A deprecated name inside `"hi {old_thing}"` would
+            // need re-parsing per chunk, which is more work than
+            // session 10 should swallow. The follow-on lands
+            // when interp authors press it.
+            let _ = exprs;
+        }
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            ..
+        } => {
+            walk_expr(cond, deprecated, out);
+            walk_expr(then_expr, deprecated, out);
+            for (c, body) in elifs {
+                walk_expr(c, deprecated, out);
+                walk_expr(body, deprecated, out);
+            }
+            walk_expr(else_expr, deprecated, out);
+        }
+        // Leaves that can't reference an identifier.
+        Expr::Str { .. }
+        | Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Percent { .. }
+        | Expr::Quantity { .. }
+        | Expr::Bool { .. }
+        | Expr::SelfRef { .. } => {}
     }
 }
 
@@ -383,5 +596,105 @@ mod tests {
         // Strict-only files still produce diagnostics — verified is
         // a strict superset, not an orthogonal mode.
         assert!(!report.ok());
+    }
+
+    // ----- Phase 13 session 10: --warn-deprecated. -----
+
+    #[test]
+    fn warn_deprecated_off_by_default() {
+        // Without the option, a deprecated-symbol use produces no
+        // warning. Strict-mode errors still surface; deprecation is
+        // its own opt-in surface so dev-loop runs aren't loud.
+        let src = "@deprecated(\"since v0.7\")\nfunction old(): return 1\nlet x = old()\n";
+        let report = verify_program(src);
+        assert!(report.ok());
+        assert_eq!(report.warnings(), 0);
+    }
+
+    #[test]
+    fn warn_deprecated_emits_one_warning_per_use_site() {
+        let src = concat!(
+            "@deprecated(\"since v0.7\")\n",
+            "function old(): return 1\n",
+            "let x = old()\n",
+            "let y = old() + old()\n",
+        );
+        let opts = VerifyOptions {
+            warn_deprecated: true,
+        };
+        let report = verify_program_with_options(src, None, &opts);
+        // Three uses of `old`: one in let x, two in `old() + old()`.
+        assert_eq!(
+            report.warnings(),
+            3,
+            "expected 3 warnings, got {:?}",
+            report.diagnostics
+        );
+        // Errors stay zero — clean program apart from deprecation.
+        assert_eq!(report.errors(), 0);
+        for d in &report.diagnostics {
+            assert_eq!(d.kind, "deprecation");
+            assert_eq!(d.severity, Severity::Warning);
+            assert!(d.message.contains("`old` is deprecated"));
+            assert!(d.message.contains("since v0.7"));
+        }
+    }
+
+    #[test]
+    fn warn_deprecated_reports_zero_when_no_uses() {
+        let src = concat!(
+            "@deprecated(\"since v0.7\")\n",
+            "function old(): return 1\n",
+            "let x = 1\n",
+        );
+        let opts = VerifyOptions {
+            warn_deprecated: true,
+        };
+        let report = verify_program_with_options(src, None, &opts);
+        assert_eq!(report.warnings(), 0);
+    }
+
+    #[test]
+    fn warn_deprecated_handles_bare_annotation_without_since() {
+        // No `since` argument → message omits the version footnote.
+        let src = concat!(
+            "@deprecated\n",
+            "function old(): return 1\n",
+            "let x = old()\n",
+        );
+        let opts = VerifyOptions {
+            warn_deprecated: true,
+        };
+        let report = verify_program_with_options(src, None, &opts);
+        assert_eq!(report.warnings(), 1);
+        let msg = &report.diagnostics[0].message;
+        assert!(msg.contains("`old` is deprecated"));
+        assert!(
+            !msg.contains('('),
+            "bare @deprecated should not parenthesise an empty since: {msg}"
+        );
+    }
+
+    #[test]
+    fn warn_deprecated_diagnostics_sorted_by_position() {
+        // Multiple use sites should report in source order so an
+        // LLM consumer can apply edits left-to-right without
+        // tracking offset shifts.
+        let src = concat!(
+            "@deprecated(\"since v0.7\")\n",
+            "function a(): return 1\n",
+            "@deprecated(\"since v0.7\")\n",
+            "function b(): return 2\n",
+            "let x = b()\n",
+            "let y = a()\n",
+        );
+        let opts = VerifyOptions {
+            warn_deprecated: true,
+        };
+        let report = verify_program_with_options(src, None, &opts);
+        assert_eq!(report.warnings(), 2);
+        assert!(report.diagnostics[0].line < report.diagnostics[1].line);
+        assert!(report.diagnostics[0].message.contains("`b`"));
+        assert!(report.diagnostics[1].message.contains("`a`"));
     }
 }
