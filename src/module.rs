@@ -69,7 +69,33 @@ pub struct LoadError {
 /// they've already loaded (e.g. for hot-reload) rather than
 /// touching disk twice.
 pub fn load_from_path(entry_path: &Path, source: Option<&str>) -> Result<ModuleGraph, LoadError> {
-    let mut loader = Loader::new();
+    load_with_config(entry_path, source, &LoaderConfig::default())
+}
+
+/// Phase 13 session 4: loader configuration. Adds extra search
+/// paths (tried after the importing file's directory) and a
+/// dependency-name → search-path map (tried when an import path's
+/// first segment matches a dependency name).
+#[derive(Clone, Debug, Default)]
+pub struct LoaderConfig {
+    /// Additional directories to search after the importing file's
+    /// own directory. Entries are tried in order; first hit wins.
+    pub search_paths: Vec<PathBuf>,
+    /// Map from dependency name → on-disk path. When `import "name"`
+    /// or `import "name/..."` is resolved, the loader checks this
+    /// table first (looking up by the import's first segment) and
+    /// prepends the matched path before falling back to
+    /// `search_paths`.
+    pub dependency_paths: std::collections::HashMap<String, PathBuf>,
+}
+
+/// Variant of `load_from_path` that consumes a `LoaderConfig`.
+pub fn load_with_config(
+    entry_path: &Path,
+    source: Option<&str>,
+    config: &LoaderConfig,
+) -> Result<ModuleGraph, LoadError> {
+    let mut loader = Loader::new(config.clone());
     let entry = loader.load_entry(entry_path, source)?;
     Ok(ModuleGraph {
         entry,
@@ -83,13 +109,15 @@ struct Loader {
     /// insertion order so a cycle error can echo the chain back
     /// to the user.
     in_flight: Vec<PathBuf>,
+    config: LoaderConfig,
 }
 
 impl Loader {
-    fn new() -> Self {
+    fn new(config: LoaderConfig) -> Self {
         Self {
             modules: BTreeMap::new(),
             in_flight: Vec::new(),
+            config,
         }
     }
 
@@ -126,10 +154,12 @@ impl Loader {
                 path, line, col, ..
             } = stmt
             {
-                let target = resolve(importer, path).map_err(|message| LoadError {
+                let target = resolve_with_config(importer, path, &self.config).map_err(|message| LoadError {
                     message,
                     help: Some(format!(
-                        "Phase 13 session 2 resolves `import \"{path}\"` against the importing file's directory"
+                        "checked the importing file's directory + {} dependency path(s) + {} extra search path(s)",
+                        self.config.dependency_paths.len(),
+                        self.config.search_paths.len(),
                     )),
                     source: importer.to_path_buf(),
                     line: *line,
@@ -198,6 +228,22 @@ impl Loader {
 /// path canonicalised when the file exists, otherwise the joined
 /// path so the caller can still report a sensible error location.
 pub fn resolve(importer: &Path, logical: &str) -> Result<PathBuf, String> {
+    resolve_with_config(importer, logical, &LoaderConfig::default())
+}
+
+/// Phase 13 session 4: resolve `logical` consulting these places
+/// in order. First hit wins; otherwise a "not found" error names
+/// every place we looked.
+///
+///   1. `[dependencies]` mapping if the import's first segment
+///      matches a dependency name with a `path = "..."`.
+///   2. The importing file's own directory.
+///   3. Each entry of `config.search_paths`.
+pub fn resolve_with_config(
+    importer: &Path,
+    logical: &str,
+    config: &LoaderConfig,
+) -> Result<PathBuf, String> {
     if logical.is_empty() {
         return Err("import path is empty".to_string());
     }
@@ -206,14 +252,59 @@ pub fn resolve(importer: &Path, logical: &str) -> Result<PathBuf, String> {
             "import path `{logical}` must be a relative module name without `..` or leading `/`"
         ));
     }
+    let segments: Vec<&str> = logical.split('/').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        return Err(format!(
+            "import path `{logical}` has an empty segment (consecutive `/`)"
+        ));
+    }
+
+    let mut tried: Vec<PathBuf> = Vec::new();
+
+    // 1. Dependency-name match. `import "mathlib/vec2"` with a
+    // `[dependencies] mathlib = { path = "vendor/mathlib" }` entry
+    // becomes `vendor/mathlib/vec2.twe`. The dependency name is
+    // *consumed* — we don't also try `vendor/mathlib/mathlib/vec2`.
+    if let Some(first) = segments.first() {
+        if let Some(dep_path) = config.dependency_paths.get(*first) {
+            let mut joined = dep_path.clone();
+            for seg in segments.iter().skip(1) {
+                joined.push(seg);
+            }
+            // If the import is bare `import "mathlib"` (one segment
+            // matching a dep name), look for `vendor/mathlib.twe`
+            // first, then fall back to `vendor/mathlib/main.twe`
+            // so a multi-file dep can still expose itself via
+            // `<dep_path>/main.twe` without forcing a single-file
+            // shape on the dep author. Single-file dep is the more
+            // common case so it wins precedence.
+            if segments.len() == 1 {
+                let mut candidate = joined.clone();
+                candidate.set_extension("twe");
+                if candidate.exists() {
+                    return Ok(canonicalize_or(&candidate));
+                }
+                tried.push(candidate);
+                let main_candidate = joined.join("main.twe");
+                if main_candidate.exists() {
+                    return Ok(canonicalize_or(&main_candidate));
+                }
+                tried.push(main_candidate);
+            } else {
+                let mut candidate = joined.clone();
+                candidate.set_extension("twe");
+                if candidate.exists() {
+                    return Ok(canonicalize_or(&candidate));
+                }
+                tried.push(candidate);
+            }
+        }
+    }
+
+    // 2. Importer's own directory.
     let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
     let mut joined = PathBuf::from(importer_dir);
-    for segment in logical.split('/') {
-        if segment.is_empty() {
-            return Err(format!(
-                "import path `{logical}` has an empty segment (consecutive `/`)"
-            ));
-        }
+    for segment in &segments {
         joined.push(segment);
     }
     let mut with_ext = joined.clone();
@@ -221,9 +312,29 @@ pub fn resolve(importer: &Path, logical: &str) -> Result<PathBuf, String> {
     if with_ext.exists() {
         return Ok(canonicalize_or(&with_ext));
     }
+    tried.push(with_ext);
+
+    // 3. Extra search paths from the config.
+    for sp in &config.search_paths {
+        let mut joined = sp.clone();
+        for segment in &segments {
+            joined.push(segment);
+        }
+        let mut candidate = joined.clone();
+        candidate.set_extension("twe");
+        if candidate.exists() {
+            return Ok(canonicalize_or(&candidate));
+        }
+        tried.push(candidate);
+    }
+
+    let tried_pretty = tried
+        .iter()
+        .map(|p| display_path(p))
+        .collect::<Vec<_>>()
+        .join(", ");
     Err(format!(
-        "module file not found at {}",
-        display_path(&with_ext)
+        "module file not found; tried: {tried_pretty}"
     ))
 }
 
@@ -603,6 +714,124 @@ mod tests {
         let g = load_from_path(&dir.join("main.twe"), None).unwrap();
         let out = run_with_modules(&g).expect("run");
         assert!(out.contains("42"), "expected 42 in output: {out:?}");
+    }
+
+    // ----- Phase 13 session 4: search paths + dependency map. -----
+
+    #[test]
+    fn search_path_resolves_when_importer_dir_misses() {
+        // main.twe says `import "vec2"` but vec2.twe lives in a
+        // sibling `lib/` directory exposed via search_paths.
+        let dir = tmp("search_path");
+        write(&dir, "main.twe", "import \"vec2\"\n");
+        write(&dir, "lib/vec2.twe", "let zero = 0\n");
+        let config = LoaderConfig {
+            search_paths: vec![dir.join("lib")],
+            ..Default::default()
+        };
+        let g = load_with_config(&dir.join("main.twe"), None, &config).unwrap();
+        let helper = g.deps.values().next().unwrap();
+        assert!(
+            helper.canonical_path.ends_with("lib/vec2.twe")
+                || helper.canonical_path.ends_with("lib\\vec2.twe"),
+            "expected lib/vec2.twe, got {}",
+            helper.canonical_path.display()
+        );
+    }
+
+    #[test]
+    fn dependency_path_takes_precedence_over_importer_dir() {
+        // Both `dir/mathlib.twe` and `dir/vendor/mathlib.twe` exist.
+        // `[dependencies] mathlib = { path = "vendor/mathlib" }`
+        // should win — the dependency name is the canonical surface,
+        // not whatever shadow file the importer has nearby.
+        let dir = tmp("dep_precedence");
+        write(&dir, "main.twe", "import \"mathlib\"\n");
+        write(&dir, "mathlib.twe", "let from_local = true\n");
+        write(&dir, "vendor/mathlib.twe", "let from_vendor = true\n");
+        let mut deps = std::collections::HashMap::new();
+        deps.insert("mathlib".to_string(), dir.join("vendor/mathlib"));
+        let config = LoaderConfig {
+            dependency_paths: deps,
+            ..Default::default()
+        };
+        let g = load_with_config(&dir.join("main.twe"), None, &config).unwrap();
+        let mathlib = g.deps.values().next().unwrap();
+        assert!(
+            mathlib
+                .canonical_path
+                .to_string_lossy()
+                .contains("vendor"),
+            "expected vendor path, got {}",
+            mathlib.canonical_path.display()
+        );
+    }
+
+    #[test]
+    fn dependency_path_with_subpath_resolves() {
+        // `import "mathlib/vec2"` with `mathlib` mapped to
+        // `vendor/mathlib` should hit `vendor/mathlib/vec2.twe`.
+        let dir = tmp("dep_subpath");
+        write(&dir, "main.twe", "import \"mathlib/vec2\"\n");
+        write(&dir, "vendor/mathlib/vec2.twe", "let zero = 0\n");
+        let mut deps = std::collections::HashMap::new();
+        deps.insert("mathlib".to_string(), dir.join("vendor/mathlib"));
+        let config = LoaderConfig {
+            dependency_paths: deps,
+            ..Default::default()
+        };
+        let g = load_with_config(&dir.join("main.twe"), None, &config).unwrap();
+        assert_eq!(g.deps.len(), 1);
+    }
+
+    #[test]
+    fn dependency_path_falls_back_to_main_twe_for_bare_name() {
+        // `import "mathlib"` with `mathlib` -> `vendor/mathlib`. If
+        // `vendor/mathlib.twe` does not exist but
+        // `vendor/mathlib/main.twe` does, the loader picks it up.
+        // This lets a multi-file dep ship a `main.twe` entry.
+        let dir = tmp("dep_main");
+        write(&dir, "main.twe", "import \"mathlib\"\n");
+        write(&dir, "vendor/mathlib/main.twe", "let entry = true\n");
+        let mut deps = std::collections::HashMap::new();
+        deps.insert("mathlib".to_string(), dir.join("vendor/mathlib"));
+        let config = LoaderConfig {
+            dependency_paths: deps,
+            ..Default::default()
+        };
+        let g = load_with_config(&dir.join("main.twe"), None, &config).unwrap();
+        let dep = g.deps.values().next().unwrap();
+        assert!(
+            dep.canonical_path.ends_with("main.twe"),
+            "expected main.twe, got {}",
+            dep.canonical_path.display()
+        );
+    }
+
+    #[test]
+    fn missing_module_error_names_search_paths() {
+        let dir = tmp("missing_paths");
+        write(&dir, "main.twe", "import \"ghost\"\n");
+        let config = LoaderConfig {
+            search_paths: vec![dir.join("lib1"), dir.join("lib2")],
+            ..Default::default()
+        };
+        let err = load_with_config(&dir.join("main.twe"), None, &config).unwrap_err();
+        assert!(
+            err.message.contains("tried"),
+            "expected `tried` in {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("lib1"),
+            "expected lib1 in {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("lib2"),
+            "expected lib2 in {}",
+            err.message
+        );
     }
 
     #[test]

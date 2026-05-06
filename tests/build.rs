@@ -824,6 +824,72 @@ fn survive_demo_round_trips_through_bundle_pipeline() {
 }
 
 #[test]
+fn manifest_parses_dependencies_string_form() {
+    // Phase 13 session 4: `[dependencies] mathlib = "1.2.3"` parses
+    // as a version pin with no path. Path-less entries don't
+    // contribute to the resolver search list.
+    let dir = temp_project("manifest_deps_str");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        r#"
+[dependencies]
+mathlib = "1.2.3"
+"#,
+    )
+    .unwrap();
+    let manifest = parse_manifest(&dir.join("twe.toml")).expect("parse");
+    let dep = manifest.dependencies.get("mathlib").expect("present");
+    assert_eq!(dep.version.as_deref(), Some("1.2.3"));
+    assert!(dep.path.is_none());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manifest_parses_dependencies_table_form() {
+    // The table form pins a version *and* a search path:
+    // `mathlib = { version = "1.2.3", path = "vendor/mathlib" }`.
+    // The path carries through to the loader's dependency_paths
+    // map (the wiring isn't this test's concern — that's the
+    // module::tests::dependency_path_* coverage).
+    let dir = temp_project("manifest_deps_tbl");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        r#"
+[dependencies]
+mathlib = { version = "1.2.3", path = "vendor/mathlib" }
+"#,
+    )
+    .unwrap();
+    let manifest = parse_manifest(&dir.join("twe.toml")).expect("parse");
+    let dep = manifest.dependencies.get("mathlib").expect("present");
+    assert_eq!(dep.version.as_deref(), Some("1.2.3"));
+    assert_eq!(
+        dep.path.as_deref(),
+        Some(std::path::Path::new("vendor/mathlib"))
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manifest_rejects_dependencies_with_unsupported_value() {
+    let dir = temp_project("manifest_deps_bad");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::write(
+        dir.join("twe.toml"),
+        r#"
+[dependencies]
+mathlib = 42
+"#,
+    )
+    .unwrap();
+    let err = parse_manifest(&dir.join("twe.toml")).expect_err("bad dep value");
+    assert!(err.contains("dependencies.mathlib"), "got: {err}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn read_asset_bytes_falls_through_when_no_bundle_set() {
     // Same fallthrough path as the cleared half of the previous
     // test, run independently to avoid leaking state if that test

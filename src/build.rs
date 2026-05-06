@@ -140,6 +140,25 @@ pub struct ProjectManifest {
     /// (or `[steam] enabled = true`), `twec build` produces a
     /// Depot-shaped layout next to the regular artifact.
     pub steam: Option<SteamManifest>,
+    /// Phase 13 session 4: `[dependencies]` table. Each entry maps a
+    /// logical dependency name to a `Dependency { version, path }`.
+    /// When `import "<name>/..."` is resolved, the loader prepends
+    /// `dependency.path` (if set) to the import-relative search.
+    /// Version is metadata for now — actual fetching / verification
+    /// is post-v1.0; v0.7's exit criterion is "the layout works",
+    /// not "the registry exists".
+    pub dependencies: std::collections::HashMap<String, Dependency>,
+}
+
+/// Phase 13 session 4: one `[dependencies]` entry. TOML accepts
+/// either a string (version pin: `mathlib = "1.2.3"`) or an inline
+/// table (`mathlib = { version = "1.2.3", path = "vendor/mathlib" }`).
+/// Both forms parse to this struct with the unspecified field left
+/// `None`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dependency {
+    pub version: Option<String>,
+    pub path: Option<PathBuf>,
 }
 
 /// Phase 12 session 9: per-project Steam configuration. App and
@@ -312,6 +331,35 @@ pub fn parse_manifest(path: &Path) -> Result<ProjectManifest, String> {
             s.depot_description = Some(d.to_string());
         }
         manifest.steam = Some(s);
+    }
+    if let Some(deps) = value.get("dependencies").and_then(|v| v.as_table()) {
+        // Phase 13 session 4. TOML allows two shapes per entry:
+        //   foo = "1.2.3"
+        //   foo = { version = "1.2.3", path = "vendor/foo" }
+        for (name, entry) in deps.iter() {
+            let dep = match entry {
+                toml::Value::String(s) => Dependency {
+                    version: Some(s.clone()),
+                    path: None,
+                },
+                toml::Value::Table(t) => Dependency {
+                    version: t
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    path: t
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .map(PathBuf::from),
+                },
+                _ => {
+                    return Err(format!(
+                        "{display}: dependencies.{name} must be a version string or an inline table"
+                    ));
+                }
+            };
+            manifest.dependencies.insert(name.clone(), dep);
+        }
     }
     Ok(manifest)
 }
