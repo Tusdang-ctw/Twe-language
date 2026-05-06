@@ -280,6 +280,18 @@ pub struct Env {
     /// `mesh()` calls run in source order). v0.2 session 1.
     pub mesh_paths: Vec<String>,
     rng_state: u64,
+    /// Phase 13 session 3: cache of evaluated modules keyed by their
+    /// canonical filesystem path (as a string for hashability). The
+    /// value is the module-value Object whose fields are the
+    /// module's top-level bindings — so `import "math"` followed by
+    /// `math.add(1, 2)` is just two ordinary lookups against this
+    /// cache + an Object field-get.
+    pub module_cache: HashMap<String, TaggedValue>,
+    /// Path of the source file currently being evaluated. Used by
+    /// `Stmt::Import` to resolve relative module paths the same way
+    /// the loader (`module::resolve`) does. Populated by the entry
+    /// runner; defaults to `None` for ad-hoc `eval::run` callers.
+    pub current_source: Option<std::path::PathBuf>,
 }
 
 /// One queued 3D primitive. Phase 6 session 7 added the `Primitive`
@@ -346,6 +358,8 @@ impl Env {
             // xorshift64* seeded from a fixed constant for deterministic
             // tests. CLI can override via `twec run --seed N`.
             rng_state: 0x9E37_79B9_7F4A_7C15,
+            module_cache: HashMap::new(),
+            current_source: None,
         }
     }
 

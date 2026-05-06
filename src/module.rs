@@ -197,7 +197,7 @@ impl Loader {
 /// Resolve `logical` relative to `importer`. Returns the resolved
 /// path canonicalised when the file exists, otherwise the joined
 /// path so the caller can still report a sensible error location.
-fn resolve(importer: &Path, logical: &str) -> Result<PathBuf, String> {
+pub fn resolve(importer: &Path, logical: &str) -> Result<PathBuf, String> {
     if logical.is_empty() {
         return Err("import path is empty".to_string());
     }
@@ -248,8 +248,134 @@ fn canonicalize_or(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
-fn canonical_key(p: &Path) -> String {
+pub fn canonical_key(p: &Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+/// Topologically sort the dependency map so leaves (no further
+/// imports) come first. Cycles were already rejected at load time,
+/// so a depth-first walk with a visited set is sufficient. Result
+/// is a list of canonical-key strings in the order they should be
+/// evaluated.
+pub fn topo_order(graph: &ModuleGraph) -> Vec<String> {
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut order: Vec<String> = Vec::new();
+
+    fn visit(
+        node_path: &Path,
+        node_program: &Program,
+        graph: &ModuleGraph,
+        visited: &mut std::collections::HashSet<String>,
+        order: &mut Vec<String>,
+    ) {
+        let key = canonical_key(node_path);
+        if !visited.insert(key.clone()) {
+            return;
+        }
+        for stmt in &node_program.stmts {
+            if let Stmt::Import { path, .. } = stmt {
+                if let Ok(target) = resolve(node_path, path) {
+                    let dep_key = canonical_key(&target);
+                    if let Some(dep) = graph.deps.get(&dep_key) {
+                        visit(&dep.canonical_path, &dep.program, graph, visited, order);
+                    }
+                }
+            }
+        }
+        // Skip the entry — it's not in `deps`. Caller runs it last
+        // explicitly.
+        if graph.deps.contains_key(&key) {
+            order.push(key);
+        }
+    }
+
+    visit(
+        &graph.entry.canonical_path,
+        &graph.entry.program,
+        graph,
+        &mut visited,
+        &mut order,
+    );
+    order
+}
+
+/// Snapshot the names that are present in `env` after stdlib
+/// installation but before any user code runs. Used by
+/// `evaluate_graph` to compute which bindings count as
+/// "module-defined" (and therefore become fields of the module
+/// value) versus stdlib-inherited (which don't).
+pub fn snapshot_stdlib_names(env: &crate::value::Env) -> std::collections::HashSet<String> {
+    env.iter_bindings().map(|(k, _)| k).collect()
+}
+
+/// Build the module value for one already-evaluated module env.
+/// Walks the env's bindings and collects everything that wasn't
+/// in the stdlib snapshot. Returns an `Object { kind: "module" }`
+/// wrapped in a `TaggedValue` ready to drop into the cache.
+pub fn build_module_value(
+    env: &crate::value::Env,
+    stdlib_names: &std::collections::HashSet<String>,
+) -> crate::tagged_value::TaggedValue {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let mut fields: std::collections::HashMap<String, crate::tagged_value::TaggedValue> =
+        std::collections::HashMap::new();
+    for (name, value) in env.iter_bindings() {
+        if stdlib_names.contains(&name) {
+            continue;
+        }
+        fields.insert(name, value);
+    }
+    crate::tagged_value::TaggedValue::from_object(Rc::new(RefCell::new(crate::value::Object {
+        fields,
+        kind: "module",
+    })))
+}
+
+/// Compute the binding name for an import: explicit `as Alias`
+/// wins; otherwise the last forward-slash segment of the logical
+/// path. Empty segments were rejected at resolve time.
+pub fn import_binding_name(path: &str, alias: Option<&str>) -> String {
+    if let Some(name) = alias {
+        return name.to_string();
+    }
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+/// Phase 13 session 3 top-level runner. Evaluates every dependency
+/// in topological order, builds a module value for each, then runs
+/// the entry program against an env whose `module_cache` carries
+/// those values. Returns the entry env's `out` buffer so the caller
+/// can assert on the program's output, mirroring `eval::run`.
+///
+/// Each module is evaluated in its own fresh env. Stdlib state is
+/// not shared — that's a feature, not a bug: a module's `let
+/// counter = 0` is private to that module's file.
+pub fn run_with_modules(graph: &ModuleGraph) -> Result<String, crate::value::RuntimeError> {
+    let order = topo_order(graph);
+    let mut module_cache: std::collections::HashMap<String, crate::tagged_value::TaggedValue> =
+        std::collections::HashMap::new();
+
+    for key in &order {
+        let module = graph.deps.get(key).expect("topo_order returns only deps");
+        let mut sub_env = crate::value::Env::new();
+        crate::stdlib::install(&mut sub_env);
+        let stdlib_names = snapshot_stdlib_names(&sub_env);
+        // Sub-modules carry the full cache built so far so a
+        // module's own `import` statement can resolve its deps.
+        sub_env.module_cache = module_cache.clone();
+        sub_env.current_source = Some(module.canonical_path.clone());
+        crate::eval::run_top_level(&mut sub_env, &module.program)?;
+        let module_value = build_module_value(&sub_env, &stdlib_names);
+        module_cache.insert(key.clone(), module_value);
+    }
+
+    let mut env = crate::value::Env::new();
+    crate::stdlib::install(&mut env);
+    env.module_cache = module_cache;
+    env.current_source = Some(graph.entry.canonical_path.clone());
+    crate::eval::run_top_level(&mut env, &graph.entry.program)?;
+    Ok(env.out)
 }
 
 fn display_path(p: &Path) -> String {
@@ -371,5 +497,133 @@ mod tests {
         let printed = crate::printer::print_program(&g.entry.program);
         assert!(printed.contains("from_caller"), "got: {printed}");
         assert!(!printed.contains("on_disk"), "got: {printed}");
+    }
+
+    // ----- Phase 13 session 3: cross-module name resolution. -----
+
+    #[test]
+    fn import_binding_name_uses_basename() {
+        assert_eq!(import_binding_name("math", None), "math");
+        assert_eq!(import_binding_name("math/vec2", None), "vec2");
+        assert_eq!(
+            import_binding_name("physics/forces", Some("Forces")),
+            "Forces"
+        );
+    }
+
+    #[test]
+    fn topo_order_puts_leaves_first() {
+        // main -> a -> shared
+        // main -> b -> shared
+        // Expected: shared, then a/b (in some order), entry not included.
+        let dir = tmp("topo");
+        write(
+            &dir,
+            "main.twe",
+            "import \"a\"\nimport \"b\"\n",
+        );
+        write(&dir, "a.twe", "import \"shared\"\nlet a = 1\n");
+        write(&dir, "b.twe", "import \"shared\"\nlet b = 1\n");
+        write(&dir, "shared.twe", "let s = 0\n");
+        let g = load_from_path(&dir.join("main.twe"), None).unwrap();
+        let order = topo_order(&g);
+        // shared must come before a and b.
+        let shared_idx = order
+            .iter()
+            .position(|k| k.ends_with("shared.twe"))
+            .expect("shared in order");
+        let a_idx = order
+            .iter()
+            .position(|k| k.ends_with("a.twe"))
+            .expect("a in order");
+        let b_idx = order
+            .iter()
+            .position(|k| k.ends_with("b.twe"))
+            .expect("b in order");
+        assert!(shared_idx < a_idx, "shared before a: {order:?}");
+        assert!(shared_idx < b_idx, "shared before b: {order:?}");
+        // Entry is not included (it's run separately by the runner).
+        assert!(
+            !order.iter().any(|k| k.ends_with("main.twe")),
+            "entry not in topo order: {order:?}"
+        );
+    }
+
+    #[test]
+    fn run_with_modules_makes_imported_function_callable() {
+        // The headline use case: a `math.twe` defines a function,
+        // the entry imports it and calls `math.add(2, 3)`.
+        let dir = tmp("call_imported_fn");
+        write(
+            &dir,
+            "main.twe",
+            "import \"math\"\nprint(math.add(2, 3))\n",
+        );
+        write(
+            &dir,
+            "math.twe",
+            "function add(a, b):\n    return a + b\n",
+        );
+        let g = load_from_path(&dir.join("main.twe"), None).unwrap();
+        let out = run_with_modules(&g).expect("run");
+        assert!(out.contains('5'), "expected 5 in output: {out:?}");
+    }
+
+    #[test]
+    fn run_with_modules_alias_renames_binding() {
+        let dir = tmp("alias");
+        write(
+            &dir,
+            "main.twe",
+            "import \"math\" as M\nprint(M.add(7, 8))\n",
+        );
+        write(
+            &dir,
+            "math.twe",
+            "function add(a, b):\n    return a + b\n",
+        );
+        let g = load_from_path(&dir.join("main.twe"), None).unwrap();
+        let out = run_with_modules(&g).expect("run");
+        assert!(out.contains("15"), "expected 15 in output: {out:?}");
+    }
+
+    #[test]
+    fn run_with_modules_module_state_is_isolated() {
+        // Each module gets its own env; a `let counter = 0` in one
+        // module isn't visible in another except via the module
+        // value's exposed surface. Verifies `current_source` plus
+        // the snapshot_stdlib_names filter does the right thing.
+        let dir = tmp("isolation");
+        write(
+            &dir,
+            "main.twe",
+            "import \"counter\"\nprint(counter.value)\n",
+        );
+        write(&dir, "counter.twe", "let value = 42\n");
+        let g = load_from_path(&dir.join("main.twe"), None).unwrap();
+        let out = run_with_modules(&g).expect("run");
+        assert!(out.contains("42"), "expected 42 in output: {out:?}");
+    }
+
+    #[test]
+    fn run_with_modules_transitive_imports_resolve() {
+        // a imports b, main imports a. main can reach b's surface
+        // only via a's re-export; this test instead verifies that
+        // a's *use* of b at module-init time works.
+        let dir = tmp("transitive");
+        write(
+            &dir,
+            "main.twe",
+            "import \"a\"\nprint(a.computed)\n",
+        );
+        write(
+            &dir,
+            "a.twe",
+            "import \"b\"\nlet computed = b.base * 10\n",
+        );
+        write(&dir, "b.twe", "let base = 7\n");
+        let g = load_from_path(&dir.join("main.twe"), None).unwrap();
+        let out = run_with_modules(&g).expect("run");
+        assert!(out.contains("70"), "expected 70 in output: {out:?}");
     }
 }

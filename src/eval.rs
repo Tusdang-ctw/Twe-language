@@ -1925,13 +1925,40 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             line,
             col,
         } => eval_decl(env, *kind, name, parent.as_deref(), members, *line, *col),
-        Stmt::Import { .. } => {
-            // Phase 13 session 1 ships only the lexer + parser + AST
-            // for `import`. Module loading (session 2) lifts these
-            // statements out of the program before evaluation, so
-            // any import that survives to here is a no-op until the
-            // loader lands. Round-tripping through `twec fmt` and
-            // the LSP still works.
+        Stmt::Import {
+            path,
+            alias,
+            line,
+            col,
+        } => {
+            // Phase 13 session 3: resolve the import against the
+            // current source file's directory, look up the
+            // pre-evaluated module value, and bind it under the
+            // chosen name. When `current_source` is `None` (ad-hoc
+            // `eval::run` callers, REPL, tests that don't go through
+            // `module::run_with_modules`) the statement degrades to
+            // a no-op so the surface still parses for those callers.
+            if let Some(src) = env.current_source.clone() {
+                let target = crate::module::resolve(&src, path).map_err(|m| RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: m,
+                    help: None,
+                })?;
+                let key = crate::module::canonical_key(&target);
+                let module_value = env.module_cache.get(&key).copied().ok_or(RuntimeError {
+                    line: *line,
+                    col: *col,
+                    message: format!(
+                        "module `{path}` was not pre-evaluated; this points at a loader bug"
+                    ),
+                    help: Some(
+                        "imports are evaluated in topological order before the entry runs; if you reach this branch the module graph is missing a dep".to_string(),
+                    ),
+                })?;
+                let bind_name = crate::module::import_binding_name(path, alias.as_deref());
+                env.set(bind_name, module_value);
+            }
             Ok(())
         }
         Stmt::Expr(e) => {
