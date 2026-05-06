@@ -225,6 +225,9 @@ fn window_conf() -> Conf {
 }
 
 async fn run_loop(path: String) {
+    // Phase 15 session 3: try to initialise the Steam client once
+    // before the first tick. No-op in non-steam builds.
+    crate::steam::init();
     let path_ref = path.clone();
     let mut env = match initialize(&path_ref) {
         Ok(e) => e,

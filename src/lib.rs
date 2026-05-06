@@ -19,6 +19,7 @@ pub mod play_visual;
 pub mod printer;
 pub mod profile;
 pub mod save;
+pub mod steam;
 pub mod stdlib;
 pub mod tagged_value;
 pub mod types;

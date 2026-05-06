@@ -455,6 +455,61 @@ pub fn install(env: &mut Env) {
         "auto_pause_on_blur".to_string(),
         Value::from_builtin("auto_pause_on_blur", &["enabled"], auto_pause_on_blur_impl),
     );
+
+    // Phase 15 session 3: Steam SDK integration. All builtins are
+    // registered unconditionally — the underlying steam.rs fns are
+    // no-ops in non-steam builds or when Steam is not running so
+    // scripts don't need to guard every call.
+    let mut achievement_fields = HashMap::new();
+    achievement_fields.insert(
+        "unlock".to_string(),
+        Value::from_builtin("achievement.unlock", &["name"], crate::steam::achievement_unlock),
+    );
+    env.set(
+        "achievement".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: achievement_fields,
+            kind: "module",
+        }))),
+    );
+
+    let mut stat_fields = HashMap::new();
+    stat_fields.insert(
+        "set".to_string(),
+        Value::from_builtin("stat.set", &["name", "value"], crate::steam::stat_set),
+    );
+    stat_fields.insert(
+        "get".to_string(),
+        Value::from_builtin("stat.get", &["name"], crate::steam::stat_get),
+    );
+    stat_fields.insert(
+        "commit".to_string(),
+        Value::from_builtin("stat.commit", &[], crate::steam::stat_commit),
+    );
+    env.set(
+        "stat".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: stat_fields,
+            kind: "module",
+        }))),
+    );
+
+    let mut cloud_fields = HashMap::new();
+    cloud_fields.insert(
+        "save".to_string(),
+        Value::from_builtin("cloud.save", &["filename", "data"], crate::steam::cloud_save),
+    );
+    cloud_fields.insert(
+        "load".to_string(),
+        Value::from_builtin("cloud.load", &["filename"], crate::steam::cloud_load),
+    );
+    env.set(
+        "cloud".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: cloud_fields,
+            kind: "module",
+        }))),
+    );
 }
 
 /// Phase 10 session 8: process-wide pause flag. Atomic + thread-local

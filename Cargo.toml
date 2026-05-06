@@ -77,6 +77,18 @@ toml = "0.8"
 # only `Win32_UI_WindowsAndMessaging` is enabled — the smallest
 # feature set that covers `GetForegroundWindow` /
 # `GetWindowThreadProcessId`. Builds vanish on non-Windows targets.
+# Phase 15 session 3: optional Steam SDK integration. Requires the
+# Steamworks SDK redistributable at link time (steam_api.dll on
+# Windows). Only compiled when `--features steam` is passed —
+# default builds have zero Steam overhead. Enabled automatically by
+# `twec build --steam` (Phase 12 session 9 adds the --steam flag).
+[features]
+steam = ["dep:steamworks"]
+
+[dependencies.steamworks]
+version = "0.11"
+optional = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
 
