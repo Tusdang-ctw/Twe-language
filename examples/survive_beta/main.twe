@@ -195,6 +195,136 @@ entity Slime:
 
 
 # ---------------------------------------------------------------
+# Bat — fast, weaving flier. 130 u/s straight-line approach plus
+# a perpendicular sin-wave offset so it doesn't read as "another
+# slime, but cyan." 1 HP, 5 damage on contact. Spawns from
+# wave 2 onward.
+# ---------------------------------------------------------------
+entity Bat:
+    var pos = (0.0, 0.0)
+    var hp = 1
+    var damage = 5.0
+    var weave_phase = 0.0
+
+    function update(dt):
+        if in_levelup:
+            return
+        let dx = player_x - pos.x
+        let dy = player_y - pos.y
+        let mag2 = dx * dx + dy * dy
+        if mag2 < 1.0:
+            return
+        let mag = math.sqrt(mag2)
+        let nx = dx / mag
+        let ny = dy / mag
+        # Perpendicular weave: rotate (nx, ny) by 90° to (-ny, nx),
+        # multiply by sin-wave amplitude. Phase advances at 5 rad/s.
+        weave_phase += dt * 5.0
+        let weave = math.sin(weave_phase) * 30.0
+        let speed = 130.0
+        pos = (
+            pos.x + nx * speed * dt + (-ny) * weave * dt,
+            pos.y + ny * speed * dt + nx * weave * dt,
+        )
+        # Contact damage. Same 22px radius + 0.6s i-frames as Slime.
+        if mag2 < 22.0 * 22.0:
+            if player_iframes <= 0.0:
+                player_hp -= damage
+                player_iframes = 0.6
+
+    function render():
+        rect(
+            at: (pos.x - camera_x - 8, pos.y - camera_y - 8),
+            size: (16, 16),
+            color: color.purple,
+        )
+
+
+# ---------------------------------------------------------------
+# Skeleton — slow ranged attacker. Approaches to a 250px standoff
+# distance, then sits and fires SkeletonBolts at the player every
+# 1.5s. 1 HP. The fire-and-stand pattern means players can no
+# longer purely kite on the perimeter — they have to weave through
+# bolts. Spawns from wave 4 onward.
+# ---------------------------------------------------------------
+entity Skeleton:
+    var pos = (0.0, 0.0)
+    var hp = 1
+    var fire_timer = 0.0
+    var fire_interval = 1.5
+    var standoff = 250.0
+    var move_speed = 50.0
+
+    function update(dt):
+        if in_levelup:
+            return
+        let dx = player_x - pos.x
+        let dy = player_y - pos.y
+        let d2 = dx * dx + dy * dy
+        if d2 > standoff * standoff:
+            let mag = math.sqrt(d2)
+            pos = (
+                pos.x + dx / mag * move_speed * dt,
+                pos.y + dy / mag * move_speed * dt,
+            )
+        fire_timer += dt
+        if fire_timer >= fire_interval:
+            fire_timer = 0.0
+            spawn SkeletonBolt at pos
+
+    function render():
+        rect(
+            at: (pos.x - camera_x - 10, pos.y - camera_y - 14),
+            size: (20, 28),
+            color: color.white,
+        )
+
+
+# ---------------------------------------------------------------
+# SkeletonBolt — enemy projectile. Locks onto the player's
+# position at spawn-frame, then flies straight at 280 u/s. 12
+# damage on contact + i-frames.
+# ---------------------------------------------------------------
+entity SkeletonBolt:
+    var pos = (0.0, 0.0)
+    var vx = 0.0
+    var vy = 0.0
+    var target_set = false
+    var lifetime = 3.0
+
+    function update(dt):
+        if in_levelup:
+            return
+        if not target_set:
+            target_set = true
+            let dx = player_x - pos.x
+            let dy = player_y - pos.y
+            let mag = math.sqrt(dx * dx + dy * dy)
+            if mag > 1.0:
+                vx = dx / mag * 280.0
+                vy = dy / mag * 280.0
+        pos = (pos.x + vx * dt, pos.y + vy * dt)
+        lifetime -= dt
+        if lifetime <= 0.0:
+            despawn self
+            return
+        let dx2 = player_x - pos.x
+        let dy2 = player_y - pos.y
+        if dx2 * dx2 + dy2 * dy2 < 18.0 * 18.0:
+            if player_iframes <= 0.0:
+                player_hp -= 12.0
+                player_iframes = 0.6
+            despawn self
+
+    function render():
+        rect(
+            at: (pos.x - camera_x - 3, pos.y - camera_y - 3),
+            size: (6, 6),
+            color: color.red,
+        )
+
+
+# ---------------------------------------------------------------
 # Projectile — the auto-attack weapon. Spawns at the player,
 # self-targets the nearest slime on its first update tick, and
 # travels in a straight line. The target-on-spawn-frame pattern
@@ -241,15 +371,30 @@ entity Projectile:
             despawn self
             return
 
-        # Hit check. 14px overlap radius matches survive.twe's
-        # bullet shape — generous enough that fast projectiles
-        # don't tunnel through a slime at 600 u/s × 16ms = 9.6 u
-        # per frame.
+        # Hit check. 14px overlap radius — generous enough that
+        # 600 u/s × 16ms ≈ 10u per frame doesn't tunnel through.
+        # The check spans every enemy class; first overlap wins.
         for slime in entities.of(Slime):
             let dx = slime.pos.x - pos.x
             let dy = slime.pos.y - pos.y
             if dx * dx + dy * dy < 14.0 * 14.0:
                 despawn slime
+                despawn self
+                kills += 1
+                return
+        for bat in entities.of(Bat):
+            let dx = bat.pos.x - pos.x
+            let dy = bat.pos.y - pos.y
+            if dx * dx + dy * dy < 14.0 * 14.0:
+                despawn bat
+                despawn self
+                kills += 1
+                return
+        for sk in entities.of(Skeleton):
+            let dx = sk.pos.x - pos.x
+            let dy = sk.pos.y - pos.y
+            if dx * dx + dy * dy < 14.0 * 14.0:
+                despawn sk
                 despawn self
                 kills += 1
                 return
@@ -285,14 +430,27 @@ entity Blade:
             player_x + math.cos(angle) * orbit_radius,
             player_y + math.sin(angle) * orbit_radius,
         )
-        # 18px hit radius (player half=12 + slime half=10 ≈ 22,
-        # blade itself half=8: tighter than projectile so the
-        # blade sweeps cleanly without snagging mid-swing).
+        # 18px hit radius (blade half-extent 6 + ~12 enemy half-
+        # extent ≈ 18). Sweeps every enemy class within range —
+        # one frame can clip multiple targets at once which is
+        # the load-bearing feel for a melee orbit.
         for slime in entities.of(Slime):
             let dx = slime.pos.x - pos.x
             let dy = slime.pos.y - pos.y
             if dx * dx + dy * dy < 18.0 * 18.0:
                 despawn slime
+                kills += 1
+        for bat in entities.of(Bat):
+            let dx = bat.pos.x - pos.x
+            let dy = bat.pos.y - pos.y
+            if dx * dx + dy * dy < 18.0 * 18.0:
+                despawn bat
+                kills += 1
+        for sk in entities.of(Skeleton):
+            let dx = sk.pos.x - pos.x
+            let dy = sk.pos.y - pos.y
+            if dx * dx + dy * dy < 18.0 * 18.0:
+                despawn sk
                 kills += 1
 
     function render():
@@ -326,6 +484,18 @@ entity Aura:
                 let dy = slime.pos.y - player_y
                 if dx * dx + dy * dy < radius * radius:
                     despawn slime
+                    kills += 1
+            for bat in entities.of(Bat):
+                let dx = bat.pos.x - player_x
+                let dy = bat.pos.y - player_y
+                if dx * dx + dy * dy < radius * radius:
+                    despawn bat
+                    kills += 1
+            for sk in entities.of(Skeleton):
+                let dx = sk.pos.x - player_x
+                let dy = sk.pos.y - player_y
+                if dx * dx + dy * dy < radius * radius:
+                    despawn sk
                     kills += 1
 
     function render():
@@ -402,13 +572,25 @@ entity XPGem:
         )
 
 
-# Slime death → XPGem drop. Phase 9 session 7b's class-event hook
-# fires when an instance of Slime is despawned (from anywhere:
-# Projectile.update, the game_over restart cleanup, etc.). The
-# restart path also clears the XPGem pool so cleanup-spawned
-# gems don't pollute the next run.
+# Enemy death → XPGem drop. Phase 9 session 7b's class-event hook
+# fires when an instance is despawned from anywhere:
+# Projectile.update, weapon hits, restart cleanup. The restart
+# path also clears the XPGem pool so cleanup-spawned gems don't
+# pollute the next run.
+#
+# Skeletons drop 2 XP because they take longer to reach + dodge
+# bolts to kill. Bats drop 1 (they're plentiful but each is a
+# low-skill swat with a Blade or Aura sweep).
 on Slime.death(s):
     spawn XPGem at s.pos
+
+on Bat.death(b):
+    spawn XPGem at b.pos
+
+on Skeleton.death(sk):
+    spawn XPGem at sk.pos
+    # Bonus drop — second gem at the same spot for net +2 XP.
+    spawn XPGem at sk.pos
 
 
 scene SurviveBeta:
@@ -492,7 +674,23 @@ scene SurviveBeta:
                         sy = 0.0
                     if sy > arena_h:
                         sy = arena_h
-                    spawn Slime at (sx, sy)
+                    # Enemy roster grows by wave_index. Wave 1
+                    # (index 0): slimes only. Wave 2+: bats join.
+                    # Wave 4+: skeletons join. Index → display
+                    # wave is +1 (the HUD shows "Wave 2" when
+                    # wave_index = 1).
+                    var pool_size = 1
+                    if wave_index >= 1:
+                        pool_size = 2
+                    if wave_index >= 3:
+                        pool_size = 3
+                    let enemy = random.int(0..<pool_size)
+                    if enemy == 0:
+                        spawn Slime at (sx, sy)
+                    elif enemy == 1:
+                        spawn Bat at (sx, sy)
+                    else:
+                        spawn Skeleton at (sx, sy)
 
             # ---- Auto-attack. The bolt picks its own target on
             # spawn-frame (see Projectile.update); we just fire
@@ -739,6 +937,12 @@ scene SurviveBeta:
                 # up XP from the previous run.
                 for slime in entities.of(Slime):
                     despawn slime
+                for bat in entities.of(Bat):
+                    despawn bat
+                for sk in entities.of(Skeleton):
+                    despawn sk
+                for bolt in entities.of(SkeletonBolt):
+                    despawn bolt
                 for proj in entities.of(Projectile):
                     despawn proj
                 for gem in entities.of(XPGem):
