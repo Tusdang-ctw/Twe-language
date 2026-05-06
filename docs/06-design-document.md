@@ -590,29 +590,284 @@ Conversion between compatible units is automatic at the type level (`30cm + 1m =
 
 ---
 
-## 7. Standard library overview
+## 7. Standard library reference
 
-Detailed in a separate document (`stdlib.md`, not yet written). Sections planned:
+Every function below is available in `twec play` (the 2D runtime) unless marked **3D** or **visual**. Drawing primitives additionally require a render context (`on render():` block) — calling them outside render is a runtime error.
 
-1. **`core`** — `print`, `assert`, `panic`, type predicates.
-2. **`math`** — `sin`, `cos`, `noise`, `smoothstep`, `mix`, `clamp`, `floor`, `ceil`, etc. (most also work in `visual` blocks). *(v0.1 ships `abs`, `sqrt`, `floor`, `ceil`, `min`, `max`, `sin`, `cos`, `pi`. Phase 9 session 1 adds `smoothstep(low, high, x)`, `mix(a, b, t)`, and `noise(point)` — all reachable via the `math.` prefix and as bare names at the top level so the same surface compiles inside `visual` block bodies. `mix` accepts numbers or same-shape tuples, so it blends colors `(r, g, b, a)` and 2D vectors `(x, y)` elementwise. `noise` is 2D value noise on an `(x, y)` tuple, deterministic, range [-1, 1] — the WGSL counterpart that produces bit-identical output lands in Phase 9 session 10.)*
-3. **`random`** — `random.float()`, `random.int(0..10)`, `random.in_circle(radius:)`, `random.choice([...])`.
-4. **`vector`** — vector operations: `dot`, `cross`, `length`, `normalize`, `lerp`.
-5. **`color`** — named constants, `color.lerp`, `color.from_hex`, `color.hsv`. *(Phase 9 session 6 ships **`color.from_hex(s)`** (`#rrggbb` / `#rrggbbaa`, '#' optional), **`color.hsv(h, s, v)`** (hue in degrees, wraps via rem_euclid; saturation/value clamped), **`color.lerp(a, b, t)`** (sRGB-space perceptual blend — same arithmetic as `mix(c, c, t)` on tuples), **`color.lerp_linear(a, b, t)`** (gamma-correct: `to_linear → mix → to_srgb`; alpha lerps in straight space), and gamma helpers **`color.to_linear(c)`** + **`color.to_srgb(c)`** using the IEC 61966-2-1 piecewise transfer function so colors round-trip CPU↔WGSL bit-identical for the Phase 9 session 10 visual block compiler. Lerp variants both ship because perceptual gradients (UI, palette ramps) and physical light blending (HDR particles, additive splatters) have legitimate distinct use cases.)*
-6. **`time`** — `time.now`, `time.delta`, `time.frame`. *(v0.1 ships only `time.dt`, the live frame delta — set by `eval::tick_frame` and readable from every-clock bodies; closes Phase 2 frustration F8.)*
-7. **`input`** — `key`, `mouse`, `gamepad`. *(Phase 9 session 5 ships **`gamepad` / `gamepad_press` / `gamepad_axis`** ambients mirroring the existing key/mouse split. `gamepad.{a,b,x,y,lb,rb,lt,rt,start,select,dup,ddown,dleft,dright}` are continuous booleans; `gamepad_press.*` is edge-triggered (true on the frame the button transitions to down); `gamepad_axis.{lx,ly,rx,ry,lt,rt}` are analog floats — sticks `[-1, 1]` per gilrs's "+y up" convention, triggers `[0, 1]`. `gamepad.connected` reports whether any pad is plugged in. Polling is gilrs-driven inside `twec play`; `twec run` (headless) leaves all fields at install-time defaults. First-connected gamepad only — multi-gamepad routing is a follow-on. Macroquad 0.4 has no gamepad support of its own, hence the gilrs dependency.)*
-8. **`scene`** — `scene.find`, `scene.spawn`, `scene.npc`, `scene.enter`.
-8a. **`entities`** *(v0.1)* — `entities.of(Class)` returns a list of live instances of a class; `entities.count(Class)` returns just the count. Closes the iteration-on-dynamic-instances gap from the Phase 2 frustration list (F3 / F6) and is what bullet/enemy collision in `examples/survive.twe` is built on.
-9. **`asset`** — `load`, `load_mesh`, `load_sound`. *(v0.1: bare `load(path)` is canonical for sprites — matches Example 1 in `01-examples.md`. Returns a sprite handle `{ path, x, y }`; the texture itself is decoded lazily on the first `sprite(handle, at, [size])` call inside `on render():`. Path existence is checked at load time so typos fail fast.)* *(Phase 9 session 3 adds **spritesheet support**: `load_atlas(path, grid)` returns an atlas handle `{ path, grid }` where `grid = (cols, rows)`. Draw cells with `sprite_frame(atlas, at, frame)` for native cell size or `sprite_frame_at(atlas, at, size, frame)` to scale; frames are zero-based row-major. Two builtins instead of an optional `frame:` kwarg on `sprite()` because Twe's calling convention requires every kwarg to be supplied — same shape as audio v2's `sound.play` / `sound.play_at` split.)* *(Phase 9 session 4 adds **TTF/OTF fonts**: `load_font(path)` returns a font handle `{ path }`; draw with `text_with_font(content, at, size, color, font)`. `load_font` validates the file via TTF/OTF magic-bytes (`0x00010000`, `OTTO`, `true`, `ttcf`) and caches raw bytes; the macroquad `Font` itself is decoded lazily on first draw because macroquad's parser asserts on `THREAD_ID` and only works inside the render frame. WOFF/WOFF2 are intentionally not accepted — macroquad's parser doesn't support them either. Plain `text(...)` continues to use macroquad's default font.)*
-9a. **`sound`** *(v0.1)* — `sound.load(path)` returns a sound handle `{ path }`; `sound.play(handle)` decodes (lazily, cached) and plays it once. WAV and Ogg Vorbis supported (via `quad-snd`). Audio is enabled via macroquad's `audio` feature.
-9b. **`camera`** *(2D Phase 9 session 2 / 3D v0.1)* — top-level ambient with both 2D and 3D fields on one object. **2D:** `camera.pos = (x, y)` (world-coord that ends up at the screen center) and `camera.zoom = 1.5` (scalar; >1 zooms in). Methods: `camera.follow(target_xy, lerp)` exponentially smooths `pos` toward a 2-tuple; `camera.shake(amplitude, duration)` adds runtime jitter (amplitude in pixels, duration in seconds — stronger replaces weaker, longer extends shorter); `camera.reset()` snaps everything to defaults. The macroquad `play` loop applies a `Camera2D` only when `pos != (0, 0)`, `zoom != 1.0`, or shake is active — so existing pixel-coord examples that never touch `camera` keep their default top-left, +y-down coord system. **3D:** `camera.eye / target / up` are 3-tuples the `play3d` view-matrix builder reads each frame.
-10. **`io`** — `read_file`, `write_file`, `save_to`, `load_from`.
-11. **`net`** — minimal HTTP for fetching at dev time; full networking deferred.
-12. **`ui`** — immediate-mode widgets. *(Phase 10 sessions 1–8 ship the widget + layout + pause surface; session 11 closes the phase with the keybind capture widget. Stateless widgets: **`button(at:, size:, label:) -> bool`** (true on the click frame; reads ambient `mouse.*`; half-open hit test); **`label(at:, size:, text:)`**; **`progress_bar(at:, size:, value:)`** (clamped 0..1). Stateful widgets: **`slider(at:, size:, value:, min:, max:) -> float`** (drag state via `UI_STATE.active_slider`); **`checkbox(at:, size:, value:) -> bool`** (two-segment check mark when true); **`dropdown(at:, size:, options:, selected:) -> int`** (click header to open / option to select / outside to dismiss); **`text_input(at:, size:, value:) -> string`** (click-to-focus, drains macroquad's `get_char_pressed`, backspace deletes, blinks a 1Hz cursor while focused, Ctrl+V paste from the OS clipboard via session-5b); **`key_input(at:, size:, value:) -> string`** (click to focus, next non-Escape key in the `key_press` ambient becomes the binding; Escape cancels — pairs with the dynamic-name `key_held(name)` / `key_pressed(name)` so games persist bindings via `settings`). Layout primitives: **`panel(at:, size:)`** (UI-themed background); **`stack(at:, size:, count:, index:, gap:) -> {at, size}`** + **`flex(...)`** + **`grid(at:, size:, cols:, rows:, index:, gap:) -> {at, size}`** (positioning helpers that return a layout-result object with `.at` and `.size` 2-tuples; script does `button(at: slot.at, size: slot.size, label: ...)`); **`scroll(at:, size:, content_height:) -> {at, size, scroll_y}`** (keeps a per-rect scroll-y in `UI_STATE.scroll_y`, drives it from `mouse.wheel` while hovered, clamps to `[0, content_height - size.y]`). Pause primitives: **`pause(flag)`** / **`is_paused() -> bool`** — the `play` loop skips `tick_frame` when paused (no fibers advance, no every-clocks fire) but keeps the render path live so a pause menu still draws and interacts. Auto-pause-on-window-blur defers to a winit-integration follow-on (macroquad 0.4 doesn't expose focus events) and per-state opt-out remains an open syntax question. The single `UI_STATE` thread-local backs every stateful widget; rect-keyed identities are stable across frames because immediate-mode contracts say layout is stable. The if-expression form `let c = if cond: a else: b` is also wired through the parser as part of this Phase 10 sub-track.)*
-13. **`os`** — OS-level surfaces that aren't part of the game runtime proper. *(Phase 10 session 5b ships **`os.clipboard.read() -> string`** and **`os.clipboard.write(text)`** via the arboard crate. Both fail silently — read returns the empty string, write drops — when no clipboard daemon is reachable (headless CI, sandboxed runtimes) so games stay portable without forcing scripts to wrap calls in error handling that doesn't yet exist.)*
-14. **`settings`** — runtime-mutable configuration with persistence. *(Phase 10 session 9 ships **`settings.set(key, value)`** / **`settings.get(key)`** (returns nil if missing) / **`settings.has(key) -> bool`** / **`settings.set_default(key, value)`** (insert only when absent — for first-launch defaults that don't clobber loaded values) / **`settings.save(path)`** + **`settings.load(path)`** (round-trip via the v0.2 save layer; same JSON format as `save_to`/`load_from`) / **`settings.try_load(path) -> bool`** (returns false on missing file instead of erroring — the canonical bootstrap pairs `set_default(...)` with `try_load(...)` so first launch and subsequent launches work the same way). Data lives under `settings.data` so scripts can also introspect via `settings.data.<field>` directly.)*
-15. **`lang`** — localization scaffolding. *(Phase 10 session 10 ships **`lang.set_locale(name)`** / **`lang.locale() -> string`** (current active) / **`lang.load(name, path)`** (load a JSON bundle of `{key: string, ...}` and register it under `name`) / **`lang.t(key) -> string`** (look up in the active bundle; returns the key itself as fallback so missing translations don't crash the menu) / **`lang.tf(key, args) -> string`** (positional `{0}/{1}/...` substitution from a list — chosen over named `{name}` because Twe has no object-literal syntax). Bundles share the JSON path with the save / settings layer; ICU-style pluralization is a v1.x ergonomics layer.)*
-16. **dynamic input lookup** — `key_held(name) -> bool` and `key_pressed(name) -> bool`. *(Phase 10 session 11. Walk the `key` / `key_press` ambient and read the named field, returning false for unknown names. The static `key.<name>` / `key_press.<name>` accessors stay canonical when the name is a literal; these are for cases where the name comes from a `settings.get("keys.move_right")` lookup driving rebindable controls.)*
+### 7.1 Core
+
+```twe
+print("hello {name}")        # interpolated string to stdout
+assert(hp >= 0, "negative hp")  # panics with message when false
+```
+
+`print` accepts any value; interpolation `{expr}` converts to string automatically.
+
+### 7.2 Math
+
+All functions available as `math.<name>` and as bare names inside `visual` blocks.
+
+```twe
+math.abs(-3)           # 3
+math.sqrt(9.0)         # 3.0
+math.floor(3.7)        # 3
+math.ceil(3.1)         # 4
+math.min(2, 5)         # 2
+math.max(2, 5)         # 5
+math.sin(math.pi)      # ~0
+math.cos(0.0)          # 1.0
+math.noise((x, y))     # deterministic 2D value noise, range [-1, 1]
+math.smoothstep(0.0, 1.0, t)  # smooth 0→1 curve
+math.mix(a, b, t)      # linear interpolation; works on numbers or same-shape tuples
+math.clamp(v, lo, hi)  # clamp v to [lo, hi]
+math.pi                # 3.14159…
+```
+
+### 7.3 Random
+
+```twe
+random.float()              # float in [0, 1)
+random.int(0..<10)          # int in [0, 9]
+random.in_circle(radius: 40.0)    # (x, y) tuple uniformly in a circle
+random.choice(["a", "b", "c"])    # random element from a list
+```
+
+### 7.4 Color
+
+Named constants: `color.red`, `color.green`, `color.blue`, `color.white`, `color.black`, `color.gray`, `color.yellow`, `color.cyan`, `color.magenta`, `color.orange`, `color.purple`.
+
+```twe
+color.from_hex("#ff8800")        # parse #rrggbb or #rrggbbaa
+color.hsv(200.0, 0.8, 1.0)      # hue in degrees, saturation/value 0–1
+color.lerp(color.red, color.blue, 0.5)        # perceptual blend
+color.lerp_linear(color.red, color.blue, 0.5) # gamma-correct blend
+color.to_linear(color.red)       # sRGB → linear
+color.to_srgb(c)                 # linear → sRGB
+```
+
+### 7.5 Drawing  *(render context required)*
+
+```twe
+rect(at: (10, 20), size: (100, 50), color: color.red)
+circle(at: (320, 240), radius: 30.0, color: color.blue)
+circle_outline(at: (320, 240), radius: 30.0, thickness: 2.0, color: color.cyan)
+line(from: (0, 0), to: (100, 100), width: 2.0, color: color.white)
+text("Score: {score}", at: (10, 10), size: 24, color: color.white)
+```
+
+Sprites and fonts (assets must be loaded first — see §7.9):
+
+```twe
+sprite(handle, at: (x, y))
+sprite(handle, at: (x, y), size: (w, h))   # scaled
+sprite_frame(atlas, at: (x, y), frame: 3)  # atlas cell, native size
+sprite_frame_at(atlas, at: (x, y), size: (w, h), frame: 3)
+text_with_font("Hi", at: (x, y), size: 18, color: color.white, font: my_font)
+```
+
+### 7.6 Input
+
+**Keyboard** — `key.*` is held (true while down); `key_press.*` is edge-triggered (true for one frame on press):
+
+```twe
+on update(dt):
+    if key.w:          # held
+        move_up()
+    if key_press.space:   # one frame
+        jump()
+```
+
+Dynamic name lookup (for rebindable controls):
+
+```twe
+if key_held(settings.get("keys.up")):   # string key name
+    dy -= 1.0
+if key_pressed(settings.get("keys.fire")):
+    shoot()
+```
+
+**Mouse:**
+
+```twe
+let x = mouse.x
+let y = mouse.y
+if mouse_press.left:    # click this frame
+    fire()
+if mouse_held.left:     # held
+    drag()
+let scroll = mouse.wheel
+```
+
+**Gamepad:**
+
+```twe
+if gamepad.connected:
+    let lx = gamepad_axis.lx   # [-1, 1]
+    let ly = gamepad_axis.ly
+    if gamepad.a:              # held
+        jump()
+    if gamepad_press.start:    # edge-triggered
+        pause(true)
+```
+
+Available buttons: `a b x y lb rb lt rt start select dup ddown dleft dright`. Axes: `lx ly rx ry lt rt`.
+
+### 7.7 Entities
+
+```twe
+spawn Slime at (100.0, 200.0)          # creates a new instance
+despawn slime                           # removes it (fields still valid this frame)
+
+for s in entities.of(Slime):           # iterate live instances
+    let d = s.pos.x - player_x
+
+let count = entities.count(Slime)      # faster than iterating just to count
+```
+
+Death hooks fire whenever any instance of a class is despawned:
+
+```twe
+on Slime.death(s):
+    spawn Spark at (s.pos.x, s.pos.y)
+```
+
+### 7.8 Camera
+
+**2D** (`twec play`):
+
+```twe
+camera.pos = (player_x, player_y)  # world-coord at screen center
+camera.zoom = 1.5                  # >1 zooms in
+camera.follow((player_x, player_y), 0.1)  # exponential smooth
+camera.shake(8.0, 0.3)            # amplitude px, duration s
+camera.reset()                    # snap to defaults
+```
+
+**3D** (`twec play3d`): `camera.eye`, `camera.target`, `camera.up` are 3-tuples.
+
+### 7.9 Assets
+
+```twe
+let img   = load("assets/hero.png")
+let atlas = load_atlas("assets/walk.png", (4, 1))  # (cols, rows)
+let font  = load_font("assets/pixel.ttf")
+let sfx   = sound.load("assets/hit.wav")
+```
+
+All loads are eager path-checked, lazy decoded. Errors on missing files fail fast.
+
+### 7.10 Audio
+
+```twe
+sound.play(sfx)                     # play once
+sound.play_at(sfx, (x, y))         # positional (attenuates with distance)
+sound.volume(sfx, 0.5)             # set volume 0–1
+```
+
+WAV and Ogg Vorbis supported.
+
+### 7.11 Save / load
+
+```twe
+save_to("save.json", { wave: wave_index, score: kills })
+let data = load_from("save.json")
+let wave = data.wave
+```
+
+`save_to` serializes any Twe value to JSON. `load_from` returns a record. Path is relative to the project directory at runtime; inside a built `.exe` the save file lands in the OS data directory.
+
+### 7.12 Settings (persistent config)
+
+```twe
+settings.set_default("keys.right", "right")   # only sets if absent
+settings.try_load("game.save")                # silently ok if missing
+
+settings.set("vol", 0.8)
+let v = settings.get("vol")       # nil if not set
+let ok = settings.has("vol")      # bool
+
+settings.save("game.save")
+settings.load("game.save")        # errors if missing — use try_load for optional
+```
+
+### 7.13 UI widgets  *(render context required)*
+
+All widgets are immediate-mode: they draw AND hit-test in the same call.
+
+```twe
+if button(at: (160, 200), size: (320, 50), label: "Start"):
+    -> playing
+
+label(at: (10, 10), size: (200, 30), text: "Score: {score}")
+progress_bar(at: (10, 40), size: (200, 16), value: hp / max_hp)
+
+var vol = slider(at: (10, 80), size: (200, 20), value: vol, min: 0.0, max: 1.0)
+var muted = checkbox(at: (10, 110), size: (20, 20), value: muted)
+var lang_idx = dropdown(at: (10, 140), size: (200, 30), options: ["EN","FR","JP"], selected: lang_idx)
+var name = text_input(at: (10, 180), size: (200, 30), value: name)
+var binding = key_input(at: (10, 220), size: (200, 30), value: binding)
+```
+
+**Layout helpers** — return `{ at, size }` so you can pipe into widgets:
+
+```twe
+let slot = grid(at: (20, 100), size: (600, 400), cols: 3, rows: 2, index: i, gap: 8)
+if button(at: slot.at, size: slot.size, label: items[i]):
+    select(i)
+```
+
+Also: `stack(...)`, `flex(...)`, `panel(at:, size:)`, `scroll(at:, size:, content_height:)`.
+
+### 7.14 Pause
+
+```twe
+pause(true)          # halts every-clocks + entity ticks; render stays live
+pause(false)
+let p = is_paused()
+
+auto_pause_when_idle(30.0)   # pause after 30s with no input
+auto_pause_on_blur(true)     # pause when window loses focus (Windows; macOS/Linux stubbed)
+```
+
+### 7.15 Localization
+
+```twe
+lang.load("en", "assets/en.json")   # { "start": "Start Game", ... }
+lang.load("fr", "assets/fr.json")
+lang.set_locale("fr")
+
+text(lang.t("start"), at: (200, 200), size: 24, color: color.white)
+text(lang.tf("score", [kills]), at: (10, 10), size: 18, color: color.white)
+```
+
+`lang.t(key)` returns the key itself if the locale is missing the entry.
+
+### 7.16 OS / clipboard
+
+```twe
+let text = os.clipboard.read()   # empty string if unavailable
+os.clipboard.write("copied!")
+```
+
+### 7.17 Screenshot
+
+```twe
+screenshot("screenshot.png")   # saves current frame; also bound to F12 in twec play
+```
+
+### 7.18 Steam  *(optional — requires `--features steam` build)*
+
+Available when the game is launched via Steam (Steam client running + `steam_appid.txt` present). All calls are no-ops in non-Steam builds or when Steam is not running.
+
+```twe
+achievement.unlock("FIRST_KILL")     # unlocks a Steam achievement by API name
+stat.set("KILLS_TOTAL", kills)       # set an integer or float stat
+stat.get("KILLS_TOTAL")              # returns the current value (0 if unset)
+cloud.save("slot1.json", data_str)   # write to Steam Cloud (string payload)
+cloud.load("slot1.json")             # returns string or nil if not found
+```
+
+Stats are committed to Steam servers automatically on clean exit. Call `stat.commit()` to flush mid-session.
 
 ---
 
