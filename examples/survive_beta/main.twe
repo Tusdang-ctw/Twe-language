@@ -44,6 +44,7 @@ var player_max_hp = 100.0
 # doesn't drain the bar in one frame. Refreshed on every successful
 # damage event.
 var player_iframes = 0.0
+var kills = 0
 
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
@@ -95,6 +96,72 @@ entity Slime:
         )
 
 
+# ---------------------------------------------------------------
+# Projectile — the auto-attack weapon. Spawns at the player,
+# self-targets the nearest slime on its first update tick, and
+# travels in a straight line. The target-on-spawn-frame pattern
+# avoids the "homing" feel of a per-frame retarget — once a
+# bolt is in flight it commits, which preserves player skill
+# expression (positioning matters).
+# ---------------------------------------------------------------
+entity Projectile:
+    var pos = (0.0, 0.0)
+    var vx = 0.0
+    var vy = 0.0
+    var target_set = false
+    var lifetime = 1.5
+
+    function update(dt):
+        if not target_set:
+            target_set = true
+            var found = false
+            var best_dx = 0.0
+            var best_dy = 0.0
+            var best_d2 = 0.0
+            for slime in entities.of(Slime):
+                let dx = slime.pos.x - pos.x
+                let dy = slime.pos.y - pos.y
+                let d2 = dx * dx + dy * dy
+                if not found or d2 < best_d2:
+                    found = true
+                    best_d2 = d2
+                    best_dx = dx
+                    best_dy = dy
+            if found:
+                let mag = math.sqrt(best_d2)
+                vx = best_dx / mag * 600.0
+                vy = best_dy / mag * 600.0
+            else:
+                # No targets in flight — drift upward and expire.
+                vy = -600.0
+
+        pos = (pos.x + vx * dt, pos.y + vy * dt)
+        lifetime -= dt
+        if lifetime <= 0.0:
+            despawn self
+            return
+
+        # Hit check. 14px overlap radius matches survive.twe's
+        # bullet shape — generous enough that fast projectiles
+        # don't tunnel through a slime at 600 u/s × 16ms = 9.6 u
+        # per frame.
+        for slime in entities.of(Slime):
+            let dx = slime.pos.x - pos.x
+            let dy = slime.pos.y - pos.y
+            if dx * dx + dy * dy < 14.0 * 14.0:
+                despawn slime
+                despawn self
+                kills += 1
+                return
+
+    function render():
+        rect(
+            at: (pos.x - camera_x - 3, pos.y - camera_y - 3),
+            size: (6, 6),
+            color: color.yellow
+        )
+
+
 scene SurviveBeta:
     var elapsed = 0.0
     # Wave system. `wave_index` rolls every 30s; pacing scales with
@@ -104,6 +171,11 @@ scene SurviveBeta:
     var wave_index = 0
     var wave_timer = 0.0
     var spawn_interval = 1.5
+    # Auto-attack pacing. v1 fires one bolt every 0.6s — sessions
+    # 5 + 6 will let the player upgrade `attack_interval` (and
+    # eventually `bolts_per_attack`, multiple weapons, etc.).
+    var attack_timer = 0.0
+    var attack_interval = 0.6
 
     initial: playing
 
@@ -172,6 +244,14 @@ scene SurviveBeta:
                     if sy > arena_h:
                         sy = arena_h
                     spawn Slime at (sx, sy)
+
+            # ---- Auto-attack. The bolt picks its own target on
+            # spawn-frame (see Projectile.update); we just fire
+            # at the cadence and let the projectile aim itself. ----
+            attack_timer += dt
+            if attack_timer >= attack_interval:
+                attack_timer = 0.0
+                spawn Projectile at (player_x, player_y)
 
             # ---- Movement (keyboard + gamepad). ----
             let speed = player_speed * dt
@@ -305,6 +385,7 @@ scene SurviveBeta:
             let hp_w = 200.0 * (player_hp / player_max_hp)
             rect(at: (12, 52), size: (hp_w, 12), color: color.red)
             text("HP {player_hp}/{player_max_hp}", at: (10, 70), size: 12, color: color.white)
+            text("Kills: {kills}", at: (540, 44), size: 16, color: color.yellow)
 
     state game_over:
         on render():
@@ -329,17 +410,22 @@ scene SurviveBeta:
 
         every 16ms:
             if key_pressed("r") or gamepad_press.start:
-                # Reset to opening conditions. Slimes from the prior
-                # run are still alive; clear them so the player
-                # doesn't restart inside a swarm.
+                # Reset to opening conditions. Slimes + projectiles
+                # from the prior run are still alive; clear them
+                # so the player doesn't restart inside a swarm or
+                # see ghost-bolts streak past.
                 for slime in entities.of(Slime):
                     despawn slime
+                for proj in entities.of(Projectile):
+                    despawn proj
                 player_x = 1200.0
                 player_y = 900.0
                 player_hp = player_max_hp
                 player_iframes = 0.0
                 elapsed = 0.0
+                kills = 0
                 wave_index = 0
                 wave_timer = 0.0
                 spawn_interval = 1.5
+                attack_timer = 0.0
                 -> playing
