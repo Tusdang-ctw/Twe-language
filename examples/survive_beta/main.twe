@@ -72,6 +72,15 @@ var pick_c = 2
 # rather than maintaining their own per-instance accumulator
 # (a global accumulator keeps multi-blade orbits in lockstep).
 var weapon_time = 0.0
+# Best-wave / best-time tracker across game-overs in this session.
+# Persists for the process lifetime; saving across launches would
+# need `settings.save("examples/survive_beta/survive_beta.save")`
+# in the death handler — kept lightweight in v1.
+var best_wave = 1
+var best_time = 0.0
+# Boss spawn cadence. Counts up every wave roll; on hitting 5,
+# spawns one boss and resets. Wave 5 is the first boss wave.
+var boss_wave_counter = 0
 
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
@@ -325,6 +334,61 @@ entity SkeletonBolt:
 
 
 # ---------------------------------------------------------------
+# Boss — periodic high-HP enemy. First boss spawns when the
+# wave_index rolls to a multiple of 5 (wave 5 = first boss wave).
+# Unlike other enemies, the boss has multi-hit HP — weapons
+# subtract from `hp` rather than 1-shot-despawn. Renders an HP
+# bar above its head while alive. Drops 10 XP gems on death.
+# ---------------------------------------------------------------
+entity Boss:
+    var pos = (0.0, 0.0)
+    var hp = 50.0
+    var max_hp = 50.0
+    var damage = 20.0
+    var move_speed = 40.0
+
+    function update(dt):
+        if in_levelup:
+            return
+        let dx = player_x - pos.x
+        let dy = player_y - pos.y
+        let mag2 = dx * dx + dy * dy
+        if mag2 < 1.0:
+            return
+        let mag = math.sqrt(mag2)
+        pos = (
+            pos.x + dx / mag * move_speed * dt,
+            pos.y + dy / mag * move_speed * dt,
+        )
+        # 36px hit radius (boss half-extent 24 + player half 12).
+        if mag2 < 36.0 * 36.0:
+            if player_iframes <= 0.0:
+                player_hp -= damage
+                player_iframes = 0.6
+
+    function render():
+        # 48×48 orange body — bigger and warmer than the normal
+        # enemy palette so it's instantly readable as a threat.
+        rect(
+            at: (pos.x - camera_x - 24, pos.y - camera_y - 24),
+            size: (48, 48),
+            color: color.orange,
+        )
+        # HP bar above the boss. 48px wide, scaled to current HP.
+        rect(
+            at: (pos.x - camera_x - 24, pos.y - camera_y - 36),
+            size: (48, 4),
+            color: color.gray,
+        )
+        let bar_w = 48.0 * (hp / max_hp)
+        rect(
+            at: (pos.x - camera_x - 24, pos.y - camera_y - 36),
+            size: (bar_w, 4),
+            color: color.red,
+        )
+
+
+# ---------------------------------------------------------------
 # Projectile — the auto-attack weapon. Spawns at the player,
 # self-targets the nearest slime on its first update tick, and
 # travels in a straight line. The target-on-spawn-frame pattern
@@ -398,6 +462,19 @@ entity Projectile:
                 despawn self
                 kills += 1
                 return
+        # Boss collision uses a larger combined radius (boss
+        # half-extent 24 + projectile half ~3 + slack ~5 ≈ 32).
+        # Subtracts 5 damage; the boss only despawns when HP hits 0.
+        for boss in entities.of(Boss):
+            let dx = boss.pos.x - pos.x
+            let dy = boss.pos.y - pos.y
+            if dx * dx + dy * dy < 32.0 * 32.0:
+                boss.hp -= 5.0
+                if boss.hp <= 0.0:
+                    despawn boss
+                    kills += 1
+                despawn self
+                return
 
     function render():
         rect(
@@ -452,6 +529,19 @@ entity Blade:
             if dx * dx + dy * dy < 18.0 * 18.0:
                 despawn sk
                 kills += 1
+        # Boss takes 2 dmg per overlap-frame. With the blade
+        # sweeping the boss for ~10-15 frames per orbit, that's
+        # 20-30 dmg per pass — a 4-blade build clears a 50hp boss
+        # in two orbits. Tunable in session 14 if it lands too
+        # generous in playtest.
+        for boss in entities.of(Boss):
+            let dx = boss.pos.x - pos.x
+            let dy = boss.pos.y - pos.y
+            if dx * dx + dy * dy < 32.0 * 32.0:
+                boss.hp -= 2.0
+                if boss.hp <= 0.0:
+                    despawn boss
+                    kills += 1
 
     function render():
         rect(
@@ -497,6 +587,18 @@ entity Aura:
                 if dx * dx + dy * dy < radius * radius:
                     despawn sk
                     kills += 1
+            # Aura ticks the boss for 6 dmg per pulse. With a
+            # 0.5s default cadence the boss takes ~4-5s in the
+            # aura to die from this weapon alone — rewards staying
+            # in melee but doesn't trivialize.
+            for boss in entities.of(Boss):
+                let dx = boss.pos.x - player_x
+                let dy = boss.pos.y - player_y
+                if dx * dx + dy * dy < radius * radius:
+                    boss.hp -= 6.0
+                    if boss.hp <= 0.0:
+                        despawn boss
+                        kills += 1
 
     function render():
         # Cyan ring around the player. 32-segment circle would
@@ -592,6 +694,14 @@ on Skeleton.death(sk):
     # Bonus drop — second gem at the same spot for net +2 XP.
     spawn XPGem at sk.pos
 
+on Boss.death(b):
+    # Boss kill is a level-up moment in itself: 10 gems → instant
+    # +10 XP, which guarantees at least one level-up at typical
+    # XP curves. Players land in the upgrade modal as the reward
+    # beat for the boss fight.
+    for i in 0..<10:
+        spawn XPGem at b.pos
+
 
 scene SurviveBeta:
     var elapsed = 0.0
@@ -639,6 +749,17 @@ scene SurviveBeta:
                 spawn_interval = 1.5 - wave_index * 0.15
                 if spawn_interval < 0.4:
                     spawn_interval = 0.4
+                # Boss every 5 waves. Counter increments each wave
+                # roll; on hitting 5, spawn one boss at the top of
+                # the camera viewport and reset. First boss arrives
+                # at wave 5 (150s), then waves 10, 15, 20…
+                boss_wave_counter += 1
+                if boss_wave_counter >= 5:
+                    boss_wave_counter = 0
+                    spawn Boss at (
+                        camera_x + view_w * 0.5,
+                        camera_y - 60.0,
+                    )
 
             # Spawn burst.
             wave_timer += dt
@@ -758,8 +879,15 @@ scene SurviveBeta:
 
             # Game-over transition. HP is replenished + slimes
             # cleared in the `game_over` -> `playing` restart hook
-            # so leaving this branch terminal is fine.
+            # so leaving this branch terminal is fine. The best-
+            # wave / best-time tracker takes a snapshot here so
+            # the next-run delta in the overlay is honest.
             if player_hp <= 0.0:
+                let display_wave = wave_index + 1
+                if display_wave > best_wave:
+                    best_wave = display_wave
+                if elapsed > best_time:
+                    best_time = elapsed
                 -> game_over
 
             # ---- Level-up detection. XP threshold met → roll
@@ -909,23 +1037,51 @@ scene SurviveBeta:
 
     state game_over:
         on render():
+            # Dim the background so the run summary reads cleanly
+            # over whatever in-flight enemies still tick out.
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
             text(
                 "Game Over",
-                at: (260, 200),
+                at: (240, 80),
                 size: 36,
-                color: color.red
+                color: color.red,
+            )
+            let display_wave = wave_index + 1
+            text(
+                "Wave reached: {display_wave}",
+                at: (220, 160),
+                size: 18,
+                color: color.white,
             )
             text(
                 "Survived: {elapsed}s",
-                at: (240, 250),
-                size: 20,
-                color: color.white
+                at: (220, 190),
+                size: 18,
+                color: color.white,
             )
             text(
-                "Press R to restart",
-                at: (220, 320),
+                "Kills: {kills}",
+                at: (220, 220),
+                size: 18,
+                color: color.yellow,
+            )
+            text(
+                "Level: {level}",
+                at: (220, 250),
+                size: 18,
+                color: color.cyan,
+            )
+            text(
+                "Best wave: {best_wave}   Best time: {best_time}s",
+                at: (160, 310),
                 size: 16,
-                color: color.gray
+                color: color.gray,
+            )
+            text(
+                "Press R or Start to restart",
+                at: (180, 380),
+                size: 16,
+                color: color.gray,
             )
 
         every 16ms:
@@ -941,6 +1097,8 @@ scene SurviveBeta:
                     despawn bat
                 for sk in entities.of(Skeleton):
                     despawn sk
+                for boss in entities.of(Boss):
+                    despawn boss
                 for bolt in entities.of(SkeletonBolt):
                     despawn bolt
                 for proj in entities.of(Projectile):
@@ -970,4 +1128,5 @@ scene SurviveBeta:
                 wave_timer = 0.0
                 spawn_interval = 1.5
                 attack_timer = 0.0
+                boss_wave_counter = 0
                 -> playing
