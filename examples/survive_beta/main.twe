@@ -45,6 +45,13 @@ var player_max_hp = 100.0
 # damage event.
 var player_iframes = 0.0
 var kills = 0
+# XP system. Each slime that dies spawns one XPGem worth 1 point.
+# The gem flies toward the player when within `magnetic_radius` and
+# is collected on overlap. Session 6 reads `xp` against
+# `xp_to_next_level` to trigger the level-up modal.
+var xp = 0
+var xp_to_next_level = 5
+var magnetic_radius = 100.0
 
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
@@ -160,6 +167,57 @@ entity Projectile:
             size: (6, 6),
             color: color.yellow
         )
+
+
+# ---------------------------------------------------------------
+# XPGem — drops on slime death. Pulls toward the player within
+# `magnetic_radius` and collects on overlap. The pickup-on-touch
+# pattern is genre-canonical: the player is incentivised to weave
+# into kill clusters rather than play purely defensively.
+# ---------------------------------------------------------------
+entity XPGem:
+    var pos = (0.0, 0.0)
+    var value = 1
+
+    function update(dt):
+        let dx = player_x - pos.x
+        let dy = player_y - pos.y
+        let d2 = dx * dx + dy * dy
+        # Pickup at 16px overlap.
+        if d2 < 16.0 * 16.0:
+            xp += value
+            despawn self
+            return
+        # Magnetic pull within `magnetic_radius`. Pull speed
+        # ramps with proximity — gems near the player snap in,
+        # distant ones drift slowly. The non-linear pull is what
+        # makes XP collection feel responsive.
+        if d2 < magnetic_radius * magnetic_radius:
+            let d = math.sqrt(d2)
+            let pull = 360.0
+            pos = (
+                pos.x + dx / d * pull * dt,
+                pos.y + dy / d * pull * dt,
+            )
+
+    function render():
+        # Bright magenta diamond so it reads against cyan slimes
+        # and yellow projectiles. 8×8 — small enough not to
+        # crowd the screen at high kill counts.
+        rect(
+            at: (pos.x - camera_x - 4, pos.y - camera_y - 4),
+            size: (8, 8),
+            color: color.magenta
+        )
+
+
+# Slime death → XPGem drop. Phase 9 session 7b's class-event hook
+# fires when an instance of Slime is despawned (from anywhere:
+# Projectile.update, the game_over restart cleanup, etc.). The
+# restart path also clears the XPGem pool so cleanup-spawned
+# gems don't pollute the next run.
+on Slime.death(s):
+    spawn XPGem at s.pos
 
 
 scene SurviveBeta:
@@ -386,6 +444,18 @@ scene SurviveBeta:
             rect(at: (12, 52), size: (hp_w, 12), color: color.red)
             text("HP {player_hp}/{player_max_hp}", at: (10, 70), size: 12, color: color.white)
             text("Kills: {kills}", at: (540, 44), size: 16, color: color.yellow)
+            # XP bar: along the bottom edge, 600px wide, scaled to
+            # current XP / requirement. Magenta to match the gem
+            # color so the link is visible.
+            rect(at: (20, 460), size: (604, 12), color: color.gray)
+            let xp_w = 600.0 * (xp / xp_to_next_level)
+            rect(at: (22, 462), size: (xp_w, 8), color: color.magenta)
+            text(
+                "XP {xp} / {xp_to_next_level}",
+                at: (260, 444),
+                size: 12,
+                color: color.white
+            )
 
     state game_over:
         on render():
@@ -411,19 +481,24 @@ scene SurviveBeta:
         every 16ms:
             if key_pressed("r") or gamepad_press.start:
                 # Reset to opening conditions. Slimes + projectiles
-                # from the prior run are still alive; clear them
-                # so the player doesn't restart inside a swarm or
-                # see ghost-bolts streak past.
+                # + gems from the prior run are still alive; clear
+                # them so the player doesn't restart inside a swarm,
+                # see ghost-bolts streak past, or accidentally pick
+                # up XP from the previous run.
                 for slime in entities.of(Slime):
                     despawn slime
                 for proj in entities.of(Projectile):
                     despawn proj
+                for gem in entities.of(XPGem):
+                    despawn gem
                 player_x = 1200.0
                 player_y = 900.0
                 player_hp = player_max_hp
                 player_iframes = 0.0
                 elapsed = 0.0
                 kills = 0
+                xp = 0
+                xp_to_next_level = 5
                 wave_index = 0
                 wave_timer = 0.0
                 spawn_interval = 1.5
