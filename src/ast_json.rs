@@ -128,6 +128,7 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             name,
             parent,
             members,
+            deprecation,
             line,
             col,
         } => {
@@ -148,6 +149,7 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
                 write_member(s, m);
             }
             s.push(']');
+            write_deprecation(s, deprecation);
             write_pos(s, *line, *col);
             s.push('}');
         }
@@ -156,6 +158,7 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             params,
             ret,
             body,
+            deprecation,
             line,
             col,
         } => {
@@ -182,6 +185,7 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             }
             s.push_str(",\"body\":");
             write_block(s, body);
+            write_deprecation(s, deprecation);
             write_pos(s, *line, *col);
             s.push('}');
         }
@@ -770,6 +774,24 @@ fn write_pos(s: &mut String, line: u32, col: u32) {
     s.push_str(&line.to_string());
     s.push_str(",\"col\":");
     s.push_str(&col.to_string());
+}
+
+/// Phase 13 session 9: emit the optional `@deprecated` annotation
+/// onto a Stmt::Decl / Stmt::FunctionDecl JSON object. Omitted
+/// when None so older AST consumers see the same shape.
+fn write_deprecation(s: &mut String, dep: &Option<crate::ast::Deprecation>) {
+    if let Some(d) = dep {
+        s.push_str(",\"deprecation\":{\"since\":");
+        match &d.since {
+            Some(v) => write_str_value(s, v),
+            None => s.push_str("null"),
+        }
+        s.push_str(",\"line\":");
+        s.push_str(&d.line.to_string());
+        s.push_str(",\"col\":");
+        s.push_str(&d.col.to_string());
+        s.push('}');
+    }
 }
 
 fn write_str_value(s: &mut String, value: &str) {

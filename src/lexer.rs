@@ -103,6 +103,12 @@ pub enum TokenKind {
     RBrace,
     DotDot,
     DotDotLt,
+    /// `@` — annotation marker. Phase 13 session 9 ships
+    /// `@deprecated("since vX.Y")` on the line before a top-level
+    /// declaration; the token is general enough to host other
+    /// annotations (`@inline`, `@nodiscard`) in future phases
+    /// without burning more reserved characters.
+    At,
     Newline,
     Indent,
     Dedent,
@@ -339,6 +345,20 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     out.push(Token {
                         kind: TokenKind::Colon,
+                        line,
+                        col,
+                    });
+                    content_since_newline = true;
+                }
+                b'@' => {
+                    // Phase 13 session 9: annotation marker.
+                    // `@deprecated("since vX.Y")` precedes a
+                    // top-level declaration. The token is bare —
+                    // the annotation's name + args are parsed as
+                    // an identifier + `(...)` by the parser.
+                    self.bump();
+                    out.push(Token {
+                        kind: TokenKind::At,
                         line,
                         col,
                     });

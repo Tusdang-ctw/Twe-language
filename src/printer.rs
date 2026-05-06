@@ -56,6 +56,34 @@ fn takes_blank_neighbor(stmt: &Stmt) -> bool {
 
 const INDENT: &str = "    "; // four spaces; matches every existing program
 
+/// Phase 13 session 9: emit `@deprecated("since vX.Y")` on the
+/// line before its annotated declaration. Empty `since` falls
+/// back to the bare `@deprecated` form so input → AST → output is
+/// stable for both shapes.
+fn print_deprecation(
+    out: &mut String,
+    depth: usize,
+    dep: &Option<crate::ast::Deprecation>,
+) {
+    let Some(dep) = dep else { return };
+    push_indent(out, depth);
+    out.push_str("@deprecated");
+    if let Some(since) = &dep.since {
+        out.push('(');
+        out.push('"');
+        for ch in since.chars() {
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                _ => out.push(ch),
+            }
+        }
+        out.push('"');
+        out.push(')');
+    }
+    out.push('\n');
+}
+
 fn push_indent(out: &mut String, depth: usize) {
     for _ in 0..depth {
         out.push_str(INDENT);
@@ -144,8 +172,10 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             name,
             parent,
             members,
+            deprecation,
             ..
         } => {
+            print_deprecation(out, depth, deprecation);
             push_indent(out, depth);
             out.push_str(kind.as_str());
             out.push(' ');
@@ -162,8 +192,10 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             params,
             ret,
             body,
+            deprecation,
             ..
         } => {
+            print_deprecation(out, depth, deprecation);
             push_indent(out, depth);
             out.push_str("function ");
             out.push_str(name);

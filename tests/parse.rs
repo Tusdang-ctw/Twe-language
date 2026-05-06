@@ -135,3 +135,87 @@ fn import_round_trips_through_fmt() {
     let printed = twec::printer::print_program(&program);
     assert_eq!(printed, src, "round-trip: got {printed:?}, want {src:?}");
 }
+
+#[test]
+fn parses_deprecated_on_function_decl() {
+    // Phase 13 session 9: `@deprecated("since v0.7")` lands on the
+    // FunctionDecl's `deprecation` field.
+    let src = "@deprecated(\"since v0.7\")\nfunction old_thing():\n    return 1\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    match &program.stmts[0] {
+        twec::ast::Stmt::FunctionDecl { deprecation, .. } => {
+            let dep = deprecation.as_ref().expect("deprecation present");
+            assert_eq!(dep.since.as_deref(), Some("since v0.7"));
+        }
+        other => panic!("expected FunctionDecl, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_deprecated_on_entity_decl() {
+    let src = "@deprecated(\"since v0.7\")\nentity OldHero:\n    hp: int = 100\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    match &program.stmts[0] {
+        twec::ast::Stmt::Decl { deprecation, .. } => {
+            let dep = deprecation.as_ref().expect("deprecation present");
+            assert_eq!(dep.since.as_deref(), Some("since v0.7"));
+        }
+        other => panic!("expected Decl, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_bare_deprecated_without_arg() {
+    // Bare `@deprecated` (no argument list) is also accepted — the
+    // `since` field stays None so `--warn-deprecated` (session 10)
+    // still triggers, just with a less-informative message.
+    let src = "@deprecated\nfunction f():\n    return 1\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    match &program.stmts[0] {
+        twec::ast::Stmt::FunctionDecl { deprecation, .. } => {
+            let dep = deprecation.as_ref().expect("deprecation present");
+            assert!(dep.since.is_none());
+        }
+        other => panic!("expected FunctionDecl, got {other:?}"),
+    }
+}
+
+#[test]
+fn deprecated_round_trips_through_fmt() {
+    // Both forms (with-arg and bare) survive a save / re-format
+    // cycle through the printer.
+    let src = "@deprecated(\"since v0.7\")\nfunction old_thing():\n    return 1\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    let printed = twec::printer::print_program(&program);
+    assert_eq!(printed, src);
+}
+
+#[test]
+fn rejects_unknown_annotation() {
+    let src = "@noinline\nfunction f():\n    return 1\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let err = parser::parse(&tokens).expect_err("unknown annotation");
+    assert!(
+        err.message.contains("unknown annotation `@noinline`"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_deprecated_on_let() {
+    // `@deprecated` only attaches to top-level declarations; a
+    // `let` after the annotation should error with a help.
+    let src = "@deprecated\nlet x = 1\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let err = parser::parse(&tokens).expect_err("must precede declaration");
+    assert!(
+        err.message.contains("must precede a function or type declaration"),
+        "got: {}",
+        err.message
+    );
+}

@@ -171,6 +171,9 @@ module.exports = grammar({
     ),
 
     function_declaration: $ => seq(
+      // Phase 13 session 9: optional `@deprecated("since vX.Y")`
+      // annotation on the line before the declaration.
+      optional(field('deprecation', $.deprecated_annotation)),
       'function',
       field('name', $.identifier),
       '(',
@@ -184,6 +187,15 @@ module.exports = grammar({
       field('body', $.block),
     ),
 
+    // Phase 13 session 9 annotation token. The optional
+    // string-literal arg documents *when* the surface was
+    // deprecated; bare `@deprecated` is also accepted.
+    deprecated_annotation: $ => seq(
+      '@', 'deprecated',
+      optional(seq('(', optional(field('since', $.string)), ')')),
+      $._newline,
+    ),
+
     // Parameter with optional `: type` annotation.
     parameter: $ => seq(
       $.identifier,
@@ -194,6 +206,8 @@ module.exports = grammar({
     // scene / particles. The body is a sequence of declaration
     // members (fields, methods, states, initial:).
     declaration: $ => seq(
+      // Phase 13 session 9: optional `@deprecated` annotation.
+      optional(field('deprecation', $.deprecated_annotation)),
       field('kind', choice(
         'entity', 'item', 'modifier', 'inventory', 'scene', 'particles',
       )),

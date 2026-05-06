@@ -3,6 +3,19 @@ pub struct Program {
     pub stmts: Vec<Stmt>,
 }
 
+/// Phase 13 session 9: `@deprecated("since vX.Y")` annotation.
+/// The optional `since` carries the version string from the
+/// argument; absent when the annotation is the bare
+/// `@deprecated` form. Attached to top-level `FunctionDecl` and
+/// `Decl` (entity / item / etc.) AST nodes; session 10 surfaces
+/// a use-site warning under `--warn-deprecated`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deprecation {
+    pub since: Option<String>,
+    pub line: u32,
+    pub col: u32,
+}
+
 /// A function parameter — name plus an optional type annotation.
 /// Non-strict mode parses the annotation but ignores it (the
 /// inferer just allocates a fresh var); strict mode unifies the
@@ -73,6 +86,10 @@ pub enum Stmt {
         name: String,
         parent: Option<String>,
         members: Vec<DeclMember>,
+        /// Phase 13 session 9: `@deprecated("since vX.Y")` on the
+        /// line before this declaration. None when no annotation
+        /// preceded it.
+        deprecation: Option<Deprecation>,
         line: u32,
         col: u32,
     },
@@ -81,6 +98,10 @@ pub enum Stmt {
         params: Vec<Param>,
         ret: Option<crate::types::Type>,
         body: Vec<Stmt>,
+        /// Phase 13 session 9: `@deprecated("since vX.Y")` on the
+        /// line before this declaration. None when no annotation
+        /// preceded it.
+        deprecation: Option<Deprecation>,
         line: u32,
         col: u32,
     },

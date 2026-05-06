@@ -1924,6 +1924,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             members,
             line,
             col,
+            ..
         } => eval_decl(env, *kind, name, parent.as_deref(), members, *line, *col),
         Stmt::Import {
             path,

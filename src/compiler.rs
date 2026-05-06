@@ -364,6 +364,7 @@ impl Compiler {
                 members,
                 line,
                 col,
+                ..
             } => {
                 self.emit_decl(*kind, name, parent.as_deref(), members, *line, *col)?;
             }

@@ -288,6 +288,7 @@ impl Inferer {
                 body,
                 line,
                 col,
+                ..
             } => {
                 // Allocate fresh vars for params + return. Register
                 // the function's type BEFORE walking the body so
@@ -686,6 +687,7 @@ impl Inferer {
                     body,
                     line,
                     col,
+                    ..
                 } => {
                     // Nested function decl — same logic as top
                     // level, isolated from the enclosing return.

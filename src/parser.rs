@@ -112,6 +112,7 @@ impl<'a> Parser<'a> {
             TokenKind::Say => return self.parse_say(),
             TokenKind::Choice => return self.parse_choice(),
             TokenKind::Import => return self.parse_import(),
+            TokenKind::At => return self.parse_annotated_stmt(),
             _ => {}
         }
         let expr = self.parse_expr()?;
@@ -349,6 +350,123 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Phase 13 session 9: parse one or more `@deprecated(...)`
+    /// annotations followed by the declaration they annotate. Only
+    /// `@deprecated` is recognised this session; future annotations
+    /// (`@inline`, `@nodiscard`) ride the same dispatch.
+    ///
+    /// Grammar:
+    ///   annotated_stmt :=
+    ///     "@" "deprecated" ("(" string_literal? ")")? newline+
+    ///     (function_decl | type_decl)
+    ///
+    /// The annotation is *attached to* the next declaration, not
+    /// itself a statement. Stray `@deprecated` with no following
+    /// declaration errors with a help that points at the canonical
+    /// shape.
+    fn parse_annotated_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let at_tok = self.bump().clone(); // `@`
+        let name = self.expect_ident("expected annotation name after `@`")?;
+        if name != "deprecated" {
+            return Err(ParseError {
+                line: at_tok.line,
+                col: at_tok.col,
+                message: format!("unknown annotation `@{name}`"),
+                help: Some(
+                    "v0.7 only recognises `@deprecated(\"since vX.Y\")` — other annotations land in later phases"
+                        .to_string(),
+                ),
+            });
+        }
+        // Optional `("string-literal")` arg list.
+        let mut since: Option<String> = None;
+        if matches!(self.peek().kind, TokenKind::LParen) {
+            self.bump(); // `(`
+            if !matches!(self.peek().kind, TokenKind::RParen) {
+                let arg_tok = self.bump().clone();
+                match arg_tok.kind {
+                    TokenKind::Str(s) => {
+                        since = Some(s);
+                    }
+                    other => {
+                        return Err(ParseError {
+                            line: arg_tok.line,
+                            col: arg_tok.col,
+                            message: format!(
+                                "expected string literal in `@deprecated(...)`, got {other:?}"
+                            ),
+                            help: Some(
+                                "use `@deprecated(\"since v0.7\")` — the argument documents when the surface was deprecated"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+            self.expect(TokenKind::RParen, "expected ')' to close `@deprecated(...)`")?;
+        }
+        // Annotation must be followed by a newline before the
+        // annotated declaration; consume it (or several) so the
+        // caller's `skip_newlines` doesn't stall on the next
+        // dispatch.
+        self.expect(TokenKind::Newline, "expected newline after annotation")?;
+        self.skip_newlines();
+        let dep = crate::ast::Deprecation {
+            since,
+            line: at_tok.line,
+            col: at_tok.col,
+        };
+        // Parse the annotated declaration. `@deprecated` only
+        // attaches to top-level declarations: function or
+        // entity/item/etc. Anything else errors with a help.
+        let inner = self.parse_stmt()?;
+        match inner {
+            Stmt::FunctionDecl {
+                name,
+                params,
+                ret,
+                body,
+                line,
+                col,
+                ..
+            } => Ok(Stmt::FunctionDecl {
+                name,
+                params,
+                ret,
+                body,
+                deprecation: Some(dep),
+                line,
+                col,
+            }),
+            Stmt::Decl {
+                kind,
+                name,
+                parent,
+                members,
+                line,
+                col,
+                ..
+            } => Ok(Stmt::Decl {
+                kind,
+                name,
+                parent,
+                members,
+                deprecation: Some(dep),
+                line,
+                col,
+            }),
+            other => Err(ParseError {
+                line: at_tok.line,
+                col: at_tok.col,
+                message: "`@deprecated` must precede a function or type declaration".to_string(),
+                help: Some(format!(
+                    "got {} after the annotation; only `function`, `entity`, `item`, `modifier`, `inventory`, `scene`, `particles`, `visual` are annotatable in v0.7",
+                    stmt_kind_label(&other)
+                )),
+            }),
+        }
+    }
+
     /// `import "<path>" [as <alias>]` — Phase 13 session 1 grammar:
     ///   import_stmt := "import" string_literal ("as" identifier)?
     /// The path is a string literal so module names need not be valid
@@ -584,6 +702,7 @@ impl<'a> Parser<'a> {
             params,
             ret,
             body,
+            deprecation: None,
             line: kw.line,
             col: kw.col,
         })
@@ -659,6 +778,7 @@ impl<'a> Parser<'a> {
             name,
             parent,
             members,
+            deprecation: None,
             line: kw.line,
             col: kw.col,
         })
@@ -1858,6 +1978,36 @@ fn expr_to_target(e: &Expr) -> Option<AssignTarget> {
 /// qualified types, generic forms — so strict mode degrades
 /// gracefully (no enforcement, but no spurious error either).
 /// Phase 6 session 2.
+/// Phase 13 session 9 helper: short label for a statement kind,
+/// used in the "`@deprecated` must precede a declaration" error
+/// message so the user sees what the parser thought came next.
+fn stmt_kind_label(stmt: &Stmt) -> &'static str {
+    match stmt {
+        Stmt::Let { .. } => "let",
+        Stmt::Assign { .. } => "assignment",
+        Stmt::If { .. } => "if",
+        Stmt::While { .. } => "while",
+        Stmt::For { .. } => "for",
+        Stmt::Break { .. } => "break",
+        Stmt::Continue { .. } => "continue",
+        Stmt::Return { .. } => "return",
+        Stmt::OnUpdate { .. } => "on update",
+        Stmt::OnRender { .. } => "on render",
+        Stmt::OnClassEvent { .. } => "on Class.event",
+        Stmt::Transition { .. } => "transition",
+        Stmt::Spawn { .. } => "spawn",
+        Stmt::Despawn { .. } => "despawn",
+        Stmt::Wait { .. } => "wait",
+        Stmt::DialogueDecl { .. } => "dialogue",
+        Stmt::Say { .. } => "say",
+        Stmt::Choice { .. } => "choice",
+        Stmt::Decl { kind, .. } => kind.as_str(),
+        Stmt::FunctionDecl { .. } => "function",
+        Stmt::Import { .. } => "import",
+        Stmt::Expr(_) => "expression",
+    }
+}
+
 fn primitive_name_to_type(name: &str) -> Option<crate::types::Type> {
     use crate::types::Type;
     match name {
