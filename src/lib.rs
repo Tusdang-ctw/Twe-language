@@ -11,6 +11,7 @@ pub mod infer;
 pub mod json;
 pub mod lexer;
 pub mod lsp;
+pub mod module;
 pub mod parser;
 pub mod play;
 pub mod play3d;
