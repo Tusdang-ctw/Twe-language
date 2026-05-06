@@ -213,6 +213,22 @@ impl Inferer {
             {
                 return;
             }
+            // Phase 13 session 6: Luau-style lax-strict narrowing.
+            // Suppress the mismatch when one side is a Union (or an
+            // Optional, which is `T | Nil`) whose variants include
+            // the other side. The user's annotation acts as an
+            // implicit narrowing assertion: they're claiming the
+            // value will be that variant at runtime, and we trust
+            // the assertion the same way we'd trust an explicit
+            // `as` cast in a nominal type system. This is exactly
+            // the rule Luau's "lax mode" applies — strict reports
+            // things it can prove wrong, and a narrowing isn't
+            // proof of error.
+            if union_contains_variant(&resolved_a, &resolved_b)
+                || union_contains_variant(&resolved_b, &resolved_a)
+            {
+                return;
+            }
             let (a_str, b_str) = match &e {
                 crate::types::UnifyError::Mismatch { a, b } => (a.clone(), b.clone()),
                 crate::types::UnifyError::OccursCheck { var, ty } => {
@@ -1069,6 +1085,25 @@ fn is_scalar_type(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Float)
 }
 
+/// Phase 13 session 6: does `union` (a Union or Optional, which is
+/// `T | Nil`) contain `variant` as one of its members under
+/// `is_compatible_with`? Used by strict-lax narrowing to suppress
+/// a mismatch when the *provided* type is a wider union and the
+/// *expected* type is one of its variants — the user's annotation
+/// acts as an implicit narrowing assertion.
+///
+/// Returns false for non-Union/Optional types so callers can use
+/// it as a one-shot rescue without first pattern-matching.
+fn union_contains_variant(union: &Type, variant: &Type) -> bool {
+    match union {
+        Type::Union(parts) => parts.iter().any(|p| p.is_compatible_with(variant)),
+        Type::Optional(inner) => {
+            matches!(variant, Type::Nil) || inner.is_compatible_with(variant)
+        }
+        _ => false,
+    }
+}
+
 /// Names the stdlib registers as globals — the seed list for
 /// strict-mode identifier resolution. Mirrors the `install_*`
 /// functions in `src/stdlib.rs`. Plus `true` / `false` (parser-
@@ -1904,5 +1939,99 @@ mod tests {
         );
         let errors = strict_errors(src);
         assert!(errors.is_empty(), "non-strict should drop, got {errors:?}");
+    }
+
+    // --- Phase 13 session 6: Luau-style lax-strict narrowing ---
+
+    #[test]
+    fn union_contains_variant_recognises_union_member() {
+        let u = Type::union(vec![Type::Int, Type::Str]);
+        assert!(union_contains_variant(&u, &Type::Int));
+        assert!(union_contains_variant(&u, &Type::Str));
+        assert!(!union_contains_variant(&u, &Type::Bool));
+    }
+
+    #[test]
+    fn union_contains_variant_recognises_optional_inner_and_nil() {
+        let opt = Type::optional(Type::Int);
+        assert!(union_contains_variant(&opt, &Type::Int));
+        assert!(union_contains_variant(&opt, &Type::Nil));
+        assert!(!union_contains_variant(&opt, &Type::Str));
+    }
+
+    #[test]
+    fn union_contains_variant_returns_false_for_non_unions() {
+        // Not a Union or Optional — caller can dispatch through
+        // this without first checking the shape.
+        assert!(!union_contains_variant(&Type::Int, &Type::Int));
+        assert!(!union_contains_variant(&Type::Str, &Type::Str));
+    }
+
+    #[test]
+    fn strict_lax_accepts_narrowing_from_optional_to_inner() {
+        // Function body has paths returning int and (implicitly via
+        // an unguarded `if`) nil. The inferred return widens to a
+        // union containing both. An explicit `-> int` annotation
+        // would, under strict-strict, surface a return mismatch.
+        // Lax accepts: the user's annotation says int, and that's
+        // implicitly a runtime narrowing assertion.
+        //
+        // The simplest concrete fire: build a function whose body
+        // returns `int | nil` and annotate it `-> int`. Today the
+        // language doesn't track implicit-nil-fall-through, so we
+        // simulate the situation by returning literal nil from one
+        // branch.
+        let src = concat!(
+            "# strict\n",
+            "function f(c) -> int:\n",
+            "    if c:\n",
+            "        return 1\n",
+            "    else:\n",
+            "        return nil\n",
+        );
+        let errors = strict_errors(src);
+        assert!(
+            errors.is_empty(),
+            "lax narrowing should accept int|nil where int annotated; got {errors:?}",
+        );
+    }
+
+    #[test]
+    fn strict_lax_accepts_narrowing_from_union_to_member() {
+        // Same idea via an explicit Int|Str return; an annotation
+        // pinning Int should be accepted under lax.
+        let src = concat!(
+            "# strict\n",
+            "function f(c) -> int:\n",
+            "    if c:\n",
+            "        return 1\n",
+            "    else:\n",
+            "        return \"hi\"\n",
+        );
+        let errors = strict_errors(src);
+        assert!(
+            errors.is_empty(),
+            "lax narrowing should accept int|str where int annotated; got {errors:?}",
+        );
+    }
+
+    #[test]
+    fn strict_lax_still_rejects_unrelated_types() {
+        // If the annotation doesn't match *any* variant of the
+        // produced union, the strict error still fires. Lax only
+        // suppresses when the contract names a real variant.
+        let src = concat!(
+            "# strict\n",
+            "function f(c) -> bool:\n",
+            "    if c:\n",
+            "        return 1\n",
+            "    else:\n",
+            "        return \"hi\"\n",
+        );
+        let errors = strict_errors(src);
+        assert!(
+            !errors.is_empty(),
+            "annotation that names no variant should still error",
+        );
     }
 }
