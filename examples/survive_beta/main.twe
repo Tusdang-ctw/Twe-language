@@ -97,6 +97,13 @@ entity Slime:
 
 scene SurviveBeta:
     var elapsed = 0.0
+    # Wave system. `wave_index` rolls every 30s; pacing scales with
+    # the index (more slimes per spawn burst, shorter cadence). The
+    # display name in the HUD is `wave_index + 1` so the player sees
+    # "Wave 1" on launch, not "Wave 0".
+    var wave_index = 0
+    var wave_timer = 0.0
+    var spawn_interval = 1.5
 
     initial: playing
 
@@ -117,6 +124,54 @@ scene SurviveBeta:
             elapsed += dt
             if player_iframes > 0.0:
                 player_iframes -= dt
+
+            # ---- Wave pacing. Index rolls every 30s. Each new wave
+            # tightens the spawn cadence by 0.15s (floor 0.4s) and
+            # adds one slime to the per-burst count. Final pacing
+            # at wave 8: 0.4s cadence, 9 slimes per burst — "you
+            # are not going to live forever" feel. ----
+            let next_wave = math.floor(elapsed / 30.0)
+            if next_wave > wave_index:
+                wave_index = next_wave
+                spawn_interval = 1.5 - wave_index * 0.15
+                if spawn_interval < 0.4:
+                    spawn_interval = 0.4
+
+            # Spawn burst.
+            wave_timer += dt
+            if wave_timer >= spawn_interval:
+                wave_timer = 0.0
+                let burst_size = 1 + wave_index
+                for i in 0..<burst_size:
+                    # Pick a side of the camera viewport, drop the
+                    # slime ~40px outside it. Clamp to the arena
+                    # so a player hugging the wall doesn't see
+                    # slimes spawn in negative space.
+                    let edge = random.int(0..<4)
+                    var sx = 0.0
+                    var sy = 0.0
+                    let margin = 40.0
+                    if edge == 0:
+                        sx = camera_x + random.int(0..640)
+                        sy = camera_y - margin
+                    elif edge == 1:
+                        sx = camera_x + random.int(0..640)
+                        sy = camera_y + view_h + margin
+                    elif edge == 2:
+                        sx = camera_x - margin
+                        sy = camera_y + random.int(0..480)
+                    else:
+                        sx = camera_x + view_w + margin
+                        sy = camera_y + random.int(0..480)
+                    if sx < 0.0:
+                        sx = 0.0
+                    if sx > arena_w:
+                        sx = arena_w
+                    if sy < 0.0:
+                        sy = 0.0
+                    if sy > arena_h:
+                        sy = arena_h
+                    spawn Slime at (sx, sy)
 
             # ---- Movement (keyboard + gamepad). ----
             let speed = player_speed * dt
@@ -243,6 +298,8 @@ scene SurviveBeta:
 
             # HUD.
             text("Time: {elapsed}s", at: (10, 20), size: 18, color: color.white)
+            let display_wave = wave_index + 1
+            text("Wave {display_wave}", at: (540, 20), size: 18, color: color.yellow)
             # HP bar: 200px wide, scaled to current_hp / max_hp.
             rect(at: (10, 50), size: (204, 16), color: color.gray)
             let hp_w = 200.0 * (player_hp / player_max_hp)
@@ -282,4 +339,7 @@ scene SurviveBeta:
                 player_hp = player_max_hp
                 player_iframes = 0.0
                 elapsed = 0.0
+                wave_index = 0
+                wave_timer = 0.0
+                spawn_interval = 1.5
                 -> playing
