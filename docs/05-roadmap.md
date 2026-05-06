@@ -484,7 +484,9 @@ Session breakdown (twelve, mirroring Phase 10 / 11 cadence):
 
 ---
 
-## Phase 13 — v0.7 — Modules + type-system stability
+## Phase 13 — v0.7 — Modules + type-system stability *(closed 2026-05-06)*
+
+**Status:** closed per `docs/changes/2026-05-06-phase-13-closeout.md`. All twelve sessions shipped. All three exit criteria met.
 
 **Theme:** the public-API freeze that v0.8+ depends on.
 
@@ -593,7 +595,7 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 10 — UI + game-shell | v0.4 | M (closed 2026-05-04; 11 sessions shipped, all 3 exit criteria met) |
 | 11 — Production hardening | v0.5 | M (closed 2026-05-04; 12 sessions + same-day follow-on shipped real auto-pause-on-blur via `GetForegroundWindow` polling on Windows; macOS / Linux focus paths still stubbed) |
 | 12 — Asset pipeline + build | v0.6 | M |
-| 13 — Modules + type-system stability | v0.7 | L |
+| 13 — Modules + type-system stability | v0.7 | L (closed 2026-05-06; 12 sessions shipped, all 3 exit criteria met) |
 | 14 — Beta + dogfood | v0.8 | XL (game-dependent) |
 | 15 — Release candidate | v0.9 | M |
 | 16 — Stable | v1.0 | S (mostly non-code) |
