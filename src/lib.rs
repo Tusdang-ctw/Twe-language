@@ -23,6 +23,7 @@ pub mod stdlib;
 pub mod tagged_value;
 pub mod types;
 pub mod value;
+pub mod verify;
 pub mod visual_check;
 pub mod visual_wgsl;
 pub mod vm;
