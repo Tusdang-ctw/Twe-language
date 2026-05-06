@@ -10,6 +10,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] <project_dir> | \
      bundle [-o PATH] <project_dir> | \
      info <bundle-or-exe> | \
+     verify <file> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -67,6 +68,7 @@ pub fn run() {
         "build" => process::exit(handle_build(&args[2..])),
         "bundle" => process::exit(handle_bundle(&args[2..])),
         "info" => process::exit(handle_info(&args[2..])),
+        "verify" => process::exit(handle_verify(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -354,6 +356,65 @@ fn handle_info(args: &[String]) -> i32 {
     }
     let path = path.expect("non-empty args + no flags ⇒ at least one positional");
     crate::build::run_info(std::path::Path::new(path))
+}
+
+/// `twec verify <file>` — Phase 13 session 8. Tier 3 LLM-facing
+/// reporter. Runs the file through lex + parse + strict-lax
+/// inference (the same pipeline `# verified` activates from inside
+/// the source) and emits the canonical JSON report on stdout. Exit
+/// code is 0 when the report has no errors, 1 otherwise — suitable
+/// for an LLM self-correction loop or a CI gate.
+fn handle_verify(args: &[String]) -> i32 {
+    if args.is_empty() {
+        eprintln!("error: `twec verify` requires a file path");
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    let mut path: Option<&str> = None;
+    for a in args {
+        if a.starts_with('-') {
+            eprintln!("error: unknown flag for `verify`: {a}");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+        if path.is_some() {
+            eprintln!("error: `twec verify` takes one file path");
+            return 2;
+        }
+        path = Some(a.as_str());
+    }
+    let path = path.expect("non-empty args + no flags ⇒ at least one positional");
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            // `twec verify` always emits a JSON document so an LLM
+            // consumer doesn't have to special-case "the file
+            // didn't exist." A read failure becomes a single
+            // `lex-error`-shaped diagnostic at line 1.
+            let report = crate::verify::VerifyReport {
+                file: Some(path.to_string()),
+                strict: false,
+                verified: false,
+                diagnostics: vec![crate::verify::VerifyDiagnostic {
+                    kind: "io-error".to_string(),
+                    severity: crate::verify::Severity::Error,
+                    line: 1,
+                    col: 1,
+                    message: format!("cannot read '{path}': {e}"),
+                    help: None,
+                }],
+            };
+            println!("{}", report.to_json());
+            return 1;
+        }
+    };
+    let report = crate::verify::verify_program_with_path(&source, Some(path));
+    println!("{}", report.to_json());
+    if report.ok() {
+        0
+    } else {
+        1
+    }
 }
 
 /// `twec play_visual <file>` — Phase 9 session 11: render the

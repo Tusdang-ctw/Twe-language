@@ -253,3 +253,73 @@ fn frames_is_only_valid_for_run() {
         "stderr did not mention --frames: {err}"
     );
 }
+
+// --- Phase 13 session 8: `twec verify <file>` ---
+
+#[test]
+fn verify_subcommand_clean_program_exits_zero_with_json() {
+    // A clean `# verified` file should print a JSON document with
+    // an empty diagnostics array and exit 0. The combined contract
+    // of "stdout is JSON" + "exit 0 means OK" is what an LLM
+    // self-correction loop reads.
+    let dir = std::env::temp_dir().join(format!("twec-verify-clean-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("clean.twe");
+    std::fs::write(&file, "# verified\nlet x: int = 42\n").unwrap();
+    let output = Command::new(twec_bin())
+        .args(["verify", file.to_str().unwrap()])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
+    assert!(stdout.contains("\"tool\":\"twec-verify\""));
+    assert!(stdout.contains("\"verified\":true"));
+    assert!(stdout.contains("\"diagnostics\":[]"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_subcommand_dirty_program_exits_one_with_diagnostic() {
+    let dir = std::env::temp_dir().join(format!("twec-verify-dirty-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("dirty.twe");
+    std::fs::write(&file, "# verified\nlet x: int = \"hi\"\n").unwrap();
+    let output = Command::new(twec_bin())
+        .args(["verify", file.to_str().unwrap()])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "stdout: {stdout}");
+    assert!(stdout.contains("\"errors\":1"));
+    assert!(stdout.contains("\"kind\":\"type-error.let-annotation\""));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn verify_subcommand_missing_file_emits_io_error_diagnostic() {
+    // The error path also produces JSON — an LLM consumer doesn't
+    // need to special-case "the file didn't exist", just read the
+    // stable shape and surface the diagnostic to the user.
+    let output = Command::new(twec_bin())
+        .args(["verify", "/nonexistent/path/that/should/not/exist.twe"])
+        .output()
+        .expect("spawn");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout.contains("\"kind\":\"io-error\""));
+    assert!(stdout.contains("cannot read"));
+}
+
+#[test]
+fn verify_subcommand_no_args_errors() {
+    let output = Command::new(twec_bin())
+        .arg("verify")
+        .output()
+        .expect("spawn");
+    assert_eq!(output.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("requires a file path"),
+        "stderr: {err}"
+    );
+}
