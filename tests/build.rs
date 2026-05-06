@@ -824,6 +824,28 @@ fn survive_demo_round_trips_through_bundle_pipeline() {
 }
 
 #[test]
+fn survive_beta_project_validates() {
+    // Phase 14 session 1: `examples/survive_beta/` ships the
+    // production Vampire-Survivors clone. Sessions 1–6 ship the
+    // game's body; session 12 ties it to `twec build`. This test
+    // pins the discovery + validation contract from session 1
+    // forward — every Phase-14 commit has to keep the project tree
+    // loadable through the same pipeline `twec build` will run.
+    let beta = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/survive_beta");
+    assert!(beta.is_dir(), "survive_beta project missing at {}", beta.display());
+    assert!(beta.join("main.twe").is_file());
+    assert!(beta.join("twe.toml").is_file());
+
+    let project = discover_project(&beta).expect("discover");
+    assert_eq!(project.name, "survive_beta");
+    let manifest_path = project.manifest.as_ref().expect("manifest").clone();
+    let manifest = parse_manifest(&manifest_path).expect("parse manifest");
+    assert_eq!(manifest.default_config, Some(BuildConfig::Release));
+    validate_project(&project).expect("survive_beta main.twe must validate");
+}
+
+#[test]
 fn manifest_parses_dependencies_string_form() {
     // Phase 13 session 4: `[dependencies] mathlib = "1.2.3"` parses
     // as a version pin with no path. Path-less entries don't

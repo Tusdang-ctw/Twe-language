@@ -1,0 +1,174 @@
+# Phase 14 — Survive Beta (Vampire-Survivors clone).
+#
+# Run with:  twec play examples/survive_beta/main.twe
+# Build to a redistributable .exe with:
+#   twec build examples/survive_beta
+#
+# v0.5 examples/survive.twe was the Phase-2 single-file vertical
+# slice — bullets, one monster type, arrow-key movement. This is
+# the production beta: arena map, camera follow, wave-based enemy
+# AI, auto-attack weapons, XP + level-up + upgrade choices, gamepad
+# support, the full Phase-10 settings/pause stack.
+#
+# Sessions land outside-in: session 1 ships scaffold + movement +
+# camera + arena (this commit). Slime AI, waves, auto-attack, XP,
+# level-up, more weapons / enemies, boss, polish, build-pipeline
+# integration follow.
+
+settings.set_default("keys.right", "right")
+settings.set_default("keys.right_alt", "d")
+settings.set_default("keys.left", "left")
+settings.set_default("keys.left_alt", "a")
+settings.set_default("keys.up", "up")
+settings.set_default("keys.up_alt", "w")
+settings.set_default("keys.down", "down")
+settings.set_default("keys.down_alt", "s")
+settings.try_load("examples/survive_beta/survive_beta.save")
+
+# World-space coordinates. The arena is `arena_w × arena_h` units
+# wide; the player roams freely inside it. Viewport is 640×480 so
+# the camera tracks the player and stays inside the arena's edges
+# (no camera shake outside the world bounds — we clamp the camera
+# rather than the player so the world-edge feels tangible).
+let arena_w = 2400.0
+let arena_h = 1800.0
+let view_w = 640.0
+let view_h = 480.0
+
+var player_x = 1200.0
+var player_y = 900.0
+var player_speed = 220.0
+
+var camera_x = player_x - view_w * 0.5
+var camera_y = player_y - view_h * 0.5
+
+scene SurviveBeta:
+    var elapsed = 0.0
+
+    initial: playing
+
+    state playing:
+        every 16ms:
+            let dt = time.dt
+            elapsed += dt
+
+            # ---- Movement (keyboard + gamepad). ----
+            let speed = player_speed * dt
+            var dx = 0.0
+            var dy = 0.0
+            if key_held(settings.get("keys.right")) or key_held(settings.get("keys.right_alt")):
+                dx += 1.0
+            if key_held(settings.get("keys.left")) or key_held(settings.get("keys.left_alt")):
+                dx -= 1.0
+            if key_held(settings.get("keys.up")) or key_held(settings.get("keys.up_alt")):
+                dy -= 1.0
+            if key_held(settings.get("keys.down")) or key_held(settings.get("keys.down_alt")):
+                dy += 1.0
+            if gamepad.connected:
+                let lx = gamepad_axis.lx
+                let ly = gamepad_axis.ly
+                if lx > 0.2 or lx < -0.2:
+                    dx += lx
+                if ly > 0.2 or ly < -0.2:
+                    dy -= ly
+            if gamepad.dright: dx += 1.0
+            if gamepad.dleft:  dx -= 1.0
+            if gamepad.dup:    dy -= 1.0
+            if gamepad.ddown:  dy += 1.0
+            # Diagonal motion stays at unit length so a controller
+            # pulled to the corner doesn't outrun straight motion.
+            let mag2 = dx * dx + dy * dy
+            if mag2 > 1.0:
+                let mag = math.sqrt(mag2)
+                dx = dx / mag
+                dy = dy / mag
+            player_x += dx * speed
+            player_y += dy * speed
+
+            # ---- Arena bounds. The player stops at the world edge. ----
+            if player_x < 16.0:
+                player_x = 16.0
+            if player_x > arena_w - 16.0:
+                player_x = arena_w - 16.0
+            if player_y < 16.0:
+                player_y = 16.0
+            if player_y > arena_h - 16.0:
+                player_y = arena_h - 16.0
+
+            # ---- Camera follow. Tracks the player but clamps so
+            # the viewport never shows past the world's edge. ----
+            camera_x = player_x - view_w * 0.5
+            camera_y = player_y - view_h * 0.5
+            if camera_x < 0.0:
+                camera_x = 0.0
+            if camera_x > arena_w - view_w:
+                camera_x = arena_w - view_w
+            if camera_y < 0.0:
+                camera_y = 0.0
+            if camera_y > arena_h - view_h:
+                camera_y = arena_h - view_h
+
+        on render():
+            # Background grid. 80px tiles, drawn in world space and
+            # offset by the camera. The cheap-but-effective trick:
+            # only draw grid lines within ±view of the camera so we
+            # don't waste a few hundred draw calls per frame on
+            # off-screen tiles.
+            let tile = 80.0
+            var gx = math.floor(camera_x / tile) * tile
+            var gy = math.floor(camera_y / tile) * tile
+            var x = gx
+            while x < camera_x + view_w + tile:
+                rect(
+                    at: (x - camera_x, 0),
+                    size: (1, view_h),
+                    color: color.gray
+                )
+                x += tile
+            var y = gy
+            while y < camera_y + view_h + tile:
+                rect(
+                    at: (0, y - camera_y),
+                    size: (view_w, 1),
+                    color: color.gray
+                )
+                y += tile
+
+            # Arena edge — drawn so the player can see the world boundary.
+            rect(
+                at: (-camera_x, -camera_y),
+                size: (arena_w, 2),
+                color: color.white
+            )
+            rect(
+                at: (-camera_x, arena_h - camera_y - 2),
+                size: (arena_w, 2),
+                color: color.white
+            )
+            rect(
+                at: (-camera_x, -camera_y),
+                size: (2, arena_h),
+                color: color.white
+            )
+            rect(
+                at: (arena_w - camera_x - 2, -camera_y),
+                size: (2, arena_h),
+                color: color.white
+            )
+
+            # Player — drawn at viewport center (mostly; offset
+            # near world edges where the camera is clamped).
+            rect(
+                at: (player_x - camera_x - 12, player_y - camera_y - 12),
+                size: (24, 24),
+                color: color.green
+            )
+
+            # HUD.
+            text("Time: {elapsed}s", at: (10, 20), size: 18, color: color.white)
+            text(
+                "Pos: ({player_x}, {player_y})",
+                at: (10, 44),
+                size: 14,
+                color: color.gray
+            )
