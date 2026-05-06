@@ -949,6 +949,15 @@ scene SurviveBeta:
                     best_time = elapsed
                 -> game_over
 
+            # ---- Pause trigger. Esc on keyboard or B on gamepad
+            # opens the pause menu. We use the engine pause()
+            # primitive (not just a flag) — every-clocks halt
+            # cleanly, while on-render and the button widgets
+            # stay responsive so the menu is interactive. ----
+            if key_pressed("escape") or gamepad_press.b:
+                pause(true)
+                -> paused
+
             # ---- Level-up detection. XP threshold met → roll
             # three upgrade picks, raise the in_levelup flag (the
             # entities check it and freeze in place), and
@@ -1068,6 +1077,49 @@ scene SurviveBeta:
                 size: 12,
                 color: color.white
             )
+
+    state paused:
+        on render():
+            # Dim background. `pause(true)` keeps render running
+            # but halts every-clocks + entity ticks, so the world
+            # is frozen behind the menu — no slimes creep, no
+            # bolts fly while the player is mid-decision.
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            text(
+                "PAUSED",
+                at: (260, 80),
+                size: 36,
+                color: color.yellow,
+            )
+            text(
+                "Esc on the playing screen toggles. Click a button below.",
+                at: (80, 130),
+                size: 14,
+                color: color.gray,
+            )
+            if button(at: (160, 180), size: (320, 50), label: "Resume"):
+                pause(false)
+                -> playing
+            if button(at: (160, 250), size: (320, 50), label: "Save Bindings"):
+                # Persists the current key bindings so a future
+                # launch picks them up via the top-level
+                # `settings.try_load(...)` call. Phase 10 surface;
+                # the rebind UI itself lives in
+                # examples/keybind_demo.twe.
+                settings.save("examples/survive_beta/survive_beta.save")
+            if button(at: (160, 320), size: (320, 50), label: "Quit Run"):
+                # Force-end the run — the scene resumes (so the
+                # game_over state's render fires) and HP is set
+                # to 0 so the death-transition path is honest
+                # (best_wave / best_time tracker fires).
+                pause(false)
+                let display_wave = wave_index + 1
+                if display_wave > best_wave:
+                    best_wave = display_wave
+                if elapsed > best_time:
+                    best_time = elapsed
+                player_hp = 0.0
+                -> game_over
 
     state level_up:
         on render():
