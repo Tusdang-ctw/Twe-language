@@ -67,6 +67,11 @@ var in_levelup = false
 var pick_a = 0
 var pick_b = 1
 var pick_c = 2
+# Monotonic time for time-driven weapons (Blade orbit angle).
+# Advanced from the playing-state every-clock; entities read it
+# rather than maintaining their own per-instance accumulator
+# (a global accumulator keeps multi-blade orbits in lockstep).
+var weapon_time = 0.0
 
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
@@ -90,7 +95,11 @@ function upgrade_name(id):
         return "Tougher Hide   (+20 max HP)"
     elif id == 3:
         return "Swift Feet     (+30 move speed)"
-    return "Quick Heal     (full HP)"
+    elif id == 4:
+        return "Quick Heal     (full HP)"
+    elif id == 5:
+        return "Orbiting Blade (+1 blade)"
+    return "Damaging Aura  (faster ticks / new aura)"
 
 function apply_upgrade(id):
     if id == 0:
@@ -104,8 +113,33 @@ function apply_upgrade(id):
         player_hp += 20.0
     elif id == 3:
         player_speed += 30.0
-    else:
+    elif id == 4:
         player_hp = player_max_hp
+    elif id == 5:
+        # Orbiting Blade — spawn one more blade and redistribute
+        # phases evenly around the orbit.
+        spawn Blade at (player_x, player_y)
+        var count = 0
+        for b in entities.of(Blade):
+            count += 1
+        var i = 0
+        let two_pi = 6.28318530717958647692
+        for b in entities.of(Blade):
+            b.phase = i * two_pi / count
+            i += 1
+    else:
+        # Damaging Aura — spawn if absent, otherwise tighten its
+        # tick interval. Aura position is irrelevant (it tracks
+        # the player every frame); the spawn `at` is just to
+        # satisfy the syntax.
+        var has_aura = false
+        for a in entities.of(Aura):
+            has_aura = true
+            a.tick_interval *= 0.85
+            if a.tick_interval < 0.1:
+                a.tick_interval = 0.1
+        if not has_aura:
+            spawn Aura at (player_x, player_y)
 
 
 # ---------------------------------------------------------------
@@ -229,6 +263,102 @@ entity Projectile:
 
 
 # ---------------------------------------------------------------
+# Blade — orbiting weapon. Each Blade reads `weapon_time` (a
+# global accumulator advanced from the playing every-clock) and
+# its own `phase` field; pos = player + (cos, sin) * radius.
+# Spawning N blades and redistributing phases at upgrade-time
+# keeps them evenly-spaced around the player. Touching a slime
+# despawns it (no per-blade cooldown — Vampire-Survivors blades
+# clear waves).
+# ---------------------------------------------------------------
+entity Blade:
+    var phase = 0.0
+    var pos = (0.0, 0.0)
+    var orbit_radius = 60.0
+    var orbit_speed = 3.0
+
+    function update(dt):
+        if in_levelup:
+            return
+        let angle = weapon_time * orbit_speed + phase
+        pos = (
+            player_x + math.cos(angle) * orbit_radius,
+            player_y + math.sin(angle) * orbit_radius,
+        )
+        # 18px hit radius (player half=12 + slime half=10 ≈ 22,
+        # blade itself half=8: tighter than projectile so the
+        # blade sweeps cleanly without snagging mid-swing).
+        for slime in entities.of(Slime):
+            let dx = slime.pos.x - pos.x
+            let dy = slime.pos.y - pos.y
+            if dx * dx + dy * dy < 18.0 * 18.0:
+                despawn slime
+                kills += 1
+
+    function render():
+        rect(
+            at: (pos.x - camera_x - 6, pos.y - camera_y - 6),
+            size: (12, 12),
+            color: color.white,
+        )
+
+
+# ---------------------------------------------------------------
+# Aura — stationary-relative-to-player area weapon. On every
+# `tick_interval` seconds, despawns every slime within `radius`.
+# The genre-canonical "garlic" pattern: low-skill but always-on
+# damage that rewards staying in the swarm. v1 ships one Aura
+# per pick (subsequent picks tighten its tick).
+# ---------------------------------------------------------------
+entity Aura:
+    var tick_timer = 0.0
+    var tick_interval = 0.5
+    var radius = 90.0
+
+    function update(dt):
+        if in_levelup:
+            return
+        tick_timer += dt
+        if tick_timer >= tick_interval:
+            tick_timer = 0.0
+            for slime in entities.of(Slime):
+                let dx = slime.pos.x - player_x
+                let dy = slime.pos.y - player_y
+                if dx * dx + dy * dy < radius * radius:
+                    despawn slime
+                    kills += 1
+
+    function render():
+        # Cyan ring around the player. 32-segment circle would
+        # be nicer but `circle()` filled-only doesn't outline; an
+        # outline is what we want so it doesn't paint over the
+        # arena. Use four rect strokes as a square-ish outline —
+        # session 10's polish pass can promote to a circle once
+        # the engine grows a stroke-circle primitive.
+        let r = radius
+        rect(
+            at: (player_x - camera_x - r, player_y - camera_y - r),
+            size: (r * 2, 2),
+            color: color.cyan,
+        )
+        rect(
+            at: (player_x - camera_x - r, player_y - camera_y + r - 2),
+            size: (r * 2, 2),
+            color: color.cyan,
+        )
+        rect(
+            at: (player_x - camera_x - r, player_y - camera_y - r),
+            size: (2, r * 2),
+            color: color.cyan,
+        )
+        rect(
+            at: (player_x - camera_x + r - 2, player_y - camera_y - r),
+            size: (2, r * 2),
+            color: color.cyan,
+        )
+
+
+# ---------------------------------------------------------------
 # XPGem — drops on slime death. Pulls toward the player within
 # `magnetic_radius` and collects on overlap. The pickup-on-touch
 # pattern is genre-canonical: the player is incentivised to weave
@@ -312,6 +442,7 @@ scene SurviveBeta:
         every 16ms:
             let dt = time.dt
             elapsed += dt
+            weapon_time += dt
             if player_iframes > 0.0:
                 player_iframes -= dt
 
@@ -443,13 +574,13 @@ scene SurviveBeta:
                 # Threshold ramps so each level takes more XP than
                 # the last. Linear-ish curve; session 8 can tune.
                 xp_to_next_level = xp_to_next_level + 3 + level
-                let i = random.int(0..<5)
+                let i = random.int(0..<7)
                 var j = i + 1
-                if j >= 5:
-                    j -= 5
+                if j >= 7:
+                    j -= 7
                 var k = i + 2
-                if k >= 5:
-                    k -= 5
+                if k >= 7:
+                    k -= 7
                 pick_a = i
                 pick_b = j
                 pick_c = k
@@ -612,6 +743,10 @@ scene SurviveBeta:
                     despawn proj
                 for gem in entities.of(XPGem):
                     despawn gem
+                for b in entities.of(Blade):
+                    despawn b
+                for a in entities.of(Aura):
+                    despawn a
                 player_x = 1200.0
                 player_y = 900.0
                 player_hp = 100.0
@@ -626,6 +761,7 @@ scene SurviveBeta:
                 in_levelup = false
                 magnetic_radius = 100.0
                 attack_interval = 0.6
+                weapon_time = 0.0
                 wave_index = 0
                 wave_timer = 0.0
                 spawn_interval = 1.5
