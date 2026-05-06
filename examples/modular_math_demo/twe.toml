@@ -1,0 +1,6 @@
+[project]
+name = "modular_math_demo"
+
+[build]
+default_target = "windows-x86_64"
+default_config = "dev"

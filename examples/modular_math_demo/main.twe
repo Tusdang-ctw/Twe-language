@@ -1,0 +1,27 @@
+# Phase 13 EXIT GATE — modular math demo.
+#
+# Imports a `math/vec2.twe` helper module from a sub-directory and
+# uses its arithmetic + clamp surface end-to-end. Run with
+#
+#     twec run examples/modular_math_demo/main.twe
+#
+# The module loader resolves "math/vec2" against this file's
+# directory; the `math/` subdirectory holds vec2.twe. No
+# `[dependencies]` block is needed for in-tree splits.
+
+import "math/vec2"
+
+let origin = vec2.make(0.0, 0.0)
+let player = vec2.make(120.0, 80.0)
+
+let stepped = vec2.add(player, vec2.make(10.0, 0.0))
+let scaled = vec2.scale(stepped, 0.5)
+let clamped = vec2.clamp(scaled, 0.0, 50.0)
+
+print("origin = ({origin.x}, {origin.y})")
+print("player = ({player.x}, {player.y})")
+print("stepped = ({stepped.x}, {stepped.y})")
+print("scaled = ({scaled.x}, {scaled.y})")
+print("clamped = ({clamped.x}, {clamped.y})")
+let dist = vec2.distance(origin, player)
+print("distance(origin, player) = {dist}")

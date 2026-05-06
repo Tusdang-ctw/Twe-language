@@ -1,0 +1,32 @@
+# Phase 13 EXIT GATE — modular audio demo.
+#
+# Single-file `examples/audio_demo.twe` mixed volume clamping with
+# input handling and audio playback in one body. The modular split
+# extracts the clamp + step logic into `volume.twe`, which is the
+# kind of utility module a real game ships in `vendor/` or `lib/`.
+#
+# Run with `twec play examples/modular_audio_demo/main.twe`.
+
+import "volume"
+
+let track = sound.load("examples/assets/silence.wav")
+var current = 0.5
+var music_playing = false
+
+on update(dt):
+    let dv = mouse.wheel * 0.05
+    current = volume.step(current, dv)
+    sound.set_volume(track, current)
+
+    if key_press.r:
+        sound.play_at(track, current)
+    if key_press.m:
+        if music_playing:
+            music.stop(track)
+            music_playing = false
+        else:
+            music.play(track)
+            music_playing = true
+    if key_press.s:
+        music.stop(track)
+        music_playing = false

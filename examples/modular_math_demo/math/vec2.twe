@@ -1,0 +1,37 @@
+# Phase 13 session 11 — vec2 helper module.
+#
+# Exports tuple-shaped vec2 values plus a small operator surface.
+# Imported from `examples/modular_math_demo/main.twe` as `vec2`.
+
+function make(x, y):
+    return (x, y)
+
+function add(a, b):
+    return (a.x + b.x, a.y + b.y)
+
+function sub(a, b):
+    return (a.x - b.x, a.y - b.y)
+
+function scale(v, s):
+    return (v.x * s, v.y * s)
+
+function dot(a, b):
+    return a.x * b.x + a.y * b.y
+
+function distance(a, b):
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    return math.sqrt(dx * dx + dy * dy)
+
+function clamp(v, lo, hi):
+    var x = v.x
+    var y = v.y
+    if x < lo:
+        x = lo
+    if x > hi:
+        x = hi
+    if y < lo:
+        y = lo
+    if y > hi:
+        y = hi
+    return (x, y)

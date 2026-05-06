@@ -834,6 +834,68 @@ mod tests {
         );
     }
 
+    // ----- Phase 13 session 11: EXIT GATE smoke tests. -----
+
+    #[test]
+    fn modular_math_demo_loads_and_runs() {
+        // Phase 13 EXIT GATE bullet:
+        //   "Two existing examples are split into multi-file modules
+        //    without rewriting their bodies."
+        // This is the first of the two: main.twe imports a vec2
+        // helper from a `math/` subdirectory and uses it. The check
+        // is end-to-end — we load via the resolver, evaluate via
+        // run_with_modules, and assert on the print output.
+        let path = std::path::Path::new("../examples/modular_math_demo/main.twe");
+        // The unit-test binary runs from `target/release/deps/` so
+        // the example lives two levels up. Skip when not available
+        // (e.g. running tests from a different cwd) so the test
+        // doesn't false-fail in unusual setups.
+        if !path.exists() {
+            let alt = std::path::Path::new("examples/modular_math_demo/main.twe");
+            if !alt.exists() {
+                eprintln!("modular_math_demo not found at expected path; skipping");
+                return;
+            }
+            let g = load_from_path(alt, None).expect("load");
+            let out = run_with_modules(&g).expect("run");
+            assert!(out.contains("origin = (0.0, 0.0)"), "got: {out}");
+            assert!(out.contains("clamped = (50.0, 40.0)"), "got: {out}");
+            return;
+        }
+        let g = load_from_path(path, None).expect("load");
+        let out = run_with_modules(&g).expect("run");
+        assert!(out.contains("origin = (0.0, 0.0)"), "got: {out}");
+        assert!(out.contains("clamped = (50.0, 40.0)"), "got: {out}");
+    }
+
+    #[test]
+    fn modular_audio_demo_parses_clean() {
+        // The second EXIT GATE example. Real audio playback needs
+        // the macroquad runtime, so we only assert on the load +
+        // dependency-resolution path here — that the project tree
+        // parses and the volume module ends up in the graph.
+        let path = std::path::Path::new("../examples/modular_audio_demo/main.twe");
+        let path = if path.exists() {
+            path
+        } else {
+            std::path::Path::new("examples/modular_audio_demo/main.twe")
+        };
+        if !path.exists() {
+            eprintln!("modular_audio_demo not found at expected path; skipping");
+            return;
+        }
+        let g = load_from_path(path, None).expect("load");
+        assert_eq!(
+            g.deps.len(),
+            1,
+            "expected exactly one dep (volume.twe), got {}: {:?}",
+            g.deps.len(),
+            g.deps.keys().collect::<Vec<_>>()
+        );
+        let dep = g.deps.values().next().unwrap();
+        assert!(dep.canonical_path.ends_with("volume.twe"));
+    }
+
     #[test]
     fn run_with_modules_transitive_imports_resolve() {
         // a imports b, main imports a. main can reach b's surface
