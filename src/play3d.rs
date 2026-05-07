@@ -572,6 +572,13 @@ struct GpuMesh {
     /// `.glb` accessors can use u8 / u16 / u32; we widen everything
     /// to u32 on load so the pipeline only needs one branch.
     index_format: wgpu::IndexFormat,
+    /// Phase 17 finish: auto-loaded base color texture from the
+    /// glTF material. `Some` when the first primitive's
+    /// `pbr_metallic_roughness.baseColorTexture` resolves to an
+    /// embedded image; the render flow uses this as the per-mesh
+    /// fallback when the script's `mesh()` call doesn't supply
+    /// an explicit texture handle.
+    auto_texture: Option<wgpu::BindGroup>,
 }
 
 impl ApplicationHandler for App {
@@ -1245,11 +1252,23 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 // materials, and textures are all follow-ons — design notes in
 // `notes/future-phases.md` "Carried into v0.2".
 
+/// Phase 17 finish: image data extracted from a glTF material.
+/// `pixels` is RGBA8, `width × height` row-major. The gltf crate
+/// pre-decodes embedded textures regardless of source format
+/// (PNG/JPEG/raw), so by the time we see it the data is already
+/// in a uniform layout we can upload directly.
+struct AutoTextureData {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
 /// Decode a `.glb` (or `.gltf`) at `path`. Returns interleaved
-/// `Vertex` array + u32 index list. Errors are stringified at the
-/// boundary because the upstream `gltf::Error` carries lifetimes
-/// we don't want to leak.
-fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>), String> {
+/// `Vertex` array + u32 index list + optionally the base color
+/// texture from the first primitive's material. Errors are
+/// stringified at the boundary because the upstream `gltf::Error`
+/// carries lifetimes we don't want to leak.
+fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>, Option<AutoTextureData>), String> {
     // Phase 12 session 3: bundle-first lookup, filesystem fallback.
     let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| e.to_string())?;
     parse_glb_bytes(&bytes)
@@ -1258,8 +1277,10 @@ fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>), String> {
 /// Inner loader exposed for tests — drives the gltf crate against
 /// an in-memory byte slice instead of a path so we can exercise
 /// the decode path without shipping binary fixtures.
-fn parse_glb_bytes(bytes: &[u8]) -> Result<(Vec<Vertex>, Vec<u32>), String> {
-    let (doc, buffers, _images) = gltf::import_slice(bytes).map_err(|e| e.to_string())?;
+fn parse_glb_bytes(
+    bytes: &[u8],
+) -> Result<(Vec<Vertex>, Vec<u32>, Option<AutoTextureData>), String> {
+    let (doc, buffers, images) = gltf::import_slice(bytes).map_err(|e| e.to_string())?;
     let mesh = doc
         .meshes()
         .next()
@@ -1329,14 +1350,63 @@ fn parse_glb_bytes(bytes: &[u8]) -> Result<(Vec<Vertex>, Vec<u32>), String> {
         None => (0..vertices.len() as u32).collect(),
     };
 
-    Ok((vertices, indices))
+    // Phase 17 finish: extract the first primitive's base color
+    // texture if present. The gltf crate pre-decodes embedded
+    // images to a uniform `image::Data` struct (regardless of
+    // PNG/JPEG/raw source); we just need to widen non-RGBA8
+    // formats to RGBA8 so the wgpu upload path is uniform.
+    let auto_texture = primitive
+        .material()
+        .pbr_metallic_roughness()
+        .base_color_texture()
+        .and_then(|info| {
+            let image_index = info.texture().source().index();
+            images.get(image_index).map(|img| {
+                let pixels = match img.format {
+                    gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
+                    gltf::image::Format::R8G8B8 => widen_rgb_to_rgba(&img.pixels),
+                    // Other formats (R8, R8G8, R16…) are uncommon in
+                    // base color textures; fall back to white pixels
+                    // of the right dimensions so the mesh draws.
+                    _ => vec![255u8; (img.width * img.height * 4) as usize],
+                };
+                AutoTextureData {
+                    width: img.width,
+                    height: img.height,
+                    pixels,
+                }
+            })
+        });
+
+    Ok((vertices, indices, auto_texture))
+}
+
+/// Widen a tightly-packed RGB8 buffer to RGBA8 with full alpha.
+/// glTF allows RGB8 sources for opaque base color textures; the
+/// wgpu upload path always wants 4 channels.
+fn widen_rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
+    let pixels = rgb.len() / 3;
+    let mut out = Vec::with_capacity(pixels * 4);
+    for chunk in rgb.chunks_exact(3) {
+        out.push(chunk[0]);
+        out.push(chunk[1]);
+        out.push(chunk[2]);
+        out.push(255);
+    }
+    out
 }
 
 /// Load `.glb` at `path`, upload CPU-side data to GPU, return a
 /// `GpuMesh` ready for rendering. Logs the failure path to stderr
 /// on any error so the user sees what went wrong.
-fn load_and_upload_mesh(device: &wgpu::Device, path: &str) -> Result<GpuMesh, String> {
-    let (vertices, indices) = load_glb(path)?;
+fn load_and_upload_mesh(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    path: &str,
+) -> Result<GpuMesh, String> {
+    let (vertices, indices, auto_tex) = load_glb(path)?;
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("twec-play3d mesh vertices"),
         contents: bytemuck::cast_slice(&vertices),
@@ -1347,11 +1417,67 @@ fn load_and_upload_mesh(device: &wgpu::Device, path: &str) -> Result<GpuMesh, St
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX,
     });
+    // Phase 17 finish: upload the auto-extracted base color texture
+    // to GPU memory and build a bind group ready for render-time
+    // binding. Untextured glb meshes (no material or no base color
+    // texture) leave `auto_texture: None`; the render flow falls
+    // back to the global white 1x1 in that case.
+    let auto_texture = auto_tex.map(|tex| {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("twec-play3d glb auto texture"),
+            size: wgpu::Extent3d {
+                width: tex.width,
+                height: tex.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &tex.pixels,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * tex.width),
+                rows_per_image: Some(tex.height),
+            },
+            wgpu::Extent3d {
+                width: tex.width,
+                height: tex.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("twec-play3d glb auto texture bg"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
+    });
     Ok(GpuMesh {
         vertex_buffer,
         index_buffer,
         index_count: indices.len() as u32,
         index_format: wgpu::IndexFormat::Uint32,
+        auto_texture,
     })
 }
 
@@ -1448,7 +1574,13 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                 continue;
             }
         };
-        match load_and_upload_mesh(&state.device, &path) {
+        match load_and_upload_mesh(
+            &state.device,
+            &state.queue,
+            &state.texture_bgl,
+            &state.default_sampler,
+            &path,
+        ) {
             Ok(gpu_mesh) => {
                 state.mesh_cache.insert(id, gpu_mesh);
             }
@@ -1659,7 +1791,20 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                     Some(m) => m,
                     None => continue,
                 };
-                rpass.set_bind_group(1, bind_for(*tex), &[]);
+                // Phase 17 finish: when the script's `mesh()` call
+                // didn't supply an explicit texture (tex == 0),
+                // prefer the mesh's auto-loaded baseColorTexture if
+                // it has one. Falls through to white when neither
+                // is present.
+                let bind = if *tex == 0 {
+                    gpu_mesh
+                        .auto_texture
+                        .as_ref()
+                        .unwrap_or(&state.white_bind_group)
+                } else {
+                    bind_for(*tex)
+                };
+                rpass.set_bind_group(1, bind, &[]);
                 rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
                 rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
                 rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
@@ -1921,7 +2066,7 @@ mod tests {
     #[test]
     fn parse_glb_extracts_positions_and_indices() {
         let bytes = make_minimal_glb();
-        let (vertices, indices) = parse_glb_bytes(&bytes).expect("decode");
+        let (vertices, indices, _auto_tex) = parse_glb_bytes(&bytes).expect("decode");
         assert_eq!(vertices.len(), 3);
         assert_eq!(indices, vec![0, 1, 2]);
         assert_eq!(vertices[0].position, [0.0, 0.0, 0.0]);
@@ -1934,7 +2079,7 @@ mod tests {
         // The fixture omits NORMAL — loader fills with [0, 1, 0]
         // so the mesh still shades against the directional light.
         let bytes = make_minimal_glb();
-        let (vertices, _) = parse_glb_bytes(&bytes).expect("decode");
+        let (vertices, _, _) = parse_glb_bytes(&bytes).expect("decode");
         assert_eq!(vertices[0].normal, [0.0, 1.0, 0.0]);
     }
 
@@ -1970,7 +2115,7 @@ mod tests {
         let bytes = make_minimal_glb();
         std::fs::write(path, &bytes).expect("write fixture");
         // Round-trip check: the file we just wrote must decode.
-        let (vertices, indices) = load_glb(path.to_str().unwrap()).expect("decode");
+        let (vertices, indices, _) = load_glb(path.to_str().unwrap()).expect("decode");
         assert_eq!(vertices.len(), 3);
         assert_eq!(indices.len(), 3);
     }
