@@ -44,7 +44,9 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -444,6 +446,13 @@ struct App {
     /// `WindowEvent::CursorMoved`. v0.2 session 3.
     mouse_x: f64,
     mouse_y: f64,
+    /// Raw mouse delta accumulated since the last frame, in winit
+    /// device-relative units (NOT logical pixels — driver-defined).
+    /// Phase 17 session 3: lets a FPS camera read `mouse.dx`/`mouse.dy`
+    /// without sensitivity-killing cursor wraparound. Reset to 0 each
+    /// frame after the env update.
+    mouse_dx: f64,
+    mouse_dy: f64,
     /// Wheel delta accumulated this frame (line-delta y, unitless
     /// scroll-tick count for typical mice). Reset each frame after
     /// the env update.
@@ -468,6 +477,8 @@ impl App {
             keys_pressed_this_frame: HashSet::new(),
             mouse_x: 0.0,
             mouse_y: 0.0,
+            mouse_dx: 0.0,
+            mouse_dy: 0.0,
             mouse_wheel_y: 0.0,
             mouse_buttons_held: HashSet::new(),
             mouse_buttons_pressed_this_frame: HashSet::new(),
@@ -678,12 +689,26 @@ impl ApplicationHandler for App {
                     &mut self.env,
                     self.mouse_x,
                     self.mouse_y,
+                    self.mouse_dx,
+                    self.mouse_dy,
                     self.mouse_wheel_y,
                     &self.mouse_buttons_held,
                     &self.mouse_buttons_pressed_this_frame,
                 );
                 self.mouse_wheel_y = 0.0;
+                self.mouse_dx = 0.0;
+                self.mouse_dy = 0.0;
                 self.mouse_buttons_pressed_this_frame.clear();
+
+                // Phase 17 session 3: drain any pending cursor-mode
+                // request from the script side. cursor.lock() /
+                // cursor.unlock() write a CursorMode here; we apply
+                // it to the window once per frame so the request
+                // takes effect even if the script is in a render
+                // handler when it fires.
+                if let Some(mode) = crate::stdlib::take_pending_cursor_mode() {
+                    apply_cursor_mode(&state.window, mode);
+                }
 
                 let now = Instant::now();
                 let dt = now.duration_since(self.last_frame_at).as_secs_f32();
@@ -695,6 +720,45 @@ impl ApplicationHandler for App {
             }
             _ => {}
         }
+    }
+
+    /// Phase 17 session 3: raw mouse delta from the OS, independent
+    /// of cursor position / wraparound. Required for FPS-style
+    /// camera control.  `WindowEvent::CursorMoved` only gives
+    /// absolute window coords, which jumps when the cursor is locked
+    /// or wraps; `DeviceEvent::MouseMotion` is the raw integrated
+    /// pointer velocity.
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            self.mouse_dx += dx;
+            self.mouse_dy += dy;
+        }
+    }
+}
+
+/// Phase 17 session 3: apply a pending cursor-mode request from
+/// the script. Locked grab is the FPS-style "infinite cursor"
+/// mode; if the platform doesn't support Locked, we fall back to
+/// Confined (which keeps the cursor inside the window). Visibility
+/// is also toggled — locked games hide the cursor by convention.
+fn apply_cursor_mode(window: &Window, locked: bool) {
+    use winit::window::CursorGrabMode;
+    if locked {
+        // Try Locked first (raw input, no cursor movement). Some
+        // platforms (older X11) only support Confined; fall back
+        // gracefully rather than failing the call.
+        if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
+            let _ = window.set_cursor_grab(CursorGrabMode::Confined);
+        }
+        window.set_cursor_visible(false);
+    } else {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+        window.set_cursor_visible(true);
     }
 }
 
@@ -738,10 +802,13 @@ fn update_key_state(env: &mut Env, held: &HashSet<&'static str>, pressed: &HashS
 /// Write the current mouse state into the env's `mouse`,
 /// `mouse_held`, and `mouse_press` Objects. Mirror of
 /// `update_key_state` for cursor + buttons + wheel. v0.2 session 3.
+#[allow(clippy::too_many_arguments)]
 fn update_mouse_state(
     env: &mut Env,
     mouse_x: f64,
     mouse_y: f64,
+    mouse_dx: f64,
+    mouse_dy: f64,
     wheel_y: f32,
     held: &HashSet<&'static str>,
     pressed: &HashSet<&'static str>,
@@ -752,6 +819,8 @@ fn update_mouse_state(
             let mut o = rc.borrow_mut();
             o.insert_field("x", Value::from_float(mouse_x));
             o.insert_field("y", Value::from_float(mouse_y));
+            o.insert_field("dx", Value::from_float(mouse_dx));
+            o.insert_field("dy", Value::from_float(mouse_dy));
             o.insert_field(
                 "pos",
                 Value::from_tuple(Rc::new(vec![

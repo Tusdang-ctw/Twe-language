@@ -271,6 +271,28 @@ pub fn install(env: &mut Env) {
         Value::from_builtin("key_pressed", &["name"], key_pressed_impl),
     );
 
+    // Phase 17 session 3: cursor lock/unlock for FPS-style camera
+    // control in `twec play3d`. The builtins write a pending flag
+    // that the play3d event loop drains and applies to the window.
+    // No-op in `twec play` (2D macroquad path doesn't expose
+    // cursor-grab; macroquad scripts don't typically need it).
+    let mut cursor_fields = HashMap::new();
+    cursor_fields.insert(
+        "lock".to_string(),
+        Value::from_builtin("cursor.lock", &[], cursor_lock_impl),
+    );
+    cursor_fields.insert(
+        "unlock".to_string(),
+        Value::from_builtin("cursor.unlock", &[], cursor_unlock_impl),
+    );
+    env.set(
+        "cursor".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: cursor_fields,
+            kind: "module",
+        }))),
+    );
+
     let key_names = [
         "right", "left", "up", "down", "space", "escape", "enter", "r", "w", "a", "s", "d",
     ];
@@ -527,16 +549,39 @@ static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 // in the same frame is degenerate.
 thread_local! {
     static PENDING_SCREENSHOT: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Phase 17 session 3: pending cursor-mode change requested by
+    /// the script via cursor.lock() / cursor.unlock(). The play3d
+    /// event loop drains this once per frame and applies the mode
+    /// to the active window. Some(true) = lock, Some(false) = unlock.
+    /// None means no change requested.
+    static PENDING_CURSOR_MODE: RefCell<Option<bool>> = const { RefCell::new(None) };
 }
 
 pub fn take_pending_screenshot() -> Option<String> {
     PENDING_SCREENSHOT.with(|c| c.borrow_mut().take())
 }
 
+/// Phase 17 session 3: drain the cursor-mode request slot. play3d
+/// calls this once per frame after rendering. Returns Some(true)
+/// for "lock", Some(false) for "unlock", None for "no change".
+pub fn take_pending_cursor_mode() -> Option<bool> {
+    PENDING_CURSOR_MODE.with(|c| c.borrow_mut().take())
+}
+
 fn screenshot_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "screenshot")?;
     let path = string_arg(&args[0], "screenshot", "path")?;
     PENDING_SCREENSHOT.with(|c| *c.borrow_mut() = Some(path));
+    Ok(Value::NIL)
+}
+
+fn cursor_lock_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    PENDING_CURSOR_MODE.with(|c| *c.borrow_mut() = Some(true));
+    Ok(Value::NIL)
+}
+
+fn cursor_unlock_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    PENDING_CURSOR_MODE.with(|c| *c.borrow_mut() = Some(false));
     Ok(Value::NIL)
 }
 
@@ -1478,6 +1523,26 @@ fn install_math(env: &mut Env) {
         "noise".to_string(),
         Value::from_builtin("math.noise", &["point"], math_noise),
     );
+    // Phase 17 session 5: vector math for 3D games. Tuples already
+    // support +/-/* via tuple arithmetic, so add only the operations
+    // that aren't expressible as operators: dot, cross, length,
+    // normalize. All work on 2D, 3D, or 4D tuples (cross is 3D-only).
+    math.insert(
+        "dot".to_string(),
+        Value::from_builtin("math.dot", &["a", "b"], math_dot),
+    );
+    math.insert(
+        "cross".to_string(),
+        Value::from_builtin("math.cross", &["a", "b"], math_cross),
+    );
+    math.insert(
+        "length".to_string(),
+        Value::from_builtin("math.length", &["v"], math_length),
+    );
+    math.insert(
+        "normalize".to_string(),
+        Value::from_builtin("math.normalize", &["v"], math_normalize),
+    );
     math.insert("pi".to_string(), Value::from_float(std::f64::consts::PI));
     // Top-level aliases so `noise(uv)`, `smoothstep(a, b, x)`, `mix(a, b, t)` work
     // without the `math.` prefix — Example 5 in docs/01-examples.md uses the
@@ -1977,6 +2042,89 @@ fn math_noise(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "noise")?;
     let (x, y) = xy_of(&args[0], "noise")?;
     Ok(Value::from_float(value_noise_2d(x, y)))
+}
+
+/// Pull an N-component float array from a Twe tuple. Used by the
+/// vector math builtins so they accept 2D, 3D, or 4D tuples by
+/// length rather than fixing one dimension.
+fn tuple_floats(v: &Value, what: &str) -> Result<Vec<f64>, RuntimeError> {
+    if !v.is_tuple() {
+        let other = *v;
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what} expects a tuple, got {}",
+                other.type_name()
+            ),
+            help: Some("e.g. (x, y) or (x, y, z)".to_string()),
+        });
+    }
+    let elems = v.as_tuple();
+    let mut out = Vec::with_capacity(elems.len());
+    for e in elems.iter() {
+        out.push(number(e, what)?);
+    }
+    Ok(out)
+}
+
+fn math_dot(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "math.dot")?;
+    let a = tuple_floats(&args[0], "math.dot.a")?;
+    let b = tuple_floats(&args[1], "math.dot.b")?;
+    if a.len() != b.len() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "math.dot: tuple length mismatch — got {} and {}",
+                a.len(),
+                b.len()
+            ),
+            help: None,
+        });
+    }
+    let sum: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    Ok(Value::from_float(sum))
+}
+
+fn math_cross(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "math.cross")?;
+    let a = tuple_floats(&args[0], "math.cross.a")?;
+    let b = tuple_floats(&args[1], "math.cross.b")?;
+    if a.len() != 3 || b.len() != 3 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "math.cross: requires two 3-component tuples".to_string(),
+            help: Some("cross product is only defined in 3D".to_string()),
+        });
+    }
+    Ok(Value::from_tuple(Rc::new(vec![
+        Value::from_float(a[1] * b[2] - a[2] * b[1]),
+        Value::from_float(a[2] * b[0] - a[0] * b[2]),
+        Value::from_float(a[0] * b[1] - a[1] * b[0]),
+    ])))
+}
+
+fn math_length(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "math.length")?;
+    let v = tuple_floats(&args[0], "math.length.v")?;
+    let sq: f64 = v.iter().map(|x| x * x).sum();
+    Ok(Value::from_float(sq.sqrt()))
+}
+
+fn math_normalize(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "math.normalize")?;
+    let v = tuple_floats(&args[0], "math.normalize.v")?;
+    let len: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if len < 1e-12 {
+        // Zero-length vector: return as-is rather than NaN, matching
+        // the convention most game engines use for safe normalisation.
+        return Ok(args[0]);
+    }
+    let normalized: Vec<Value> = v.iter().map(|x| Value::from_float(x / len)).collect();
+    Ok(Value::from_tuple(Rc::new(normalized)))
 }
 
 fn install_random(env: &mut Env) {
