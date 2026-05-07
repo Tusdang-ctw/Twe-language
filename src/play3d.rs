@@ -1281,28 +1281,173 @@ fn parse_glb_bytes(
     bytes: &[u8],
 ) -> Result<(Vec<Vertex>, Vec<u32>, Option<AutoTextureData>), String> {
     let (doc, buffers, images) = gltf::import_slice(bytes).map_err(|e| e.to_string())?;
-    let mesh = doc
-        .meshes()
-        .next()
-        .ok_or_else(|| "glb has no meshes".to_string())?;
-    let primitive = mesh
-        .primitives()
-        .next()
-        .ok_or_else(|| "first mesh has no primitives".to_string())?;
-    let reader = primitive.reader(|b| Some(&buffers[b.index()]));
-
-    let positions: Vec<[f32; 3]> = reader
-        .read_positions()
-        .ok_or_else(|| "primitive has no POSITION accessor".to_string())?
-        .collect();
-    if positions.is_empty() {
-        return Err("primitive has zero vertices".to_string());
+    if doc.meshes().count() == 0 {
+        return Err("glb has no meshes".to_string());
     }
 
-    // Normals are optional in glTF. When absent, we fall back to a
-    // constant up-vector — the mesh will shade flat-bright but at
-    // least it draws. Computing flat normals from indices is a
-    // follow-on; users who want shading should export with normals.
+    // Phase 19: walk the scene graph and flatten all nodes into a
+    // single (vertices, indices) buffer. Each node's accumulated
+    // transform (parent-multiplied) bakes into vertex positions and
+    // normals at load time. This is the "scene flatten" approach:
+    // a multi-node Blender export renders correctly without per-frame
+    // node-matrix math, at the cost of not being able to animate
+    // individual nodes (which lands in Phase 21).
+    let mut all_verts: Vec<Vertex> = Vec::new();
+    let mut all_indices: Vec<u32> = Vec::new();
+    let mut auto_texture: Option<AutoTextureData> = None;
+
+    // Use the default scene if present, otherwise scene 0.
+    let scene = doc
+        .default_scene()
+        .or_else(|| doc.scenes().next())
+        .ok_or_else(|| "glb has no scenes".to_string())?;
+
+    for node in scene.nodes() {
+        flatten_node(
+            &node,
+            mat4_identity(),
+            &buffers,
+            &images,
+            &mut all_verts,
+            &mut all_indices,
+            &mut auto_texture,
+        );
+    }
+
+    // Phase 5 fallback: if the document has meshes but no scene
+    // graph (rare but legal for raw mesh files), pull the first
+    // primitive of the first mesh directly. Preserves backward
+    // compatibility with the pre-Phase-19 single-primitive loader.
+    if all_verts.is_empty() {
+        let mesh = doc.meshes().next().unwrap();
+        let primitive = mesh
+            .primitives()
+            .next()
+            .ok_or_else(|| "first mesh has no primitives".to_string())?;
+        flatten_primitive(
+            &primitive,
+            mat4_identity(),
+            &buffers,
+            &images,
+            &mut all_verts,
+            &mut all_indices,
+            &mut auto_texture,
+        );
+    }
+
+    if all_verts.is_empty() {
+        return Err("glb has zero vertices across all primitives".to_string());
+    }
+    Ok((all_verts, all_indices, auto_texture))
+}
+
+/// Phase 19: 4×4 column-major identity matrix, used as the root
+/// transform when walking a glTF scene graph.
+fn mat4_identity() -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+/// Multiply two 4×4 column-major matrices: out = a * b. Glsl-style
+/// (so `a` is the outer transform — applied second when transforming
+/// a vector).
+fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0f32; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            out[j][i] =
+                a[0][i] * b[j][0] + a[1][i] * b[j][1] + a[2][i] * b[j][2] + a[3][i] * b[j][3];
+        }
+    }
+    out
+}
+
+/// Apply a 4×4 transform to a 3D point (w=1). Used when baking
+/// node transforms into vertex positions during scene flattening.
+fn mat4_transform_point(m: [[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0],
+        m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1],
+        m[0][2] * p[0] + m[1][2] * p[1] + m[2][2] * p[2] + m[3][2],
+    ]
+}
+
+/// Apply a 4×4 transform to a 3D direction (w=0). Used for normals.
+/// For non-uniform scale this is wrong (proper fix is the
+/// inverse-transpose of the upper-left 3×3); for the typical
+/// translation-rotation-uniform-scale node transforms in a
+/// Blender export it's good enough.
+fn mat4_transform_dir(m: [[f32; 4]; 4], d: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * d[0] + m[1][0] * d[1] + m[2][0] * d[2],
+        m[0][1] * d[0] + m[1][1] * d[1] + m[2][1] * d[2],
+        m[0][2] * d[0] + m[1][2] * d[1] + m[2][2] * d[2],
+    ]
+}
+
+/// Recursively walk a glTF node's subtree, accumulate transforms,
+/// and bake each primitive's vertices into the flattened output.
+fn flatten_node(
+    node: &gltf::Node<'_>,
+    parent_transform: [[f32; 4]; 4],
+    buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
+    out_verts: &mut Vec<Vertex>,
+    out_indices: &mut Vec<u32>,
+    out_auto_tex: &mut Option<AutoTextureData>,
+) {
+    let local = node.transform().matrix();
+    let world = mat4_mul(parent_transform, local);
+    if let Some(mesh) = node.mesh() {
+        for primitive in mesh.primitives() {
+            flatten_primitive(
+                &primitive,
+                world,
+                buffers,
+                images,
+                out_verts,
+                out_indices,
+                out_auto_tex,
+            );
+        }
+    }
+    for child in node.children() {
+        flatten_node(
+            &child,
+            world,
+            buffers,
+            images,
+            out_verts,
+            out_indices,
+            out_auto_tex,
+        );
+    }
+}
+
+/// Append one glTF primitive's vertices + indices to the flattened
+/// output, transformed by `world`. Index values are offset by the
+/// existing vertex count so multiple primitives share one buffer.
+fn flatten_primitive(
+    primitive: &gltf::Primitive<'_>,
+    world: [[f32; 4]; 4],
+    buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
+    out_verts: &mut Vec<Vertex>,
+    out_indices: &mut Vec<u32>,
+    out_auto_tex: &mut Option<AutoTextureData>,
+) {
+    let reader = primitive.reader(|b| Some(&buffers[b.index()]));
+    let positions: Vec<[f32; 3]> = match reader.read_positions() {
+        Some(p) => p.collect(),
+        None => return,
+    };
+    if positions.is_empty() {
+        return;
+    }
     let normals: Vec<[f32; 3]> = match reader.read_normals() {
         Some(iter) => {
             let v: Vec<[f32; 3]> = iter.collect();
@@ -1314,11 +1459,6 @@ fn parse_glb_bytes(
         }
         None => vec![[0.0, 1.0, 0.0]; positions.len()],
     };
-
-    // Phase 17 session 2: read TEXCOORD_0 if present. Most Blender /
-    // Mixamo exports include it. Falls back to (0, 0) per vertex —
-    // sampling the fallback white texture at any uv produces white,
-    // so untextured meshes still render correctly.
     let uvs: Vec<[f32; 2]> = match reader.read_tex_coords(0) {
         Some(iter) => {
             let v: Vec<[f32; 2]> = iter.into_f32().collect();
@@ -1331,54 +1471,48 @@ fn parse_glb_bytes(
         None => vec![[0.0, 0.0]; positions.len()],
     };
 
-    let vertices: Vec<Vertex> = positions
-        .iter()
-        .zip(normals.iter())
-        .zip(uvs.iter())
-        .map(|((p, n), uv)| Vertex {
-            position: *p,
-            normal: *n,
+    let base_index = out_verts.len() as u32;
+    for ((p, n), uv) in positions.iter().zip(normals.iter()).zip(uvs.iter()) {
+        out_verts.push(Vertex {
+            position: mat4_transform_point(world, *p),
+            normal: mat4_transform_dir(world, *n),
             uv: *uv,
-        })
-        .collect();
+        });
+    }
 
-    // Indices are optional too — non-indexed primitives implicitly
-    // index 0..N. `into_u32()` widens whatever the file used (u8 /
-    // u16 / u32) so we only need one GPU index format.
     let indices: Vec<u32> = match reader.read_indices() {
         Some(idx) => idx.into_u32().collect(),
-        None => (0..vertices.len() as u32).collect(),
+        None => (0..positions.len() as u32).collect(),
     };
+    for i in indices {
+        out_indices.push(base_index + i);
+    }
 
-    // Phase 17 finish: extract the first primitive's base color
-    // texture if present. The gltf crate pre-decodes embedded
-    // images to a uniform `image::Data` struct (regardless of
-    // PNG/JPEG/raw source); we just need to widen non-RGBA8
-    // formats to RGBA8 so the wgpu upload path is uniform.
-    let auto_texture = primitive
-        .material()
-        .pbr_metallic_roughness()
-        .base_color_texture()
-        .and_then(|info| {
+    // Phase 19: capture the first primitive's base color texture as
+    // the mesh-wide auto texture. Multi-material primitives don't
+    // get per-primitive textures yet (deferred to a Phase 21+
+    // follow-on once the renderer's draw partitioning supports it).
+    if out_auto_tex.is_none() {
+        if let Some(info) = primitive
+            .material()
+            .pbr_metallic_roughness()
+            .base_color_texture()
+        {
             let image_index = info.texture().source().index();
-            images.get(image_index).map(|img| {
+            if let Some(img) = images.get(image_index) {
                 let pixels = match img.format {
                     gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
                     gltf::image::Format::R8G8B8 => widen_rgb_to_rgba(&img.pixels),
-                    // Other formats (R8, R8G8, R16…) are uncommon in
-                    // base color textures; fall back to white pixels
-                    // of the right dimensions so the mesh draws.
                     _ => vec![255u8; (img.width * img.height * 4) as usize],
                 };
-                AutoTextureData {
+                *out_auto_tex = Some(AutoTextureData {
                     width: img.width,
                     height: img.height,
                     pixels,
-                }
-            })
-        });
-
-    Ok((vertices, indices, auto_texture))
+                });
+            }
+        }
+    }
 }
 
 /// Widen a tightly-packed RGB8 buffer to RGBA8 with full alpha.

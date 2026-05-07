@@ -1665,6 +1665,52 @@ fn install_math(env: &mut Env) {
         "noise".to_string(),
         Value::from_builtin("noise", &["point"], math_noise),
     );
+
+    // Phase 19: mat4 namespace. Stored as a 16-element tagged
+    // Object with kind="mat4" — no new Value variant, no GC
+    // changes, no parser changes. Element order is column-major
+    // (matches glTF + WGSL convention).
+    let mut mat4 = HashMap::new();
+    mat4.insert(
+        "identity".to_string(),
+        Value::from_builtin("mat4.identity", &[], mat4_identity_impl),
+    );
+    mat4.insert(
+        "translate".to_string(),
+        Value::from_builtin("mat4.translate", &["v"], mat4_translate_impl),
+    );
+    mat4.insert(
+        "rotate_x".to_string(),
+        Value::from_builtin("mat4.rotate_x", &["angle"], mat4_rotate_x_impl),
+    );
+    mat4.insert(
+        "rotate_y".to_string(),
+        Value::from_builtin("mat4.rotate_y", &["angle"], mat4_rotate_y_impl),
+    );
+    mat4.insert(
+        "rotate_z".to_string(),
+        Value::from_builtin("mat4.rotate_z", &["angle"], mat4_rotate_z_impl),
+    );
+    mat4.insert(
+        "scale".to_string(),
+        Value::from_builtin("mat4.scale", &["v"], mat4_scale_impl),
+    );
+    mat4.insert(
+        "mul".to_string(),
+        Value::from_builtin("mat4.mul", &["a", "b"], mat4_mul_impl),
+    );
+    mat4.insert(
+        "transform_vec3".to_string(),
+        Value::from_builtin("mat4.transform_vec3", &["m", "v"], mat4_transform_vec3_impl),
+    );
+    env.set(
+        "mat4".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: mat4,
+            kind: "module",
+        }))),
+    );
+
     env.set(
         "math".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -2217,6 +2263,173 @@ fn math_length(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let v = tuple_floats(&args[0], "math.length.v")?;
     let sq: f64 = v.iter().map(|x| x * x).sum();
     Ok(Value::from_float(sq.sqrt()))
+}
+
+// ---------- Phase 19: mat4 helpers ----------
+
+/// Build a Twe mat4 Object from a flat column-major [f32; 16] array.
+/// Stored as `kind="mat4"` Object with a single `data` field that's
+/// a 16-element list of floats. Avoids needing a new Value variant.
+fn mat4_to_value(m: &[f32; 16]) -> Value {
+    let elems: Vec<Value> = m.iter().map(|f| Value::from_float(*f as f64)).collect();
+    let mut fields = HashMap::new();
+    fields.insert(
+        "data".to_string(),
+        Value::from_list(Rc::new(RefCell::new(elems))),
+    );
+    Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "mat4",
+    })))
+}
+
+/// Pull a [f32; 16] out of a Twe mat4 handle. Errors if not a mat4
+/// object or if `data` is not a 16-element float list.
+fn mat4_from_value(v: &Value, what: &str) -> Result<[f32; 16], RuntimeError> {
+    if !v.is_object() {
+        let other = *v;
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: expected a mat4, got {}", other.type_name()),
+            help: Some("create one with mat4.identity() / mat4.translate(v) / etc.".to_string()),
+        });
+    }
+    let rc = v.as_object();
+    let o = rc.borrow();
+    if o.kind != "mat4" {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what}: expected a mat4 Object, got kind '{}'",
+                o.kind
+            ),
+            help: None,
+        });
+    }
+    let data = o
+        .get_field("data")
+        .ok_or_else(|| RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: mat4 missing data field"),
+            help: None,
+        })?;
+    if !data.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: mat4.data is not a list"),
+            help: None,
+        });
+    }
+    let list = data.as_list();
+    let list = list.borrow();
+    if list.len() != 16 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: mat4.data has {} elements, expected 16", list.len()),
+            help: None,
+        });
+    }
+    let mut out = [0.0f32; 16];
+    for (i, e) in list.iter().enumerate() {
+        out[i] = number(e, what)? as f32;
+    }
+    Ok(out)
+}
+
+fn mat4_identity_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    let m: [f32; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    Ok(mat4_to_value(&m))
+}
+
+fn mat4_translate_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mat4.translate")?;
+    let v = xyz_of(&args[0], "mat4.translate.v")?;
+    // Column-major: translation lives in column 3 (indices 12,13,14).
+    let m: [f32; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, v[0], v[1], v[2], 1.0,
+    ];
+    Ok(mat4_to_value(&m))
+}
+
+fn mat4_rotate_x_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mat4.rotate_x")?;
+    let a = number(&args[0], "mat4.rotate_x.angle")? as f32;
+    let c = a.cos();
+    let s = a.sin();
+    let m: [f32; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    Ok(mat4_to_value(&m))
+}
+
+fn mat4_rotate_y_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mat4.rotate_y")?;
+    let a = number(&args[0], "mat4.rotate_y.angle")? as f32;
+    let c = a.cos();
+    let s = a.sin();
+    let m: [f32; 16] = [
+        c, 0.0, -s, 0.0, 0.0, 1.0, 0.0, 0.0, s, 0.0, c, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    Ok(mat4_to_value(&m))
+}
+
+fn mat4_rotate_z_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mat4.rotate_z")?;
+    let a = number(&args[0], "mat4.rotate_z.angle")? as f32;
+    let c = a.cos();
+    let s = a.sin();
+    let m: [f32; 16] = [
+        c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    Ok(mat4_to_value(&m))
+}
+
+fn mat4_scale_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mat4.scale")?;
+    let v = xyz_of(&args[0], "mat4.scale.v")?;
+    let m: [f32; 16] = [
+        v[0], 0.0, 0.0, 0.0, 0.0, v[1], 0.0, 0.0, 0.0, 0.0, v[2], 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    Ok(mat4_to_value(&m))
+}
+
+fn mat4_mul_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "mat4.mul")?;
+    let a = mat4_from_value(&args[0], "mat4.mul.a")?;
+    let b = mat4_from_value(&args[1], "mat4.mul.b")?;
+    let mut out = [0.0f32; 16];
+    for i in 0..4 {
+        for j in 0..4 {
+            // out[col=j, row=i] = sum over k of a[col=k,row=i] * b[col=j,row=k]
+            out[j * 4 + i] = a[i] * b[j * 4]
+                + a[4 + i] * b[j * 4 + 1]
+                + a[8 + i] * b[j * 4 + 2]
+                + a[12 + i] * b[j * 4 + 3];
+        }
+    }
+    Ok(mat4_to_value(&out))
+}
+
+fn mat4_transform_vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "mat4.transform_vec3")?;
+    let m = mat4_from_value(&args[0], "mat4.transform_vec3.m")?;
+    let v = xyz_of(&args[1], "mat4.transform_vec3.v")?;
+    // Treat v as a point (w=1).
+    let x = m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12];
+    let y = m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13];
+    let z = m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14];
+    Ok(Value::from_tuple(Rc::new(vec![
+        Value::from_float(x as f64),
+        Value::from_float(y as f64),
+        Value::from_float(z as f64),
+    ])))
 }
 
 fn math_normalize(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
