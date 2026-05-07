@@ -1,6 +1,6 @@
 [package]
 name = "twec"
-version = "0.1.0-pre"
+version = "0.1.0"
 edition = "2021"
 description = "Twe language compiler and tree-walking interpreter"
 publish = false

@@ -10,6 +10,70 @@ ships. Until then, every minor (v0.x) release is permitted to break
 the surface, with deprecations rather than removals where the
 removal would be load-bearing.
 
+## v0.1.0 — First public release (2026-05-07)
+
+The first public-tagged release of Twe. Everything below the line
+ships in this build; what's open and tracked in CLAUDE.md / the
+roadmap is not in scope here.
+
+### Highlights
+
+- **2D runtime** (`twec play`) — macroquad-backed game loop, full
+  UI widget set (button, slider, dropdown, panel, stack, flex,
+  grid, scroll, text input, key-input rebind), pause stack,
+  settings + localization, gamepad, particles, clipboard, hot
+  reload, screenshot (F12), frame-time HUD (F3), crash reporter.
+- **3D runtime** (`twec play3d`) — wgpu pipeline with rapier3d
+  physics, glTF 2.0 multi-node scene flatten + GPU skinning +
+  animation channel sampling, 8 point lights + Blinn-Phong, 2K
+  shadow maps with 3×3 PCF, HDR linear lighting + ACES filmic
+  tone mapping + vignette, frustum culling, dynamic instance
+  buffer, distance-attenuated 3D audio, KinematicCharacterController
+  with raycasts + collision events, typed `save.*` namespace.
+- **Visual runtime** (`twec play_visual`) — `visual` blocks
+  compile to WGSL fragment shaders.
+- **Build pipeline** (`twec build`) — produces a self-extracting
+  Windows `.exe` with the bundled game + Twe runtime; macOS
+  `.app` and Linux `.AppDir` directory layouts also supported
+  (per-target binaries via cargo-dist in this release).
+- **Module system** + **strict mode v2** + **verified-mode JSON
+  diagnostics** for LLM tool-use loops.
+- **Tooling** — `twec fmt` (trivia-preserving since Phase 27),
+  `twec verify`, `twec types`, `twec profile` (Chrome trace),
+  `twec info`, `twec bench` (criterion-based), tree-sitter
+  grammar, LSP with hover + completion + go-to-definition.
+- **737 tests pass** across lib + 12 integration binaries.
+- **Two reference games**: `survive_beta` (Vampire-Survivors
+  clone, ~1300 lines) and `crystal_hunter` (3D FPS, ~250 lines).
+
+### Released artifacts
+
+Cross-platform binaries attached to the GitHub Release for:
+
+- `x86_64-pc-windows-msvc` (`.zip`)
+- `x86_64-unknown-linux-gnu` (`.tar.gz`)
+- `x86_64-apple-darwin` (`.tar.gz`)
+- `aarch64-apple-darwin` (`.tar.gz`)
+
+Each archive contains the `twec` binary plus README, LICENSE,
+and CHANGELOG.
+
+### Known limitations carried into v0.1
+
+- Bytecode VM is partial: rejects `on render():`, keyword
+  arguments to builtin calls, dialogue, and non-literal field
+  defaults. The tree-walker is the canonical execution path;
+  `--vm bytecode` falls back with a clean compile error.
+- The bytecode VM is currently 1.1×–1.8× *slower* than the
+  pre-NaN-tag baseline on tight integer loops; the 3× target is
+  unmet but the criterion harness (`benches/vm.rs`) is in place
+  to drive it down.
+- Auto-pause-on-window-blur ships only on Windows;
+  macOS / X11 / Wayland focus paths stub `is_focused() = true`.
+- Cross-compiled per-target twec runtimes for the macOS `.app`
+  and Linux `.AppDir` layouts produce empty shells today; the
+  cargo-dist release pipeline (this release) fills them in.
+
 ## v0.7 (Phase 13) — Modules + type-system stability
 
 **Status:** in development.
