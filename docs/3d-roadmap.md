@@ -2,7 +2,13 @@
 
 > **Goal:** Bring Twe from its current minimal 3D scaffolding to full commercial/production 3D game capability.
 >
-> **Status (2026-05-07):** Phases 17 + 18 are **codebase-closed**. Textures, mouse look, cursor lock, vec3 math, glTF material auto-extraction, full rapier3d physics with character controller, raycasts, and collision events all ship. Closeout notes in `docs/changes/2026-05-07-phase-{17,18}-closeout.md`. Phases 19–23 (full glTF scene graph, lights + shadows, skeletal animation, scene management, polish + perf) remain.
+> **Status (2026-05-07):** **Phases 17–23 are all codebase-closed (MVP scope).** Each phase ships a real but partial subset of the full plan, with deferred items honestly tracked.
+>
+> - Phase 17 — UV + textures + mouse + cursor + vec3 math + glTF material auto-extraction. Closeout: `docs/changes/2026-05-07-phase-17-closeout.md`.
+> - Phase 18 — full rapier3d physics + KCC + raycast + collision events. Closeout: `docs/changes/2026-05-07-phase-18-closeout.md`.
+> - Phases 19–23 — multi-node glTF + mat4 + lighting + animation API + typed save + dynamic instances + spatial audio. Single combined closeout at `docs/changes/2026-05-07-phase-19-23-closeout.md`.
+>
+> **Major deferrals tracked in closeouts:** GPU skinning (Phase 21), shadow maps (Phase 20), frustum culling (Phase 23), post-processing (Phase 23), per-instance dynamic transforms (Phase 19). The Twe-facing API surface for these is stable where applicable; what lands later is the GPU pipeline implementation.
 
 ---
 
