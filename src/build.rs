@@ -263,8 +263,7 @@ impl ResolvedConfig {
 /// new keys.
 pub fn parse_manifest(path: &Path) -> Result<ProjectManifest, String> {
     let display = path.display().to_string();
-    let src = fs::read_to_string(path)
-        .map_err(|e| format!("cannot read '{display}': {e}"))?;
+    let src = fs::read_to_string(path).map_err(|e| format!("cannot read '{display}': {e}"))?;
     let value: toml::Value = src
         .parse()
         .map_err(|e| format!("{display}: invalid TOML: {e}"))?;
@@ -347,10 +346,7 @@ pub fn parse_manifest(path: &Path) -> Result<ProjectManifest, String> {
                         .get("version")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
-                    path: t
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .map(PathBuf::from),
+                    path: t.get("path").and_then(|v| v.as_str()).map(PathBuf::from),
                 },
                 _ => {
                     return Err(format!(
@@ -466,11 +462,10 @@ pub fn discover_project(dir: &Path) -> Result<DiscoveredProject, String> {
 }
 
 fn walk_assets(dir: &Path, root: &Path, out: &mut Vec<AssetEntry>) -> Result<(), String> {
-    let entries = fs::read_dir(dir)
-        .map_err(|e| format!("cannot read directory '{}': {e}", dir.display()))?;
+    let entries =
+        fs::read_dir(dir).map_err(|e| format!("cannot read directory '{}': {e}", dir.display()))?;
     for entry in entries {
-        let entry =
-            entry.map_err(|e| format!("error walking '{}': {e}", dir.display()))?;
+        let entry = entry.map_err(|e| format!("error walking '{}': {e}", dir.display()))?;
         let path = entry.path();
         let ft = entry
             .file_type()
@@ -507,8 +502,8 @@ fn walk_assets(dir: &Path, root: &Path, out: &mut Vec<AssetEntry>) -> Result<(),
 /// downstream sessions to reuse.
 pub fn validate_project(project: &DiscoveredProject) -> Result<crate::ast::Program, String> {
     let main_str = project.main.display().to_string();
-    let src = fs::read_to_string(&project.main)
-        .map_err(|e| format!("cannot read '{main_str}': {e}"))?;
+    let src =
+        fs::read_to_string(&project.main).map_err(|e| format!("cannot read '{main_str}': {e}"))?;
     let tokens = crate::lexer::lex(&src).map_err(|e| format!("{main_str}:{e}"))?;
     let program = crate::parser::parse(&tokens).map_err(|e| format!("{main_str}:{e}"))?;
     // Phase 4 closed at non-strict default per CLAUDE.md, so type
@@ -678,8 +673,10 @@ pub fn run_info(path: &Path) -> i32 {
         Ok(None) => match crate::bundle::BundleReader::open(path) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("error: '{}' is not a twebundle or self-extracting binary: {e}",
-                    path.display());
+                eprintln!(
+                    "error: '{}' is not a twebundle or self-extracting binary: {e}",
+                    path.display()
+                );
                 return 1;
             }
         },
@@ -733,11 +730,7 @@ pub fn run_info(path: &Path) -> i32 {
             continue;
         }
         // Look up the on-disk size from the header.
-        let size = reader
-            .header
-            .find(key)
-            .map(|e| e.body_length)
-            .unwrap_or(0);
+        let size = reader.header.find(key).map(|e| e.body_length).unwrap_or(0);
         println!("  {key:<40} {size} bytes");
     }
     0
@@ -802,11 +795,8 @@ pub fn write_steam_layout(
         .map_err(|e| format!("cannot write steam_appid.txt: {e}"))?;
 
     let app_build = render_app_build_vdf(app_id, depot_id, &description);
-    fs::write(
-        steam_dir.join(format!("app_build_{app_id}.vdf")),
-        app_build,
-    )
-    .map_err(|e| format!("cannot write app_build vdf: {e}"))?;
+    fs::write(steam_dir.join(format!("app_build_{app_id}.vdf")), app_build)
+        .map_err(|e| format!("cannot write app_build vdf: {e}"))?;
 
     let depot_build = render_depot_build_vdf(depot_id);
     fs::write(
@@ -894,18 +884,14 @@ fn build_self_extracting(
 ) -> i32 {
     // Encode the bundle to memory (small enough — full survive.twe
     // tree is ~1MB; v0.6 doesn't ship multi-GB games).
-    let bundle_bytes = match encode_bundle_to_vec(
-        project,
-        resolved.compress,
-        args.target,
-        args.config,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
+    let bundle_bytes =
+        match encode_bundle_to_vec(project, resolved.compress, args.target, args.config) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
     let runtime = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -1006,10 +992,7 @@ fn bundle_out_path(out_path: &Path) -> PathBuf {
 /// the number of bytes written. Used both by `twec build` and by
 /// the standalone `twec bundle` subcommand. Defaults to no
 /// compression — call `write_bundle_with_options` to opt in.
-pub fn write_bundle(
-    project: &DiscoveredProject,
-    out_path: &Path,
-) -> Result<u64, String> {
+pub fn write_bundle(project: &DiscoveredProject, out_path: &Path) -> Result<u64, String> {
     write_bundle_with_options(project, out_path, crate::bundle::EncodeOptions::default())
 }
 
@@ -1095,22 +1078,17 @@ fn build_macos_app(
         eprintln!("error: cannot write '{}': {e}", plist_path.display());
         return 1;
     }
-    let bundle_bytes = match encode_bundle_to_vec(
-        project,
-        resolved.compress,
-        args.target,
-        args.config,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
+    let bundle_bytes =
+        match encode_bundle_to_vec(project, resolved.compress, args.target, args.config) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
     let exec_path = app_dir.join("Contents/MacOS").join(&exec_name);
     let host = BuildTarget::host();
-    let host_is_macos =
-        host == BuildTarget::MacOsAarch64 || host == BuildTarget::MacOsX86_64;
+    let host_is_macos = host == BuildTarget::MacOsAarch64 || host == BuildTarget::MacOsX86_64;
     if host_is_macos {
         let runtime = match std::env::current_exe() {
             Ok(p) => p,
@@ -1260,18 +1238,14 @@ fn build_linux_appdir(
             let _ = fs::set_permissions(&apprun_path, perms);
         }
     }
-    let bundle_bytes = match encode_bundle_to_vec(
-        project,
-        resolved.compress,
-        args.target,
-        args.config,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
+    let bundle_bytes =
+        match encode_bundle_to_vec(project, resolved.compress, args.target, args.config) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
     let exec_path = appdir.join("usr/bin").join(&exec_name);
     let host_is_linux = BuildTarget::host() == BuildTarget::LinuxX86_64;
     if host_is_linux {

@@ -214,7 +214,8 @@ fn rejects_deprecated_on_let() {
     let tokens = lexer::lex(src).expect("lex");
     let err = parser::parse(&tokens).expect_err("must precede declaration");
     assert!(
-        err.message.contains("must precede a function or type declaration"),
+        err.message
+            .contains("must precede a function or type declaration"),
         "got: {}",
         err.message
     );

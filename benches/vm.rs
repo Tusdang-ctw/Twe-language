@@ -97,5 +97,10 @@ fn bench_float_loop(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_sum_loop, bench_fib_recursive, bench_float_loop);
+criterion_group!(
+    benches,
+    bench_sum_loop,
+    bench_fib_recursive,
+    bench_float_loop
+);
 criterion_main!(benches);

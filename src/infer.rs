@@ -1099,9 +1099,7 @@ fn is_scalar_type(t: &Type) -> bool {
 fn union_contains_variant(union: &Type, variant: &Type) -> bool {
     match union {
         Type::Union(parts) => parts.iter().any(|p| p.is_compatible_with(variant)),
-        Type::Optional(inner) => {
-            matches!(variant, Type::Nil) || inner.is_compatible_with(variant)
-        }
+        Type::Optional(inner) => matches!(variant, Type::Nil) || inner.is_compatible_with(variant),
         _ => false,
     }
 }

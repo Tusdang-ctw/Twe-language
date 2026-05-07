@@ -1,0 +1,106 @@
+name: release
+
+# Phase 7 #1: cross-platform release binaries.
+#
+# Triggers on git tag push matching `v*.*.*` (e.g. `git tag v0.1.0
+# && git push --tags`). For each target in the matrix, builds
+# `twec` in --release mode and attaches an archive to the GitHub
+# Release for that tag.
+#
+# Archive layout:
+#   twec-v0.1.0-x86_64-pc-windows-msvc.zip   (twec.exe)
+#   twec-v0.1.0-x86_64-unknown-linux-gnu.tar.gz   (twec)
+#   twec-v0.1.0-x86_64-apple-darwin.tar.gz   (twec)
+#   twec-v0.1.0-aarch64-apple-darwin.tar.gz  (twec)
+#
+# This is a hand-rolled equivalent of `cargo dist init`; once
+# cargo-dist is installed locally we can re-generate and replace
+# this with the canonical config.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            bin: twec.exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            bin: twec
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+            bin: twec
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+            bin: twec
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build twec
+        run: cargo build --release --target ${{ matrix.target }} --bin twec
+
+      - name: Stage release artifact (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          stage="twec-${version}-${{ matrix.target }}"
+          mkdir -p "${stage}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${stage}/"
+          cp README.md LICENSE CHANGELOG.md "${stage}/" 2>/dev/null || true
+          tar -czf "${stage}.tar.gz" "${stage}"
+          echo "ASSET=${stage}.tar.gz" >> "${GITHUB_ENV}"
+
+      - name: Stage release artifact (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          $stage = "twec-${version}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.bin }}" $stage
+          foreach ($f in @("README.md", "LICENSE", "CHANGELOG.md")) {
+              if (Test-Path $f) { Copy-Item $f $stage }
+          }
+          Compress-Archive -Path $stage -DestinationPath "${stage}.zip"
+          "ASSET=${stage}.zip" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true

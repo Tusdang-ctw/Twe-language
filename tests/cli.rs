@@ -331,7 +331,10 @@ fn verify_warn_deprecated_flag_emits_warning() {
     // Exit 0 because warnings only — no errors.
     assert_eq!(output.status.code(), Some(0), "stdout: {stdout}");
     assert!(stdout.contains("\"warnings\":1"), "stdout: {stdout}");
-    assert!(stdout.contains("\"kind\":\"deprecation\""), "stdout: {stdout}");
+    assert!(
+        stdout.contains("\"kind\":\"deprecation\""),
+        "stdout: {stdout}"
+    );
     assert!(stdout.contains("`old` is deprecated"), "stdout: {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -367,8 +370,5 @@ fn verify_subcommand_no_args_errors() {
         .expect("spawn");
     assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        err.contains("requires a file path"),
-        "stderr: {err}"
-    );
+    assert!(err.contains("requires a file path"), "stderr: {err}");
 }

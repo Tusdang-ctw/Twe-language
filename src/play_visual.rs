@@ -93,10 +93,7 @@ fn build_visual(path: &str) -> Result<String, ()> {
     let check_errors = crate::visual_check::check_program(&program);
     if !check_errors.is_empty() {
         for err in &check_errors {
-            eprintln!(
-                "{path}:{}:{}: {}",
-                err.line, err.col, err.message
-            );
+            eprintln!("{path}:{}:{}: {}", err.line, err.col, err.message);
             if let Some(help) = &err.help {
                 eprintln!("  help: {help}");
             }
@@ -181,12 +178,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let state = match self.state.as_mut() {
             Some(s) => s,
             None => return,
@@ -349,44 +341,46 @@ fn build_pipeline(
         bind_group_layouts: &[bind_group_layout],
         push_constant_ranges: &[],
     });
-    Ok(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("twec-play_visual pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            // No vertex buffers — vs_main builds the fullscreen quad
-            // from vertex_index alone.
-            buffers: &[],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: "fs_main",
-            targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
+    Ok(
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("twec-play_visual pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                // No vertex buffers — vs_main builds the fullscreen quad
+                // from vertex_index alone.
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                // Front-face / cull-mode: fullscreen-triangle covers the
+                // viewport regardless of orientation; disable culling so
+                // the orientation of the trick-triangle doesn't matter.
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
         }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            // Front-face / cull-mode: fullscreen-triangle covers the
-            // viewport regardless of orientation; disable culling so
-            // the orientation of the trick-triangle doesn't matter.
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-        cache: None,
-    }))
+    )
 }
 
 fn rebuild_pipeline(state: &mut RenderState, wgsl: &str) -> Result<(), String> {

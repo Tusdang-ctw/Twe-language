@@ -156,10 +156,8 @@ fn if_expression_requires_else() {
 fn if_expression_inside_call_arg_works() {
     // Use as a function-call argument — the headline use case is
     // `text("count: {x}", ..., color: if dark: color.white else: color.black)`.
-    let out = run_program_str(
-        "let dark = true\nprint(if dark: \"white\" else: \"black\")\n",
-    )
-    .expect("program should run");
+    let out = run_program_str("let dark = true\nprint(if dark: \"white\" else: \"black\")\n")
+        .expect("program should run");
     assert_eq!(out, "white\n");
 }
 
@@ -298,8 +296,7 @@ fn death_event_unknown_keyword_errors() {
     // "unknown class event" branch — `spawn` is a Twe keyword and
     // hits the "expected event name" branch first (also a clean
     // error, but tests a different code path).
-    let err = run_program_str("on Foo.fire(e):\n    print(\"x\")\n")
-        .expect_err("should fail");
+    let err = run_program_str("on Foo.fire(e):\n    print(\"x\")\n").expect_err("should fail");
     assert!(err.contains("unknown class event"), "got: {err}");
 }
 
@@ -359,8 +356,7 @@ fn runs_color_phase9_pipeline() {
 
 #[test]
 fn color_from_hex_errors_on_bad_input() {
-    let err =
-        run_program_str("color.from_hex(\"#zzz\")\n").expect_err("should fail");
+    let err = run_program_str("color.from_hex(\"#zzz\")\n").expect_err("should fail");
     assert!(err.contains("color.from_hex"), "got: {err}");
 
     let err = run_program_str("color.from_hex(\"#abc\")\n").expect_err("should fail");
@@ -374,8 +370,7 @@ fn runs_gamepad_phase9_surface_defaults() {
     // polling impl lives in play.rs (gilrs-driven, requires the
     // macroquad window context) so headless `twec run` is the
     // perfect place to assert nothing else got accidentally set.
-    let out =
-        run_program("tests/programs/gamepad_phase9.twe").expect("program should run");
+    let out = run_program("tests/programs/gamepad_phase9.twe").expect("program should run");
     let mut expected = String::new();
     // 15 booleans (connected + 14 buttons), 1 edge-trigger, 6 axes.
     for _ in 0..16 {
@@ -404,20 +399,15 @@ fn load_font_errors_on_bad_format() {
     // or silently returning a junk handle.
     let err =
         run_program_str("load_font(\"examples/assets/hero.png\")\n").expect_err("should fail");
-    assert!(
-        err.contains("is not a valid TTF/OTF font"),
-        "got: {err}"
-    );
+    assert!(err.contains("is not a valid TTF/OTF font"), "got: {err}");
 }
 
 #[test]
 fn text_with_font_outside_render_fails_clearly() {
     // require_render fires before the font-handle type check, so the
     // bogus 0 in the font slot never gets validated.
-    let err = run_program_str(
-        "text_with_font(\"hi\", (0, 0), 24, color.white, 0)\n",
-    )
-    .expect_err("should fail");
+    let err = run_program_str("text_with_font(\"hi\", (0, 0), 24, color.white, 0)\n")
+        .expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -431,15 +421,14 @@ fn runs_atlas_phase9_load_handle() {
     // calls need a GL context (require_render guards them) so they
     // can't run headless — exercised by hand via examples/atlas_demo.twe.
     let out = run_program("tests/programs/atlas_phase9.twe").expect("program should run");
-    let expected =
-        "examples/assets/hero.png\n(4, 2)\n(8, 8)\n(4, 2)\n";
+    let expected = "examples/assets/hero.png\n(4, 2)\n(8, 8)\n(4, 2)\n";
     assert_eq!(out, expected);
 }
 
 #[test]
 fn load_atlas_errors_on_missing_file() {
-    let err = run_program_str("load_atlas(\"no_such_file.png\", (4, 2))\n")
-        .expect_err("should fail");
+    let err =
+        run_program_str("load_atlas(\"no_such_file.png\", (4, 2))\n").expect_err("should fail");
     assert!(err.contains("cannot find asset"), "got: {err}");
 }
 
@@ -455,10 +444,9 @@ fn sprite_frame_outside_render_fails_clearly() {
     // sprite_frame is require_render-guarded so calling it outside
     // an `on render():` body fails fast with the standard message —
     // the atlas-handle type-check never gets reached headless.
-    let err = run_program_str(
-        "let s = load(\"examples/assets/hero.png\")\nsprite_frame(s, (0, 0), 0)\n",
-    )
-    .expect_err("should fail");
+    let err =
+        run_program_str("let s = load(\"examples/assets/hero.png\")\nsprite_frame(s, (0, 0), 0)\n")
+            .expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -473,8 +461,7 @@ fn button_outside_render_fails_clearly() {
     // by hand via `examples/button_demo.twe` (needs a real mouse +
     // GL context); the pure point-in-rect helper has unit tests in
     // `src/stdlib.rs`.
-    let err = run_program_str("button((0, 0), (100, 40), \"Resume\")\n")
-        .expect_err("should fail");
+    let err = run_program_str("button((0, 0), (100, 40), \"Resume\")\n").expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -484,8 +471,7 @@ fn button_outside_render_fails_clearly() {
 #[test]
 fn label_outside_render_fails_clearly() {
     // Phase 10 session 2.
-    let err =
-        run_program_str("label((0, 0), (100, 40), \"Hello\")\n").expect_err("should fail");
+    let err = run_program_str("label((0, 0), (100, 40), \"Hello\")\n").expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -495,8 +481,7 @@ fn label_outside_render_fails_clearly() {
 #[test]
 fn progress_bar_outside_render_fails_clearly() {
     // Phase 10 session 2.
-    let err = run_program_str("progress_bar((0, 0), (100, 20), 0.5)\n")
-        .expect_err("should fail");
+    let err = run_program_str("progress_bar((0, 0), (100, 20), 0.5)\n").expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -506,8 +491,8 @@ fn progress_bar_outside_render_fails_clearly() {
 #[test]
 fn slider_outside_render_fails_clearly() {
     // Phase 10 session 3.
-    let err = run_program_str("slider((0, 0), (200, 28), 0.5, 0.0, 1.0)\n")
-        .expect_err("should fail");
+    let err =
+        run_program_str("slider((0, 0), (200, 28), 0.5, 0.0, 1.0)\n").expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -517,8 +502,7 @@ fn slider_outside_render_fails_clearly() {
 #[test]
 fn checkbox_outside_render_fails_clearly() {
     // Phase 10 session 4.
-    let err =
-        run_program_str("checkbox((0, 0), (24, 24), true)\n").expect_err("should fail");
+    let err = run_program_str("checkbox((0, 0), (24, 24), true)\n").expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -528,10 +512,8 @@ fn checkbox_outside_render_fails_clearly() {
 #[test]
 fn dropdown_outside_render_fails_clearly() {
     // Phase 10 session 4.
-    let err = run_program_str(
-        "dropdown((0, 0), (200, 28), [\"Low\", \"High\"], 0)\n",
-    )
-    .expect_err("should fail");
+    let err = run_program_str("dropdown((0, 0), (200, 28), [\"Low\", \"High\"], 0)\n")
+        .expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -541,8 +523,7 @@ fn dropdown_outside_render_fails_clearly() {
 #[test]
 fn text_input_outside_render_fails_clearly() {
     // Phase 10 session 5.
-    let err = run_program_str("text_input((0, 0), (200, 28), \"\")\n")
-        .expect_err("should fail");
+    let err = run_program_str("text_input((0, 0), (200, 28), \"\")\n").expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -779,8 +760,8 @@ auto_pause_when_idle(2.5)
 
 #[test]
 fn auto_pause_when_idle_rejects_negative() {
-    let err = run_program_str("auto_pause_when_idle(-1.5)\n")
-        .expect_err("negative seconds should error");
+    let err =
+        run_program_str("auto_pause_when_idle(-1.5)\n").expect_err("negative seconds should error");
     assert!(err.contains("non-negative"), "got: {err}");
 }
 
@@ -801,8 +782,7 @@ fn auto_pause_on_blur_round_trips_flag() {
 
 #[test]
 fn auto_pause_on_blur_rejects_non_bool() {
-    let err = run_program_str("auto_pause_on_blur(1)\n")
-        .expect_err("integer should error");
+    let err = run_program_str("auto_pause_on_blur(1)\n").expect_err("integer should error");
     assert!(err.contains("bool"), "got: {err}");
 }
 
@@ -838,8 +818,8 @@ print("queued")
 #[test]
 fn key_input_outside_render_fails_clearly() {
     // Phase 10 session 11.
-    let err = run_program_str("key_input((0, 0), (160, 28), \"right\")\n")
-        .expect_err("should fail");
+    let err =
+        run_program_str("key_input((0, 0), (160, 28), \"right\")\n").expect_err("should fail");
     assert!(
         err.contains("must be called from inside `on render():`"),
         "got: {err}"
@@ -951,8 +931,7 @@ fn runs_camera_phase9_follow_shake_reset() {
     // mutations; the macroquad render-loop integration (set_camera,
     // shake offset, default-camera carve-out) is exercised by hand
     // via `twec play` and not snapshot-tested.
-    let out =
-        run_program("tests/programs/camera_phase9.twe").expect("program should run");
+    let out = run_program("tests/programs/camera_phase9.twe").expect("program should run");
     let expected = "(0.0, 0.0)\n\
         1.0\n\
         (200, 150)\n\
@@ -990,8 +969,7 @@ fn runs_math_phase9_smoothstep_mix_noise() {
     // Smoothstep + mix outputs are exact (algebraic). Noise is asserted
     // by property (deterministic + range) so the hash internals can
     // change without a brittle test.
-    let out =
-        run_program("tests/programs/math_phase9.twe").expect("program should run");
+    let out = run_program("tests/programs/math_phase9.twe").expect("program should run");
     let expected = "0.0\n\
         1.0\n\
         0.5\n\

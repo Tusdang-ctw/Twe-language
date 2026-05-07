@@ -1,0 +1,47 @@
+# mdBook config — Phase 7 #3.
+#
+# Generates the public docs site from the in-repo `docs/` Markdown.
+# Run locally with `mdbook serve book` (auto-reload at
+# http://localhost:3000) or `mdbook build book` to produce static
+# HTML in `book/book/`.
+#
+# The book.toml lives under `book/` so the generated output stays
+# scoped to that directory and doesn't pollute the repo root.
+# Sources point back at `../docs/` so we don't have to duplicate
+# content — every doc edit lands once and the book picks it up.
+
+[book]
+title = "Twe — game-first programming language"
+authors = ["Twe contributors"]
+description = "A scripting language where `entity`, `state`, `scene`, and `dialogue` are language primitives. 2D + 3D runtimes built in."
+language = "en"
+src = "src"
+multilingual = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/Tusdang-ctw/Twe-language"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/Tusdang-ctw/Twe-language/edit/main/book/{path}"
+site-url = "/"
+fold = { enable = true, level = 1 }
+
+[output.html.playground]
+editable = false
+copy-js = true
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[preprocessor.index]
+
+[preprocessor.links]

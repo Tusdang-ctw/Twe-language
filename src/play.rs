@@ -762,9 +762,8 @@ fn hud_draw() {
         (cur, r.avg_ms(), r.max_ms())
     });
     let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
-    let text = format!(
-        "frame {cur_ms:>5.1}ms  avg {avg_ms:>5.1}ms  max {max_ms:>5.1}ms  {fps:>5.1} fps"
-    );
+    let text =
+        format!("frame {cur_ms:>5.1}ms  avg {avg_ms:>5.1}ms  max {max_ms:>5.1}ms  {fps:>5.1} fps");
     // Top-right anchored. Measure first to know how wide the panel is.
     let font_size: u16 = 14;
     let dim = measure_text(&text, None, font_size, 1.0);

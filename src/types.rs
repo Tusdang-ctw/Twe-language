@@ -544,9 +544,8 @@ impl Type {
             // shape; `is_compatible_with` is class-shape-blind.
             (Type::Record(a), Type::Record(b)) => {
                 a.len() == b.len()
-                    && a.iter().all(|(k, ta)| {
-                        b.get(k).is_some_and(|tb| ta.is_compatible_with(tb))
-                    })
+                    && a.iter()
+                        .all(|(k, ta)| b.get(k).is_some_and(|tb| ta.is_compatible_with(tb)))
             }
             _ => false,
         }
@@ -1134,11 +1133,7 @@ mod tests {
         // Provided record has {x, y, z}; expected record has {x, y}.
         // Provided is a width-subtype of expected — extra `z` is
         // fine; the contract only asks for x and y.
-        let provided = record(&[
-            ("x", Type::Int),
-            ("y", Type::Int),
-            ("z", Type::Str),
-        ]);
+        let provided = record(&[("x", Type::Int), ("y", Type::Int), ("z", Type::Str)]);
         let expected = record(&[("x", Type::Int), ("y", Type::Int)]);
         let no_classes = |_: &str| None;
         assert!(is_record_subtype_of(&provided, &expected, &no_classes));

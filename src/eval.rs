@@ -1914,13 +1914,12 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             // Multiple handlers per (class, event) registered in source
             // order; the death-fire site iterates that list.
             let _ = event;
-            env.death_handlers
-                .entry(class.clone())
-                .or_default()
-                .push(crate::value::OnDeathHandler {
+            env.death_handlers.entry(class.clone()).or_default().push(
+                crate::value::OnDeathHandler {
                     param: param.clone(),
                     body: body.clone(),
-                });
+                },
+            );
             Ok(())
         }
         Stmt::Decl {

@@ -1,8 +1,8 @@
 # Twe
 
-> A game-first programming language designed for the AI-collaboration era.
-
-Twe is a scripting language for 2D and 3D game development. Game concepts — `entity`, `state`, `visual`, `dialogue`, `particles`, `scene` — are first-class language constructs, not library calls. The runtime compiles Twe to bytecode and runs it; `twec build` bundles a game into a self-extracting Windows `.exe`.
+> Ship a 2D or 3D game in a language built around `entity`, `state`, `scene`,
+> and `dialogue`. No engine dependency — `twec build` produces a single
+> self-extracting `.exe`.
 
 ```twe
 entity Slime:
@@ -11,13 +11,22 @@ entity Slime:
     function update(dt):
         let dx = player_x - pos.x
         let dy = player_y - pos.y
-        let d = math.sqrt(dx*dx + dy*dy)
-        pos = (pos.x + dx/d * 40.0 * dt,
-               pos.y + dy/d * 40.0 * dt)
+        let d = math.sqrt(dx * dx + dy * dy)
+        pos = (pos.x + dx / d * 40.0 * dt,
+               pos.y + dy / d * 40.0 * dt)
 
     function render():
         rect(at: (pos.x - 10, pos.y - 10), size: (20, 20), color: color.cyan)
 ```
+
+**Twe in one sentence:** game concepts (`entity`, `state`, `visual`, `dialogue`,
+`particles`, `scene`) are first-class language constructs, not library calls,
+so a Vampire-Survivors-class 2D game ships in ~1300 lines and a 3D
+crystal-collection prototype with shadows + ACES tone mapping ships in ~250.
+
+**3D pipeline (v0.1):** rapier3d physics, glTF 2.0 scene graph + GPU skinning,
+8 point lights + Blinn-Phong, 2K shadow maps with 3×3 PCF, HDR + ACES filmic
+tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 
 ## What ships with Twe
 
@@ -41,50 +50,73 @@ entity Slime:
 | Tutorial v2 (Pong → Survivors → RPG) | v0.8 |
 | Steam SDK integration (`--features steam`) | v0.9 |
 | RPG demo — second first-party game | v1.0 |
+| 3D physics + character controller (rapier3d) | post-v1.0 |
+| glTF 2.0 multi-node scenes + auto-textures | post-v1.0 |
+| GPU skinning + glTF animation channels | post-v1.0 |
+| Real-time directional shadows (2K depth + 3×3 PCF) | post-v1.0 |
+| HDR pipeline + ACES filmic tone mapping + vignette | post-v1.0 |
+| Frustum culling, dynamic instance buffer | post-v1.0 |
 
-**732 tests pass. `cargo clippy -- -D warnings` clean.**
+**737 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.**
 
 ## Install
 
-```
-cargo install --git https://github.com/your-org/twe-language twec
-```
+Build from source (requires Rust 1.74+):
 
-Or clone and build:
-
-```
-git clone https://github.com/your-org/twe-language
-cd twe-language
+```sh
+git clone https://github.com/Tusdang-ctw/Twe-language
+cd Twe-language
 cargo build --release
 ./target/release/twec version
 ```
 
+Or install directly:
+
+```sh
+cargo install --git https://github.com/Tusdang-ctw/Twe-language --bin twec
+```
+
+Pre-built binaries for Windows / macOS / Linux land in [Releases](https://github.com/Tusdang-ctw/Twe-language/releases) once cargo-dist is wired up (Phase 7).
+
 ## Quick start
 
+2D — pick any:
+
+```sh
+twec play examples/pong.twe                # Pong (player vs AI)
+twec play examples/survive_beta/main.twe   # Vampire-Survivors clone
+twec play examples/rpg_demo/main.twe       # Dialogue-driven mini-RPG
+twec play_visual examples/visual_fire.twe  # Procedural fire shader
 ```
-twec play examples/pong.twe          # Pong (player vs AI)
-twec play examples/survive_beta/main.twe  # Vampire Survivors clone
-twec play examples/rpg_demo/main.twe      # Dialogue RPG
-twec play_visual examples/visual_fire.twe # Procedural fire shader
+
+3D — pick any:
+
+```sh
+twec play3d examples/crystal_hunter.twe    # FPS — collect crystals, dodge sentinels
+twec play3d examples/fps_demo.twe          # Bare physics + KCC + raycast prototype
+twec play3d examples/hello_3d.twe          # Cubes + spheres + orbit camera
 ```
 
 Build a redistributable:
 
-```
+```sh
 twec build examples/survive_beta
 # → examples/survive_beta/dist/survive_beta.exe (self-extracting, no Twe required)
 ```
 
 ## Examples gallery
 
-28 runnable examples covering every major surface:
+27 single-file examples + 7 multi-file projects, covering every major surface:
 
 | File | What it shows |
 |------|--------------|
+| `examples/crystal_hunter.twe` | **3D showcase** — physics, shadows, HDR + ACES, 5 point lights, save state |
+| `examples/fps_demo.twe` | First-person physics, mouse-look, raycasts, collision events |
+| `examples/hello_3d.twe` / `hello_glb.twe` | 3D primitives + glTF mesh import |
 | `examples/pong.twe` | Paddles, ball physics, AI, state machine |
 | `examples/snake.twe` | Classic Snake — entity-less version |
-| `examples/survive_beta/` | Full Vampire-Survivors clone (1300 lines) |
-| `examples/rpg_demo/` | Dialogue, rooms, pickups, save/load |
+| `examples/survive_beta/` | Full Vampire-Survivors clone (~1300 lines) |
+| `examples/rpg_demo/` | Dialogue, rooms, pickups, save / load |
 | `examples/visual_fire.twe` | Procedural fire via `visual` → WGSL |
 | `examples/particles_demo.twe` | Particle systems |
 | `examples/pause_menu_demo.twe` | Pause stack + settings save |
@@ -94,7 +126,7 @@ twec build examples/survive_beta
 | `examples/atlas_demo.twe` | Spritesheet animation |
 | `examples/widgets_demo.twe` | Full widget gallery |
 | `examples/modular_math_demo/` | Multi-file modules |
-| … 15 more | Audio, camera, gamepad, fonts, mouse, save, layout, … |
+| … and more | Audio, camera, gamepad, fonts, mouse, save, layout, physics |
 
 ## Language in 60 seconds
 
@@ -166,8 +198,9 @@ In strict priority order:
 
 | Game | Author | Version |
 |------|--------|---------|
-| [Survive Beta](examples/survive_beta/) — Vampire Survivors clone | First-party | v0.8 |
+| [Survive Beta](examples/survive_beta/) — Vampire-Survivors clone | First-party | v0.8 |
 | [RPG Demo](examples/rpg_demo/) — Dialogue-driven adventure | First-party | v1.0 |
+| [Crystal Hunter](examples/crystal_hunter.twe) — 3D FPS showcase | First-party | post-v1.0 |
 
 *Ship a game with Twe? Open a PR to add it here.*
 

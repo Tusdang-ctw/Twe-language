@@ -11,8 +11,8 @@ use std::sync::Mutex;
 use twec::build::{
     discover_project, encode_bundle_to_vec, parse_manifest, render_app_build_vdf,
     render_apprun_script, render_depot_build_vdf, render_desktop_entry, render_info_plist,
-    resolve_config, validate_project, write_bundle, write_bundle_with_options,
-    write_steam_layout, BuildArgs, BuildConfig, BuildTarget,
+    resolve_config, validate_project, write_bundle, write_bundle_with_options, write_steam_layout,
+    BuildArgs, BuildConfig, BuildTarget,
 };
 use twec::bundle::{
     append_to_binary, clear_active_bundle, detect_in_file, encode_with_options, has_active_bundle,
@@ -46,11 +46,19 @@ fn discover_finds_main_and_walks_assets() {
     let project = discover_project(&dir).expect("discover");
     assert_eq!(project.name, dir.file_name().unwrap().to_string_lossy());
     assert_eq!(project.assets.len(), 3);
-    let keys: Vec<_> = project.assets.iter().map(|a| a.bundle_key.as_str()).collect();
+    let keys: Vec<_> = project
+        .assets
+        .iter()
+        .map(|a| a.bundle_key.as_str())
+        .collect();
     // Sorted, forward-slash-canonical bundle keys.
     assert_eq!(
         keys,
-        vec!["assets/audio.ogg", "assets/sprites/hero.png", "assets/walk.png"]
+        vec![
+            "assets/audio.ogg",
+            "assets/sprites/hero.png",
+            "assets/walk.png"
+        ]
     );
     assert!(project.manifest.is_none());
     let _ = fs::remove_dir_all(&dir);
@@ -81,18 +89,17 @@ fn discover_errors_when_path_not_a_directory() {
     let file = dir.join("main.twe");
     fs::write(&file, "print(\"hi\")\n").unwrap();
     let err = discover_project(&file).expect_err("should fail when given a file");
-    assert!(err.contains("not a directory") || err.contains("missing"), "got: {err}");
+    assert!(
+        err.contains("not a directory") || err.contains("missing"),
+        "got: {err}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn validate_succeeds_on_well_formed_program() {
     let dir = temp_project("validate_ok");
-    fs::write(
-        dir.join("main.twe"),
-        "let x = 1\nlet y = x + 2\nprint(y)\n",
-    )
-    .unwrap();
+    fs::write(dir.join("main.twe"), "let x = 1\nlet y = x + 2\nprint(y)\n").unwrap();
     let project = discover_project(&dir).expect("discover");
     validate_project(&project).expect("well-formed program should validate");
     let _ = fs::remove_dir_all(&dir);
@@ -118,7 +125,10 @@ fn target_host_returns_a_real_target() {
     // CLI default works on any contributor's machine.
     let host = BuildTarget::host();
     let label = host.label();
-    assert!(BuildTarget::parse(label).is_some(), "host label round-trips");
+    assert!(
+        BuildTarget::parse(label).is_some(),
+        "host label round-trips"
+    );
 }
 
 #[test]
@@ -202,8 +212,8 @@ fn active_bundle_redirects_then_falls_through_to_filesystem() {
     assert_eq!(bytes_disk, b"DISK_VERSION");
 
     // Missing path errors with NotFound.
-    let err = read_asset_bytes("does_not_exist_anywhere.png")
-        .expect_err("missing path should error");
+    let err =
+        read_asset_bytes("does_not_exist_anywhere.png").expect_err("missing path should error");
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 
     let _ = fs::remove_dir_all(&dir);
@@ -242,14 +252,8 @@ profile = true
     assert_eq!(manifest.default_target, Some(BuildTarget::WindowsX86_64));
     assert_eq!(manifest.default_config, Some(BuildConfig::Release));
     assert_eq!(manifest.configs.len(), 3);
-    assert_eq!(
-        manifest.configs.get("dev").unwrap().hot_reload,
-        Some(true)
-    );
-    assert_eq!(
-        manifest.configs.get("profile").unwrap().profile,
-        Some(true)
-    );
+    assert_eq!(manifest.configs.get("dev").unwrap().hot_reload, Some(true));
+    assert_eq!(manifest.configs.get("profile").unwrap().profile, Some(true));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -274,7 +278,7 @@ fn resolve_config_applies_manifest_overrides() {
     manifest.configs.insert(
         "release".to_string(),
         ConfigOverride {
-            hot_reload: Some(true),  // override the builtin false
+            hot_reload: Some(true), // override the builtin false
             bundle_assets: None,
             strip_debug: Some(false),
             profile: None,
@@ -520,14 +524,13 @@ fn release_config_default_compresses() {
 fn manifest_compress_override_round_trips() {
     let dir = temp_project("compress_override");
     fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
-    fs::write(
-        dir.join("twe.toml"),
-        "[build.release]\ncompress = false\n",
-    )
-    .unwrap();
+    fs::write(dir.join("twe.toml"), "[build.release]\ncompress = false\n").unwrap();
     let manifest = parse_manifest(&dir.join("twe.toml")).expect("parse");
     let resolved = resolve_config(Some(&manifest), BuildConfig::Release);
-    assert!(!resolved.compress, "manifest override should disable compression");
+    assert!(
+        !resolved.compress,
+        "manifest override should disable compression"
+    );
     assert!(resolved.bundle_assets);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -753,9 +756,12 @@ fn survive_demo_project_validates() {
     // discovery + validation path is the same pipeline `twec build`
     // runs before producing an artifact, so this test catches
     // regressions that would prevent the demo shipping.
-    let demo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/survive_demo");
-    assert!(demo.is_dir(), "survive_demo project missing at {}", demo.display());
+    let demo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/survive_demo");
+    assert!(
+        demo.is_dir(),
+        "survive_demo project missing at {}",
+        demo.display()
+    );
     assert!(demo.join("main.twe").is_file());
     assert!(demo.join("twe.toml").is_file());
     assert!(demo.join("assets/hero.png").is_file());
@@ -763,7 +769,10 @@ fn survive_demo_project_validates() {
     let project = discover_project(&demo).expect("discover");
     assert_eq!(project.name, "survive_demo");
     assert!(
-        project.assets.iter().any(|a| a.bundle_key == "assets/hero.png"),
+        project
+            .assets
+            .iter()
+            .any(|a| a.bundle_key == "assets/hero.png"),
         "hero asset must be picked up"
     );
     let manifest_path = project.manifest.as_ref().expect("manifest").clone();
@@ -780,8 +789,7 @@ fn survive_demo_round_trips_through_bundle_pipeline() {
     // tempfile, read it back through the public `twec info` path
     // (`run_info`), and confirm the provenance + entry layout match
     // what a Steam-class build would deliver.
-    let demo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/survive_demo");
+    let demo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/survive_demo");
     let project = discover_project(&demo).expect("discover");
     let bytes = encode_bundle_to_vec(
         &project,
@@ -831,9 +839,12 @@ fn survive_beta_project_validates() {
     // pins the discovery + validation contract from session 1
     // forward — every Phase-14 commit has to keep the project tree
     // loadable through the same pipeline `twec build` will run.
-    let beta = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/survive_beta");
-    assert!(beta.is_dir(), "survive_beta project missing at {}", beta.display());
+    let beta = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/survive_beta");
+    assert!(
+        beta.is_dir(),
+        "survive_beta project missing at {}",
+        beta.display()
+    );
     assert!(beta.join("main.twe").is_file());
     assert!(beta.join("twe.toml").is_file());
 
@@ -855,8 +866,7 @@ fn survive_beta_round_trips_through_bundle_pipeline() {
     // layout match what a Steam-class build would deliver. The
     // session 1 build test pinned discovery; this one pins the
     // full bundle path.
-    let beta = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/survive_beta");
+    let beta = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/survive_beta");
     let project = discover_project(&beta).expect("discover");
     let bytes = encode_bundle_to_vec(
         &project,
@@ -976,8 +986,7 @@ fn read_asset_bytes_falls_through_when_no_bundle_set() {
     let dir = temp_project("fall_through");
     fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
     fs::write(dir.join("hello.txt"), b"FROM_DISK").unwrap();
-    let bytes = read_asset_bytes(dir.join("hello.txt").to_str().unwrap())
-        .expect("filesystem read");
+    let bytes = read_asset_bytes(dir.join("hello.txt").to_str().unwrap()).expect("filesystem read");
     assert_eq!(bytes, b"FROM_DISK");
     let _ = fs::remove_dir_all(&dir);
 }

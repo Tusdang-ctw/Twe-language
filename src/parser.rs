@@ -213,7 +213,9 @@ impl<'a> Parser<'a> {
                     return Err(ParseError {
                         line: event_kind_tok.line,
                         col: event_kind_tok.col,
-                        message: format!("expected event name after `on {event_name}.`, got {other:?}"),
+                        message: format!(
+                            "expected event name after `on {event_name}.`, got {other:?}"
+                        ),
                         help: Some("v0.3 supports `on <Class>.death(param):`".to_string()),
                     });
                 }
@@ -231,10 +233,7 @@ impl<'a> Parser<'a> {
                     ),
                 });
             }
-            self.expect(
-                TokenKind::LParen,
-                "expected '(' after `on <Class>.death`",
-            )?;
+            self.expect(TokenKind::LParen, "expected '(' after `on <Class>.death`")?;
             let param_tok = self.bump().clone();
             let param = match param_tok.kind {
                 TokenKind::Ident(s) => s,
@@ -243,9 +242,7 @@ impl<'a> Parser<'a> {
                         line: param_tok.line,
                         col: param_tok.col,
                         message: format!("expected parameter name, got {other:?}"),
-                        help: Some(
-                            "`on Enemy.death(e):` binds e as the dying entity".to_string(),
-                        ),
+                        help: Some("`on Enemy.death(e):` binds e as the dying entity".to_string()),
                     });
                 }
             };
@@ -403,7 +400,10 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            self.expect(TokenKind::RParen, "expected ')' to close `@deprecated(...)`")?;
+            self.expect(
+                TokenKind::RParen,
+                "expected ')' to close `@deprecated(...)`",
+            )?;
         }
         // Annotation must be followed by a newline before the
         // annotated declaration; consume it (or several) so the
@@ -1276,8 +1276,7 @@ impl<'a> Parser<'a> {
                 col,
                 message: "empty record type `{}` is not supported".to_string(),
                 help: Some(
-                    "spell the top type with `?` (Unknown) or list at least one field"
-                        .to_string(),
+                    "spell the top type with `?` (Unknown) or list at least one field".to_string(),
                 ),
             });
         }

@@ -196,10 +196,7 @@ impl Loader {
                         path,
                         display_path(&target)
                     ),
-                    help: Some(format!(
-                        "expected the module at {}",
-                        display_path(&target)
-                    )),
+                    help: Some(format!("expected the module at {}", display_path(&target))),
                     source: importer.to_path_buf(),
                     line: *line,
                     col: *col,
@@ -333,9 +330,7 @@ pub fn resolve_with_config(
         .map(|p| display_path(p))
         .collect::<Vec<_>>()
         .join(", ");
-    Err(format!(
-        "module file not found; tried: {tried_pretty}"
-    ))
+    Err(format!("module file not found; tried: {tried_pretty}"))
 }
 
 fn parse_text(text: &str, file: &Path) -> Result<Program, LoadError> {
@@ -507,11 +502,7 @@ mod tests {
 
     fn tmp(name: &str) -> PathBuf {
         let mut d = std::env::temp_dir();
-        d.push(format!(
-            "twec-module-test-{}-{}",
-            name,
-            std::process::id()
-        ));
+        d.push(format!("twec-module-test-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -535,11 +526,7 @@ mod tests {
         // a imports b and c; both b and c import shared. shared.twe
         // should appear in deps once, not twice.
         let dir = tmp("diamond");
-        write(
-            &dir,
-            "main.twe",
-            "import \"b\"\nimport \"c\"\nlet x = 1\n",
-        );
+        write(&dir, "main.twe", "import \"b\"\nimport \"c\"\nlet x = 1\n");
         write(&dir, "b.twe", "import \"shared\"\nlet b = 1\n");
         write(&dir, "c.twe", "import \"shared\"\nlet c = 1\n");
         write(&dir, "shared.twe", "let s = 0\n");
@@ -598,11 +585,7 @@ mod tests {
     fn source_argument_overrides_disk_read() {
         let dir = tmp("source_arg");
         write(&dir, "main.twe", "let on_disk = 0\n");
-        let g = load_from_path(
-            &dir.join("main.twe"),
-            Some("let from_caller = 1\n"),
-        )
-        .unwrap();
+        let g = load_from_path(&dir.join("main.twe"), Some("let from_caller = 1\n")).unwrap();
         // The entry's program comes from the caller-supplied text,
         // not the on-disk version. Easiest check is via printer.
         let printed = crate::printer::print_program(&g.entry.program);
@@ -628,11 +611,7 @@ mod tests {
         // main -> b -> shared
         // Expected: shared, then a/b (in some order), entry not included.
         let dir = tmp("topo");
-        write(
-            &dir,
-            "main.twe",
-            "import \"a\"\nimport \"b\"\n",
-        );
+        write(&dir, "main.twe", "import \"a\"\nimport \"b\"\n");
         write(&dir, "a.twe", "import \"shared\"\nlet a = 1\n");
         write(&dir, "b.twe", "import \"shared\"\nlet b = 1\n");
         write(&dir, "shared.twe", "let s = 0\n");
@@ -665,16 +644,8 @@ mod tests {
         // The headline use case: a `math.twe` defines a function,
         // the entry imports it and calls `math.add(2, 3)`.
         let dir = tmp("call_imported_fn");
-        write(
-            &dir,
-            "main.twe",
-            "import \"math\"\nprint(math.add(2, 3))\n",
-        );
-        write(
-            &dir,
-            "math.twe",
-            "function add(a, b):\n    return a + b\n",
-        );
+        write(&dir, "main.twe", "import \"math\"\nprint(math.add(2, 3))\n");
+        write(&dir, "math.twe", "function add(a, b):\n    return a + b\n");
         let g = load_from_path(&dir.join("main.twe"), None).unwrap();
         let out = run_with_modules(&g).expect("run");
         assert!(out.contains('5'), "expected 5 in output: {out:?}");
@@ -688,11 +659,7 @@ mod tests {
             "main.twe",
             "import \"math\" as M\nprint(M.add(7, 8))\n",
         );
-        write(
-            &dir,
-            "math.twe",
-            "function add(a, b):\n    return a + b\n",
-        );
+        write(&dir, "math.twe", "function add(a, b):\n    return a + b\n");
         let g = load_from_path(&dir.join("main.twe"), None).unwrap();
         let out = run_with_modules(&g).expect("run");
         assert!(out.contains("15"), "expected 15 in output: {out:?}");
@@ -758,10 +725,7 @@ mod tests {
         let g = load_with_config(&dir.join("main.twe"), None, &config).unwrap();
         let mathlib = g.deps.values().next().unwrap();
         assert!(
-            mathlib
-                .canonical_path
-                .to_string_lossy()
-                .contains("vendor"),
+            mathlib.canonical_path.to_string_lossy().contains("vendor"),
             "expected vendor path, got {}",
             mathlib.canonical_path.display()
         );
@@ -902,16 +866,8 @@ mod tests {
         // only via a's re-export; this test instead verifies that
         // a's *use* of b at module-init time works.
         let dir = tmp("transitive");
-        write(
-            &dir,
-            "main.twe",
-            "import \"a\"\nprint(a.computed)\n",
-        );
-        write(
-            &dir,
-            "a.twe",
-            "import \"b\"\nlet computed = b.base * 10\n",
-        );
+        write(&dir, "main.twe", "import \"a\"\nprint(a.computed)\n");
+        write(&dir, "a.twe", "import \"b\"\nlet computed = b.base * 10\n");
         write(&dir, "b.twe", "let base = 7\n");
         let g = load_from_path(&dir.join("main.twe"), None).unwrap();
         let out = run_with_modules(&g).expect("run");

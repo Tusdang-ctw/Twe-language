@@ -47,8 +47,17 @@ const ALLOWED_BARE_FNS: &[&str] = &["smoothstep", "mix", "noise"];
 /// `math.<name>` calls. Pure number-in-number-out — every WGSL
 /// implementation is trivial.
 const ALLOWED_MATH_FNS: &[&str] = &[
-    "abs", "sqrt", "floor", "ceil", "min", "max", "sin", "cos",
-    "smoothstep", "mix", "noise",
+    "abs",
+    "sqrt",
+    "floor",
+    "ceil",
+    "min",
+    "max",
+    "sin",
+    "cos",
+    "smoothstep",
+    "mix",
+    "noise",
 ];
 
 /// Named color constants on the `color` module. Only the static
@@ -56,8 +65,17 @@ const ALLOWED_MATH_FNS: &[&str] = &[
 /// at runtime today, and folding them into shader constants is its
 /// own session of work.
 const ALLOWED_COLOR_FIELDS: &[&str] = &[
-    "red", "green", "blue", "cyan", "yellow", "orange", "purple",
-    "white", "black", "gray", "transparent",
+    "red",
+    "green",
+    "blue",
+    "cyan",
+    "yellow",
+    "orange",
+    "purple",
+    "white",
+    "black",
+    "gray",
+    "transparent",
 ];
 
 /// Run the subset checker over the whole program. Empty Vec means
@@ -101,9 +119,7 @@ fn check_visual_members(members: &[DeclMember], errors: &mut Vec<VisualError>) {
             // (the parser accepts them generically because parse_decl
             // is shared with entity / scene). Surface a clear error.
             DeclMember::InitialState { name, line, col } => errors.push(VisualError {
-                message: format!(
-                    "`initial state {name}` is not allowed inside a `visual` block"
-                ),
+                message: format!("`initial state {name}` is not allowed inside a `visual` block"),
                 help: Some(
                     "visual blocks are pure; states / state machines belong on `entity` blocks"
                         .to_string(),
@@ -111,7 +127,9 @@ fn check_visual_members(members: &[DeclMember], errors: &mut Vec<VisualError>) {
                 line: *line,
                 col: *col,
             }),
-            DeclMember::State { name, line, col, .. } => errors.push(VisualError {
+            DeclMember::State {
+                name, line, col, ..
+            } => errors.push(VisualError {
                 message: format!("`state {name}` is not allowed inside a `visual` block"),
                 help: None,
                 line: *line,
@@ -353,9 +371,7 @@ fn check_expr(expr: &Expr, errors: &mut Vec<VisualError>) {
             // handles the function-call case.
             check_expr(object, errors);
         }
-        Expr::Call {
-            callee, args, ..
-        } => {
+        Expr::Call { callee, args, .. } => {
             check_callable(callee, errors);
             for a in args {
                 check_expr(a, errors);
@@ -365,7 +381,10 @@ fn check_expr(expr: &Expr, errors: &mut Vec<VisualError>) {
         // Allocating / non-GPU forms.
         Expr::Str { line, col, .. } => errors.push(VisualError {
             message: "string literals aren't allowed inside a `visual` body".to_string(),
-            help: Some("shaders work on numeric data; build colors from tuples or `color.<name>`".to_string()),
+            help: Some(
+                "shaders work on numeric data; build colors from tuples or `color.<name>`"
+                    .to_string(),
+            ),
             line: *line,
             col: *col,
         }),
@@ -410,9 +429,7 @@ fn check_callable(callee: &Expr, errors: &mut Vec<VisualError>) {
         Expr::Ident { name, line, col } => {
             if !ALLOWED_BARE_FNS.contains(&name.as_str()) {
                 errors.push(VisualError {
-                    message: format!(
-                        "function `{name}` is not allowed inside a `visual` body"
-                    ),
+                    message: format!("function `{name}` is not allowed inside a `visual` body"),
                     help: Some(format!(
                         "GPU-safe bare names: {}",
                         ALLOWED_BARE_FNS.join(", ")
@@ -428,10 +445,7 @@ fn check_callable(callee: &Expr, errors: &mut Vec<VisualError>) {
             line,
             col,
         } => match object.as_ref() {
-            Expr::Ident {
-                name: module,
-                ..
-            } if module == "math" => {
+            Expr::Ident { name: module, .. } if module == "math" => {
                 if !ALLOWED_MATH_FNS.contains(&name.as_str()) {
                     errors.push(VisualError {
                         message: format!(
@@ -446,10 +460,7 @@ fn check_callable(callee: &Expr, errors: &mut Vec<VisualError>) {
                     });
                 }
             }
-            Expr::Ident {
-                name: module,
-                ..
-            } if module == "color" => {
+            Expr::Ident { name: module, .. } if module == "color" => {
                 if !ALLOWED_COLOR_FIELDS.contains(&name.as_str()) {
                     errors.push(VisualError {
                         message: format!(
@@ -478,8 +489,9 @@ fn check_callable(callee: &Expr, errors: &mut Vec<VisualError>) {
             }
             _ => {
                 errors.push(VisualError {
-                    message: "method calls on arbitrary receivers aren't allowed inside a `visual` body"
-                        .to_string(),
+                    message:
+                        "method calls on arbitrary receivers aren't allowed inside a `visual` body"
+                            .to_string(),
                     help: Some(
                         "GPU-safe calls are bare `smoothstep` / `mix` / `noise` or `math.<name>`"
                             .to_string(),

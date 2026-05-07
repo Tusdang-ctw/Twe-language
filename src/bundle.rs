@@ -312,9 +312,7 @@ pub fn decode_header<R: Read>(r: &mut R) -> io::Result<BundleHeader> {
     if version != FORMAT_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "twebundle format version {version} not supported (expected {FORMAT_VERSION})"
-            ),
+            format!("twebundle format version {version} not supported (expected {FORMAT_VERSION})"),
         ));
     }
     let flags = read_u32(r, "flags")?;
@@ -541,10 +539,7 @@ pub fn clear_active_bundle() {
 
 /// True when a bundle is installed.
 pub fn has_active_bundle() -> bool {
-    ACTIVE_BUNDLE
-        .lock()
-        .map(|g| g.is_some())
-        .unwrap_or(false)
+    ACTIVE_BUNDLE.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
 /// Resolve a path, trying the active bundle first and then the
@@ -554,9 +549,7 @@ pub fn has_active_bundle() -> bool {
 /// `assets/` yet).
 pub fn read_asset_bytes(path: &str) -> io::Result<Vec<u8>> {
     {
-        let mut guard = ACTIVE_BUNDLE
-            .lock()
-            .expect("active bundle mutex poisoned");
+        let mut guard = ACTIVE_BUNDLE.lock().expect("active bundle mutex poisoned");
         if let Some(reader) = guard.as_mut() {
             if let Some(bytes) = reader.read(path)? {
                 return Ok(bytes);
@@ -619,10 +612,7 @@ mod tests {
 
     #[test]
     fn reader_round_trips_bodies() {
-        let dir = std::env::temp_dir().join(format!(
-            "twec_bundle_round_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("twec_bundle_round_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let bundle_path = dir.join("test.twebundle");
         let files = vec![
@@ -653,10 +643,7 @@ mod tests {
         // Session 4 path: bundle appended to a host file. We prepend
         // a fake "runtime header" of arbitrary bytes and verify the
         // reader still resolves bodies through `base_offset`.
-        let dir = std::env::temp_dir().join(format!(
-            "twec_bundle_offset_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("twec_bundle_offset_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let host_path = dir.join("hosted.bin");
         let prefix: Vec<u8> = (0u8..123u8).collect();

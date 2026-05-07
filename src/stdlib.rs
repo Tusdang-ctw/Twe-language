@@ -92,8 +92,8 @@ struct CameraShake {
 /// triggers thresholded into booleans (gilrs's default 0.75 cutoff);
 /// the analog values live in `gamepad_axis.lt` / `.rt`.
 pub const GAMEPAD_BUTTON_NAMES: &[&str] = &[
-    "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "select",
-    "dup", "ddown", "dleft", "dright",
+    "a", "b", "x", "y", "lb", "rb", "lt", "rt", "start", "select", "dup", "ddown", "dleft",
+    "dright",
 ];
 
 /// Axis names for the analog sticks + triggers. Sticks are in
@@ -146,7 +146,11 @@ pub fn camera_tick(dt: f64) {
 pub fn camera_shake_offset(env: &mut Env) -> (f64, f64) {
     let amp = CAMERA_SHAKE.with(|c| {
         let s = c.borrow();
-        if s.remaining > 0.0 { s.amplitude } else { 0.0 }
+        if s.remaining > 0.0 {
+            s.amplitude
+        } else {
+            0.0
+        }
     });
     if amp == 0.0 {
         return (0.0, 0.0);
@@ -277,11 +281,7 @@ pub fn install(env: &mut Env) {
     let mut light_fields = HashMap::new();
     light_fields.insert(
         "add".to_string(),
-        Value::from_builtin(
-            "light.add",
-            &["at", "color", "radius"],
-            light_add_impl,
-        ),
+        Value::from_builtin("light.add", &["at", "color", "radius"], light_add_impl),
     );
     light_fields.insert(
         "remove".to_string(),
@@ -385,11 +385,7 @@ pub fn install(env: &mut Env) {
     let mut physics_fields = HashMap::new();
     physics_fields.insert(
         "body".to_string(),
-        Value::from_builtin(
-            "physics.body",
-            &["shape", "at", "mass"],
-            physics_body_impl,
-        ),
+        Value::from_builtin("physics.body", &["shape", "at", "mass"], physics_body_impl),
     );
     physics_fields.insert(
         "static_box".to_string(),
@@ -429,19 +425,11 @@ pub fn install(env: &mut Env) {
     );
     physics_fields.insert(
         "velocity".to_string(),
-        Value::from_builtin(
-            "physics.velocity",
-            &["handle", "v"],
-            physics_velocity_impl,
-        ),
+        Value::from_builtin("physics.velocity", &["handle", "v"], physics_velocity_impl),
     );
     physics_fields.insert(
         "impulse".to_string(),
-        Value::from_builtin(
-            "physics.impulse",
-            &["handle", "v"],
-            physics_impulse_impl,
-        ),
+        Value::from_builtin("physics.impulse", &["handle", "v"], physics_impulse_impl),
     );
     physics_fields.insert(
         "gravity".to_string(),
@@ -513,16 +501,70 @@ pub fn install(env: &mut Env) {
     // tables so the input plumbing actually drives these slots.
     let key_names = [
         // Movement / arrows.
-        "right", "left", "up", "down",
+        "right",
+        "left",
+        "up",
+        "down",
         // Common control keys.
-        "space", "escape", "enter", "tab", "backspace", "shift", "ctrl", "alt",
+        "space",
+        "escape",
+        "enter",
+        "tab",
+        "backspace",
+        "shift",
+        "ctrl",
+        "alt",
         // Letters a–z.
-        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
-        "s", "t", "u", "v", "w", "x", "y", "z",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "i",
+        "j",
+        "k",
+        "l",
+        "m",
+        "n",
+        "o",
+        "p",
+        "q",
+        "r",
+        "s",
+        "t",
+        "u",
+        "v",
+        "w",
+        "x",
+        "y",
+        "z",
         // Digits 0–9.
-        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
         // Function row F1–F12.
-        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "f11",
+        "f12",
     ];
     let mut key_fields = HashMap::new();
     let mut press_fields = HashMap::new();
@@ -719,7 +761,11 @@ pub fn install(env: &mut Env) {
     let mut achievement_fields = HashMap::new();
     achievement_fields.insert(
         "unlock".to_string(),
-        Value::from_builtin("achievement.unlock", &["name"], crate::steam::achievement_unlock),
+        Value::from_builtin(
+            "achievement.unlock",
+            &["name"],
+            crate::steam::achievement_unlock,
+        ),
     );
     env.set(
         "achievement".to_string(),
@@ -753,7 +799,11 @@ pub fn install(env: &mut Env) {
     let mut cloud_fields = HashMap::new();
     cloud_fields.insert(
         "save".to_string(),
-        Value::from_builtin("cloud.save", &["filename", "data"], crate::steam::cloud_save),
+        Value::from_builtin(
+            "cloud.save",
+            &["filename", "data"],
+            crate::steam::cloud_save,
+        ),
     );
     cloud_fields.insert(
         "load".to_string(),
@@ -1242,8 +1292,8 @@ fn settings_try_load(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     if !p.exists() {
         return Ok(Value::FALSE);
     }
-    let loaded = crate::save::load_from_path(p)
-        .map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
+    let loaded =
+        crate::save::load_from_path(p).map_err(|m| crate::save::to_runtime_error(m, 0, 0))?;
     merge_settings_data(env, "settings.try_load", &path, &loaded)?;
     Ok(Value::TRUE)
 }
@@ -1296,10 +1346,7 @@ fn merge_settings_data(
 /// convention requires every kwarg supplied.
 fn install_lang(env: &mut Env) {
     let mut lang = HashMap::new();
-    lang.insert(
-        "active".to_string(),
-        Value::from_string("en".to_string()),
-    );
+    lang.insert("active".to_string(), Value::from_string("en".to_string()));
     lang.insert(
         "bundles".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -1397,12 +1444,15 @@ fn lang_load(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     let lang = lang_namespace(env, "lang.load")?;
-    let bundles_v = lang.borrow().get_field("bundles").ok_or_else(|| RuntimeError {
-        line: 0,
-        col: 0,
-        message: "lang.load: `lang.bundles` is missing".to_string(),
-        help: None,
-    })?;
+    let bundles_v = lang
+        .borrow()
+        .get_field("bundles")
+        .ok_or_else(|| RuntimeError {
+            line: 0,
+            col: 0,
+            message: "lang.load: `lang.bundles` is missing".to_string(),
+            help: None,
+        })?;
     if !bundles_v.is_object() {
         return Err(RuntimeError {
             line: 0,
@@ -2120,9 +2170,7 @@ fn load_atlas_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "load_atlas: grid must be positive integers, got ({cols}, {rows})"
-            ),
+            message: format!("load_atlas: grid must be positive integers, got ({cols}, {rows})"),
             help: Some("e.g. `load_atlas(\"walk.png\", (8, 4))`".to_string()),
         });
     }
@@ -2130,10 +2178,7 @@ fn load_atlas_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
     fields.insert("path".to_string(), Value::from_string(path));
     fields.insert(
         "grid".to_string(),
-        Value::from_tuple(Rc::new(vec![
-            Value::from_int(cols),
-            Value::from_int(rows),
-        ])),
+        Value::from_tuple(Rc::new(vec![Value::from_int(cols), Value::from_int(rows)])),
     );
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
         fields,
@@ -2511,10 +2556,7 @@ fn tuple_floats(v: &Value, what: &str) -> Result<Vec<f64>, RuntimeError> {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "{what} expects a tuple, got {}",
-                other.type_name()
-            ),
+            message: format!("{what} expects a tuple, got {}", other.type_name()),
             help: Some("e.g. (x, y) or (x, y, z)".to_string()),
         });
     }
@@ -2812,18 +2854,9 @@ fn mesh_current_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         let st = s.borrow();
         let entry = st.get(&handle).cloned().unwrap_or_default();
         let mut fields = HashMap::new();
-        fields.insert(
-            "clip".to_string(),
-            Value::from_string(entry.clip.clone()),
-        );
-        fields.insert(
-            "time".to_string(),
-            Value::from_float(entry.time as f64),
-        );
-        fields.insert(
-            "looping".to_string(),
-            Value::from_bool(entry.looping),
-        );
+        fields.insert("clip".to_string(), Value::from_string(entry.clip.clone()));
+        fields.insert("time".to_string(), Value::from_float(entry.time as f64));
+        fields.insert("looping".to_string(), Value::from_bool(entry.looping));
         Ok(Value::from_object(Rc::new(RefCell::new(Object {
             fields,
             kind: "anim_state",
@@ -2884,7 +2917,9 @@ fn quat_from_value(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
             line: 0,
             col: 0,
             message: format!("{what}: expected a quat, got {}", other.type_name()),
-            help: Some("create one with quat.identity() / quat.from_axis_angle(axis, angle)".to_string()),
+            help: Some(
+                "create one with quat.identity() / quat.from_axis_angle(axis, angle)".to_string(),
+            ),
         });
     }
     let rc = v.as_object();
@@ -3075,21 +3110,16 @@ fn mat4_from_value(v: &Value, what: &str) -> Result<[f32; 16], RuntimeError> {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "{what}: expected a mat4 Object, got kind '{}'",
-                o.kind
-            ),
+            message: format!("{what}: expected a mat4 Object, got kind '{}'", o.kind),
             help: None,
         });
     }
-    let data = o
-        .get_field("data")
-        .ok_or_else(|| RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!("{what}: mat4 missing data field"),
-            help: None,
-        })?;
+    let data = o.get_field("data").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{what}: mat4 missing data field"),
+        help: None,
+    })?;
     if !data.is_list() {
         return Err(RuntimeError {
             line: 0,
@@ -3429,13 +3459,23 @@ fn linear_to_srgb(c: f64) -> f64 {
 fn color_to_linear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "color.to_linear")?;
     let (r, g, b, a) = rgba(&args[0], "color.to_linear")?;
-    Ok(make_color(srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), a))
+    Ok(make_color(
+        srgb_to_linear(r),
+        srgb_to_linear(g),
+        srgb_to_linear(b),
+        a,
+    ))
 }
 
 fn color_to_srgb(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "color.to_srgb")?;
     let (r, g, b, a) = rgba(&args[0], "color.to_srgb")?;
-    Ok(make_color(linear_to_srgb(r), linear_to_srgb(g), linear_to_srgb(b), a))
+    Ok(make_color(
+        linear_to_srgb(r),
+        linear_to_srgb(g),
+        linear_to_srgb(b),
+        a,
+    ))
 }
 
 fn color_lerp(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -3497,12 +3537,18 @@ fn color_from_hex(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
                 col: 0,
                 message: format!("color.from_hex: invalid hex byte `{span}`"),
                 help: Some(
-                    "expected `#rrggbb` or `#rrggbbaa` (case-insensitive, '#' optional)".to_string(),
+                    "expected `#rrggbb` or `#rrggbbaa` (case-insensitive, '#' optional)"
+                        .to_string(),
                 ),
             })
     };
     let (r, g, b, a) = match s.len() {
-        6 => (parse_byte(&s[0..2])?, parse_byte(&s[2..4])?, parse_byte(&s[4..6])?, 1.0),
+        6 => (
+            parse_byte(&s[0..2])?,
+            parse_byte(&s[2..4])?,
+            parse_byte(&s[4..6])?,
+            1.0,
+        ),
         8 => (
             parse_byte(&s[0..2])?,
             parse_byte(&s[2..4])?,
@@ -4312,11 +4358,7 @@ fn install_draw(env: &mut Env) {
     );
     env.set(
         "progress_bar".to_string(),
-        Value::from_builtin(
-            "progress_bar",
-            &["at", "size", "value"],
-            draw_progress_bar,
-        ),
+        Value::from_builtin("progress_bar", &["at", "size", "value"], draw_progress_bar),
     );
     // Phase 10 session 3: `slider(at:, size:, value:, min:, max:) -> float`.
     // Drag-state widget: the user click-and-drags the knob; the builtin
@@ -4355,11 +4397,7 @@ fn install_draw(env: &mut Env) {
     // since it needs an OS-clipboard dependency.
     env.set(
         "text_input".to_string(),
-        Value::from_builtin(
-            "text_input",
-            &["at", "size", "value"],
-            draw_text_input,
-        ),
+        Value::from_builtin("text_input", &["at", "size", "value"], draw_text_input),
     );
     // Phase 10 session 11: `key_input(at:, size:, value:) -> string`.
     // The keybind capture widget. Click to focus; the next key pressed
@@ -4369,11 +4407,7 @@ fn install_draw(env: &mut Env) {
     // the existing `key_press` ambient — no separate input plumbing.
     env.set(
         "key_input".to_string(),
-        Value::from_builtin(
-            "key_input",
-            &["at", "size", "value"],
-            draw_key_input,
-        ),
+        Value::from_builtin("key_input", &["at", "size", "value"], draw_key_input),
     );
     // Phase 10 session 6: layout primitives. `panel` is a UI-themed
     // background rect (the visual frame for grouped widgets).
@@ -4422,11 +4456,7 @@ fn install_draw(env: &mut Env) {
     );
     env.set(
         "scroll".to_string(),
-        Value::from_builtin(
-            "scroll",
-            &["at", "size", "content_height"],
-            layout_scroll,
-        ),
+        Value::from_builtin("scroll", &["at", "size", "content_height"], layout_scroll),
     );
     // sprite() is variadic-style — 2 or 3 positional args, no kwargs in v0.1.
     // Add named-param support when the optional `size` slot has a clean
@@ -5277,10 +5307,7 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
-                message: format!(
-                    "checkbox.value expects a bool, got {}",
-                    (*v).type_name()
-                ),
+                message: format!("checkbox.value expects a bool, got {}", (*v).type_name()),
                 help: Some("pass a `var` you toggle via the return value".to_string()),
             });
         }
@@ -5290,7 +5317,11 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let pressed_now = read_mouse_button(env, "mouse_press", "left");
     let held_now = read_mouse_button(env, "mouse_held", "left");
     let hovered = point_in_rect(mx, my, x, y, w, h);
-    let value = if hovered && pressed_now { !value_in } else { value_in };
+    let value = if hovered && pressed_now {
+        !value_in
+    } else {
+        value_in
+    };
 
     let bg = if hovered && held_now {
         macroquad::color::Color::new(0.45, 0.45, 0.50, 1.0)
@@ -6148,11 +6179,7 @@ fn install_3d(env: &mut Env) {
     let mut mesh_anim = HashMap::new();
     mesh_anim.insert(
         "play".to_string(),
-        Value::from_builtin(
-            "mesh.play",
-            &["handle", "clip", "looping"],
-            mesh_play_impl,
-        ),
+        Value::from_builtin("mesh.play", &["handle", "clip", "looping"], mesh_play_impl),
     );
     mesh_anim.insert(
         "stop".to_string(),
@@ -6328,10 +6355,7 @@ fn camera_follow_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     let ny = cy + (ty - cy) * lerp;
     o.insert_field(
         "pos".to_string(),
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(nx),
-            Value::from_float(ny),
-        ])),
+        Value::from_tuple(Rc::new(vec![Value::from_float(nx), Value::from_float(ny)])),
     );
     Ok(Value::NIL)
 }
@@ -6750,10 +6774,7 @@ fn handle_int(v: &Value, what: &str) -> Result<u32, RuntimeError> {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "{what}: expected integer handle, got {}",
-                other.type_name()
-            ),
+            message: format!("{what}: expected integer handle, got {}", other.type_name()),
             help: None,
         });
     }
@@ -6787,7 +6808,9 @@ fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runt
     arity(args, 2, "physics.static_box")?;
     let at = xyz_of(&args[0], "physics.static_box.at")?;
     let size = xyz_of(&args[1], "physics.static_box.size")?;
-    Ok(Value::from_int(crate::physics3d::static_box(at, size) as i64))
+    Ok(Value::from_int(
+        crate::physics3d::static_box(at, size) as i64
+    ))
 }
 
 fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -6795,7 +6818,7 @@ fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, R
     let at = xyz_of(&args[0], "physics.static_sphere.at")?;
     let radius = number(&args[1], "physics.static_sphere.radius")? as f32;
     Ok(Value::from_int(
-        crate::physics3d::static_sphere(at, radius) as i64,
+        crate::physics3d::static_sphere(at, radius) as i64
     ))
 }
 
@@ -6931,13 +6954,12 @@ fn physics_static_mesh_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Run
         message: format!("physics.static_mesh: {e}"),
         help: Some("expected a .glb file with a positions accessor".to_string()),
     })?;
-    let id =
-        crate::physics3d::static_trimesh(at, &verts, &tris).map_err(|e| RuntimeError {
-            line: 0,
-            col: 0,
-            message: e,
-            help: None,
-        })?;
+    let id = crate::physics3d::static_trimesh(at, &verts, &tris).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: e,
+        help: None,
+    })?;
     Ok(Value::from_int(id as i64))
 }
 
@@ -7018,10 +7040,7 @@ fn texture_handle_id(v: &Value, what: &str) -> Result<u32, RuntimeError> {
     Err(RuntimeError {
         line: 0,
         col: 0,
-        message: format!(
-            "{what} expects a texture handle, got {}",
-            other.type_name()
-        ),
+        message: format!("{what} expects a texture handle, got {}", other.type_name()),
         help: Some("create one with `texture(\"path.png\")`".to_string()),
     })
 }

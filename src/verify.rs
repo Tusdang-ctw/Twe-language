@@ -573,8 +573,7 @@ mod tests {
 
     #[test]
     fn file_field_carries_through_when_supplied() {
-        let report =
-            verify_program_with_path("let x = 1\n", Some("path/to/file.twe"));
+        let report = verify_program_with_path("let x = 1\n", Some("path/to/file.twe"));
         assert_eq!(report.file.as_deref(), Some("path/to/file.twe"));
         let json = report.to_json();
         assert!(json.contains("\"file\":\"path/to/file.twe\""));

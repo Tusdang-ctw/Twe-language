@@ -70,10 +70,7 @@ fn tuple_2_emits_vec2() {
         \x20       return color.red\n";
     let modules = compile(src).expect("should compile");
     let wgsl = &modules[0].1;
-    assert!(
-        wgsl.contains("vec2<f32>(1.0, 2.0)"),
-        "got:\n{wgsl}"
-    );
+    assert!(wgsl.contains("vec2<f32>(1.0, 2.0)"), "got:\n{wgsl}");
 }
 
 #[test]
@@ -84,10 +81,7 @@ fn math_dot_sin_calls_through() {
         \x20       return color.red\n";
     let modules = compile(src).expect("should compile");
     let wgsl = &modules[0].1;
-    assert!(
-        wgsl.contains("sin(time)"),
-        "got:\n{wgsl}"
-    );
+    assert!(wgsl.contains("sin(time)"), "got:\n{wgsl}");
 }
 
 #[test]

@@ -422,9 +422,8 @@ impl Compiler {
                         *col,
                     ));
                 }
-                let func = self.compile_class_event_handler(
-                    class, event, param, body, *line, *col,
-                )?;
+                let func =
+                    self.compile_class_event_handler(class, event, param, body, *line, *col)?;
                 let class_idx = self
                     .frame_mut()
                     .chunk
@@ -1851,10 +1850,7 @@ impl Compiler {
         let last_line = body.last().map(stmt_line).unwrap_or(line);
         self.frame_mut().chunk.write_op(OpCode::Nil, last_line);
         self.frame_mut().chunk.write_op(OpCode::Return, last_line);
-        let frame = self
-            .frames
-            .pop()
-            .expect("class-event frame we just pushed");
+        let frame = self.frames.pop().expect("class-event frame we just pushed");
         Ok(BcFunction::new(frame.name, frame.arity, frame.chunk))
     }
 

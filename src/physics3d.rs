@@ -206,8 +206,11 @@ impl PhysicsWorld {
                 ));
             }
         };
-        let collider = builder.active_events(ActiveEvents::COLLISION_EVENTS).build();
-        let coll_h = self.colliders
+        let collider = builder
+            .active_events(ActiveEvents::COLLISION_EVENTS)
+            .build();
+        let coll_h = self
+            .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
@@ -225,7 +228,8 @@ impl PhysicsWorld {
         let collider = ColliderBuilder::cuboid(size[0] * 0.5, size[1] * 0.5, size[2] * 0.5)
             .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
-        let coll_h = self.colliders
+        let coll_h = self
+            .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
@@ -240,7 +244,8 @@ impl PhysicsWorld {
         let collider = ColliderBuilder::ball(radius)
             .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
-        let coll_h = self.colliders
+        let coll_h = self
+            .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
@@ -272,7 +277,8 @@ impl PhysicsWorld {
             .translation(vector![at[0], at[1], at[2]])
             .build();
         let body_h = self.bodies.insert(body);
-        let coll_h = self.colliders
+        let coll_h = self
+            .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
@@ -302,7 +308,8 @@ impl PhysicsWorld {
         let collider = ColliderBuilder::capsule_y(half_cyl, radius)
             .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
-        let coll_h = self.colliders
+        let coll_h = self
+            .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
@@ -412,26 +419,20 @@ impl PhysicsWorld {
         // disallows mutable + immutable borrows of the same set,
         // so we extract the data we need first.
         let (collider_handle, isometry, shape_clone) = {
-            let body = self
-                .bodies
-                .get(rh)
-                .ok_or_else(|| {
-                    format!("physics.character_move: body for handle {handle} despawned")
-                })?;
+            let body = self.bodies.get(rh).ok_or_else(|| {
+                format!("physics.character_move: body for handle {handle} despawned")
+            })?;
             if !body.is_kinematic() {
                 return Err(format!(
                     "physics.character_move: handle {handle} is not a character body — create with physics.character() instead of physics.body()"
                 ));
             }
-            let coll = body
-                .colliders()
-                .first()
-                .copied()
-                .ok_or_else(|| format!("physics.character_move: handle {handle} has no collider"))?;
-            let collider = self
-                .colliders
-                .get(coll)
-                .ok_or_else(|| format!("physics.character_move: collider missing for handle {handle}"))?;
+            let coll = body.colliders().first().copied().ok_or_else(|| {
+                format!("physics.character_move: handle {handle} has no collider")
+            })?;
+            let collider = self.colliders.get(coll).ok_or_else(|| {
+                format!("physics.character_move: collider missing for handle {handle}")
+            })?;
             (coll, *body.position(), collider.shared_shape().clone())
         };
         let desired_v = vector![desired[0] * dt, desired[1] * dt, desired[2] * dt];
@@ -464,7 +465,11 @@ impl PhysicsWorld {
         let new_t = isometry.translation.vector + movement.translation;
         body.set_next_kinematic_translation(new_t);
         Ok((
-            [movement.translation.x, movement.translation.y, movement.translation.z],
+            [
+                movement.translation.x,
+                movement.translation.y,
+                movement.translation.z,
+            ],
             movement.grounded,
         ))
     }
@@ -612,11 +617,7 @@ pub fn character(at: [f32; 3], height: f32, radius: f32) -> u32 {
     WORLD.with(|w| w.borrow_mut().character(at, height, radius))
 }
 
-pub fn character_move(
-    handle: u32,
-    dir: [f32; 3],
-    dt: f32,
-) -> Result<([f32; 3], bool), String> {
+pub fn character_move(handle: u32, dir: [f32; 3], dt: f32) -> Result<([f32; 3], bool), String> {
     WORLD.with(|w| w.borrow_mut().character_move(handle, dir, dt))
 }
 

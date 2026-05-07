@@ -261,11 +261,7 @@ const INDENT: &str = "    "; // four spaces; matches every existing program
 /// line before its annotated declaration. Empty `since` falls
 /// back to the bare `@deprecated` form so input → AST → output is
 /// stable for both shapes.
-fn print_deprecation(
-    out: &mut String,
-    depth: usize,
-    dep: &Option<crate::ast::Deprecation>,
-) {
+fn print_deprecation(out: &mut String, depth: usize, dep: &Option<crate::ast::Deprecation>) {
     let Some(dep) = dep else { return };
     push_indent(out, depth);
     out.push_str("@deprecated");

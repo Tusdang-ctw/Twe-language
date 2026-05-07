@@ -37,9 +37,7 @@ pub struct WgslError {
 /// Compile every `visual` block in the program. Returns a vector of
 /// `(name, wgsl_source)` pairs in source order. Empty when the
 /// program has no visual blocks.
-pub fn compile_program(
-    program: &crate::ast::Program,
-) -> Result<Vec<(String, String)>, WgslError> {
+pub fn compile_program(program: &crate::ast::Program) -> Result<Vec<(String, String)>, WgslError> {
     let mut out = Vec::new();
     for stmt in &program.stmts {
         if let Stmt::Decl {
@@ -205,9 +203,7 @@ impl Codegen {
                 self.emit_expr(out, value)?;
                 out.push_str(";\n");
             }
-            Stmt::Return {
-                value: Some(e), ..
-            } => {
+            Stmt::Return { value: Some(e), .. } => {
                 self.push_indent(out);
                 out.push_str("return ");
                 self.emit_expr(out, e)?;

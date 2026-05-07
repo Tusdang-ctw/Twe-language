@@ -781,35 +781,179 @@ const UNSKINNED_W: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
 
 const CUBE_VERTICES: &[Vertex] = &[
     // +z (front)
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        normal: N_FRONT,
+        uv: UV_BL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        normal: N_FRONT,
+        uv: UV_BR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        normal: N_FRONT,
+        uv: UV_TR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        normal: N_FRONT,
+        uv: UV_TL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
     // -z (back)
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        normal: N_BACK,
+        uv: UV_BL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        normal: N_BACK,
+        uv: UV_BR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        normal: N_BACK,
+        uv: UV_TR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        normal: N_BACK,
+        uv: UV_TL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
     // +x (right)
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_RIGHT,  uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_RIGHT,  uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_RIGHT,  uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_RIGHT,  uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        normal: N_RIGHT,
+        uv: UV_BL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        normal: N_RIGHT,
+        uv: UV_BR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        normal: N_RIGHT,
+        uv: UV_TR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        normal: N_RIGHT,
+        uv: UV_TL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
     // -x (left)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_LEFT,   uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_LEFT,   uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_LEFT,   uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_LEFT,   uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        normal: N_LEFT,
+        uv: UV_BL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        normal: N_LEFT,
+        uv: UV_BR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        normal: N_LEFT,
+        uv: UV_TR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        normal: N_LEFT,
+        uv: UV_TL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
     // +y (top)
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex {
+        position: [-0.5, 0.5, 0.5],
+        normal: N_TOP,
+        uv: UV_BL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.5],
+        normal: N_TOP,
+        uv: UV_BR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, 0.5, -0.5],
+        normal: N_TOP,
+        uv: UV_TR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, 0.5, -0.5],
+        normal: N_TOP,
+        uv: UV_TL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
     // -y (bottom)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex {
+        position: [-0.5, -0.5, -0.5],
+        normal: N_BOTTOM,
+        uv: UV_BL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, -0.5, -0.5],
+        normal: N_BOTTOM,
+        uv: UV_BR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.5],
+        normal: N_BOTTOM,
+        uv: UV_TR,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
+    Vertex {
+        position: [-0.5, -0.5, 0.5],
+        normal: N_BOTTOM,
+        uv: UV_TL,
+        joints: UNSKINNED_J,
+        weights: UNSKINNED_W,
+    },
 ];
 
 #[rustfmt::skip]
@@ -1377,12 +1521,7 @@ impl ApplicationHandler for App {
     /// absolute window coords, which jumps when the cursor is locked
     /// or wraps; `DeviceEvent::MouseMotion` is the raw integrated
     /// pointer velocity.
-    fn device_event(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-        _id: DeviceId,
-        event: DeviceEvent,
-    ) {
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
             self.mouse_dx += dx;
             self.mouse_dy += dy;
@@ -2033,7 +2172,11 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    queue.write_buffer(&tonemap_params_buffer, 0, bytemuck::cast_slice(&[0.0_f32; 4]));
+    queue.write_buffer(
+        &tonemap_params_buffer,
+        0,
+        bytemuck::cast_slice(&[0.0_f32; 4]),
+    );
     let tonemap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("twec-play3d tonemap shader"),
         source: wgpu::ShaderSource::Wgsl(TONEMAP_SHADER_SRC.into()),
@@ -2792,37 +2935,12 @@ fn extract_frustum_planes(vp: [[f32; 4]; 4]) -> [[f32; 4]; 6] {
     // wgpu's NDC z is [0, 1]; near plane = row3 + row2 (z ≥ 0),
     // far = row3 - row2 (z ≤ 1).
     let raw = [
-        [
-            r3[0] + r0[0],
-            r3[1] + r0[1],
-            r3[2] + r0[2],
-            r3[3] + r0[3],
-        ], // left
-        [
-            r3[0] - r0[0],
-            r3[1] - r0[1],
-            r3[2] - r0[2],
-            r3[3] - r0[3],
-        ], // right
-        [
-            r3[0] + r1[0],
-            r3[1] + r1[1],
-            r3[2] + r1[2],
-            r3[3] + r1[3],
-        ], // bottom
-        [
-            r3[0] - r1[0],
-            r3[1] - r1[1],
-            r3[2] - r1[2],
-            r3[3] - r1[3],
-        ], // top
-        [r2[0], r2[1], r2[2], r2[3]], // near
-        [
-            r3[0] - r2[0],
-            r3[1] - r2[1],
-            r3[2] - r2[2],
-            r3[3] - r2[3],
-        ], // far
+        [r3[0] + r0[0], r3[1] + r0[1], r3[2] + r0[2], r3[3] + r0[3]], // left
+        [r3[0] - r0[0], r3[1] - r0[1], r3[2] - r0[2], r3[3] - r0[3]], // right
+        [r3[0] + r1[0], r3[1] + r1[1], r3[2] + r1[2], r3[3] + r1[3]], // bottom
+        [r3[0] - r1[0], r3[1] - r1[1], r3[2] - r1[2], r3[3] - r1[3]], // top
+        [r2[0], r2[1], r2[2], r2[3]],                                 // near
+        [r3[0] - r2[0], r3[1] - r2[1], r3[2] - r2[2], r3[3] - r2[3]], // far
     ];
     let mut out = [[0.0; 4]; 6];
     for (i, p) in raw.iter().enumerate() {
@@ -2864,23 +2982,14 @@ fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> [
         [2.0 / rl, 0.0, 0.0, 0.0],
         [0.0, 2.0 / tb, 0.0, 0.0],
         [0.0, 0.0, -1.0 / fnz, 0.0],
-        [
-            -(right + left) / rl,
-            -(top + bottom) / tb,
-            -near / fnz,
-            1.0,
-        ],
+        [-(right + left) / rl, -(top + bottom) / tb, -near / fnz, 1.0],
     ]
 }
 
 /// Phase 24: apply one animation clip's channels onto a TRS table
 /// at time `t_clip`. Mutates the targeted nodes in place; nodes
 /// not referenced by any channel keep their rest-pose values.
-fn apply_clip(
-    trs: &mut [([f32; 3], [f32; 4], [f32; 3])],
-    clip: &AnimClip,
-    t_clip: f32,
-) {
+fn apply_clip(trs: &mut [([f32; 3], [f32; 4], [f32; 3])], clip: &AnimClip, t_clip: f32) {
     for ch in &clip.channels {
         if ch.target_node >= trs.len() {
             continue;
@@ -3030,7 +3139,10 @@ fn flatten_primitive(
         let (pos, nrm) = if is_skinned {
             (*p, *n)
         } else {
-            (mat4_transform_point(world, *p), mat4_transform_dir(world, *n))
+            (
+                mat4_transform_point(world, *p),
+                mat4_transform_dir(world, *n),
+            )
         };
         out_verts.push(Vertex {
             position: pos,
@@ -3298,11 +3410,9 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     // mutates lighting via `light.add` / `sun.direction` / etc.;
     // we read the current values here once per frame.
     let lights_uniform = crate::stdlib::lights_snapshot();
-    state.queue.write_buffer(
-        &state.lights_buffer,
-        0,
-        bytemuck::bytes_of(&lights_uniform),
-    );
+    state
+        .queue
+        .write_buffer(&state.lights_buffer, 0, bytemuck::bytes_of(&lights_uniform));
 
     // Phase 25: compute the light-space view-projection matrix
     // and upload to the shadow uniform. When shadows are disabled
@@ -3310,11 +3420,9 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     // disabled-flag uniform so the main shader's PCF lookup
     // short-circuits to "fully lit".
     let shadow_uniform = compute_shadow_uniform(&lights_uniform, eye, target);
-    state.queue.write_buffer(
-        &state.shadow_buffer,
-        0,
-        bytemuck::bytes_of(&shadow_uniform),
-    );
+    state
+        .queue
+        .write_buffer(&state.shadow_buffer, 0, bytemuck::bytes_of(&shadow_uniform));
 
     // 4. Partition the queue per primitive. Each primitive becomes
     //    one instanced draw call, packed contiguously into the
@@ -3458,32 +3566,30 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         }
     };
 
-    let push_group = |group: &[&DrawCall3d],
-                      out: &mut Vec<Instance>,
-                      mesh_radius: f32|
-     -> (u32, u32) {
-        let start = out.len() as u32;
-        for d in group {
-            if out.len() >= cap {
-                break;
+    let push_group =
+        |group: &[&DrawCall3d], out: &mut Vec<Instance>, mesh_radius: f32| -> (u32, u32) {
+            let start = out.len() as u32;
+            for d in group {
+                if out.len() >= cap {
+                    break;
+                }
+                // Phase 26: cull instances whose bounding sphere is
+                // entirely outside the view frustum. The sphere center
+                // is the instance's world-space position; the radius
+                // scales the mesh-local bound by `instance.size`.
+                let world_radius = mesh_radius * d.size.max(0.0);
+                if cull_sphere(d.at, world_radius) {
+                    continue;
+                }
+                out.push(Instance {
+                    position: d.at,
+                    size: d.size,
+                    color: d.color,
+                });
             }
-            // Phase 26: cull instances whose bounding sphere is
-            // entirely outside the view frustum. The sphere center
-            // is the instance's world-space position; the radius
-            // scales the mesh-local bound by `instance.size`.
-            let world_radius = mesh_radius * d.size.max(0.0);
-            if cull_sphere(d.at, world_radius) {
-                continue;
-            }
-            out.push(Instance {
-                position: d.at,
-                size: d.size,
-                color: d.color,
-            });
-        }
-        let end = out.len() as u32;
-        (start, end)
-    };
+            let end = out.len() as u32;
+            (start, end)
+        };
     // Cube has corner-distance √3/2 ≈ 0.866 in mesh-local space.
     let cube_radius = 0.8660254;
     // Sphere has radius 0.5 in mesh-local space.
@@ -3550,11 +3656,9 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         };
         let anim_state = crate::stdlib::mesh_anim_state(mesh_id);
         let joints_uniform = compute_skinned_joint_matrices(skin, &anim_state);
-        state.queue.write_buffer(
-            &skin.joint_buffer,
-            0,
-            bytemuck::bytes_of(&joints_uniform),
-        );
+        state
+            .queue
+            .write_buffer(&skin.joint_buffer, 0, bytemuck::bytes_of(&joints_uniform));
     }
 
     // 5. Acquire the swapchain texture and draw.
@@ -3710,10 +3814,8 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                 }
                 rpass.set_bind_group(1, bind_for(*tex), &[]);
                 rpass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                rpass.set_index_buffer(
-                    state.cube_index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint16,
-                );
+                rpass
+                    .set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 rpass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
             }
             // Sphere draws — one per (texture) group.
@@ -3727,11 +3829,7 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                     state.sphere_index_buffer.slice(..),
                     wgpu::IndexFormat::Uint16,
                 );
-                rpass.draw_indexed(
-                    0..state.sphere_index_count,
-                    0,
-                    range.0..range.1,
-                );
+                rpass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
             }
             // Mesh draws — one per (mesh id, texture) group. Each
             // unique combination is its own instanced draw call.
@@ -3788,12 +3886,7 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     state.queue.write_buffer(
         &state.tonemap_params_buffer,
         0,
-        bytemuck::cast_slice(&[
-            if tonemap_aces { 1.0_f32 } else { 0.0 },
-            0.0,
-            0.0,
-            vignette,
-        ]),
+        bytemuck::cast_slice(&[if tonemap_aces { 1.0_f32 } else { 0.0 }, 0.0, 0.0, vignette]),
     );
     if let Some(bg) = &state.tonemap_bind_group {
         let mut tmpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

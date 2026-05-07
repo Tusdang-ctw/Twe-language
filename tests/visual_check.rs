@@ -13,10 +13,7 @@ fn example_5_subset_passes() {
     // The session-8 visual_fire.twe is the canonical happy path.
     let src = std::fs::read_to_string("tests/programs/visual_fire.twe").unwrap();
     let errors = check(&src);
-    assert!(
-        errors.is_empty(),
-        "expected no errors, got: {errors:#?}"
-    );
+    assert!(errors.is_empty(), "expected no errors, got: {errors:#?}");
 }
 
 #[test]
@@ -55,7 +52,10 @@ fn rejects_print_call() {
         \x20       return color.red\n";
     let errors = check(src);
     // print itself errors (callable), and the string arg errors too.
-    assert!(errors.iter().any(|e| e.message.contains("`print`")), "got: {errors:#?}");
+    assert!(
+        errors.iter().any(|e| e.message.contains("`print`")),
+        "got: {errors:#?}"
+    );
 }
 
 #[test]
@@ -65,7 +65,10 @@ fn rejects_load_call() {
         \x20       let h = load(\"x.png\")\n\
         \x20       return color.red\n";
     let errors = check(src);
-    assert!(errors.iter().any(|e| e.message.contains("`load`")), "got: {errors:#?}");
+    assert!(
+        errors.iter().any(|e| e.message.contains("`load`")),
+        "got: {errors:#?}"
+    );
 }
 
 #[test]
@@ -76,7 +79,10 @@ fn rejects_while_loop() {
         \x20           return color.red\n\
         \x20       return color.red\n";
     let errors = check(src);
-    assert!(errors.iter().any(|e| e.message.contains("`while`")), "got: {errors:#?}");
+    assert!(
+        errors.iter().any(|e| e.message.contains("`while`")),
+        "got: {errors:#?}"
+    );
 }
 
 #[test]
@@ -87,7 +93,10 @@ fn rejects_assignment() {
         \x20       x = 2\n\
         \x20       return color.red\n";
     let errors = check(src);
-    assert!(errors.iter().any(|e| e.message.contains("assignment")), "got: {errors:#?}");
+    assert!(
+        errors.iter().any(|e| e.message.contains("assignment")),
+        "got: {errors:#?}"
+    );
 }
 
 #[test]
@@ -132,7 +141,9 @@ fn requires_pixel_method() {
         \x20   size: (64, 64)\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("requires a `pixel")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("requires a `pixel")),
         "got: {errors:#?}"
     );
 }
@@ -144,7 +155,9 @@ fn enforces_pixel_arity() {
         \x20       return color.red\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("exactly two parameters")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("exactly two parameters")),
         "got: {errors:#?}"
     );
 }

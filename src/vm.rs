@@ -867,7 +867,8 @@ Err(RuntimeError {
                         return Err(RuntimeError {
                             line,
                             col: 0,
-                            message: "OP_REGISTER_DEATH_HANDLER expected a string class name".to_string(),
+                            message: "OP_REGISTER_DEATH_HANDLER expected a string class name"
+                                .to_string(),
                             help: Some("compiler bug".to_string()),
                         });
                     }
@@ -881,16 +882,15 @@ Err(RuntimeError {
                     }
                     let class_name = class_v.as_string().clone();
                     let func = func_v.as_bc_function();
-                    self.death_handlers
-                        .entry(class_name)
-                        .or_default()
-                        .push(crate::bytecode::BcDeathHandler {
+                    self.death_handlers.entry(class_name).or_default().push(
+                        crate::bytecode::BcDeathHandler {
                             // The compiler doesn't ship the param name into
                             // the runtime — slot 1 in the function body is
                             // already bound to the argument we pass.
                             param: String::new(),
                             func,
-                        });
+                        },
+                    );
                 }
                 OpCode::Invoke => {
                     let name_idx = read_byte!() as usize;
@@ -1112,11 +1112,7 @@ Err(RuntimeError {
                 if let Some(handlers) = handlers {
                     let recv = Value::from_bc_instance(entity.clone());
                     for handler in handlers {
-                        self.invoke_method_value(
-                            handler.func,
-                            recv,
-                            &[recv],
-                        )?;
+                        self.invoke_method_value(handler.func, recv, &[recv])?;
                     }
                 }
             }
