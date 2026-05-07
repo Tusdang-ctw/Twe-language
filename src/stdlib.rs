@@ -341,6 +341,35 @@ pub fn install(env: &mut Env) {
         "shadow_extent".to_string(),
         Value::from_builtin("sun.shadow_extent", &["radius"], sun_shadow_extent_impl),
     );
+    // Phase 26: post-processing namespace. `postfx.tonemap(true)`
+    // enables ACES filmic tone mapping (HDR offscreen target +
+    // fullscreen pass); `postfx.vignette(strength)` adds a soft
+    // edge darkening; `postfx.frustum_cull(false)` disables
+    // per-instance frustum culling (default on).
+    let mut postfx_fields = HashMap::new();
+    postfx_fields.insert(
+        "tonemap".to_string(),
+        Value::from_builtin("postfx.tonemap", &["enabled"], postfx_tonemap_impl),
+    );
+    postfx_fields.insert(
+        "vignette".to_string(),
+        Value::from_builtin("postfx.vignette", &["strength"], postfx_vignette_impl),
+    );
+    postfx_fields.insert(
+        "frustum_cull".to_string(),
+        Value::from_builtin(
+            "postfx.frustum_cull",
+            &["enabled"],
+            postfx_frustum_cull_impl,
+        ),
+    );
+    env.set(
+        "postfx".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: postfx_fields,
+            kind: "module",
+        }))),
+    );
     env.set(
         "sun".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -761,6 +790,23 @@ thread_local! {
     /// surrounding playable area at moderate sharpness; bigger
     /// scenes need a larger value (sharpness scales inversely).
     static SHADOW_EXTENT: RefCell<f32> = const { RefCell::new(30.0) };
+    /// Phase 26: enable/disable per-instance frustum culling.
+    /// On by default — culling is a performance win, especially
+    /// in open scenes with thousands of instances. Toggle off via
+    /// `postfx.frustum_cull(false)` when benchmarking the cull
+    /// path's contribution.
+    static FRUSTUM_CULL_ENABLED: RefCell<bool> = const { RefCell::new(true) };
+    /// Phase 26: ACES filmic tone mapping enable. The main
+    /// pipeline always renders to an HDR offscreen target
+    /// (Rgba16Float) and a fullscreen tonemap pass writes the
+    /// swapchain. The toggle controls whether the tonemap shader
+    /// applies the ACES curve (default on, commercial-grade)
+    /// versus a straight linear→sRGB pass (off).
+    static TONEMAP_ENABLED: RefCell<bool> = const { RefCell::new(true) };
+    /// Phase 26: vignette strength, 0.0 (off) to 1.0 (full).
+    /// Applied during the tonemap pass. Default off; opt-in via
+    /// `postfx.vignette(strength)`.
+    static VIGNETTE_STRENGTH: RefCell<f32> = const { RefCell::new(0.0) };
     static PENDING_SCREENSHOT: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Phase 17 session 3: pending cursor-mode change requested by
     /// the script via cursor.lock() / cursor.unlock(). The play3d
@@ -789,6 +835,21 @@ pub fn shadow_enabled() -> bool {
 /// Phase 25: read the script-controlled shadow frustum extent.
 pub fn shadow_extent() -> f32 {
     SHADOW_EXTENT.with(|s| *s.borrow())
+}
+
+/// Phase 26: read the script-controlled frustum-cull toggle.
+pub fn frustum_culling_enabled() -> bool {
+    FRUSTUM_CULL_ENABLED.with(|s| *s.borrow())
+}
+
+/// Phase 26: read the script-controlled ACES tonemap toggle.
+pub fn tonemap_enabled() -> bool {
+    TONEMAP_ENABLED.with(|s| *s.borrow())
+}
+
+/// Phase 26: read the script-controlled vignette strength.
+pub fn vignette_strength() -> f32 {
+    VIGNETTE_STRENGTH.with(|s| *s.borrow())
 }
 
 /// Phase 17 session 3: drain the cursor-mode request slot. play3d
@@ -6617,6 +6678,45 @@ fn sun_shadow_extent_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runti
     if r > 0.0 {
         SHADOW_EXTENT.with(|s| *s.borrow_mut() = r);
     }
+    Ok(Value::NIL)
+}
+
+fn postfx_tonemap_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.tonemap")?;
+    let on = if args[0].is_bool() {
+        args[0].as_bool()
+    } else {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "postfx.tonemap expects a bool".to_string(),
+            help: None,
+        });
+    };
+    TONEMAP_ENABLED.with(|s| *s.borrow_mut() = on);
+    Ok(Value::NIL)
+}
+
+fn postfx_vignette_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.vignette")?;
+    let s = (number(&args[0], "postfx.vignette.strength")? as f32).clamp(0.0, 1.0);
+    VIGNETTE_STRENGTH.with(|st| *st.borrow_mut() = s);
+    Ok(Value::NIL)
+}
+
+fn postfx_frustum_cull_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.frustum_cull")?;
+    let on = if args[0].is_bool() {
+        args[0].as_bool()
+    } else {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "postfx.frustum_cull expects a bool".to_string(),
+            help: None,
+        });
+    };
+    FRUSTUM_CULL_ENABLED.with(|s| *s.borrow_mut() = on);
     Ok(Value::NIL)
 }
 

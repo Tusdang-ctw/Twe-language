@@ -564,6 +564,84 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Phase 26: ACES filmic tone mapping shader. Reads an HDR
+/// linear-light texture and writes sRGB-encoded LDR to the
+/// swapchain. Optional radial vignette in the same pass.
+const TONEMAP_SHADER_SRC: &str = r#"
+struct Params {
+    /// x = ACES on/off (1.0 / 0.0), yz = unused, w = vignette strength.
+    flags: vec4<f32>,
+};
+
+@group(0) @binding(0) var t_hdr: texture_2d<f32>;
+@group(0) @binding(1) var s_hdr: sampler;
+@group(0) @binding(2) var<uniform> params: Params;
+
+struct VOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+// Fullscreen triangle — covers [-1, -1] to [3, 3] in clip space,
+// the visible screen window is the [-1, 1] subset of it. Avoids
+// the diagonal seam of a quad.
+@vertex
+fn vs_fullscreen(@builtin(vertex_index) idx: u32) -> VOut {
+    var pos = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+    );
+    var uv = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(2.0, 1.0),
+        vec2<f32>(0.0, -1.0),
+    );
+    var out: VOut;
+    out.clip_pos = vec4<f32>(pos[idx], 0.0, 1.0);
+    out.uv = uv[idx];
+    return out;
+}
+
+// Narkowicz 2015 ACES approximation — fast (~6 fma) and visually
+// matches the full ACES tone curve closely enough for game use.
+fn aces(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+@fragment
+fn fs_tonemap(in: VOut) -> @location(0) vec4<f32> {
+    let hdr = textureSample(t_hdr, s_hdr, in.uv).rgb;
+    var col: vec3<f32>;
+    if (params.flags.x > 0.5) {
+        col = aces(hdr);
+    } else {
+        // Pass-through clamp — preserves HDR-style blown highlights
+        // when ACES is off.
+        col = clamp(hdr, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    // Optional vignette: smooth radial darken centered at screen
+    // center. Strength 0 disables.
+    if (params.flags.w > 0.001) {
+        let centered = in.uv - vec2<f32>(0.5, 0.5);
+        let r2 = dot(centered, centered) * 4.0; // 0 at center, 1 at corner
+        let v = 1.0 - clamp(r2 * params.flags.w, 0.0, 0.85);
+        col = col * v;
+    }
+    return vec4<f32>(col, 1.0);
+}
+"#;
+
+/// Phase 26: HDR linear-light intermediate format for the main
+/// pass when tone mapping is on. Rgba16Float gives ~5 stops of
+/// HDR headroom while staying well within mainstream GPU support.
+const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 /// Phase 25: separate shadow shader — depth-only, no fragment
 /// stage needed, just the vertex pass that emits clip-space
 /// positions in *light space* so the depth buffer captures
@@ -888,6 +966,31 @@ struct RenderState {
     /// Depth-only attachment view for the shadow pass.
     shadow_depth_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
+    /// Phase 26: post-FX pipeline — fullscreen triangle that
+    /// reads the HDR offscreen texture, applies ACES tone
+    /// mapping + optional vignette, writes to the swapchain.
+    /// Only used when `postfx.tonemap(true)`. The pipeline is
+    /// always created (cheap); the offscreen target is too.
+    tonemap_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout reused when the offscreen texture
+    /// resizes (the layout itself is stable; only the texture
+    /// view binding changes).
+    tonemap_bgl: wgpu::BindGroupLayout,
+    /// Linear sampler for the HDR offscreen lookup.
+    tonemap_sampler: wgpu::Sampler,
+    /// Per-frame tonemap params buffer (vignette strength).
+    tonemap_params_buffer: wgpu::Buffer,
+    /// HDR offscreen texture + view, resized with the window.
+    /// `None` until first allocated; allocated lazily on the first
+    /// frame that actually uses tone mapping.
+    hdr_texture: Option<wgpu::Texture>,
+    hdr_view: Option<wgpu::TextureView>,
+    /// Bind group binding the current HDR view + sampler + params
+    /// buffer. Re-created when `hdr_texture` is re-allocated.
+    tonemap_bind_group: Option<wgpu::BindGroup>,
+    /// Cached size used to allocate the HDR texture; if the
+    /// surface resizes we re-allocate.
+    hdr_size: (u32, u32),
     /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
     /// `Env::mesh_paths` interned id (the `u32` payload of
     /// `Primitive::Mesh`). Populated on first sight of a new id in
@@ -915,6 +1018,12 @@ struct RenderState {
 /// Stored in `RenderState::mesh_cache` keyed by the
 /// `Env::mesh_paths` interned id.
 struct GpuMesh {
+    /// Phase 26: bounding sphere radius in mesh-local space, used
+    /// for per-instance frustum culling. For unskinned meshes it's
+    /// `max(|v|)` over all vertices; for skinned meshes it's a
+    /// loose multiplier of the rest-pose AABB to account for
+    /// limb extension during animation.
+    bound_radius: f32,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -1657,8 +1766,10 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: "fs_main",
+            // Phase 26: main pipeline always targets HDR. The
+            // tonemap pass converts to the swapchain's sRGB.
             targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
+                format: HDR_FORMAT,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -1807,6 +1918,96 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         cache: None,
     });
 
+    // Phase 26: tonemap pipeline. The fragment samples the HDR
+    // offscreen texture (group 0 binding 0), runs ACES, optionally
+    // applies vignette from `params` (binding 2), and writes sRGB
+    // to the swapchain.
+    let tonemap_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("twec-play3d tonemap bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let tonemap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("twec-play3d tonemap sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let tonemap_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("twec-play3d tonemap params"),
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&tonemap_params_buffer, 0, bytemuck::cast_slice(&[0.0_f32; 4]));
+    let tonemap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("twec-play3d tonemap shader"),
+        source: wgpu::ShaderSource::Wgsl(TONEMAP_SHADER_SRC.into()),
+    });
+    let tonemap_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("twec-play3d tonemap pipeline layout"),
+        bind_group_layouts: &[&tonemap_bgl],
+        push_constant_ranges: &[],
+    });
+    let tonemap_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("twec-play3d tonemap pipeline"),
+        layout: Some(&tonemap_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &tonemap_shader,
+            entry_point: "vs_fullscreen",
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &tonemap_shader,
+            entry_point: "fs_tonemap",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
     Ok(RenderState {
         window,
         surface,
@@ -1835,6 +2036,14 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         shadow_texture,
         shadow_depth_view,
         depth_view,
+        tonemap_pipeline,
+        tonemap_bgl,
+        tonemap_sampler,
+        tonemap_params_buffer,
+        hdr_texture: None,
+        hdr_view: None,
+        tonemap_bind_group: None,
+        hdr_size: (0, 0),
         mesh_cache: HashMap::new(),
         mesh_load_failures: HashSet::new(),
         texture_bgl,
@@ -2501,6 +2710,85 @@ fn compute_shadow_uniform(
     }
 }
 
+/// Phase 26: extract the 6 frustum planes from a column-major
+/// view-projection matrix. Each plane is (a, b, c, d) such that
+/// a point (x, y, z) is *inside* when a*x + b*y + c*z + d ≥ 0.
+/// Planes are normalized so the dot product is a signed distance.
+///
+/// Algorithm (Gribb-Hartmann): combine rows of `vp` to get
+/// the planes. With column-major storage, accessing row r column c
+/// is `vp[c][r]`.
+fn extract_frustum_planes(vp: [[f32; 4]; 4]) -> [[f32; 4]; 6] {
+    // Row vectors, indexed [c][r]:
+    let row = |r: usize| [vp[0][r], vp[1][r], vp[2][r], vp[3][r]];
+    let r0 = row(0);
+    let r1 = row(1);
+    let r2 = row(2);
+    let r3 = row(3);
+    // wgpu's NDC z is [0, 1]; near plane = row3 + row2 (z ≥ 0),
+    // far = row3 - row2 (z ≤ 1).
+    let raw = [
+        [
+            r3[0] + r0[0],
+            r3[1] + r0[1],
+            r3[2] + r0[2],
+            r3[3] + r0[3],
+        ], // left
+        [
+            r3[0] - r0[0],
+            r3[1] - r0[1],
+            r3[2] - r0[2],
+            r3[3] - r0[3],
+        ], // right
+        [
+            r3[0] + r1[0],
+            r3[1] + r1[1],
+            r3[2] + r1[2],
+            r3[3] + r1[3],
+        ], // bottom
+        [
+            r3[0] - r1[0],
+            r3[1] - r1[1],
+            r3[2] - r1[2],
+            r3[3] - r1[3],
+        ], // top
+        [r2[0], r2[1], r2[2], r2[3]], // near
+        [
+            r3[0] - r2[0],
+            r3[1] - r2[1],
+            r3[2] - r2[2],
+            r3[3] - r2[3],
+        ], // far
+    ];
+    let mut out = [[0.0; 4]; 6];
+    for (i, p) in raw.iter().enumerate() {
+        let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        if len > 1e-6 {
+            out[i] = [p[0] / len, p[1] / len, p[2] / len, p[3] / len];
+        } else {
+            out[i] = *p;
+        }
+    }
+    out
+}
+
+/// Phase 26: returns true when the sphere is entirely on the
+/// outside (negative side) of any single plane — the standard
+/// "if outside any plane, definitely outside the frustum" cull.
+/// False positives (sphere inside frustum but flagged outside) are
+/// impossible; false negatives (sphere outside frustum but inside
+/// a plane's bounded region) are possible at the corners and are
+/// the standard accuracy tradeoff for fast culling.
+fn sphere_outside_frustum(center: [f32; 3], radius: f32, planes: &[[f32; 4]; 6]) -> bool {
+    for p in planes {
+        let signed = p[0] * center[0] + p[1] * center[1] + p[2] * center[2] + p[3];
+        if signed < -radius {
+            return true;
+        }
+    }
+    false
+}
+
 /// Phase 25: orthographic projection — column-major, matches WGSL
 /// expectations. NDC z is [0, 1] for wgpu (D3D-style), so the
 /// near→far range maps to that.
@@ -2851,7 +3139,28 @@ fn load_and_upload_mesh(
             joint_bind_group,
         }
     });
+    // Phase 26: bound radius for frustum culling. For skinned
+    // meshes, multiply by 1.5 to leave headroom for the joints
+    // moving the surface beyond the rest-pose bound (e.g. an
+    // outstretched arm).
+    let mut max_sq: f32 = 0.0;
+    for v in &vertices {
+        let p = v.position;
+        let d = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+        if d > max_sq {
+            max_sq = d;
+        }
+    }
+    let mut bound_radius = max_sq.sqrt();
+    if skin.is_some() {
+        bound_radius *= 1.5;
+    }
+    if bound_radius < 0.001 {
+        bound_radius = 0.5; // fallback for empty / degenerate meshes
+    }
+
     Ok(GpuMesh {
+        bound_radius,
         vertex_buffer,
         index_buffer,
         index_count: indices.len() as u32,
@@ -3068,11 +3377,39 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         }
     }
 
-    let push_group = |group: &[&DrawCall3d], out: &mut Vec<Instance>| -> (u32, u32) {
+    // Phase 26: extract frustum planes from the camera view-proj
+    // for per-instance sphere culling. `frustum_culling_enabled`
+    // is a script-controlled toggle (default on); disable for
+    // benchmarking the cull path's contribution.
+    let cull_enabled = crate::stdlib::frustum_culling_enabled();
+    let planes = if cull_enabled {
+        Some(extract_frustum_planes(view_proj))
+    } else {
+        None
+    };
+    let cull_sphere = |center: [f32; 3], radius: f32| -> bool {
+        match &planes {
+            Some(pl) => sphere_outside_frustum(center, radius, pl),
+            None => false,
+        }
+    };
+
+    let push_group = |group: &[&DrawCall3d],
+                      out: &mut Vec<Instance>,
+                      mesh_radius: f32|
+     -> (u32, u32) {
         let start = out.len() as u32;
         for d in group {
             if out.len() >= cap {
                 break;
+            }
+            // Phase 26: cull instances whose bounding sphere is
+            // entirely outside the view frustum. The sphere center
+            // is the instance's world-space position; the radius
+            // scales the mesh-local bound by `instance.size`.
+            let world_radius = mesh_radius * d.size.max(0.0);
+            if cull_sphere(d.at, world_radius) {
+                continue;
             }
             out.push(Instance {
                 position: d.at,
@@ -3083,17 +3420,28 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         let end = out.len() as u32;
         (start, end)
     };
+    // Cube has corner-distance √3/2 ≈ 0.866 in mesh-local space.
+    let cube_radius = 0.8660254;
+    // Sphere has radius 0.5 in mesh-local space.
+    let sphere_radius = 0.5;
     let cube_ranges: Vec<(u32, (u32, u32))> = cube_groups
         .iter()
-        .map(|(t, list)| (*t, push_group(list, &mut instances)))
+        .map(|(t, list)| (*t, push_group(list, &mut instances, cube_radius)))
         .collect();
     let sphere_ranges: Vec<(u32, (u32, u32))> = sphere_groups
         .iter()
-        .map(|(t, list)| (*t, push_group(list, &mut instances)))
+        .map(|(t, list)| (*t, push_group(list, &mut instances, sphere_radius)))
         .collect();
     let mesh_ranges: Vec<((u32, u32), (u32, u32))> = mesh_groups
         .iter()
-        .map(|(k, list)| (*k, push_group(list, &mut instances)))
+        .map(|(k, list)| {
+            let r = state
+                .mesh_cache
+                .get(&k.0)
+                .map(|m| m.bound_radius)
+                .unwrap_or(1.0);
+            (*k, push_group(list, &mut instances, r))
+        })
         .collect();
     if !instances.is_empty() {
         // Phase 23: grow the instance buffer if this frame needs
@@ -3226,11 +3574,22 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         }
     }
 
+    // Phase 26: HDR pipeline. The main pipeline always targets a
+    // 16-bit float offscreen, and a fullscreen tonemap pass
+    // converts to sRGB for the swapchain. The `postfx.tonemap`
+    // toggle selects ACES vs straight linear→sRGB inside the
+    // tonemap shader (via a flag); both routes keep gamma
+    // correctness regardless of the script's choice.
+    ensure_hdr_target(state);
+    let main_color_view: &wgpu::TextureView = state
+        .hdr_view
+        .as_ref()
+        .expect("ensure_hdr_target should have allocated the HDR view");
     {
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("twec-play3d main pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view_target,
+                view: main_color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -3354,9 +3713,94 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
             }
         }
     }
+    // Phase 26: fullscreen tonemap pass — reads the HDR offscreen,
+    // applies ACES (or pass-through, per script flag) plus
+    // optional vignette, writes to the swapchain. Always runs:
+    // the main pipeline writes Rgba16Float, so this pass is the
+    // step that gets that data into the user's sRGB display.
+    let tonemap_aces = crate::stdlib::tonemap_enabled();
+    let vignette = crate::stdlib::vignette_strength();
+    // params: x = ACES on/off, w = vignette strength.
+    state.queue.write_buffer(
+        &state.tonemap_params_buffer,
+        0,
+        bytemuck::cast_slice(&[
+            if tonemap_aces { 1.0_f32 } else { 0.0 },
+            0.0,
+            0.0,
+            vignette,
+        ]),
+    );
+    if let Some(bg) = &state.tonemap_bind_group {
+        let mut tmpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("twec-play3d tonemap pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view_target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        tmpass.set_pipeline(&state.tonemap_pipeline);
+        tmpass.set_bind_group(0, bg, &[]);
+        tmpass.draw(0..3, 0..1);
+    }
+
     state.queue.submit(Some(encoder.finish()));
     frame.present();
     Ok(())
+}
+
+/// Phase 26: ensure the HDR offscreen color target matches the
+/// current surface size. Re-allocates on first use and on every
+/// resize. Updates `tonemap_bind_group` to bind the new view.
+fn ensure_hdr_target(state: &mut RenderState) {
+    let want = (state.config.width.max(1), state.config.height.max(1));
+    if state.hdr_size == want && state.hdr_texture.is_some() {
+        return;
+    }
+    let texture = state.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("twec-play3d hdr target"),
+        size: wgpu::Extent3d {
+            width: want.0,
+            height: want.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: HDR_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d tonemap bg"),
+        layout: &state.tonemap_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&state.tonemap_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: state.tonemap_params_buffer.as_entire_binding(),
+            },
+        ],
+    });
+    state.hdr_texture = Some(texture);
+    state.hdr_view = Some(view);
+    state.tonemap_bind_group = Some(bg);
+    state.hdr_size = want;
 }
 
 /// Extract `camera.eye` / `camera.target` / `camera.up` from the
