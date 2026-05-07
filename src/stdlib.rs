@@ -718,6 +718,12 @@ static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 // Single-slot (last write wins) is fine — issuing two screenshot calls
 // in the same frame is degenerate.
 thread_local! {
+    /// Phase 22: in-memory save store. Map of key → Value.
+    /// `save.write(path)` flushes the whole map to a JSON file
+    /// via the Phase 8 `save_to` codec; `save.read(path)`
+    /// replaces the map from a file. Typed helpers (vec3, f32,
+    /// int, string) read/write through this map.
+    static SAVE_STORE: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
     /// Phase 21: per-mesh-handle animation state. Keyed by the
     /// texture-handle u32 the script passed to `mesh_textured`
     /// (we reuse texture handles as the mesh-instance identity
@@ -2385,6 +2391,171 @@ fn math_length(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let v = tuple_floats(&args[0], "math.length.v")?;
     let sq: f64 = v.iter().map(|x| x * x).sum();
     Ok(Value::from_float(sq.sqrt()))
+}
+
+// ---------- Phase 22: typed save helpers ----------
+
+fn save_vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "save.vec3")?;
+    let key = string_arg(&args[0], "save.vec3", "key")?;
+    let v = xyz_of(&args[1], "save.vec3.v")?;
+    let tup = Value::from_tuple(Rc::new(vec![
+        Value::from_float(v[0] as f64),
+        Value::from_float(v[1] as f64),
+        Value::from_float(v[2] as f64),
+    ]));
+    SAVE_STORE.with(|s| s.borrow_mut().insert(key, tup));
+    Ok(Value::NIL)
+}
+
+fn save_f32_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "save.f32")?;
+    let key = string_arg(&args[0], "save.f32", "key")?;
+    let f = number(&args[1], "save.f32.v")?;
+    SAVE_STORE.with(|s| s.borrow_mut().insert(key, Value::from_float(f)));
+    Ok(Value::NIL)
+}
+
+fn save_int_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "save.int")?;
+    let key = string_arg(&args[0], "save.int", "key")?;
+    if !args[1].is_int() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "save.int: value must be an integer".to_string(),
+            help: None,
+        });
+    }
+    SAVE_STORE.with(|s| s.borrow_mut().insert(key, args[1]));
+    Ok(Value::NIL)
+}
+
+fn save_string_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "save.string")?;
+    let key = string_arg(&args[0], "save.string", "key")?;
+    let v = string_arg(&args[1], "save.string", "v")?;
+    SAVE_STORE.with(|s| s.borrow_mut().insert(key, Value::from_string(v)));
+    Ok(Value::NIL)
+}
+
+fn save_get_vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.get_vec3")?;
+    let key = string_arg(&args[0], "save.get_vec3", "key")?;
+    let result = SAVE_STORE.with(|s| s.borrow().get(&key).copied());
+    match result {
+        Some(v) if v.is_tuple() && v.as_tuple().len() == 3 => Ok(v),
+        _ => Ok(Value::NIL),
+    }
+}
+
+fn save_get_f32_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.get_f32")?;
+    let key = string_arg(&args[0], "save.get_f32", "key")?;
+    let result = SAVE_STORE.with(|s| s.borrow().get(&key).copied());
+    match result {
+        Some(v) if v.is_float() => Ok(v),
+        Some(v) if v.is_int() => Ok(Value::from_float(v.as_int() as f64)),
+        _ => Ok(Value::NIL),
+    }
+}
+
+fn save_get_int_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.get_int")?;
+    let key = string_arg(&args[0], "save.get_int", "key")?;
+    let result = SAVE_STORE.with(|s| s.borrow().get(&key).copied());
+    match result {
+        Some(v) if v.is_int() => Ok(v),
+        _ => Ok(Value::NIL),
+    }
+}
+
+fn save_get_string_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.get_string")?;
+    let key = string_arg(&args[0], "save.get_string", "key")?;
+    let result = SAVE_STORE.with(|s| s.borrow().get(&key).copied());
+    match result {
+        Some(v) if v.is_str() => Ok(v),
+        _ => Ok(Value::NIL),
+    }
+}
+
+fn save_has_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.has")?;
+    let key = string_arg(&args[0], "save.has", "key")?;
+    let has = SAVE_STORE.with(|s| s.borrow().contains_key(&key));
+    Ok(Value::from_bool(has))
+}
+
+fn save_remove_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.remove")?;
+    let key = string_arg(&args[0], "save.remove", "key")?;
+    let removed = SAVE_STORE.with(|s| s.borrow_mut().remove(&key).is_some());
+    Ok(Value::from_bool(removed))
+}
+
+fn save_clear_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    SAVE_STORE.with(|s| s.borrow_mut().clear());
+    Ok(Value::NIL)
+}
+
+fn save_write_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.write")?;
+    let path = string_arg(&args[0], "save.write", "path")?;
+    // Build an Object Value from the store map and pipe through
+    // the Phase 8 save_to codec. Avoids a parallel JSON writer.
+    let value = SAVE_STORE.with(|s| {
+        let mut obj_fields = HashMap::new();
+        for (k, v) in s.borrow().iter() {
+            obj_fields.insert(k.clone(), *v);
+        }
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: obj_fields,
+            kind: "save_store",
+        })))
+    });
+    crate::save::save_to_path(std::path::Path::new(&path), &value)
+        .map_err(|e| crate::save::to_runtime_error(e, 0, 0))?;
+    Ok(Value::NIL)
+}
+
+fn save_read_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.read")?;
+    let path = string_arg(&args[0], "save.read", "path")?;
+    let value = crate::save::load_from_path(std::path::Path::new(&path))
+        .map_err(|e| crate::save::to_runtime_error(e, 0, 0))?;
+    apply_save_from_value(value);
+    Ok(Value::NIL)
+}
+
+fn save_try_read_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.try_read")?;
+    let key = string_arg(&args[0], "save.try_read", "path")?;
+    if !std::path::Path::new(&key).exists() {
+        return Ok(Value::from_bool(false));
+    }
+    match crate::save::load_from_path(std::path::Path::new(&key)) {
+        Ok(value) => {
+            apply_save_from_value(value);
+            Ok(Value::from_bool(true))
+        }
+        Err(_) => Ok(Value::from_bool(false)),
+    }
+}
+
+fn apply_save_from_value(value: Value) {
+    if !value.is_object() {
+        return;
+    }
+    let rc = value.as_object();
+    let o = rc.borrow();
+    SAVE_STORE.with(|s| {
+        let mut store = s.borrow_mut();
+        store.clear();
+        for (k, v) in o.fields.iter() {
+            store.insert(k.clone(), *v);
+        }
+    });
 }
 
 // ---------- Phase 21: animation state ----------
@@ -5695,6 +5866,77 @@ fn install_3d(env: &mut Env) {
     env.set(
         "texture".to_string(),
         Value::from_builtin("texture", &["path"], texture_impl),
+    );
+
+    // Phase 22: typed save helpers — `save.vec3` / `save.f32` /
+    // `save.get_vec3` / `save.get_f32` etc. Wrap an in-memory
+    // HashMap that can flush to disk via save.write(path) and
+    // restore via save.read(path). Reuses save_to / load_from
+    // from Phase 8 — these are typed sugar for "save the player's
+    // 3D position" without manually constructing nested objects.
+    let mut save_fields = HashMap::new();
+    save_fields.insert(
+        "vec3".to_string(),
+        Value::from_builtin("save.vec3", &["key", "v"], save_vec3_impl),
+    );
+    save_fields.insert(
+        "f32".to_string(),
+        Value::from_builtin("save.f32", &["key", "v"], save_f32_impl),
+    );
+    save_fields.insert(
+        "int".to_string(),
+        Value::from_builtin("save.int", &["key", "v"], save_int_impl),
+    );
+    save_fields.insert(
+        "string".to_string(),
+        Value::from_builtin("save.string", &["key", "v"], save_string_impl),
+    );
+    save_fields.insert(
+        "get_vec3".to_string(),
+        Value::from_builtin("save.get_vec3", &["key"], save_get_vec3_impl),
+    );
+    save_fields.insert(
+        "get_f32".to_string(),
+        Value::from_builtin("save.get_f32", &["key"], save_get_f32_impl),
+    );
+    save_fields.insert(
+        "get_int".to_string(),
+        Value::from_builtin("save.get_int", &["key"], save_get_int_impl),
+    );
+    save_fields.insert(
+        "get_string".to_string(),
+        Value::from_builtin("save.get_string", &["key"], save_get_string_impl),
+    );
+    save_fields.insert(
+        "has".to_string(),
+        Value::from_builtin("save.has", &["key"], save_has_impl),
+    );
+    save_fields.insert(
+        "remove".to_string(),
+        Value::from_builtin("save.remove", &["key"], save_remove_impl),
+    );
+    save_fields.insert(
+        "clear".to_string(),
+        Value::from_builtin("save.clear", &[], save_clear_impl),
+    );
+    save_fields.insert(
+        "write".to_string(),
+        Value::from_builtin("save.write", &["path"], save_write_impl),
+    );
+    save_fields.insert(
+        "read".to_string(),
+        Value::from_builtin("save.read", &["path"], save_read_impl),
+    );
+    save_fields.insert(
+        "try_read".to_string(),
+        Value::from_builtin("save.try_read", &["path"], save_try_read_impl),
+    );
+    env.set(
+        "save".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: save_fields,
+            kind: "module",
+        }))),
     );
 
     // Phase 21: animation API surface. mesh.play(handle, clip)
