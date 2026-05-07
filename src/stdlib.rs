@@ -301,6 +301,22 @@ pub fn install(env: &mut Env) {
         ),
     );
     physics_fields.insert(
+        "static_mesh".to_string(),
+        Value::from_builtin(
+            "physics.static_mesh",
+            &["path", "at"],
+            physics_static_mesh_impl,
+        ),
+    );
+    physics_fields.insert(
+        "raycast".to_string(),
+        Value::from_builtin(
+            "physics.raycast",
+            &["origin", "direction", "max_dist"],
+            physics_raycast_impl,
+        ),
+    );
+    physics_fields.insert(
         "position".to_string(),
         Value::from_builtin("physics.position", &["handle"], physics_position_impl),
     );
@@ -5545,6 +5561,63 @@ fn physics_despawn_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
 fn physics_reset_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
     crate::physics3d::reset();
     Ok(Value::NIL)
+}
+
+/// Phase 18 finish: load a `.glb` and add its first primitive as a
+/// static trimesh collider. The translation `at` positions the
+/// whole mesh in world space; the mesh's own internal node
+/// transforms are flattened into the positions at load time.
+/// Returns the body handle (mostly for record-keeping; static
+/// bodies rarely need post-creation lookup).
+fn physics_static_mesh_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics.static_mesh")?;
+    let path = string_arg(&args[0], "physics.static_mesh", "path")?;
+    let at = xyz_of(&args[1], "physics.static_mesh.at")?;
+    let (verts, tris) = crate::physics3d::load_glb_geometry(&path).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("physics.static_mesh: {e}"),
+        help: Some("expected a .glb file with a positions accessor".to_string()),
+    })?;
+    let id =
+        crate::physics3d::static_trimesh(at, &verts, &tris).map_err(|e| RuntimeError {
+            line: 0,
+            col: 0,
+            message: e,
+            help: None,
+        })?;
+    Ok(Value::from_int(id as i64))
+}
+
+/// Phase 18 finish: raycast against all colliders. Returns
+/// nil on miss, or an Object `{ handle, point, distance }` on
+/// hit. The handle field is the same u32 id `physics.body()`
+/// returns, so callers can look up the body that was struck.
+fn physics_raycast_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics.raycast")?;
+    let origin = xyz_of(&args[0], "physics.raycast.origin")?;
+    let direction = xyz_of(&args[1], "physics.raycast.direction")?;
+    let max_dist = number(&args[2], "physics.raycast.max_dist")? as f32;
+    match crate::physics3d::raycast(origin, direction, max_dist) {
+        Some((handle, point, distance)) => {
+            let mut fields = HashMap::new();
+            fields.insert("handle".to_string(), Value::from_int(handle as i64));
+            fields.insert(
+                "point".to_string(),
+                Value::from_tuple(Rc::new(vec![
+                    Value::from_float(point[0] as f64),
+                    Value::from_float(point[1] as f64),
+                    Value::from_float(point[2] as f64),
+                ])),
+            );
+            fields.insert("distance".to_string(), Value::from_float(distance as f64));
+            Ok(Value::from_object(Rc::new(RefCell::new(Object {
+                fields,
+                kind: "raycast_hit",
+            }))))
+        }
+        None => Ok(Value::NIL),
+    }
 }
 
 /// Pull a texture id out of a value returned by `texture(...)`.

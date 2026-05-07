@@ -157,6 +157,75 @@ impl PhysicsWorld {
         self.allocate_handle(body_h)
     }
 
+    /// Phase 18 finish: static triangle-mesh collider built from
+    /// a flat list of vertex positions + u32 triangle indices.
+    /// Used for level geometry — the player physics capsule slides
+    /// along arbitrary mesh surfaces (slopes, stairs, walls).
+    /// `at` translates the whole mesh in world space.
+    pub fn static_trimesh(
+        &mut self,
+        at: [f32; 3],
+        vertices: &[[f32; 3]],
+        indices: &[[u32; 3]],
+    ) -> Result<u32, String> {
+        if vertices.is_empty() || indices.is_empty() {
+            return Err("physics.static_mesh: empty geometry".to_string());
+        }
+        let pts: Vec<Point<Real>> = vertices
+            .iter()
+            .map(|v| Point::new(v[0], v[1], v[2]))
+            .collect();
+        let collider = ColliderBuilder::trimesh(pts, indices.to_vec()).build();
+        let body = RigidBodyBuilder::fixed()
+            .translation(vector![at[0], at[1], at[2]])
+            .build();
+        let body_h = self.bodies.insert(body);
+        self.colliders
+            .insert_with_parent(collider, body_h, &mut self.bodies);
+        Ok(self.allocate_handle(body_h))
+    }
+
+    /// Phase 18 finish: raycast against all colliders. Returns
+    /// (hit_handle, hit_point, hit_distance) on hit, None on miss.
+    /// Used for FPS aim, line-of-sight checks, hover-pick, etc.
+    pub fn raycast(
+        &mut self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_dist: f32,
+    ) -> Option<(u32, [f32; 3], f32)> {
+        // Ensure the broad-phase index is current before querying.
+        self.query_pipeline.update(&self.colliders);
+        let ray = Ray::new(
+            Point::new(origin[0], origin[1], origin[2]),
+            vector![direction[0], direction[1], direction[2]],
+        );
+        let filter = QueryFilter::default();
+        if let Some((collider_handle, toi)) = self.query_pipeline.cast_ray(
+            &self.bodies,
+            &self.colliders,
+            &ray,
+            max_dist,
+            true,
+            filter,
+        ) {
+            let hit_point = ray.point_at(toi);
+            // Find the body handle that owns this collider, then
+            // the Twe-side u32 handle that maps to it.
+            let collider = self.colliders.get(collider_handle)?;
+            let body_handle = collider.parent()?;
+            let twe_handle = self
+                .handles
+                .iter()
+                .find(|(_, h)| **h == body_handle)
+                .map(|(k, _)| *k)
+                .unwrap_or(0);
+            Some((twe_handle, [hit_point.x, hit_point.y, hit_point.z], toi))
+        } else {
+            None
+        }
+    }
+
     pub fn position(&self, handle: u32) -> Option<[f32; 3]> {
         let rh = self.handles.get(&handle)?;
         let body = self.bodies.get(*rh)?;
@@ -249,6 +318,51 @@ impl Default for PhysicsWorld {
     }
 }
 
+// ---- glTF geometry loader (positions + triangles only) ----
+//
+// Physics doesn't need normals, UVs, or materials — just enough
+// to build a TriMeshShape. Lighter than play3d::parse_glb_bytes.
+
+/// Load a `.glb`'s first-mesh-first-primitive geometry as positions
+/// and packed u32 triangles. Used by `physics.static_mesh(path)` to
+/// turn a Blender-exported level mesh into a static trimesh
+/// collider. Errors are stringified at the boundary.
+pub fn load_glb_geometry(path: &str) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>), String> {
+    let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| e.to_string())?;
+    let (doc, buffers, _images) = gltf::import_slice(&bytes).map_err(|e| e.to_string())?;
+    let mesh = doc
+        .meshes()
+        .next()
+        .ok_or_else(|| "glb has no meshes".to_string())?;
+    let primitive = mesh
+        .primitives()
+        .next()
+        .ok_or_else(|| "first mesh has no primitives".to_string())?;
+    let reader = primitive.reader(|b| Some(&buffers[b.index()]));
+    let positions: Vec<[f32; 3]> = reader
+        .read_positions()
+        .ok_or_else(|| "primitive has no POSITION accessor".to_string())?
+        .collect();
+    if positions.is_empty() {
+        return Err("primitive has zero vertices".to_string());
+    }
+    let raw_indices: Vec<u32> = match reader.read_indices() {
+        Some(idx) => idx.into_u32().collect(),
+        None => (0..positions.len() as u32).collect(),
+    };
+    if raw_indices.len() % 3 != 0 {
+        return Err(format!(
+            "physics.static_mesh: expected triangle list, got {} indices (not divisible by 3)",
+            raw_indices.len()
+        ));
+    }
+    let triangles: Vec<[u32; 3]> = raw_indices
+        .chunks_exact(3)
+        .map(|c| [c[0], c[1], c[2]])
+        .collect();
+    Ok((positions, triangles))
+}
+
 // ---- Public API used by play3d.rs and stdlib.rs ----
 
 pub fn step(dt: f32) {
@@ -265,6 +379,22 @@ pub fn static_box(at: [f32; 3], size: [f32; 3]) -> u32 {
 
 pub fn static_sphere(at: [f32; 3], radius: f32) -> u32 {
     WORLD.with(|w| w.borrow_mut().static_sphere(at, radius))
+}
+
+pub fn static_trimesh(
+    at: [f32; 3],
+    vertices: &[[f32; 3]],
+    indices: &[[u32; 3]],
+) -> Result<u32, String> {
+    WORLD.with(|w| w.borrow_mut().static_trimesh(at, vertices, indices))
+}
+
+pub fn raycast(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    max_dist: f32,
+) -> Option<(u32, [f32; 3], f32)> {
+    WORLD.with(|w| w.borrow_mut().raycast(origin, direction, max_dist))
 }
 
 pub fn position(handle: u32) -> Option<[f32; 3]> {
