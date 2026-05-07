@@ -244,6 +244,50 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
+/// Phase 20: per-frame lighting uniform. Up to 8 point lights +
+/// one directional sun + a global ambient. Padded to vec4-aligned
+/// fields per std140 / wgsl uniform layout rules. Disabled lights
+/// have `radius = 0.0` so the shader can early-out cheaply.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct PointLightU {
+    /// xyz = world-space position. w padding.
+    pub pos: [f32; 4],
+    /// xyz = light color (linear-ish, treat as gain). w = radius.
+    /// `radius == 0.0` means "slot disabled".
+    pub color_radius: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct LightsUniform {
+    /// xyz = ambient color (RGB), w padding.
+    pub ambient: [f32; 4],
+    /// xyz = normalized direction TOWARD the sun (i.e. light comes
+    /// from this direction). w = sun intensity (0..1+).
+    pub sun_dir: [f32; 4],
+    pub point_lights: [PointLightU; 8],
+}
+
+impl LightsUniform {
+    pub fn new() -> Self {
+        Self {
+            ambient: [0.20, 0.20, 0.22, 0.0],
+            sun_dir: [0.4, 0.85, 0.35, 1.0],
+            point_lights: [PointLightU {
+                pos: [0.0; 4],
+                color_radius: [0.0; 4],
+            }; 8],
+        }
+    }
+}
+
+impl Default for LightsUniform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 const SHADER_SRC: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -256,6 +300,21 @@ struct Camera {
 // mesh has no texture, so untextured rendering still works.
 @group(1) @binding(0) var t_diffuse: texture_2d<f32>;
 @group(1) @binding(1) var s_diffuse: sampler;
+
+// Phase 20: lighting uniform — global ambient, directional sun,
+// 8 point lights. Bound once per frame (group 2) alongside camera.
+struct PointLight {
+    pos: vec4<f32>,
+    color_radius: vec4<f32>,  // xyz=color, w=radius (0 = disabled)
+};
+
+struct Lights {
+    ambient: vec4<f32>,
+    sun_dir: vec4<f32>,        // xyz=normalized dir TOWARD light, w=intensity
+    point_lights: array<PointLight, 8>,
+};
+
+@group(2) @binding(0) var<uniform> lights: Lights;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -273,15 +332,8 @@ struct VertexOutput {
     @location(0) world_normal: vec3<f32>,
     @location(1) base_color: vec3<f32>,
     @location(2) tex_coord: vec2<f32>,
+    @location(3) world_pos: vec3<f32>,
 };
-
-// Hardcoded sun direction (towards the light) and intensities.
-// The shading model is Lambertian + a constant ambient floor so
-// faces away from the sun aren't pure black. When session (e+1)
-// brings lights into Twe, these constants become uniform-buffer
-// fields the script can write.
-const SUN_DIR: vec3<f32> = vec3<f32>(0.4, 0.85, 0.35);
-const AMBIENT: f32 = 0.30;
 
 @vertex
 fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
@@ -291,19 +343,45 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     out.world_normal = vert.normal;
     out.base_color = inst.inst_color.rgb;
     out.tex_coord = vert.uv;
+    out.world_pos = model_pos;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
-    let l = normalize(SUN_DIR);
-    let diffuse = max(dot(n, l), 0.0);
-    let lit = AMBIENT + diffuse * (1.0 - AMBIENT);
-    // Sample the bound texture and modulate by the per-instance
-    // color tint. For untextured meshes the fallback white texture
-    // makes this a no-op (1.0 * tint) so existing scenes look the
-    // same. Phase 17 session 3.
+    var lit = lights.ambient.rgb;
+    // Directional sun. w = intensity multiplier; 0 disables the sun.
+    if (lights.sun_dir.w > 0.0) {
+        let l = normalize(lights.sun_dir.xyz);
+        let d = max(dot(n, l), 0.0);
+        lit = lit + lights.sun_dir.www * d;
+    }
+    // Up to 8 point lights with quadratic attenuation. radius==0
+    // disables the slot. Inside the radius the falloff is a smooth
+    // edge so distant lights don't pop. Outside, contribution is
+    // exactly zero (early out via the comparison).
+    for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+        let pl = lights.point_lights[i];
+        let r = pl.color_radius.w;
+        if (r <= 0.0) {
+            continue;
+        }
+        let to_light = pl.pos.xyz - in.world_pos;
+        let dist = length(to_light);
+        if (dist >= r) {
+            continue;
+        }
+        let l = to_light / dist;
+        let lambert = max(dot(n, l), 0.0);
+        // Attenuation: 1 at distance 0, smooth-edge falloff to 0
+        // at the edge of the radius. This is a game-friendly
+        // approximation rather than physically-correct 1/d² —
+        // bounded radii make tuning predictable.
+        let t = 1.0 - (dist / r);
+        let atten = t * t;
+        lit = lit + pl.color_radius.rgb * (lambert * atten);
+    }
     let tex = textureSample(t_diffuse, s_diffuse, in.tex_coord);
     return vec4<f32>(in.base_color * tex.rgb * lit, tex.a);
 }
@@ -538,6 +616,10 @@ struct RenderState {
     instance_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    /// Phase 20: lighting uniform buffer + bind group. Updated
+    /// once per frame from the lights state in `stdlib::LIGHTS`.
+    lights_buffer: wgpu::Buffer,
+    lights_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
     /// `Env::mesh_paths` interned id (the `u32` payload of
@@ -1010,6 +1092,37 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         }],
     });
 
+    // Phase 20: lights uniform buffer + bind group. Bound once per
+    // frame at group 2 alongside camera. Initial contents = the
+    // LightsUniform default (low ambient + a sensible sun).
+    let lights_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("twec-play3d lights"),
+        size: std::mem::size_of::<LightsUniform>() as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let lights_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("twec-play3d lights bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let lights_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d lights bg"),
+        layout: &lights_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: lights_buffer.as_entire_binding(),
+        }],
+    });
+
     // Phase 17 session 3: texture bind group layout — sampled
     // 2D float texture + a filtering sampler. One layout, reused
     // for every per-mesh texture binding (including the fallback
@@ -1089,7 +1202,7 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d pipeline layout"),
-        bind_group_layouts: &[&camera_bgl, &texture_bgl],
+        bind_group_layouts: &[&camera_bgl, &texture_bgl, &lights_bgl],
         push_constant_ranges: &[],
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1150,6 +1263,8 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         instance_buffer,
         camera_buffer,
         camera_bind_group,
+        lights_buffer,
+        lights_bind_group,
         depth_view,
         mesh_cache: HashMap::new(),
         mesh_load_failures: HashSet::new(),
@@ -1674,6 +1789,17 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         .queue
         .write_buffer(&state.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
 
+    // Phase 20: snapshot the script-controlled lighting state into
+    // a LightsUniform and upload to the lights buffer. The script
+    // mutates lighting via `light.add` / `sun.direction` / etc.;
+    // we read the current values here once per frame.
+    let lights_uniform = crate::stdlib::lights_snapshot();
+    state.queue.write_buffer(
+        &state.lights_buffer,
+        0,
+        bytemuck::bytes_of(&lights_uniform),
+    );
+
     // 4. Partition the queue per primitive. Each primitive becomes
     //    one instanced draw call, packed contiguously into the
     //    shared instance buffer with a remembered (offset, count)
@@ -1871,6 +1997,7 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         if !instances.is_empty() {
             rpass.set_pipeline(&state.pipeline);
             rpass.set_bind_group(0, &state.camera_bind_group, &[]);
+            rpass.set_bind_group(2, &state.lights_bind_group, &[]);
             rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
             // Phase 17 session 3: helper closure that picks the
             // right texture bind group for a given texture id.

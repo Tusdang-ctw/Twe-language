@@ -271,6 +271,71 @@ pub fn install(env: &mut Env) {
         Value::from_builtin("key_pressed", &["name"], key_pressed_impl),
     );
 
+    // Phase 20: lighting surface. light.* manages an 8-slot point
+    // light array; sun.* tweaks the directional sun. The play3d
+    // loop reads `lights_snapshot()` each frame and uploads.
+    let mut light_fields = HashMap::new();
+    light_fields.insert(
+        "add".to_string(),
+        Value::from_builtin(
+            "light.add",
+            &["at", "color", "radius"],
+            light_add_impl,
+        ),
+    );
+    light_fields.insert(
+        "remove".to_string(),
+        Value::from_builtin("light.remove", &["handle"], light_remove_impl),
+    );
+    light_fields.insert(
+        "ambient".to_string(),
+        Value::from_builtin("light.ambient", &["color"], light_ambient_impl),
+    );
+    light_fields.insert(
+        "set".to_string(),
+        Value::from_builtin(
+            "light.set",
+            &["handle", "at", "color", "radius"],
+            light_set_impl,
+        ),
+    );
+    light_fields.insert(
+        "set_radius".to_string(),
+        Value::from_builtin(
+            "light.set_radius",
+            &["handle", "radius"],
+            light_set_radius_impl,
+        ),
+    );
+    light_fields.insert(
+        "clear".to_string(),
+        Value::from_builtin("light.clear", &[], light_clear_impl),
+    );
+    env.set(
+        "light".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: light_fields,
+            kind: "module",
+        }))),
+    );
+
+    let mut sun_fields = HashMap::new();
+    sun_fields.insert(
+        "direction".to_string(),
+        Value::from_builtin("sun.direction", &["v"], sun_direction_impl),
+    );
+    sun_fields.insert(
+        "intensity".to_string(),
+        Value::from_builtin("sun.intensity", &["i"], sun_intensity_impl),
+    );
+    env.set(
+        "sun".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: sun_fields,
+            kind: "module",
+        }))),
+    );
+
     // Phase 18: 3D physics surface. All builtins forward to the
     // thread-local PhysicsWorld in src/physics3d.rs. The play3d
     // loop steps the world before each Twe `on update(dt)` so
@@ -653,6 +718,12 @@ static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 // Single-slot (last write wins) is fine — issuing two screenshot calls
 // in the same frame is degenerate.
 thread_local! {
+    /// Phase 20: script-controlled lighting state. The play3d loop
+    /// reads this once per frame and uploads to the GPU lights
+    /// uniform. Up to 8 simultaneous point lights; light.add()
+    /// returns the slot index (1-based, so 0 means "all full").
+    static LIGHTS_STATE: RefCell<crate::play3d::LightsUniform> =
+        RefCell::new(crate::play3d::LightsUniform::new());
     static PENDING_SCREENSHOT: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Phase 17 session 3: pending cursor-mode change requested by
     /// the script via cursor.lock() / cursor.unlock(). The play3d
@@ -664,6 +735,13 @@ thread_local! {
 
 pub fn take_pending_screenshot() -> Option<String> {
     PENDING_SCREENSHOT.with(|c| c.borrow_mut().take())
+}
+
+/// Phase 20: snapshot the current lighting state for the play3d
+/// frame loop. Returns by value so the caller can write it
+/// straight into a wgpu buffer without holding the thread-local.
+pub fn lights_snapshot() -> crate::play3d::LightsUniform {
+    LIGHTS_STATE.with(|s| *s.borrow())
 }
 
 /// Phase 17 session 3: drain the cursor-mode request slot. play3d
@@ -5655,6 +5733,137 @@ fn texture_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         fields,
         kind: "texture",
     }))))
+}
+
+// ---------- Phase 20: lighting builtins ----------
+
+fn light_add_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "light.add")?;
+    let at = xyz_of(&args[0], "light.add.at")?;
+    let color = rgba_of(&args[1], "light.add.color")?;
+    let radius = number(&args[2], "light.add.radius")? as f32;
+    if radius <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "light.add: radius must be > 0".to_string(),
+            help: Some("a 0-radius light is disabled by definition".to_string()),
+        });
+    }
+    let mut handle = 0;
+    LIGHTS_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        for (i, slot) in st.point_lights.iter_mut().enumerate() {
+            if slot.color_radius[3] <= 0.0 {
+                slot.pos = [at[0], at[1], at[2], 0.0];
+                slot.color_radius = [color[0], color[1], color[2], radius];
+                handle = (i + 1) as i64;
+                return;
+            }
+        }
+    });
+    if handle == 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "light.add: all 8 light slots full".to_string(),
+            help: Some("call light.remove(h) to free a slot".to_string()),
+        });
+    }
+    Ok(Value::from_int(handle))
+}
+
+fn light_remove_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "light.remove")?;
+    let handle = handle_int(&args[0], "light.remove")?;
+    LIGHTS_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if let Some(slot) = st.point_lights.get_mut((handle - 1) as usize) {
+            slot.pos = [0.0; 4];
+            slot.color_radius = [0.0; 4];
+        }
+    });
+    Ok(Value::NIL)
+}
+
+fn light_ambient_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "light.ambient")?;
+    let color = rgba_of(&args[0], "light.ambient.color")?;
+    LIGHTS_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        st.ambient = [color[0], color[1], color[2], 0.0];
+    });
+    Ok(Value::NIL)
+}
+
+fn light_set_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "light.set")?;
+    let handle = handle_int(&args[0], "light.set")?;
+    let at = xyz_of(&args[1], "light.set.at")?;
+    let color = rgba_of(&args[2], "light.set.color")?;
+    let radius = number(&args[3], "light.set.radius")? as f32;
+    LIGHTS_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if let Some(slot) = st.point_lights.get_mut((handle - 1) as usize) {
+            slot.pos = [at[0], at[1], at[2], 0.0];
+            slot.color_radius = [color[0], color[1], color[2], radius];
+        }
+    });
+    Ok(Value::NIL)
+}
+
+fn light_set_radius_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "light.set_radius")?;
+    let handle = handle_int(&args[0], "light.set_radius")?;
+    let radius = number(&args[1], "light.set_radius.radius")? as f32;
+    LIGHTS_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if let Some(slot) = st.point_lights.get_mut((handle - 1) as usize) {
+            slot.color_radius[3] = radius;
+        }
+    });
+    Ok(Value::NIL)
+}
+
+fn light_clear_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    LIGHTS_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        for slot in st.point_lights.iter_mut() {
+            slot.pos = [0.0; 4];
+            slot.color_radius = [0.0; 4];
+        }
+    });
+    Ok(Value::NIL)
+}
+
+fn sun_direction_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "sun.direction")?;
+    let v = xyz_of(&args[0], "sun.direction.v")?;
+    LIGHTS_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        // Normalize so the shader doesn't have to. Zero-length
+        // vector falls back to a sensible up-vector.
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if len > 1e-6 {
+            st.sun_dir[0] = v[0] / len;
+            st.sun_dir[1] = v[1] / len;
+            st.sun_dir[2] = v[2] / len;
+        } else {
+            st.sun_dir[0] = 0.0;
+            st.sun_dir[1] = 1.0;
+            st.sun_dir[2] = 0.0;
+        }
+    });
+    Ok(Value::NIL)
+}
+
+fn sun_intensity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "sun.intensity")?;
+    let i = number(&args[0], "sun.intensity.i")? as f32;
+    LIGHTS_STATE.with(|s| {
+        s.borrow_mut().sun_dir[3] = i.max(0.0);
+    });
+    Ok(Value::NIL)
 }
 
 // ---------- Phase 18: physics builtins ----------
