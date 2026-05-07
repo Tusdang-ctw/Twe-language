@@ -34,29 +34,35 @@ if not save.has("high_score"):
 let high_score = save.get_int("high_score")
 
 # === World layout ===
-# Floor: 40 × 40 unit, top face at y = 0.
-let floor = physics.static_box((0.0, -0.5, 0.0), (20.0, 0.5, 20.0))
+# `physics.static_box(at, size)` takes the FULL box extents (the
+# function halves them internally for rapier's cuboid). So a
+# 40 × 1 × 40 floor is `size = (40, 1, 40)`, not (20, 0.5, 20).
+# Floor: 40m × 40m, top face at y = 0.
+let floor = physics.static_box((0.0, -0.5, 0.0), (40.0, 1.0, 40.0))
 
-# Outer walls (physics only; visible as thin colored rims).
-let wall_n = physics.static_box((0.0, 1.5, -20.0), (20.0, 1.5, 0.5))
-let wall_s = physics.static_box((0.0, 1.5, 20.0), (20.0, 1.5, 0.5))
-let wall_e = physics.static_box((20.0, 1.5, 0.0), (0.5, 1.5, 20.0))
-let wall_w = physics.static_box((-20.0, 1.5, 0.0), (0.5, 1.5, 20.0))
+# Outer walls (physics only; visible as small markers — the engine
+# doesn't yet have asymmetric-scale primitives, so the wall *cube*
+# rendered separately is just a token, while the physics box is
+# the real bound).
+let wall_n = physics.static_box((0.0, 1.5, -20.0), (40.0, 3.0, 1.0))
+let wall_s = physics.static_box((0.0, 1.5,  20.0), (40.0, 3.0, 1.0))
+let wall_e = physics.static_box(( 20.0, 1.5, 0.0), (1.0, 3.0, 40.0))
+let wall_w = physics.static_box((-20.0, 1.5, 0.0), (1.0, 3.0, 40.0))
 
-# Four cover pillars near the corners.
-let pillar_a = physics.static_box((-7.0, 1.5, -7.0), (0.75, 1.5, 0.75))
-let pillar_b = physics.static_box((7.0, 1.5, -7.0), (0.75, 1.5, 0.75))
-let pillar_c = physics.static_box((-7.0, 1.5, 7.0), (0.75, 1.5, 0.75))
-let pillar_d = physics.static_box((7.0, 1.5, 7.0), (0.75, 1.5, 0.75))
+# Four cover pillars: 1.5m wide, 3m tall.
+let pillar_a = physics.static_box((-7.0, 1.5, -7.0), (1.5, 3.0, 1.5))
+let pillar_b = physics.static_box(( 7.0, 1.5, -7.0), (1.5, 3.0, 1.5))
+let pillar_c = physics.static_box((-7.0, 1.5,  7.0), (1.5, 3.0, 1.5))
+let pillar_d = physics.static_box(( 7.0, 1.5,  7.0), (1.5, 3.0, 1.5))
 
 # === Crystals (collectible static sensors) ===
 # Each crystal is a static sphere; walking into one fires a
 # collision event we use to despawn it and bump the score.
 var crystal_positions = [
-    (-15.0, 0.6, -15.0),
-    ( 15.0, 0.6, -15.0),
-    (-15.0, 0.6,  15.0),
-    ( 15.0, 0.6,  15.0),
+    (-14.0, 0.6, -14.0),
+    ( 14.0, 0.6, -14.0),
+    (-14.0, 0.6,  14.0),
+    ( 14.0, 0.6,  14.0),
     (  0.0, 0.6, -10.0),
     (  0.0, 0.6,  10.0),
     (-10.0, 0.6,   0.0),
@@ -117,6 +123,7 @@ camera.up = vec3(0.0, 1.0, 0.0)
 var yaw = 0.0
 var pitch = -0.15
 var on_ground = false
+var vy = 0.0          # vertical velocity (m/s) — integrates gravity
 var hearts = 3
 var score = 0
 var game_state = "playing"
@@ -125,7 +132,11 @@ var hit_cooldown = 0.0
 
 let mouse_sens = 0.0030
 let walk_speed = 6.0
-let jump_impulse = 5.5
+# Jump start velocity in m/s. Apex height ≈ v² / (2 g) = 36 / 19.62
+# ≈ 1.83m, well above the 1m pillar tier and the high crystal at y=4
+# is reachable by jumping off a pillar.
+let jump_speed = 6.0
+let gravity = 18.0    # boosted above real-world 9.81 — feels snappier
 
 on update(dt):
     time = time + dt
@@ -142,6 +153,33 @@ on update(dt):
     light.set(torch_ne, ( 18.0, 4.5, -18.0), (f2, f2 * 0.55, f2 * 0.20, 1.0), 14.0)
     light.set(torch_sw, (-18.0, 4.5,  18.0), (f3, f3 * 0.55, f3 * 0.20, 1.0), 14.0)
     light.set(torch_se, ( 18.0, 4.5,  18.0), (f4, f4 * 0.55, f4 * 0.20, 1.0), 14.0)
+
+    # Visual game-state feedback: vignette intensifies when you've
+    # lost (the world goes dim around the edges) and softens to a
+    # gentle pulse on win. The 3D pipeline doesn't render text yet,
+    # so the vignette + console print are the win/lose UI.
+    if game_state == "playing":
+        postfx.vignette(0.30)
+    elif game_state == "lost":
+        postfx.vignette(0.85)
+    else:
+        let pulse = 0.20 + 0.15 * math.sin(time * 4.0)
+        postfx.vignette(pulse)
+
+    # Restart is always available — works whether you're playing,
+    # won, or lost. Re-spawns any collected crystals + resets
+    # score / hearts / position.
+    if key_press.r:
+        game_state = "playing"
+        score = 0
+        hearts = 3
+        vy = 0.0
+        var i = 0
+        while i < crystals.length:
+            if not crystal_alive[i]:
+                crystals.set(i, physics.static_sphere(crystal_positions[i], 0.6))
+                crystal_alive.set(i, true)
+            i = i + 1
 
     if game_state == "playing":
         # --- Mouse look ---
@@ -177,12 +215,23 @@ on update(dt):
             dx = dx / mag * walk_speed
             dz = dz / mag * walk_speed
 
-        var dy = -9.81 * dt
+        # Gravity integrates each frame as a real velocity. When
+        # grounded we clamp vy to a small downward bias so the KCC
+        # keeps reporting `grounded = true`; pressing space replaces
+        # vy with `jump_speed` for a clean parabolic arc.
+        # `physics.character_move` multiplies by dt internally, so
+        # `dy` here is m/s (a velocity), not a per-frame translation.
+        vy = vy - gravity * dt
+        if on_ground and vy < 0.0:
+            vy = -2.0
         if on_ground and key_press.space:
-            dy = jump_impulse
-
-        let move = physics.character_move(player, (dx, dy, dz), dt)
+            vy = jump_speed
+        let move = physics.character_move(player, (dx, vy, dz), dt)
         on_ground = move.grounded
+        # Bumped our head — kill upward velocity so we fall instead
+        # of sticking to the ceiling.
+        if vy > 0.0 and not on_ground and move.translation.y <= 0.001:
+            vy = 0.0
 
         # --- Camera follows the player's head ---
         let pos = physics.position(player)
@@ -227,18 +276,6 @@ on update(dt):
                 save.int("high_score", score)
                 save.write("crystal_hunter.save")
                 print("new high score: {score}")
-    elif key_press.r:
-        # Restart on R after game over / win. Re-spawn any
-        # collected crystals + reset score/hearts.
-        game_state = "playing"
-        score = 0
-        hearts = 3
-        var i = 0
-        while i < crystals.length:
-            if not crystal_alive[i]:
-                crystals.set(i, physics.static_sphere(crystal_positions[i], 0.6))
-                crystal_alive.set(i, true)
-            i = i + 1
 
 on render():
     # --- Floor: 40m × 40m flat slab. The cube's lower 19.5m are
@@ -270,9 +307,10 @@ on render():
             cube(at: (tx, 3.5, tz), color: (0.32, 0.20, 0.12, 1.0), size: 0.3)
             sphere(at: (tx, 4.4, tz), color: (1.0, 0.6, 0.25, 1.0), size: 0.4)
 
-    # --- Crystals: pulsing cyan spheres. Slight scale pulse +
-    # the sun-tinted color reads as glowing in HDR. ---
-    let pulse = 0.45 + 0.10 * math.sin(time * 3.0)
+    # --- Crystals: pulsing cyan spheres. Visible diameter matches
+    # the physics radius (0.6 → diameter 1.2) so walking into a
+    # crystal lines up with the collision event firing. ---
+    let pulse = 1.0 + 0.20 * math.sin(time * 3.0)
     var i = 0
     while i < crystals.length:
         if crystal_alive[i]:
@@ -280,11 +318,12 @@ on render():
         i = i + 1
 
     # --- Sentinels: red dynamic spheres, position-tracked from
-    # the physics integrator so they roll around realistically. ---
+    # the physics integrator. `physics.body("sphere", ...)` creates
+    # a radius-0.5 ball, so render at diameter 1.0 to match. ---
     for h in sentinels:
         let p = physics.position(h)
         if p:
-            sphere(at: p, color: (1.4, 0.25, 0.20, 1.0), size: 0.6)
+            sphere(at: p, color: (1.4, 0.25, 0.20, 1.0), size: 1.0)
 
     # --- Status print: this lands in the terminal that launched
     # twec, not on-screen. The full play3d HUD is in the in-window
