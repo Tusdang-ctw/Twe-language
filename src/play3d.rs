@@ -302,6 +302,48 @@ impl Default for LightsUniform {
     }
 }
 
+/// Phase 25: shadow uniform — light-space view-projection matrix
+/// used by both the shadow pass (as the "camera") and the main
+/// pass (to transform fragments into shadow-map UV space). The
+/// extent and direction are derived each frame from `sun.direction`,
+/// a shadow center (defaulting to the camera target), and an
+/// extent value configurable via `sun.shadow_extent`.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct ShadowUniform {
+    pub light_space_matrix: [[f32; 4]; 4],
+    /// xyz = currently unused, w = `1.0` if shadows are enabled
+    /// for this frame, `0.0` otherwise. The fragment shader uses
+    /// the flag to short-circuit the shadow lookup so disabling
+    /// shadows is a real perf win, not a same-cost no-op.
+    pub flags: [f32; 4],
+}
+
+impl ShadowUniform {
+    pub fn disabled() -> Self {
+        Self {
+            light_space_matrix: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            flags: [0.0; 4],
+        }
+    }
+}
+
+impl Default for ShadowUniform {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+/// Phase 25: dimension of the shadow map. 2048 is a balanced
+/// default — sharp enough for indoor / mid-range outdoor scenes,
+/// not so big that 16 MB of GPU memory is allocated for it.
+pub const SHADOW_MAP_SIZE: u32 = 2048;
+
 /// Phase 24: joint matrix array bound at @group(3). Each skinned
 /// mesh uploads its computed per-joint matrices (joint world ×
 /// inverse-bind matrix) to a per-mesh instance of this UBO each
@@ -380,6 +422,18 @@ struct Joints {
 };
 @group(3) @binding(0) var<uniform> joints_u: Joints;
 
+// Phase 25: shadow map + light-space matrix at @group(4).
+// `flags.w == 1.0` means shadows are active this frame; the
+// fragment shader skips the shadow lookup when the flag is 0
+// (e.g. when the script disables shadows via `sun.shadow(false)`).
+struct Shadow {
+    light_space_matrix: mat4x4<f32>,
+    flags: vec4<f32>,
+};
+@group(4) @binding(0) var<uniform> shadow_u: Shadow;
+@group(4) @binding(1) var t_shadow: texture_depth_2d;
+@group(4) @binding(2) var s_shadow: sampler_comparison;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -424,6 +478,48 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     return out;
 }
 
+// Phase 25: 3x3 PCF shadow sample. Returns 1.0 = fully lit,
+// 0.0 = fully in shadow. The 0.5 / size offset gives texel-aligned
+// taps for sharp results without over-sampling.
+fn sample_shadow(world_pos: vec3<f32>) -> f32 {
+    if (shadow_u.flags.w < 0.5) {
+        return 1.0;
+    }
+    let light_pos = shadow_u.light_space_matrix * vec4<f32>(world_pos, 1.0);
+    var shadow_uv = light_pos.xyz / light_pos.w;
+    // Convert from clip space [-1, 1] to texture UV [0, 1].
+    shadow_uv = vec3<f32>(
+        shadow_uv.x * 0.5 + 0.5,
+        shadow_uv.y * -0.5 + 0.5,
+        shadow_uv.z,
+    );
+    if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0
+     || shadow_uv.y < 0.0 || shadow_uv.y > 1.0
+     || shadow_uv.z < 0.0 || shadow_uv.z > 1.0) {
+        return 1.0;
+    }
+    // Bias to combat self-shadowing acne. Subtracting from the
+    // reference depth makes a fragment "deeper" so coincident
+    // shadow-map texels still pass the comparison.
+    let bias = 0.0008;
+    let ref_depth = shadow_uv.z - bias;
+    let dim = vec2<f32>(textureDimensions(t_shadow));
+    let inv = vec2<f32>(1.0 / dim.x, 1.0 / dim.y);
+    var sum = 0.0;
+    for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
+        for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
+            let off = vec2<f32>(f32(dx), f32(dy)) * inv;
+            sum = sum + textureSampleCompare(
+                t_shadow,
+                s_shadow,
+                shadow_uv.xy + off,
+                ref_depth,
+            );
+        }
+    }
+    return sum / 9.0;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
@@ -432,7 +528,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (lights.sun_dir.w > 0.0) {
         let l = normalize(lights.sun_dir.xyz);
         let d = max(dot(n, l), 0.0);
-        lit = lit + lights.sun_dir.www * d;
+        // Phase 25: shadow attenuates only the sun term, not
+        // ambient or point lights — same convention as Unity /
+        // Unreal so artists can still see geometry in shadow.
+        let shadow = sample_shadow(in.world_pos);
+        lit = lit + lights.sun_dir.www * (d * shadow);
     }
     // Up to 8 point lights with quadratic attenuation. radius==0
     // disables the slot. Inside the radius the falloff is a smooth
@@ -461,6 +561,50 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let tex = textureSample(t_diffuse, s_diffuse, in.tex_coord);
     return vec4<f32>(in.base_color * tex.rgb * lit, tex.a);
+}
+"#;
+
+/// Phase 25: separate shadow shader — depth-only, no fragment
+/// stage needed, just the vertex pass that emits clip-space
+/// positions in *light space* so the depth buffer captures
+/// distance-to-sun. Reuses the same vertex layout (position +
+/// joints + weights) so a single vertex buffer per mesh feeds
+/// both passes.
+const SHADOW_SHADER_SRC: &str = r#"
+struct Shadow {
+    light_space_matrix: mat4x4<f32>,
+    flags: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> shadow_u: Shadow;
+
+struct Joints {
+    matrices: array<mat4x4<f32>, 128>,
+};
+@group(1) @binding(0) var<uniform> joints_u: Joints;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(4) uv: vec2<f32>,
+    @location(5) joints: vec4<u32>,
+    @location(6) weights: vec4<f32>,
+};
+
+struct InstanceInput {
+    @location(2) inst_pos_size: vec4<f32>,
+    @location(3) inst_color: vec4<f32>,
+};
+
+@vertex
+fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<f32> {
+    let skin_mat: mat4x4<f32> =
+          vert.weights.x * joints_u.matrices[vert.joints.x]
+        + vert.weights.y * joints_u.matrices[vert.joints.y]
+        + vert.weights.z * joints_u.matrices[vert.joints.z]
+        + vert.weights.w * joints_u.matrices[vert.joints.w];
+    let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
+    let model_pos = skinned_pos * inst.inst_pos_size.w + inst.inst_pos_size.xyz;
+    return shadow_u.light_space_matrix * vec4<f32>(model_pos, 1.0);
 }
 "#;
 
@@ -722,6 +866,27 @@ struct RenderState {
     /// defaults (joints=0, weights=[1,0,0,0]) the skin matrix is
     /// identity and the vertex passes through unchanged.
     identity_joints_bind_group: wgpu::BindGroup,
+    /// Phase 25: depth-only render pipeline used for the shadow
+    /// pass. Reuses the same vertex + instance layouts as the
+    /// main pipeline so vertex buffers are shared between passes.
+    shadow_pipeline: wgpu::RenderPipeline,
+    /// Per-frame shadow uniform: light-space view-projection +
+    /// enable/disable flag.
+    shadow_buffer: wgpu::Buffer,
+    /// Bound at @group(0) of the shadow pipeline (so it acts as
+    /// the camera) and at @group(4) binding 0 of the main
+    /// pipeline.
+    shadow_uniform_bg_for_pass: wgpu::BindGroup,
+    /// Combined bind group used by the main pipeline at @group(4):
+    /// shadow uniform + shadow texture view + comparison sampler.
+    shadow_combined_bg: wgpu::BindGroup,
+    /// Depth texture written by the shadow pass, sampled in the
+    /// main pass via `t_shadow` + `s_shadow`. Resolution =
+    /// `SHADOW_MAP_SIZE × SHADOW_MAP_SIZE`.
+    #[allow(dead_code)]
+    shadow_texture: wgpu::Texture,
+    /// Depth-only attachment view for the shadow pass.
+    shadow_depth_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
     /// `Env::mesh_paths` interned id (the `u32` payload of
@@ -1420,9 +1585,64 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         label: Some("twec-play3d shader"),
         source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
     });
+    // Phase 25: shadow uniform bgl (just the matrix + flags). The
+    // shadow pipeline binds this at @group(0) as its only "camera".
+    let shadow_uniform_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("twec-play3d shadow uniform bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    // Combined shadow bgl used by the main pipeline: shadow
+    // uniform + depth texture + comparison sampler.
+    let shadow_combined_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("twec-play3d shadow combined bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                count: None,
+            },
+        ],
+    });
+
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d pipeline layout"),
-        bind_group_layouts: &[&camera_bgl, &texture_bgl, &lights_bgl, &joints_bgl],
+        bind_group_layouts: &[
+            &camera_bgl,
+            &texture_bgl,
+            &lights_bgl,
+            &joints_bgl,
+            &shadow_combined_bgl,
+        ],
         push_constant_ranges: &[],
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1467,6 +1687,126 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
 
     let depth_view = create_depth_view(&device, config.width, config.height);
 
+    // Phase 25: build the shadow texture, shadow uniform buffer +
+    // bind groups, depth-only shadow pipeline. The shadow pass
+    // runs each frame before the main pass when shadows are
+    // enabled, writing depth from the sun's POV into a
+    // SHADOW_MAP_SIZE × SHADOW_MAP_SIZE texture; the main
+    // fragment shader then samples that texture for PCF shadow.
+    let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("twec-play3d shadow map"),
+        size: wgpu::Extent3d {
+            width: SHADOW_MAP_SIZE,
+            height: SHADOW_MAP_SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let shadow_depth_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let shadow_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("twec-play3d shadow uniform"),
+        size: std::mem::size_of::<ShadowUniform>() as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(
+        &shadow_buffer,
+        0,
+        bytemuck::bytes_of(&ShadowUniform::disabled()),
+    );
+    let shadow_uniform_bg_for_pass = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d shadow uniform bg"),
+        layout: &shadow_uniform_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: shadow_buffer.as_entire_binding(),
+        }],
+    });
+    // Comparison sampler — PCF expects this. Linear filter does
+    // hardware 2x2 PCF on top of our manual 3x3 = a 5x5-ish kernel.
+    let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("twec-play3d shadow sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        compare: Some(wgpu::CompareFunction::LessEqual),
+        ..Default::default()
+    });
+    let shadow_combined_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d shadow combined bg"),
+        layout: &shadow_combined_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: shadow_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&shadow_depth_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+            },
+        ],
+    });
+    // Shadow pipeline: depth-only. Binds shadow uniform at @group(0)
+    // (acting as the camera) and joints UBO at @group(1) (so
+    // skinned characters cast correct shadows).
+    let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("twec-play3d shadow shader"),
+        source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER_SRC.into()),
+    });
+    let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("twec-play3d shadow pipeline layout"),
+        bind_group_layouts: &[&shadow_uniform_bgl, &joints_bgl],
+        push_constant_ranges: &[],
+    });
+    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("twec-play3d shadow pipeline"),
+        layout: Some(&shadow_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shadow_shader,
+            entry_point: "vs_shadow",
+            buffers: &[Vertex::layout(), Instance::layout()],
+            compilation_options: Default::default(),
+        },
+        fragment: None, // depth-only pass
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            // Front-face culling for the shadow pass mitigates
+            // self-shadowing acne on flat ground meshes.
+            cull_mode: Some(wgpu::Face::Front),
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState {
+                constant: 2,
+                slope_scale: 2.0,
+                clamp: 0.0,
+            },
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
     Ok(RenderState {
         window,
         surface,
@@ -1488,6 +1828,12 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         lights_bind_group,
         joints_bgl,
         identity_joints_bind_group,
+        shadow_pipeline,
+        shadow_buffer,
+        shadow_uniform_bg_for_pass,
+        shadow_combined_bg,
+        shadow_texture,
+        shadow_depth_view,
         depth_view,
         mesh_cache: HashMap::new(),
         mesh_load_failures: HashSet::new(),
@@ -2116,6 +2462,65 @@ fn compute_skinned_joint_matrices(skin: &MeshSkin, anim: &AnimSnapshot) -> Joint
     out
 }
 
+/// Phase 25: build the per-frame shadow uniform from sun direction,
+/// camera target, the script-driven enable flag, and extent.
+/// Returns a "disabled" uniform when shadows are off so the main
+/// pass short-circuits the lookup. The light-space matrix is an
+/// orthographic projection from the sun looking at `target`, sized
+/// by the script-controlled extent (default 30m radius).
+fn compute_shadow_uniform(
+    lights: &LightsUniform,
+    _eye: [f32; 3],
+    target: [f32; 3],
+) -> ShadowUniform {
+    let enabled = crate::stdlib::shadow_enabled();
+    if !enabled || lights.sun_dir[3] <= 0.0 {
+        return ShadowUniform::disabled();
+    }
+    let extent = crate::stdlib::shadow_extent();
+    let sun_dir = normalize([lights.sun_dir[0], lights.sun_dir[1], lights.sun_dir[2]]);
+    // Pull back from the target along the sun direction so the
+    // ortho frustum encloses the visible scene around `target`.
+    let pull = extent * 1.5;
+    let light_eye = [
+        target[0] + sun_dir[0] * pull,
+        target[1] + sun_dir[1] * pull,
+        target[2] + sun_dir[2] * pull,
+    ];
+    let up_guess = if sun_dir[1].abs() > 0.99 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let view = look_at(light_eye, target, up_guess);
+    let proj = ortho(-extent, extent, -extent, extent, 0.1, pull * 2.0 + extent);
+    let light_space_matrix = mul(proj, view);
+    ShadowUniform {
+        light_space_matrix,
+        flags: [0.0, 0.0, 0.0, 1.0],
+    }
+}
+
+/// Phase 25: orthographic projection — column-major, matches WGSL
+/// expectations. NDC z is [0, 1] for wgpu (D3D-style), so the
+/// near→far range maps to that.
+fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
+    let rl = right - left;
+    let tb = top - bottom;
+    let fnz = far - near;
+    [
+        [2.0 / rl, 0.0, 0.0, 0.0],
+        [0.0, 2.0 / tb, 0.0, 0.0],
+        [0.0, 0.0, -1.0 / fnz, 0.0],
+        [
+            -(right + left) / rl,
+            -(top + bottom) / tb,
+            -near / fnz,
+            1.0,
+        ],
+    ]
+}
+
 /// Phase 24: apply one animation clip's channels onto a TRS table
 /// at time `t_clip`. Mutates the targeted nodes in place; nodes
 /// not referenced by any channel keep their rest-pose values.
@@ -2526,6 +2931,18 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         bytemuck::bytes_of(&lights_uniform),
     );
 
+    // Phase 25: compute the light-space view-projection matrix
+    // and upload to the shadow uniform. When shadows are disabled
+    // (`sun.shadow(false)` or no sun direction set), upload a
+    // disabled-flag uniform so the main shader's PCF lookup
+    // short-circuits to "fully lit".
+    let shadow_uniform = compute_shadow_uniform(&lights_uniform, eye, target);
+    state.queue.write_buffer(
+        &state.shadow_buffer,
+        0,
+        bytemuck::bytes_of(&shadow_uniform),
+    );
+
     // 4. Partition the queue per primitive. Each primitive becomes
     //    one instanced draw call, packed contiguously into the
     //    shared instance buffer with a remembered (offset, count)
@@ -2741,6 +3158,74 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("twec-play3d encoder"),
         });
+    // Phase 25: shadow pass — depth-only render from sun POV
+    // into the shadow map. Runs every frame even when shadows
+    // are disabled (the disabled-flag uniform short-circuits the
+    // sample); the cost is one render of all opaque geometry
+    // into a 2K depth buffer. We render every visible draw call
+    // (cube/sphere/mesh groups) so anything in the scene casts a
+    // shadow.
+    if shadow_uniform.flags[3] > 0.5 && !instances.is_empty() {
+        let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("twec-play3d shadow pass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &state.shadow_depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        spass.set_pipeline(&state.shadow_pipeline);
+        spass.set_bind_group(0, &state.shadow_uniform_bg_for_pass, &[]);
+        spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+        spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+        // Cubes
+        for (_tex, range) in &cube_ranges {
+            if range.1 <= range.0 {
+                continue;
+            }
+            spass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
+            spass.set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
+        }
+        // Spheres
+        for (_tex, range) in &sphere_ranges {
+            if range.1 <= range.0 {
+                continue;
+            }
+            spass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
+            spass.set_index_buffer(
+                state.sphere_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            spass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
+        }
+        // Meshes (with per-mesh joints if skinned)
+        for ((mesh_id, _tex), range) in &mesh_ranges {
+            if range.1 <= range.0 {
+                continue;
+            }
+            let gpu_mesh = match state.mesh_cache.get(mesh_id) {
+                Some(m) => m,
+                None => continue,
+            };
+            if let Some(skin) = &gpu_mesh.skin {
+                spass.set_bind_group(1, &skin.joint_bind_group, &[]);
+            }
+            spass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+            spass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
+            spass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+            if gpu_mesh.skin.is_some() {
+                spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+            }
+        }
+    }
+
     {
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("twec-play3d main pass"),
@@ -2777,6 +3262,10 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
             // without a skin). Skinned mesh draws override slot 3
             // with their per-mesh joint bind group below.
             rpass.set_bind_group(3, &state.identity_joints_bind_group, &[]);
+            // Phase 25: shadow combined bind group at slot 4 —
+            // shadow uniform + texture + comparison sampler. The
+            // shader short-circuits when flags.w == 0.
+            rpass.set_bind_group(4, &state.shadow_combined_bg, &[]);
             rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
             // Phase 17 session 3: helper closure that picks the
             // right texture bind group for a given texture id.

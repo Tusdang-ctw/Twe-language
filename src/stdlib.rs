@@ -328,6 +328,19 @@ pub fn install(env: &mut Env) {
         "intensity".to_string(),
         Value::from_builtin("sun.intensity", &["i"], sun_intensity_impl),
     );
+    // Phase 25: shadow controls. `sun.shadow(true)` enables PCF
+    // shadow rendering from the sun direction; `sun.shadow_extent(r)`
+    // sets the half-side of the orthographic shadow frustum
+    // (default 30m). The render path writes a 2K shadow map each
+    // frame when enabled.
+    sun_fields.insert(
+        "shadow".to_string(),
+        Value::from_builtin("sun.shadow", &["enabled"], sun_shadow_impl),
+    );
+    sun_fields.insert(
+        "shadow_extent".to_string(),
+        Value::from_builtin("sun.shadow_extent", &["radius"], sun_shadow_extent_impl),
+    );
     env.set(
         "sun".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -738,6 +751,16 @@ thread_local! {
     /// returns the slot index (1-based, so 0 means "all full").
     static LIGHTS_STATE: RefCell<crate::play3d::LightsUniform> =
         RefCell::new(crate::play3d::LightsUniform::new());
+    /// Phase 25: shadow-pass enable flag (default off — opt-in via
+    /// `sun.shadow(true)`). When off, the play3d frame loop still
+    /// writes the shadow uniform, but with `flags.w = 0` so the
+    /// main shader's PCF lookup short-circuits to fully lit.
+    static SHADOW_ENABLED: RefCell<bool> = const { RefCell::new(false) };
+    /// Phase 25: half-side of the orthographic shadow frustum, in
+    /// world units. Default of 30m covers a typical character +
+    /// surrounding playable area at moderate sharpness; bigger
+    /// scenes need a larger value (sharpness scales inversely).
+    static SHADOW_EXTENT: RefCell<f32> = const { RefCell::new(30.0) };
     static PENDING_SCREENSHOT: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Phase 17 session 3: pending cursor-mode change requested by
     /// the script via cursor.lock() / cursor.unlock(). The play3d
@@ -756,6 +779,16 @@ pub fn take_pending_screenshot() -> Option<String> {
 /// straight into a wgpu buffer without holding the thread-local.
 pub fn lights_snapshot() -> crate::play3d::LightsUniform {
     LIGHTS_STATE.with(|s| *s.borrow())
+}
+
+/// Phase 25: read the script-controlled shadow enable flag.
+pub fn shadow_enabled() -> bool {
+    SHADOW_ENABLED.with(|s| *s.borrow())
+}
+
+/// Phase 25: read the script-controlled shadow frustum extent.
+pub fn shadow_extent() -> f32 {
+    SHADOW_EXTENT.with(|s| *s.borrow())
 }
 
 /// Phase 17 session 3: drain the cursor-mode request slot. play3d
@@ -6558,6 +6591,32 @@ fn sun_intensity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     LIGHTS_STATE.with(|s| {
         s.borrow_mut().sun_dir[3] = i.max(0.0);
     });
+    Ok(Value::NIL)
+}
+
+fn sun_shadow_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "sun.shadow")?;
+    let on = if args[0].is_bool() {
+        args[0].as_bool()
+    } else {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "sun.shadow expects a bool (sun.shadow(true) or sun.shadow(false))"
+                .to_string(),
+            help: None,
+        });
+    };
+    SHADOW_ENABLED.with(|s| *s.borrow_mut() = on);
+    Ok(Value::NIL)
+}
+
+fn sun_shadow_extent_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "sun.shadow_extent")?;
+    let r = number(&args[0], "sun.shadow_extent.radius")? as f32;
+    if r > 0.0 {
+        SHADOW_EXTENT.with(|s| *s.borrow_mut() = r);
+    }
     Ok(Value::NIL)
 }
 
