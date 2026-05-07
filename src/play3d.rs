@@ -708,6 +708,11 @@ impl ApplicationHandler for App {
                         state.mesh_load_failures.clear();
                         state.texture_cache.clear();
                         state.texture_load_failures.clear();
+                        // Phase 18: drop all rigid bodies; the new
+                        // env will recreate them on its first
+                        // `on update(dt)` tick. Otherwise stale
+                        // handles from the prior run leak.
+                        crate::physics3d::reset();
                         self.env = new_env;
                     }
                     // A failed re-init keeps the current env so the
@@ -1353,6 +1358,13 @@ fn load_and_upload_mesh(device: &wgpu::Device, path: &str) -> Result<GpuMesh, St
 // ---------- Per-frame render ----------
 
 fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String> {
+    // Phase 18: step the rapier3d world before the Twe `on update`
+    // body runs, so script logic reads authoritative positions.
+    // Scripts own intent (velocity / impulse), the integrator owns
+    // truth. No-op if the script never created any bodies — the
+    // world's empty body set means step() returns near-instantly.
+    crate::physics3d::step(dt);
+
     // 1. Tick the per-frame logic — top-level `on update(dt):`
     //    plus any active scene / entity tick. The macroquad path
     //    does the same in `src/play.rs::run_loop`, separating

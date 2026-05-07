@@ -53,6 +53,13 @@ gilrs = "0.10"
 # on the Windows + macOS + Linux trio that v1.0 targets.
 arboard = "3"
 
+# Phase 18: rapier3d for collision + rigid-body physics in
+# `twec play3d`. Pure Rust, no native deps. Default features
+# include `dim3` + `f32` precision; we drop `parallel` (rayon)
+# because the play loop is single-threaded and rayon would only
+# add startup cost.
+rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f32"] }
+
 # Phase 12 session 8: zstd bundle-body compression. Roadmap names
 # zstd specifically — it's the modern speed/ratio sweet spot and
 # what Steam Depot uses internally. The `zstd` crate vendors libzstd

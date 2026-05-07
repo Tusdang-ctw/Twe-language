@@ -13,6 +13,7 @@ pub mod lexer;
 pub mod lsp;
 pub mod module;
 pub mod parser;
+pub mod physics3d;
 pub mod play;
 pub mod play3d;
 pub mod play_visual;

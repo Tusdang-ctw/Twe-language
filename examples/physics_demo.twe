@@ -1,0 +1,53 @@
+# Phase 18 demo — falling cubes with physics.
+#
+# Run with:  twec play3d examples/physics_demo.twe
+#
+# Spawns three dynamic cubes above a static box "floor". rapier3d
+# integrates gravity each frame; the script reads
+# `physics.position(handle)` and renders a `cube()` at that location.
+# Hit R to drop another cube; the world fills with stacking boxes.
+
+# --- Static floor (10x1x10 box centred at the origin) ---
+let floor = physics.static_box((0.0, 0.0, 0.0), (10.0, 1.0, 10.0))
+
+# --- Three dynamic cubes ---
+let box1 = physics.body("box", (0.0, 5.0, 0.0), 1.0)
+let box2 = physics.body("box", (1.5, 7.0, 0.0), 1.0)
+let box3 = physics.body("box", (-1.0, 9.0, 0.5), 1.0)
+
+# Track all spawned dynamic boxes so render() can iterate them.
+# Top-level mutable list — physics handles are integers so this is
+# just a list of ints we can grow with R.
+var dyn_boxes = [box1, box2, box3]
+
+camera.eye = vec3(0.0, 6.0, 14.0)
+camera.target = vec3(0.0, 1.5, 0.0)
+camera.up = vec3(0.0, 1.0, 0.0)
+
+on update(dt):
+    if key_press.r:
+        # Drop a new cube at a random offset above the player view.
+        let nx = random.float() * 4.0 - 2.0
+        let nz = random.float() * 4.0 - 2.0
+        let nb = physics.body("box", (nx, 9.0, nz), 1.0)
+        dyn_boxes.append(nb)
+
+on render():
+    # Floor — drawn as a flat green slab. The static collider above
+    # is the same size, so visually they line up.
+    cube(at: vec3(0.0, 0.0, 0.0), color: (0.2, 0.5, 0.25, 1.0), size: 10.0)
+    # Render all dynamic cubes at their physics-driven positions.
+    # `physics.position(h)` returns a vec3 we can pass straight
+    # into `cube(at:, ...)`. Tint each box a different color by
+    # index so they're visually distinct as they fall.
+    var i = 0
+    for h in dyn_boxes:
+        let p = physics.position(h)
+        # Procedural tint: cycle through hues by index.
+        let hue = i * 47.0
+        cube(
+            at: p,
+            color: color.hsv(hue, 0.8, 1.0),
+            size: 1.0,
+        )
+        i += 1

@@ -271,6 +271,83 @@ pub fn install(env: &mut Env) {
         Value::from_builtin("key_pressed", &["name"], key_pressed_impl),
     );
 
+    // Phase 18: 3D physics surface. All builtins forward to the
+    // thread-local PhysicsWorld in src/physics3d.rs. The play3d
+    // loop steps the world before each Twe `on update(dt)` so
+    // scripts read authoritative positions.
+    let mut physics_fields = HashMap::new();
+    physics_fields.insert(
+        "body".to_string(),
+        Value::from_builtin(
+            "physics.body",
+            &["shape", "at", "mass"],
+            physics_body_impl,
+        ),
+    );
+    physics_fields.insert(
+        "static_box".to_string(),
+        Value::from_builtin(
+            "physics.static_box",
+            &["at", "size"],
+            physics_static_box_impl,
+        ),
+    );
+    physics_fields.insert(
+        "static_sphere".to_string(),
+        Value::from_builtin(
+            "physics.static_sphere",
+            &["at", "radius"],
+            physics_static_sphere_impl,
+        ),
+    );
+    physics_fields.insert(
+        "position".to_string(),
+        Value::from_builtin("physics.position", &["handle"], physics_position_impl),
+    );
+    physics_fields.insert(
+        "velocity".to_string(),
+        Value::from_builtin(
+            "physics.velocity",
+            &["handle", "v"],
+            physics_velocity_impl,
+        ),
+    );
+    physics_fields.insert(
+        "impulse".to_string(),
+        Value::from_builtin(
+            "physics.impulse",
+            &["handle", "v"],
+            physics_impulse_impl,
+        ),
+    );
+    physics_fields.insert(
+        "gravity".to_string(),
+        Value::from_builtin("physics.gravity", &["v"], physics_gravity_impl),
+    );
+    physics_fields.insert(
+        "character_move".to_string(),
+        Value::from_builtin(
+            "physics.character_move",
+            &["handle", "dir", "dt"],
+            physics_character_move_impl,
+        ),
+    );
+    physics_fields.insert(
+        "despawn".to_string(),
+        Value::from_builtin("physics.despawn", &["handle"], physics_despawn_impl),
+    );
+    physics_fields.insert(
+        "reset".to_string(),
+        Value::from_builtin("physics.reset", &[], physics_reset_impl),
+    );
+    env.set(
+        "physics".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: physics_fields,
+            kind: "module",
+        }))),
+    );
+
     // Phase 17 session 3: cursor lock/unlock for FPS-style camera
     // control in `twec play3d`. The builtins write a pending flag
     // that the play3d event loop drains and applies to the window.
@@ -5337,6 +5414,137 @@ fn texture_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         fields,
         kind: "texture",
     }))))
+}
+
+// ---------- Phase 18: physics builtins ----------
+
+fn handle_int(v: &Value, what: &str) -> Result<u32, RuntimeError> {
+    if !v.is_int() {
+        let other = *v;
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{what}: expected integer handle, got {}",
+                other.type_name()
+            ),
+            help: None,
+        });
+    }
+    let i = v.as_int();
+    if i <= 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: invalid handle {i}"),
+            help: None,
+        });
+    }
+    Ok(i as u32)
+}
+
+fn physics_body_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics.body")?;
+    let shape = string_arg(&args[0], "physics.body", "shape")?;
+    let at = xyz_of(&args[1], "physics.body.at")?;
+    let mass = number(&args[2], "physics.body.mass")? as f32;
+    let id = crate::physics3d::body(&shape, at, mass).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: e,
+        help: Some("expected shape: \"box\", \"sphere\", or \"capsule\"".to_string()),
+    })?;
+    Ok(Value::from_int(id as i64))
+}
+
+fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics.static_box")?;
+    let at = xyz_of(&args[0], "physics.static_box.at")?;
+    let size = xyz_of(&args[1], "physics.static_box.size")?;
+    Ok(Value::from_int(crate::physics3d::static_box(at, size) as i64))
+}
+
+fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics.static_sphere")?;
+    let at = xyz_of(&args[0], "physics.static_sphere.at")?;
+    let radius = number(&args[1], "physics.static_sphere.radius")? as f32;
+    Ok(Value::from_int(
+        crate::physics3d::static_sphere(at, radius) as i64,
+    ))
+}
+
+fn physics_position_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "physics.position")?;
+    let handle = handle_int(&args[0], "physics.position")?;
+    let pos = crate::physics3d::position(handle).ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("physics.position: unknown handle {handle}"),
+        help: None,
+    })?;
+    Ok(Value::from_tuple(Rc::new(vec![
+        Value::from_float(pos[0] as f64),
+        Value::from_float(pos[1] as f64),
+        Value::from_float(pos[2] as f64),
+    ])))
+}
+
+fn physics_velocity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics.velocity")?;
+    let handle = handle_int(&args[0], "physics.velocity")?;
+    let v = xyz_of(&args[1], "physics.velocity.v")?;
+    crate::physics3d::set_velocity(handle, v).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: e,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+fn physics_impulse_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics.impulse")?;
+    let handle = handle_int(&args[0], "physics.impulse")?;
+    let v = xyz_of(&args[1], "physics.impulse.v")?;
+    crate::physics3d::apply_impulse(handle, v).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: e,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+fn physics_gravity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "physics.gravity")?;
+    let v = xyz_of(&args[0], "physics.gravity.v")?;
+    crate::physics3d::set_gravity(v);
+    Ok(Value::NIL)
+}
+
+fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics.character_move")?;
+    let handle = handle_int(&args[0], "physics.character_move")?;
+    let dir = xyz_of(&args[1], "physics.character_move.dir")?;
+    let dt = number(&args[2], "physics.character_move.dt")? as f32;
+    crate::physics3d::character_move(handle, dir, dt).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: e,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+fn physics_despawn_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "physics.despawn")?;
+    let handle = handle_int(&args[0], "physics.despawn")?;
+    Ok(Value::from_bool(crate::physics3d::despawn(handle)))
+}
+
+fn physics_reset_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    crate::physics3d::reset();
+    Ok(Value::NIL)
 }
 
 /// Pull a texture id out of a value returned by `texture(...)`.
