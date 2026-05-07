@@ -1,0 +1,297 @@
+# Twe Crystal Hunter — full 3D-stack showcase game.
+#
+# Run with:  twec play3d examples/crystal_hunter.twe
+#
+# Drives the entire Phase 17–26 3D stack end-to-end:
+# - Phase 18: rapier3d physics — character controller, static
+#   colliders, dynamic sentinel bodies, collision events.
+# - Phase 20: 8 point lights — torch flicker at corners +
+#   crystal glow that pulses with time.
+# - Phase 22: typed save namespace — persistent high score
+#   round-trips through the Phase 8 codec.
+# - Phase 25: dynamic shadow maps — sun casts real-time
+#   shadows on the arena geometry.
+# - Phase 26: HDR + ACES tone mapping + soft vignette +
+#   per-instance frustum culling.
+#
+# Goal: collect all 10 cyan crystals scattered around the arena.
+# Avoid the four red bouncing sentinels — touching one costs a
+# heart. You start with 3 hearts. Win by collecting them all.
+#
+# Controls:
+#   WASD     — move (relative to look direction)
+#   Mouse    — look around
+#   Space    — jump
+#   R        — restart after win/loss
+#   Esc      — close window
+
+# === Persistent high score ===
+# Try to read a previously-saved high score; on first run the
+# file doesn't exist and we initialize to 0.
+save.try_read("crystal_hunter.save")
+if not save.has("high_score"):
+    save.int("high_score", 0)
+let high_score = save.get_int("high_score")
+
+# === World layout ===
+# Floor: 40 × 40 unit, top face at y = 0.
+let floor = physics.static_box((0.0, -0.5, 0.0), (20.0, 0.5, 20.0))
+
+# Outer walls (physics only; visible as thin colored rims).
+let wall_n = physics.static_box((0.0, 1.5, -20.0), (20.0, 1.5, 0.5))
+let wall_s = physics.static_box((0.0, 1.5, 20.0), (20.0, 1.5, 0.5))
+let wall_e = physics.static_box((20.0, 1.5, 0.0), (0.5, 1.5, 20.0))
+let wall_w = physics.static_box((-20.0, 1.5, 0.0), (0.5, 1.5, 20.0))
+
+# Four cover pillars near the corners.
+let pillar_a = physics.static_box((-7.0, 1.5, -7.0), (0.75, 1.5, 0.75))
+let pillar_b = physics.static_box((7.0, 1.5, -7.0), (0.75, 1.5, 0.75))
+let pillar_c = physics.static_box((-7.0, 1.5, 7.0), (0.75, 1.5, 0.75))
+let pillar_d = physics.static_box((7.0, 1.5, 7.0), (0.75, 1.5, 0.75))
+
+# === Crystals (collectible static sensors) ===
+# Each crystal is a static sphere; walking into one fires a
+# collision event we use to despawn it and bump the score.
+var crystal_positions = [
+    (-15.0, 0.6, -15.0),
+    ( 15.0, 0.6, -15.0),
+    (-15.0, 0.6,  15.0),
+    ( 15.0, 0.6,  15.0),
+    (  0.0, 0.6, -10.0),
+    (  0.0, 0.6,  10.0),
+    (-10.0, 0.6,   0.0),
+    ( 10.0, 0.6,   0.0),
+    (  3.0, 0.6,   8.0),
+    ( -3.0, 0.6,  -8.0),
+]
+var crystals = []
+for p in crystal_positions:
+    crystals.append(physics.static_sphere(p, 0.6))
+var crystal_alive = []
+for p in crystal_positions:
+    crystal_alive.append(true)
+
+# === Sentinels (bouncing dynamic enemy spheres) ===
+var sentinels = [
+    physics.body("sphere", (10.0, 6.0, 10.0), 1.0),
+    physics.body("sphere", (-10.0, 6.0, 10.0), 1.0),
+    physics.body("sphere", (10.0, 6.0, -10.0), 1.0),
+    physics.body("sphere", (-10.0, 6.0, -10.0), 1.0),
+]
+
+# Give each sentinel a small lateral kick so they wander.
+physics.impulse(sentinels[0], (-3.0, 0.0,  3.0))
+physics.impulse(sentinels[1], ( 3.0, 0.0, -3.0))
+physics.impulse(sentinels[2], (-3.0, 0.0, -3.0))
+physics.impulse(sentinels[3], ( 3.0, 0.0,  3.0))
+
+# === Player ===
+let player = physics.character((0.0, 1.0, 0.0), 1.6, 0.4)
+
+# === Lighting ===
+sun.direction((0.4, 0.85, 0.35))
+sun.intensity(0.65)
+sun.shadow(true)
+sun.shadow_extent(25.0)
+light.ambient((0.18, 0.20, 0.25, 1.0))
+
+# Four corner torches that flicker each frame.
+let torch_nw = light.add((-18.0, 4.5, -18.0), (1.0, 0.55, 0.20, 1.0), 14.0)
+let torch_ne = light.add(( 18.0, 4.5, -18.0), (1.0, 0.55, 0.20, 1.0), 14.0)
+let torch_sw = light.add((-18.0, 4.5,  18.0), (1.0, 0.55, 0.20, 1.0), 14.0)
+let torch_se = light.add(( 18.0, 4.5,  18.0), (1.0, 0.55, 0.20, 1.0), 14.0)
+
+# === Post-FX ===
+postfx.tonemap(true)
+postfx.vignette(0.30)
+
+# === Cursor lock for FPS-style mouse look ===
+cursor.lock()
+
+# === Camera ===
+camera.eye = vec3(0.0, 1.6, 0.0)
+camera.target = vec3(0.0, 1.6, -1.0)
+camera.up = vec3(0.0, 1.0, 0.0)
+
+# === Player state ===
+var yaw = 0.0
+var pitch = -0.15
+var on_ground = false
+var hearts = 3
+var score = 0
+var game_state = "playing"
+var time = 0.0
+var hit_cooldown = 0.0
+
+let mouse_sens = 0.0030
+let walk_speed = 6.0
+let jump_impulse = 5.5
+
+on update(dt):
+    time = time + dt
+    if hit_cooldown > 0.0:
+        hit_cooldown = hit_cooldown - dt
+
+    # Torch flicker: independent sin/cos at each corner so the
+    # lighting feels lived-in, not synchronized.
+    let f1 = 0.85 + 0.15 * math.sin(time * 8.3)
+    let f2 = 0.80 + 0.20 * math.cos(time * 6.7)
+    let f3 = 0.88 + 0.12 * math.sin(time * 9.1 + 1.5)
+    let f4 = 0.83 + 0.17 * math.cos(time * 7.5 + 0.8)
+    light.set(torch_nw, (-18.0, 4.5, -18.0), (f1, f1 * 0.55, f1 * 0.20, 1.0), 14.0)
+    light.set(torch_ne, ( 18.0, 4.5, -18.0), (f2, f2 * 0.55, f2 * 0.20, 1.0), 14.0)
+    light.set(torch_sw, (-18.0, 4.5,  18.0), (f3, f3 * 0.55, f3 * 0.20, 1.0), 14.0)
+    light.set(torch_se, ( 18.0, 4.5,  18.0), (f4, f4 * 0.55, f4 * 0.20, 1.0), 14.0)
+
+    if game_state == "playing":
+        # --- Mouse look ---
+        yaw = yaw - mouse.dx * mouse_sens
+        pitch = pitch - mouse.dy * mouse_sens
+        if pitch > 1.4:
+            pitch = 1.4
+        if pitch < -1.4:
+            pitch = -1.4
+
+        # --- Movement basis (yaw only — flat WASD) ---
+        let fwd_x = math.sin(yaw)
+        let fwd_z = math.cos(yaw)
+        let right_x = math.cos(yaw)
+        let right_z = -math.sin(yaw)
+
+        var dx = 0.0
+        var dz = 0.0
+        if key.w:
+            dx = dx - fwd_x
+            dz = dz - fwd_z
+        if key.s:
+            dx = dx + fwd_x
+            dz = dz + fwd_z
+        if key.a:
+            dx = dx - right_x
+            dz = dz - right_z
+        if key.d:
+            dx = dx + right_x
+            dz = dz + right_z
+        let mag = math.sqrt(dx * dx + dz * dz)
+        if mag > 0.0:
+            dx = dx / mag * walk_speed
+            dz = dz / mag * walk_speed
+
+        var dy = -9.81 * dt
+        if on_ground and key_press.space:
+            dy = jump_impulse
+
+        let move = physics.character_move(player, (dx, dy, dz), dt)
+        on_ground = move.grounded
+
+        # --- Camera follows the player's head ---
+        let pos = physics.position(player)
+        let eye = (pos.x, pos.y + 0.55, pos.z)
+        camera.eye = eye
+        let cp = math.cos(pitch)
+        let look_x = -math.sin(yaw) * cp
+        let look_y = math.sin(pitch)
+        let look_z = -math.cos(yaw) * cp
+        camera.target = (eye.x + look_x, eye.y + look_y, eye.z + look_z)
+
+        # --- Collision resolution ---
+        for ev in physics.collisions():
+            if ev.started:
+                var other = 0
+                if ev.a == player:
+                    other = ev.b
+                elif ev.b == player:
+                    other = ev.a
+                if other != 0:
+                    # Crystal pickup: linear scan of crystals[].
+                    var i = 0
+                    while i < crystals.length:
+                        if crystals[i] == other and crystal_alive[i]:
+                            crystal_alive.set(i, false)
+                            physics.despawn(other)
+                            score = score + 1
+                            print("crystal {score}/10")
+                        i = i + 1
+                    # Sentinel hit: cooldown so brushing is one tick.
+                    if sentinels.contains(other) and hit_cooldown <= 0.0:
+                        hearts = hearts - 1
+                        hit_cooldown = 0.8
+                        print("ouch! hearts: {hearts}")
+                        if hearts <= 0:
+                            game_state = "lost"
+
+        # --- Win check ---
+        if score >= 10:
+            game_state = "won"
+            if score > high_score:
+                save.int("high_score", score)
+                save.write("crystal_hunter.save")
+                print("new high score: {score}")
+    elif key_press.r:
+        # Restart on R after game over / win. Re-spawn any
+        # collected crystals + reset score/hearts.
+        game_state = "playing"
+        score = 0
+        hearts = 3
+        var i = 0
+        while i < crystals.length:
+            if not crystal_alive[i]:
+                crystals.set(i, physics.static_sphere(crystal_positions[i], 0.6))
+                crystal_alive.set(i, true)
+            i = i + 1
+
+on render():
+    # --- Floor: 40m × 40m flat slab. The cube's lower 19.5m are
+    # below the playable area; back-face cull drops the inside,
+    # so the player only ever sees the top face. ---
+    cube(at: (0.0, -20.0, 0.0), color: (0.32, 0.34, 0.30, 1.0), size: 40.0)
+
+    # --- Walls (visual rims only — collision is in static_box). ---
+    cube(at: (0.0, 1.5, -20.0), color: (0.55, 0.46, 0.36, 1.0), size: 1.0)
+    cube(at: (0.0, 1.5,  20.0), color: (0.55, 0.46, 0.36, 1.0), size: 1.0)
+    cube(at: (20.0, 1.5,  0.0), color: (0.55, 0.46, 0.36, 1.0), size: 1.0)
+    cube(at: (-20.0, 1.5, 0.0), color: (0.55, 0.46, 0.36, 1.0), size: 1.0)
+
+    # --- Cover pillars. Three repeats stacked vertically read as
+    # tall columns despite the uniform-scale cube. ---
+    for px in [-7.0, 7.0]:
+        for pz in [-7.0, 7.0]:
+            cube(at: (px, 0.5, pz), color: (0.45, 0.42, 0.40, 1.0), size: 1.5)
+            cube(at: (px, 1.7, pz), color: (0.50, 0.47, 0.44, 1.0), size: 1.5)
+            cube(at: (px, 2.9, pz), color: (0.45, 0.42, 0.40, 1.0), size: 1.5)
+
+    # --- Corner torch posts: a stack of brown cubes plus the
+    # warm point light at the top makes them read as torches. ---
+    for tx in [-18.0, 18.0]:
+        for tz in [-18.0, 18.0]:
+            cube(at: (tx, 0.5, tz), color: (0.30, 0.18, 0.10, 1.0), size: 0.3)
+            cube(at: (tx, 1.5, tz), color: (0.32, 0.20, 0.12, 1.0), size: 0.3)
+            cube(at: (tx, 2.5, tz), color: (0.30, 0.18, 0.10, 1.0), size: 0.3)
+            cube(at: (tx, 3.5, tz), color: (0.32, 0.20, 0.12, 1.0), size: 0.3)
+            sphere(at: (tx, 4.4, tz), color: (1.0, 0.6, 0.25, 1.0), size: 0.4)
+
+    # --- Crystals: pulsing cyan spheres. Slight scale pulse +
+    # the sun-tinted color reads as glowing in HDR. ---
+    let pulse = 0.45 + 0.10 * math.sin(time * 3.0)
+    var i = 0
+    while i < crystals.length:
+        if crystal_alive[i]:
+            sphere(at: crystal_positions[i], color: (0.5, 1.0, 1.6, 1.0), size: pulse)
+        i = i + 1
+
+    # --- Sentinels: red dynamic spheres, position-tracked from
+    # the physics integrator so they roll around realistically. ---
+    for h in sentinels:
+        let p = physics.position(h)
+        if p:
+            sphere(at: p, color: (1.4, 0.25, 0.20, 1.0), size: 0.6)
+
+    # --- Status print: this lands in the terminal that launched
+    # twec, not on-screen. The full play3d HUD is in the in-window
+    # render, but the language has no built-in text-in-3D yet. ---
+    if game_state == "won":
+        if time > 0.0 and math.floor(time * 2.0) != math.floor((time - 0.016) * 2.0):
+            print("YOU WIN! score {score}, high score {high_score}. Press R.")
+    if game_state == "lost":
+        if time > 0.0 and math.floor(time * 2.0) != math.floor((time - 0.016) * 2.0):
+            print("Game over. score {score}, high score {high_score}. Press R.")

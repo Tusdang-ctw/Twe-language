@@ -22,19 +22,77 @@ use macroquad::prelude::*;
 
 use crate::value::{Env, Object, Value};
 
+// Phase 27: full key namespace for the 2D macroquad path —
+// matches the field set registered by `stdlib::register_keys`.
+// Letters a–z, digits 0–9, F1–F12, plus arrows + common
+// control keys. Field-style accesses (`key.m`, `key_press.f7`)
+// now actually plumb through.
 const KEYS: &[(&str, KeyCode)] = &[
+    // Movement / arrows.
     ("right", KeyCode::Right),
     ("left", KeyCode::Left),
     ("up", KeyCode::Up),
     ("down", KeyCode::Down),
+    // Common control keys.
     ("space", KeyCode::Space),
     ("escape", KeyCode::Escape),
     ("enter", KeyCode::Enter),
-    ("r", KeyCode::R),
-    ("w", KeyCode::W),
+    ("tab", KeyCode::Tab),
+    ("backspace", KeyCode::Backspace),
+    ("shift", KeyCode::LeftShift),
+    ("ctrl", KeyCode::LeftControl),
+    ("alt", KeyCode::LeftAlt),
+    // Letters a–z.
     ("a", KeyCode::A),
-    ("s", KeyCode::S),
+    ("b", KeyCode::B),
+    ("c", KeyCode::C),
     ("d", KeyCode::D),
+    ("e", KeyCode::E),
+    ("f", KeyCode::F),
+    ("g", KeyCode::G),
+    ("h", KeyCode::H),
+    ("i", KeyCode::I),
+    ("j", KeyCode::J),
+    ("k", KeyCode::K),
+    ("l", KeyCode::L),
+    ("m", KeyCode::M),
+    ("n", KeyCode::N),
+    ("o", KeyCode::O),
+    ("p", KeyCode::P),
+    ("q", KeyCode::Q),
+    ("r", KeyCode::R),
+    ("s", KeyCode::S),
+    ("t", KeyCode::T),
+    ("u", KeyCode::U),
+    ("v", KeyCode::V),
+    ("w", KeyCode::W),
+    ("x", KeyCode::X),
+    ("y", KeyCode::Y),
+    ("z", KeyCode::Z),
+    // Digits 0–9.
+    ("0", KeyCode::Key0),
+    ("1", KeyCode::Key1),
+    ("2", KeyCode::Key2),
+    ("3", KeyCode::Key3),
+    ("4", KeyCode::Key4),
+    ("5", KeyCode::Key5),
+    ("6", KeyCode::Key6),
+    ("7", KeyCode::Key7),
+    ("8", KeyCode::Key8),
+    ("9", KeyCode::Key9),
+    // Function row F1–F12.
+    ("f1", KeyCode::F1),
+    ("f2", KeyCode::F2),
+    ("f3", KeyCode::F3),
+    ("f4", KeyCode::F4),
+    ("f5", KeyCode::F5),
+    ("f6", KeyCode::F6),
+    ("f7", KeyCode::F7),
+    ("f8", KeyCode::F8),
+    ("f9", KeyCode::F9),
+    ("f10", KeyCode::F10),
+    ("f11", KeyCode::F11),
+    ("f12", KeyCode::F12),
 ];
 
 const MOUSE_BUTTONS: &[(&str, MouseButton)] = &[

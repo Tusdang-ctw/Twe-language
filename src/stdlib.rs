@@ -505,8 +505,24 @@ pub fn install(env: &mut Env) {
         }))),
     );
 
+    // Phase 27: full 26-letter + 10-digit + F1-F12 + common-keys
+    // namespace. Field-style access (`key.m`, `key_press.i`) now
+    // mirrors what `key_held("m")` / `key_pressed("m")` already
+    // supported. The 2D macroquad backend in `play.rs` and the 3D
+    // winit backend in `play3d.rs` carry the matching VK→name
+    // tables so the input plumbing actually drives these slots.
     let key_names = [
-        "right", "left", "up", "down", "space", "escape", "enter", "r", "w", "a", "s", "d",
+        // Movement / arrows.
+        "right", "left", "up", "down",
+        // Common control keys.
+        "space", "escape", "enter", "tab", "backspace", "shift", "ctrl", "alt",
+        // Letters a–z.
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+        "s", "t", "u", "v", "w", "x", "y", "z",
+        // Digits 0–9.
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        // Function row F1–F12.
+        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
     ];
     let mut key_fields = HashMap::new();
     let mut press_fields = HashMap::new();
@@ -546,6 +562,12 @@ pub fn install(env: &mut Env) {
         ])),
     );
     mouse_fields.insert("wheel".to_string(), Value::from_float(0.0));
+    // Phase 27: pre-register dx/dy so reading them in headless
+    // `twec run` (no event loop) doesn't blow up. The play3d event
+    // loop overwrites these each frame from raw DeviceEvent
+    // mouse-motion deltas; the play (2D) loop leaves them at 0.
+    mouse_fields.insert("dx".to_string(), Value::from_float(0.0));
+    mouse_fields.insert("dy".to_string(), Value::from_float(0.0));
     env.set(
         "mouse".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {

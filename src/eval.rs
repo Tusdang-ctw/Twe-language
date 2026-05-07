@@ -2658,6 +2658,39 @@ fn list_method_call(
             let found = rc.borrow().iter().any(|v| values_equal(v, &needle));
             Ok(Some(Value::from_bool(found)))
         }
+        // Phase 27: indexed mutation. Twe's `AssignTarget` enum
+        // doesn't support `arr[i] = x` syntactically (only Name +
+        // Field). `list.set(i, v)` is the canonical way to mutate
+        // a slot in place. Out-of-bounds indices error instead of
+        // silently growing the list — that surface choice
+        // matches list.append's "explicit growth" stance.
+        "set" => {
+            arity_check(2)?;
+            let idx_v = eval_expr(env, &args[0])?;
+            let val = eval_expr(env, &args[1])?;
+            let i = if idx_v.is_int() {
+                idx_v.as_int()
+            } else {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: "list.set expects an int index".to_string(),
+                    help: None,
+                });
+            };
+            let mut v = rc.borrow_mut();
+            let len = v.len() as i64;
+            if i < 0 || i >= len {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!("list.set index {i} out of bounds (length {len})"),
+                    help: Some("guard with `if i >= 0 and i < list.length:`".to_string()),
+                });
+            }
+            v[i as usize] = val;
+            Ok(Some(Value::NIL))
+        }
         _ => Ok(None),
     }
 }

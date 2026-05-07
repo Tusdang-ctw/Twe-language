@@ -204,6 +204,38 @@ pub enum Stmt {
     Expr(Expr),
 }
 
+impl Stmt {
+    /// Source line of this statement's leading token. Used by the
+    /// formatter to inject preserved comments / blank lines at the
+    /// correct positions.
+    pub fn line(&self) -> u32 {
+        match self {
+            Stmt::Let { line, .. }
+            | Stmt::Assign { line, .. }
+            | Stmt::If { line, .. }
+            | Stmt::OnUpdate { line, .. }
+            | Stmt::OnRender { line, .. }
+            | Stmt::OnClassEvent { line, .. }
+            | Stmt::Decl { line, .. }
+            | Stmt::FunctionDecl { line, .. }
+            | Stmt::Return { line, .. }
+            | Stmt::While { line, .. }
+            | Stmt::For { line, .. }
+            | Stmt::Break { line, .. }
+            | Stmt::Continue { line, .. }
+            | Stmt::Transition { line, .. }
+            | Stmt::Spawn { line, .. }
+            | Stmt::Despawn { line, .. }
+            | Stmt::Wait { line, .. }
+            | Stmt::DialogueDecl { line, .. }
+            | Stmt::Say { line, .. }
+            | Stmt::Choice { line, .. }
+            | Stmt::Import { line, .. } => *line,
+            Stmt::Expr(e) => e.line(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclKind {
     Entity,
@@ -273,6 +305,17 @@ pub enum DeclMember {
     },
 }
 
+impl DeclMember {
+    pub fn line(&self) -> u32 {
+        match self {
+            DeclMember::Field { line, .. }
+            | DeclMember::Method { line, .. }
+            | DeclMember::InitialState { line, .. }
+            | DeclMember::State { line, .. } => *line,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StateMember {
     /// Plain statements that run when the state is entered.
@@ -316,6 +359,19 @@ pub enum StateMember {
         line: u32,
         col: u32,
     },
+}
+
+impl StateMember {
+    pub fn line(&self) -> u32 {
+        match self {
+            StateMember::Stmt(s) => s.line(),
+            StateMember::Every { line, .. }
+            | StateMember::OnRender { line, .. }
+            | StateMember::OnKeyPress { line, .. }
+            | StateMember::OnUpdate { line, .. }
+            | StateMember::OnPredicate { line, .. } => *line,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

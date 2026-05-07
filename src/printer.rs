@@ -3,23 +3,234 @@
 //! Drives `twec fmt`. The contract:
 //!
 //!   1. **Round-trip safe**: `parse(print(p))` is structurally
-//!      equal to `p`, modulo line / col positions and modulo
-//!      lost comments + blank lines (which the AST doesn't carry
-//!      in v0.1).
+//!      equal to `p`, modulo line / col positions.
 //!   2. **Idempotent**: `print(parse(print(p))) == print(p)`. The
 //!      `tests/fmt.rs` suite asserts this on every test program.
 //!   3. **Single canonical style**: 4-space indent, `<op> ` spacing
 //!      around binary operators, no trailing whitespace, one blank
 //!      line between top-level declarations, no blank lines inside
 //!      function/method/state bodies.
-//!
-//! Comments and blank lines are dropped — the AST doesn't preserve
-//! them. A future "trivia-preserving formatter" would need lex-time
-//! attachment of comment tokens to surrounding nodes.
+//!   4. **Trivia preserving**: when called via
+//!      `print_program_with_trivia(p, src)`, comments and blank
+//!      lines from `src` are re-emitted at their original
+//!      positions. The bare `print_program(p)` form drops trivia
+//!      (used by AST round-trip tests where comments are
+//!      irrelevant).
 
 use crate::ast::{
     AssignOp, AssignTarget, BinOp, DeclKind, DeclMember, Expr, Program, StateMember, Stmt, UnOp,
 };
+
+// ---- Trivia preservation (Phase 27) ----
+
+/// A piece of preserved source trivia: either a blank line or a
+/// `# ...` comment. Stored alongside its 1-based source line
+/// number so the printer can re-emit it before any AST node whose
+/// own source line is greater.
+#[derive(Debug, Clone)]
+enum Trivia {
+    Blank,
+    /// Full `# ...` text including the leading `#`. Stored without
+    /// trailing whitespace; the printer adds the line break.
+    Comment(String),
+    /// Block comment `#- ... -#`. Multi-line; printed verbatim
+    /// with `\n` preserved, indented at the current depth.
+    BlockComment(String),
+}
+
+/// Walk source text and capture line-anchored trivia (comments +
+/// blank lines). Returns a vector sorted by line number. Single
+/// `# ...` comments tied to a code line (not the only thing on the
+/// line) are *not* captured; they'd dangle in the formatted
+/// output. Standalone-line and leading-blank trivia is what gets
+/// preserved — the common case for documentation headers and
+/// section breaks.
+fn extract_trivia(src: &str) -> Vec<(u32, Trivia)> {
+    let mut out = Vec::new();
+    let mut line_no: u32 = 1;
+    let mut chars = src.chars().peekable();
+    let mut col: u32 = 1;
+    // Track per-line: has any non-whitespace, non-comment character
+    // appeared yet? Resets at each newline. When a `#` appears at
+    // the start of an otherwise-whitespace line, it's a standalone
+    // comment we capture.
+    let mut line_has_code = false;
+    let mut line_buf = String::new(); // captured text for the current logical line if comment
+    let mut capture_comment_indent: Option<usize> = None;
+    while let Some(c) = chars.next() {
+        if c == '\n' {
+            if let Some(_indent) = capture_comment_indent.take() {
+                out.push((line_no, Trivia::Comment(std::mem::take(&mut line_buf))));
+            } else if !line_has_code {
+                // Whitespace-only line.
+                out.push((line_no, Trivia::Blank));
+            }
+            line_no += 1;
+            col = 1;
+            line_has_code = false;
+            continue;
+        }
+        if capture_comment_indent.is_some() {
+            line_buf.push(c);
+            col += 1;
+            continue;
+        }
+        if c == '#' && !line_has_code {
+            // Possible standalone comment. Check for block comment `#- ... -#`.
+            if chars.peek() == Some(&'-') {
+                // Block comment.
+                let _ = chars.next();
+                let mut block = String::from("#-");
+                let start_col = col as usize;
+                let mut start_line = line_no;
+                let _ = start_col;
+                let _ = start_line;
+                start_line = line_no;
+                let mut prev = ' ';
+                loop {
+                    match chars.next() {
+                        None => {
+                            // Unterminated — bail without recording.
+                            break;
+                        }
+                        Some(ch) => {
+                            block.push(ch);
+                            if prev == '-' && ch == '#' {
+                                out.push((start_line, Trivia::BlockComment(block)));
+                                break;
+                            }
+                            if ch == '\n' {
+                                line_no += 1;
+                                col = 1;
+                            } else {
+                                col += 1;
+                            }
+                            prev = ch;
+                        }
+                    }
+                }
+                continue;
+            }
+            // Line comment. Capture from `#` to newline.
+            line_buf.clear();
+            line_buf.push('#');
+            capture_comment_indent = Some(col as usize - 1);
+            col += 1;
+            continue;
+        }
+        if !c.is_whitespace() {
+            line_has_code = true;
+        }
+        col += 1;
+    }
+    // EOF without trailing newline.
+    if let Some(_indent) = capture_comment_indent.take() {
+        out.push((line_no, Trivia::Comment(line_buf)));
+    }
+    out
+}
+
+/// Cursor over a sorted-by-line `Vec<(u32, Trivia)>`. Each
+/// `flush_through(target_line, depth)` call emits trivia whose
+/// source line is strictly less than `target_line`, indenting
+/// comments at the given depth. Blank lines emit a bare `\n`.
+pub struct TriviaCursor {
+    items: Vec<(u32, Trivia)>,
+    /// Index of the next trivia entry to consider.
+    next: usize,
+}
+
+impl TriviaCursor {
+    fn new(items: Vec<(u32, Trivia)>) -> Self {
+        Self { items, next: 0 }
+    }
+
+    /// Empty cursor — flushing is a no-op. Used by the bare
+    /// `print_program(p)` entry to keep the threaded `&mut
+    /// TriviaCursor` parameter uniform across all helpers.
+    fn empty() -> Self {
+        Self::new(Vec::new())
+    }
+
+    /// Emit trivia whose source line is `< target_line`. After
+    /// flushing, the cursor advances past the emitted entries. To
+    /// flush trailing trivia (after the last AST node), pass
+    /// `u32::MAX`.
+    fn flush_through(&mut self, out: &mut String, target_line: u32, depth: usize) {
+        while self.next < self.items.len() {
+            let (line, _) = &self.items[self.next];
+            if *line >= target_line {
+                break;
+            }
+            let (_, trivia) = self.items[self.next].clone();
+            match trivia {
+                Trivia::Blank => {
+                    // Avoid emitting two consecutive blank lines —
+                    // the formatter already inserts blank
+                    // separators between top-level decls and
+                    // members, so a source blank that lands next
+                    // to one of those would compound.
+                    if !out.ends_with("\n\n") && !out.is_empty() {
+                        out.push('\n');
+                    }
+                }
+                Trivia::Comment(text) => {
+                    push_indent(out, depth);
+                    out.push_str(&text);
+                    out.push('\n');
+                }
+                Trivia::BlockComment(text) => {
+                    // Multi-line; emit each line with current
+                    // indent. Preserves the `#- ... -#` markers
+                    // verbatim.
+                    let mut first = true;
+                    for line in text.split('\n') {
+                        if !first {
+                            out.push('\n');
+                        }
+                        push_indent(out, depth);
+                        out.push_str(line);
+                        first = false;
+                    }
+                    out.push('\n');
+                }
+            }
+            self.next += 1;
+        }
+    }
+}
+
+/// Phase 27: trivia-preserving formatter entry point. Use this
+/// from `twec fmt` so source comments + blank lines round-trip.
+pub fn print_program_with_trivia(p: &Program, src: &str) -> String {
+    let mut cursor = TriviaCursor::new(extract_trivia(src));
+    print_program_internal(p, &mut cursor)
+}
+
+fn print_program_internal(p: &Program, cursor: &mut TriviaCursor) -> String {
+    let mut out = String::new();
+    let mut prev: Option<&Stmt> = None;
+    for stmt in &p.stmts {
+        cursor.flush_through(&mut out, stmt.line(), 0);
+        if let Some(prev_stmt) = prev {
+            if (takes_blank_neighbor(stmt) || takes_blank_neighbor(prev_stmt))
+                && !out.ends_with("\n\n")
+                && !out.is_empty()
+            {
+                out.push('\n');
+            }
+        }
+        print_stmt(&mut out, stmt, 0, cursor);
+        prev = Some(stmt);
+    }
+    cursor.flush_through(&mut out, u32::MAX, 0);
+    // Drop a trailing run of blank lines (extract_trivia treats an
+    // EOF-terminating newline as an empty trailing line).
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    out
+}
 
 /// Format a whole program to a `String` ending in `\n`. Empty
 /// programs round-trip to the empty string (no leading newline).
@@ -29,18 +240,8 @@ use crate::ast::{
 /// run of plain `let`s + `print`s in a script) compact, while
 /// breathing space sits around the heavier declarative blocks.
 pub fn print_program(p: &Program) -> String {
-    let mut out = String::new();
-    let mut prev: Option<&Stmt> = None;
-    for stmt in &p.stmts {
-        if let Some(p) = prev {
-            if takes_blank_neighbor(stmt) || takes_blank_neighbor(p) {
-                out.push('\n');
-            }
-        }
-        print_stmt(&mut out, stmt, 0);
-        prev = Some(stmt);
-    }
-    out
+    let mut cursor = TriviaCursor::empty();
+    print_program_internal(p, &mut cursor)
 }
 
 fn takes_blank_neighbor(stmt: &Stmt) -> bool {
@@ -92,7 +293,8 @@ fn push_indent(out: &mut String, depth: usize) {
 
 // --- statements ---
 
-fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
+fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize, cursor: &mut TriviaCursor) {
+    cursor.flush_through(out, stmt.line(), depth);
     match stmt {
         Stmt::Let { name, value, .. } => {
             push_indent(out, depth);
@@ -124,18 +326,18 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str("if ");
             print_expr(out, cond, Prec::Lowest);
             out.push_str(":\n");
-            print_block(out, then_body, depth + 1);
+            print_block(out, then_body, depth + 1, cursor);
             for (cond, body) in elifs {
                 push_indent(out, depth);
                 out.push_str("elif ");
                 print_expr(out, cond, Prec::Lowest);
                 out.push_str(":\n");
-                print_block(out, body, depth + 1);
+                print_block(out, body, depth + 1, cursor);
             }
             if let Some(else_body) = else_body {
                 push_indent(out, depth);
                 out.push_str("else:\n");
-                print_block(out, else_body, depth + 1);
+                print_block(out, else_body, depth + 1, cursor);
             }
         }
         Stmt::OnUpdate { param, body, .. } => {
@@ -143,12 +345,12 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str("on update(");
             out.push_str(param);
             out.push_str("):\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         Stmt::OnRender { body, .. } => {
             push_indent(out, depth);
             out.push_str("on render():\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         Stmt::OnClassEvent {
             class,
@@ -165,7 +367,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push('(');
             out.push_str(param);
             out.push_str("):\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         Stmt::Decl {
             kind,
@@ -185,7 +387,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
                 out.push_str(parent);
             }
             out.push_str(":\n");
-            print_decl_members(out, members, depth + 1, *kind);
+            print_decl_members(out, members, depth + 1, *kind, cursor);
         }
         Stmt::FunctionDecl {
             name,
@@ -207,7 +409,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
                 out.push_str(&ret_ty.to_string());
             }
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         Stmt::Return { value, .. } => {
             push_indent(out, depth);
@@ -223,7 +425,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str("while ");
             print_expr(out, cond, Prec::Lowest);
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         Stmt::For {
             var, iter, body, ..
@@ -234,7 +436,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str(" in ");
             print_expr(out, iter, Prec::Lowest);
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         Stmt::Break { .. } => {
             push_indent(out, depth);
@@ -277,7 +479,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str("dialogue ");
             out.push_str(name);
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         Stmt::Say { actor, text, .. } => {
             push_indent(out, depth);
@@ -296,7 +498,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
                 push_indent(out, depth + 1);
                 print_expr(out, label, Prec::Lowest);
                 out.push_str(":\n");
-                print_block(out, body, depth + 2);
+                print_block(out, body, depth + 2, cursor);
             }
         }
         Stmt::Import { path, alias, .. } => {
@@ -327,7 +529,7 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
     }
 }
 
-fn print_block(out: &mut String, stmts: &[Stmt], depth: usize) {
+fn print_block(out: &mut String, stmts: &[Stmt], depth: usize, cursor: &mut TriviaCursor) {
     if stmts.is_empty() {
         // Empty body: indented `pass`-equivalent isn't a Twe thing,
         // so emit a stub no-op. The parser accepts `nil` as a
@@ -341,11 +543,17 @@ fn print_block(out: &mut String, stmts: &[Stmt], depth: usize) {
         return;
     }
     for s in stmts {
-        print_stmt(out, s, depth);
+        print_stmt(out, s, depth, cursor);
     }
 }
 
-fn print_decl_members(out: &mut String, members: &[DeclMember], depth: usize, _kind: DeclKind) {
+fn print_decl_members(
+    out: &mut String,
+    members: &[DeclMember],
+    depth: usize,
+    _kind: DeclKind,
+    cursor: &mut TriviaCursor,
+) {
     // Print fields, then initial: state, then methods, then states
     // — this matches the convention all the test programs use and
     // keeps the formatted output readable. We preserve the source
@@ -357,11 +565,12 @@ fn print_decl_members(out: &mut String, members: &[DeclMember], depth: usize, _k
     }
     let mut first = true;
     for m in members {
-        if !first && member_takes_blank_line(m) {
+        cursor.flush_through(out, m.line(), depth);
+        if !first && member_takes_blank_line(m) && !out.ends_with("\n\n") && !out.is_empty() {
             out.push('\n');
         }
         first = false;
-        print_decl_member(out, m, depth);
+        print_decl_member(out, m, depth, cursor);
     }
 }
 
@@ -372,7 +581,7 @@ fn member_takes_blank_line(m: &DeclMember) -> bool {
     )
 }
 
-fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize) {
+fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize, cursor: &mut TriviaCursor) {
     match m {
         DeclMember::Field {
             name, value, ty, ..
@@ -422,7 +631,7 @@ fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize) {
                 out.push_str(&rt.to_string());
             }
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         DeclMember::InitialState { name, .. } => {
             push_indent(out, depth);
@@ -435,23 +644,29 @@ fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize) {
             out.push_str("state ");
             out.push_str(name);
             out.push_str(":\n");
-            print_state_members(out, members, depth + 1);
+            print_state_members(out, members, depth + 1, cursor);
         }
     }
 }
 
-fn print_state_members(out: &mut String, members: &[StateMember], depth: usize) {
+fn print_state_members(
+    out: &mut String,
+    members: &[StateMember],
+    depth: usize,
+    cursor: &mut TriviaCursor,
+) {
     // The parser accepts an empty state body (`state done:` with
     // nothing after — common for terminal idle states). Emit
     // nothing inside; the next sibling's indentation closes the
     // block naturally.
     let mut first = true;
     for m in members {
-        if !first && state_member_takes_blank(m) {
+        cursor.flush_through(out, m.line(), depth);
+        if !first && state_member_takes_blank(m) && !out.ends_with("\n\n") && !out.is_empty() {
             out.push('\n');
         }
         first = false;
-        print_state_member(out, m, depth);
+        print_state_member(out, m, depth, cursor);
     }
     let _ = depth;
 }
@@ -466,34 +681,34 @@ fn state_member_takes_blank(m: &StateMember) -> bool {
     )
 }
 
-fn print_state_member(out: &mut String, m: &StateMember, depth: usize) {
+fn print_state_member(out: &mut String, m: &StateMember, depth: usize, cursor: &mut TriviaCursor) {
     match m {
-        StateMember::Stmt(s) => print_stmt(out, s, depth),
+        StateMember::Stmt(s) => print_stmt(out, s, depth, cursor),
         StateMember::Every { interval, body, .. } => {
             push_indent(out, depth);
             out.push_str("every ");
             print_expr(out, interval, Prec::Lowest);
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         StateMember::OnRender { body, .. } => {
             push_indent(out, depth);
             out.push_str("on render():\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         StateMember::OnKeyPress { key, body, .. } => {
             push_indent(out, depth);
             out.push_str("on key_press.");
             out.push_str(key);
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         StateMember::OnUpdate { param, body, .. } => {
             push_indent(out, depth);
             out.push_str("on update(");
             out.push_str(param);
             out.push_str("):\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
         StateMember::OnPredicate {
             predicate, body, ..
@@ -502,7 +717,7 @@ fn print_state_member(out: &mut String, m: &StateMember, depth: usize) {
             out.push_str("on ");
             print_expr(out, predicate, Prec::Lowest);
             out.push_str(":\n");
-            print_block(out, body, depth + 1);
+            print_block(out, body, depth + 1, cursor);
         }
     }
 }

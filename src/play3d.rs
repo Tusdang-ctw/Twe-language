@@ -57,19 +57,75 @@ use crate::{eval, lexer, parser, stdlib};
 /// Twe-side key names ↔ winit physical key codes. Same name set
 /// `src/play.rs` exposes for the macroquad path; the user's
 /// `key.right` reads the same way no matter which loop is driving.
+// Phase 27: full key namespace for the 3D winit path — matches
+// the field set registered by `stdlib::register_keys` and the
+// 2D macroquad mirror in `play.rs`.
 const KEYS: &[(&str, KeyCode)] = &[
+    // Movement / arrows.
     ("right", KeyCode::ArrowRight),
     ("left", KeyCode::ArrowLeft),
     ("up", KeyCode::ArrowUp),
     ("down", KeyCode::ArrowDown),
+    // Common control keys.
     ("space", KeyCode::Space),
     ("escape", KeyCode::Escape),
     ("enter", KeyCode::Enter),
-    ("r", KeyCode::KeyR),
-    ("w", KeyCode::KeyW),
+    ("tab", KeyCode::Tab),
+    ("backspace", KeyCode::Backspace),
+    ("shift", KeyCode::ShiftLeft),
+    ("ctrl", KeyCode::ControlLeft),
+    ("alt", KeyCode::AltLeft),
+    // Letters a–z.
     ("a", KeyCode::KeyA),
-    ("s", KeyCode::KeyS),
+    ("b", KeyCode::KeyB),
+    ("c", KeyCode::KeyC),
     ("d", KeyCode::KeyD),
+    ("e", KeyCode::KeyE),
+    ("f", KeyCode::KeyF),
+    ("g", KeyCode::KeyG),
+    ("h", KeyCode::KeyH),
+    ("i", KeyCode::KeyI),
+    ("j", KeyCode::KeyJ),
+    ("k", KeyCode::KeyK),
+    ("l", KeyCode::KeyL),
+    ("m", KeyCode::KeyM),
+    ("n", KeyCode::KeyN),
+    ("o", KeyCode::KeyO),
+    ("p", KeyCode::KeyP),
+    ("q", KeyCode::KeyQ),
+    ("r", KeyCode::KeyR),
+    ("s", KeyCode::KeyS),
+    ("t", KeyCode::KeyT),
+    ("u", KeyCode::KeyU),
+    ("v", KeyCode::KeyV),
+    ("w", KeyCode::KeyW),
+    ("x", KeyCode::KeyX),
+    ("y", KeyCode::KeyY),
+    ("z", KeyCode::KeyZ),
+    // Digits 0–9.
+    ("0", KeyCode::Digit0),
+    ("1", KeyCode::Digit1),
+    ("2", KeyCode::Digit2),
+    ("3", KeyCode::Digit3),
+    ("4", KeyCode::Digit4),
+    ("5", KeyCode::Digit5),
+    ("6", KeyCode::Digit6),
+    ("7", KeyCode::Digit7),
+    ("8", KeyCode::Digit8),
+    ("9", KeyCode::Digit9),
+    // Function row F1–F12.
+    ("f1", KeyCode::F1),
+    ("f2", KeyCode::F2),
+    ("f3", KeyCode::F3),
+    ("f4", KeyCode::F4),
+    ("f5", KeyCode::F5),
+    ("f6", KeyCode::F6),
+    ("f7", KeyCode::F7),
+    ("f8", KeyCode::F8),
+    ("f9", KeyCode::F9),
+    ("f10", KeyCode::F10),
+    ("f11", KeyCode::F11),
+    ("f12", KeyCode::F12),
 ];
 
 /// Mouse-button names exposed to Twe code. Same set the macroquad
@@ -381,7 +437,7 @@ impl Default for JointsUniform {
     }
 }
 
-const SHADER_SRC: &str = r#"
+pub(crate) const SHADER_SRC: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
 };
@@ -567,7 +623,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 /// Phase 26: ACES filmic tone mapping shader. Reads an HDR
 /// linear-light texture and writes sRGB-encoded LDR to the
 /// swapchain. Optional radial vignette in the same pass.
-const TONEMAP_SHADER_SRC: &str = r#"
+pub(crate) const TONEMAP_SHADER_SRC: &str = r#"
 struct Params {
     /// x = ACES on/off (1.0 / 0.0), yz = unused, w = vignette strength.
     flags: vec4<f32>,
@@ -648,7 +704,7 @@ const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// distance-to-sun. Reuses the same vertex layout (position +
 /// joints + weights) so a single vertex buffer per mesh feeds
 /// both passes.
-const SHADOW_SHADER_SRC: &str = r#"
+pub(crate) const SHADOW_SHADER_SRC: &str = r#"
 struct Shadow {
     light_space_matrix: mat4x4<f32>,
     flags: vec4<f32>,
@@ -1458,11 +1514,19 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         force_fallback_adapter: false,
     }))
     .ok_or_else(|| "no compatible wgpu adapter found".to_string())?;
+    // Phase 27: bump max_bind_groups so the main pipeline can
+    // bind 5 groups (camera, texture, lights, joints, shadow).
+    // wgpu's default downlevel limit is 4 — every modern GPU
+    // supports 8 (the WebGPU spec floor), so this is safe.
+    let required_limits = wgpu::Limits {
+        max_bind_groups: 8,
+        ..wgpu::Limits::default()
+    };
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("twec-play3d device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits,
             memory_hints: wgpu::MemoryHints::default(),
         },
         None,
@@ -4105,5 +4169,64 @@ mod tests {
         let (vertices, indices, _, _) = load_glb(path.to_str().unwrap()).expect("decode");
         assert_eq!(vertices.len(), 3);
         assert_eq!(indices.len(), 3);
+    }
+
+    /// Phase 27: every WGSL shader the play3d pipeline ships
+    /// must parse + validate cleanly under naga (wgpu's WGSL
+    /// frontend). naga's accept-set is a superset of what
+    /// wgpu::create_shader_module accepts at runtime, so a parse
+    /// or validation failure here would also fail at GPU init.
+    /// Catches typos, bind-group / location mismatches, and
+    /// invalid type usage without needing a window or adapter.
+    fn validate_wgsl(label: &str, src: &str) {
+        let module = match naga::front::wgsl::parse_str(src) {
+            Ok(m) => m,
+            Err(e) => panic!("naga parse failed for {label}:\n{}\n--- WGSL ---\n{src}", e),
+        };
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        );
+        if let Err(e) = validator.validate(&module) {
+            panic!(
+                "naga validate failed for {label}:\n{:?}\n--- WGSL ---\n{src}",
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn main_shader_parses_and_validates() {
+        validate_wgsl("SHADER_SRC", SHADER_SRC);
+    }
+
+    #[test]
+    fn shadow_shader_parses_and_validates() {
+        validate_wgsl("SHADOW_SHADER_SRC", SHADOW_SHADER_SRC);
+    }
+
+    #[test]
+    fn tonemap_shader_parses_and_validates() {
+        validate_wgsl("TONEMAP_SHADER_SRC", TONEMAP_SHADER_SRC);
+    }
+
+    /// Phase 27: the Vertex layout's stride must match what the
+    /// shader expects. With joints (8B) + weights (16B) added on
+    /// top of position+normal+uv (32B), the stride should be
+    /// exactly 56 bytes. A mismatch here would either crash on
+    /// pipeline creation or silently scramble vertex data.
+    #[test]
+    fn vertex_layout_stride_matches_phase_24() {
+        assert_eq!(std::mem::size_of::<Vertex>(), 56);
+    }
+
+    /// Phase 27: the joint UBO size must fit in the default wgpu
+    /// max_uniform_buffer_binding_size (64 KB). 128 mat4 = 8 KB,
+    /// well within budget. If MAX_JOINTS or the matrix size ever
+    /// changes, this catches the regression at test time.
+    #[test]
+    fn joints_uniform_size_within_ubo_budget() {
+        assert_eq!(std::mem::size_of::<JointsUniform>(), 128 * 64);
+        assert!(std::mem::size_of::<JointsUniform>() <= 65_536);
     }
 }

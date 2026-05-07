@@ -526,7 +526,10 @@ fn handle_fmt(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let formatted = crate::printer::print_program(&program);
+    // Phase 27: trivia-preserving fmt. Re-emits the source's
+    // comments + blank lines at their original positions instead
+    // of dropping them.
+    let formatted = crate::printer::print_program_with_trivia(&program, &src);
     if check {
         if src == formatted {
             0
