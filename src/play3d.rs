@@ -195,13 +195,27 @@ struct Vertex {
     /// pixel). glb-loaded meshes write the `TEXCOORD_0` accessor
     /// here when present, `[0.0, 0.0]` otherwise.
     uv: [f32; 2],
+    /// Phase 24 (GPU skinning): four joint indices into the
+    /// per-mesh joint matrix UBO. For unskinned meshes (cube,
+    /// sphere, glb without a skin), all four values are 0 and
+    /// joint 0 of the bound UBO is an identity matrix — so the
+    /// skin pass is a no-op.
+    joints: [u16; 4],
+    /// Four bone weights matching `joints`. For unskinned meshes,
+    /// `weights[0] = 1.0` and the rest are 0.0, which means the
+    /// vertex is fully driven by joint 0 (the identity matrix in
+    /// the unskinned UBO). Skinned meshes from glTF write the
+    /// `WEIGHTS_0` accessor here, normalized to sum to 1.0.
+    weights: [f32; 4],
 }
 
 impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x3,
         4 => Float32x2,
+        5 => Uint16x4,
+        6 => Float32x4,
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -288,6 +302,43 @@ impl Default for LightsUniform {
     }
 }
 
+/// Phase 24: joint matrix array bound at @group(3). Each skinned
+/// mesh uploads its computed per-joint matrices (joint world ×
+/// inverse-bind matrix) to a per-mesh instance of this UBO each
+/// frame. Unskinned meshes bind a shared "all identity" instance
+/// of this UBO so the skin pass collapses to a no-op.
+///
+/// 128 mat4 = 8 KB. Comfortably under the default 64 KB UBO size
+/// limit. 128 covers Mixamo-class characters (typically ≤80 joints)
+/// with headroom for complex rigs.
+pub const MAX_JOINTS: usize = 128;
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct JointsUniform {
+    pub matrices: [[[f32; 4]; 4]; MAX_JOINTS],
+}
+
+impl JointsUniform {
+    pub fn identity() -> Self {
+        let id = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        Self {
+            matrices: [id; MAX_JOINTS],
+        }
+    }
+}
+
+impl Default for JointsUniform {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
 const SHADER_SRC: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -316,10 +367,25 @@ struct Lights {
 
 @group(2) @binding(0) var<uniform> lights: Lights;
 
+// Phase 24: per-mesh joint matrix UBO. Up to 128 joints per
+// skinned mesh. Unskinned meshes (cube, sphere, glb without a
+// skin) bind a default UBO whose joint 0 is identity, and their
+// vertices use joints=[0,0,0,0], weights=[1,0,0,0] — so the
+// skin matrix collapses to identity and the vertex passes
+// through unchanged. Skinned meshes upload computed joint
+// matrices each frame (driven by `mesh_anim.advance` + glTF
+// animation channels).
+struct Joints {
+    matrices: array<mat4x4<f32>, 128>,
+};
+@group(3) @binding(0) var<uniform> joints_u: Joints;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(4) uv: vec2<f32>,
+    @location(5) joints: vec4<u32>,   // u16x4 zero-extended
+    @location(6) weights: vec4<f32>,
 };
 
 struct InstanceInput {
@@ -337,10 +403,21 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
-    let model_pos = vert.position * inst.inst_pos_size.w + inst.inst_pos_size.xyz;
+    // Phase 24: linear blend skinning. The four joint indices select
+    // four mat4 from the joint UBO, weighted by `weights`. For
+    // unskinned meshes joint 0 is identity and weights = (1,0,0,0),
+    // so skin_mat collapses to identity.
+    let skin_mat: mat4x4<f32> =
+          vert.weights.x * joints_u.matrices[vert.joints.x]
+        + vert.weights.y * joints_u.matrices[vert.joints.y]
+        + vert.weights.z * joints_u.matrices[vert.joints.z]
+        + vert.weights.w * joints_u.matrices[vert.joints.w];
+    let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
+    let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
+    let model_pos = skinned_pos * inst.inst_pos_size.w + inst.inst_pos_size.xyz;
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
-    out.world_normal = vert.normal;
+    out.world_normal = skinned_normal;
     out.base_color = inst.inst_color.rgb;
     out.tex_coord = vert.uv;
     out.world_pos = model_pos;
@@ -414,37 +491,47 @@ const UV_TR: [f32; 2] = [1.0, 0.0];
 const UV_BR: [f32; 2] = [1.0, 1.0];
 const UV_BL: [f32; 2] = [0.0, 1.0];
 
+/// Phase 24: default joint indices for unskinned vertices. All
+/// four reference joint 0 of the bound joint UBO. Combined with
+/// `UNSKINNED_W` and the identity-joint UBO, the skin pass is a
+/// no-op for static geometry.
+const UNSKINNED_J: [u16; 4] = [0, 0, 0, 0];
+/// Phase 24: default joint weights for unskinned vertices. Full
+/// weight on joint 0 (which is the identity matrix in the
+/// unskinned UBO).
+const UNSKINNED_W: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+
 const CUBE_VERTICES: &[Vertex] = &[
     // +z (front)
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BL },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BR },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TR },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TL },
+    Vertex { position: [-0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
     // -z (back)
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BL },
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BR },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TR },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TL },
+    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
     // +x (right)
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_RIGHT,  uv: UV_BL },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_RIGHT,  uv: UV_BR },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_RIGHT,  uv: UV_TR },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_RIGHT,  uv: UV_TL },
+    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_RIGHT,  uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_RIGHT,  uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_RIGHT,  uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_RIGHT,  uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
     // -x (left)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_LEFT,   uv: UV_BL },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_LEFT,   uv: UV_BR },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_LEFT,   uv: UV_TR },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_LEFT,   uv: UV_TL },
+    Vertex { position: [-0.5, -0.5, -0.5], normal: N_LEFT,   uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5, -0.5,  0.5], normal: N_LEFT,   uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5,  0.5,  0.5], normal: N_LEFT,   uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5,  0.5, -0.5], normal: N_LEFT,   uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
     // +y (top)
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BL },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BR },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TR },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TL },
+    Vertex { position: [-0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
     // -y (bottom)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BL },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BR },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TR },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TL },
+    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BL, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TR, joints: UNSKINNED_J, weights: UNSKINNED_W },
+    Vertex { position: [-0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TL, joints: UNSKINNED_J, weights: UNSKINNED_W },
 ];
 
 #[rustfmt::skip]
@@ -499,6 +586,8 @@ fn sphere_mesh() -> (Vec<Vertex>, Vec<u16>) {
                 normal: [nx, ny, nz],
                 // Standard UV-sphere mapping: longitude → u, latitude → v.
                 uv: [u, v],
+                joints: UNSKINNED_J,
+                weights: UNSKINNED_W,
             });
         }
     }
@@ -623,6 +712,16 @@ struct RenderState {
     /// once per frame from the lights state in `stdlib::LIGHTS`.
     lights_buffer: wgpu::Buffer,
     lights_bind_group: wgpu::BindGroup,
+    /// Phase 24: bind group layout for joint matrix UBOs. Reused
+    /// for every skinned mesh's per-mesh joint UBO, plus the
+    /// identity-default UBO bound for unskinned meshes.
+    joints_bgl: wgpu::BindGroupLayout,
+    /// Phase 24: shared identity-only joint UBO + bind group, bound
+    /// at @group(3) for any draw call without a skin. Joint 0 is
+    /// the identity matrix; combined with the unskinned vertex
+    /// defaults (joints=0, weights=[1,0,0,0]) the skin matrix is
+    /// identity and the vertex passes through unchanged.
+    identity_joints_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
     /// `Env::mesh_paths` interned id (the `u32` payload of
@@ -664,6 +763,89 @@ struct GpuMesh {
     /// fallback when the script's `mesh()` call doesn't supply
     /// an explicit texture handle.
     auto_texture: Option<wgpu::BindGroup>,
+    /// Phase 24: skinning data extracted from the glTF skin (if
+    /// any). When `Some`, the mesh has per-vertex joint indices +
+    /// weights bound, the per-mesh joint UBO + bind group below
+    /// are populated, and the render flow updates the UBO each
+    /// frame from the active animation clip. When `None`, the
+    /// shared `identity_joints_bind_group` is used at slot 3.
+    skin: Option<MeshSkin>,
+}
+
+/// Phase 24: per-mesh skin data + GPU resources. Built at glb load
+/// time, retained for the mesh's lifetime. The animation channels
+/// own time/value samples in CPU memory; the joint UBO is updated
+/// each frame from the script-driven `mesh_anim` state.
+struct MeshSkin {
+    /// glTF node indices that drive each skin joint (in joint
+    /// order). `joint_node_indices.len() ≤ MAX_JOINTS`.
+    joint_node_indices: Vec<usize>,
+    /// 4×4 inverse bind matrices (column-major) per joint. Same
+    /// length as `joint_node_indices`. Multiplied with the joint's
+    /// world transform each frame to produce the skin matrix.
+    inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
+    /// Full set of glTF nodes referenced by the document, in
+    /// insertion order. Each entry holds rest-pose TRS plus the
+    /// list of child node indices, so the animation sampler can
+    /// rebuild the world transform of any joint by walking down
+    /// from the skeleton root.
+    nodes: Vec<GltfNodeData>,
+    /// Top-level scene node indices (the "roots" of the hierarchy
+    /// the animation walks). The skin's joints are reachable from
+    /// these.
+    scene_roots: Vec<usize>,
+    /// Animation clips by name. A script-driven `mesh_anim.play(h,
+    /// "walk")` selects the clip whose `name` matches.
+    clips: HashMap<String, AnimClip>,
+    /// Per-mesh joint matrix UBO, written once per frame when an
+    /// animation is active. Bound at @group(3) for skinned draws.
+    joint_buffer: wgpu::Buffer,
+    joint_bind_group: wgpu::BindGroup,
+}
+
+/// Phase 24: a single glTF node's rest-pose TRS + children. Stored
+/// at glb load time so animation sampling can override TRS each
+/// frame and walk children to compute world transforms.
+#[derive(Clone, Debug)]
+struct GltfNodeData {
+    translation: [f32; 3],
+    rotation: [f32; 4], // (x, y, z, w) glTF order
+    scale: [f32; 3],
+    children: Vec<usize>,
+}
+
+/// Phase 24: a single animation clip = a set of channels over a
+/// fixed duration. Sampled at any time `t ∈ [0, duration]` to
+/// produce per-node TRS overrides.
+#[derive(Clone, Debug)]
+struct AnimClip {
+    duration: f32,
+    channels: Vec<AnimChannel>,
+}
+
+/// One animation channel = (target node, target property, samples).
+/// `times` is monotonic; `values` runs in the same step (vec3 for
+/// T/S, vec4 for R). Linear interpolation between bracketing
+/// keyframes; rotations use shortest-path slerp.
+#[derive(Clone, Debug)]
+struct AnimChannel {
+    target_node: usize,
+    property: AnimProperty,
+    times: Vec<f32>,
+    values: AnimValues,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AnimProperty {
+    Translation,
+    Rotation,
+    Scale,
+}
+
+#[derive(Clone, Debug)]
+enum AnimValues {
+    Vec3(Vec<[f32; 3]>),
+    Vec4(Vec<[f32; 4]>),
 }
 
 impl ApplicationHandler for App {
@@ -1130,6 +1312,37 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         }],
     });
 
+    // Phase 24: joint UBO bind group layout, plus a shared
+    // identity-only UBO bound for unskinned draws (cube, sphere,
+    // glb without a skin). Skinned meshes own a per-mesh UBO of
+    // the same layout written each frame from `mesh_anim`.
+    let joints_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("twec-play3d joints bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let identity_joints_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("twec-play3d identity joints"),
+        contents: bytemuck::bytes_of(&JointsUniform::identity()),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let identity_joints_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d identity joints bg"),
+        layout: &joints_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: identity_joints_buffer.as_entire_binding(),
+        }],
+    });
+
     // Phase 17 session 3: texture bind group layout — sampled
     // 2D float texture + a filtering sampler. One layout, reused
     // for every per-mesh texture binding (including the fallback
@@ -1209,7 +1422,7 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d pipeline layout"),
-        bind_group_layouts: &[&camera_bgl, &texture_bgl, &lights_bgl],
+        bind_group_layouts: &[&camera_bgl, &texture_bgl, &lights_bgl, &joints_bgl],
         push_constant_ranges: &[],
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1273,6 +1486,8 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         camera_bind_group,
         lights_buffer,
         lights_bind_group,
+        joints_bgl,
+        identity_joints_bind_group,
         depth_view,
         mesh_cache: HashMap::new(),
         mesh_load_failures: HashSet::new(),
@@ -1386,12 +1601,35 @@ struct AutoTextureData {
     pixels: Vec<u8>,
 }
 
+/// Phase 24: skin + animation data extracted from a glb at load
+/// time, ready to be paired with GPU resources by the caller.
+/// Decoupled from `MeshSkin` (which holds the GPU buffer) so
+/// tests can exercise the parser without a wgpu device.
+pub(crate) struct LoadedSkinData {
+    joint_node_indices: Vec<usize>,
+    inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
+    nodes: Vec<GltfNodeData>,
+    scene_roots: Vec<usize>,
+    clips: HashMap<String, AnimClip>,
+}
+
+/// Phase 24: tuple result of the glb loader. The four slots are
+/// (vertices, indices, optional auto-loaded base color texture,
+/// optional skin + animation data).
+type LoadedGlb = (
+    Vec<Vertex>,
+    Vec<u32>,
+    Option<AutoTextureData>,
+    Option<LoadedSkinData>,
+);
+
 /// Decode a `.glb` (or `.gltf`) at `path`. Returns interleaved
 /// `Vertex` array + u32 index list + optionally the base color
-/// texture from the first primitive's material. Errors are
-/// stringified at the boundary because the upstream `gltf::Error`
-/// carries lifetimes we don't want to leak.
-fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>, Option<AutoTextureData>), String> {
+/// texture from the first primitive's material + optionally the
+/// skin/animation data when the document carries a skinned mesh.
+/// Errors are stringified at the boundary because the upstream
+/// `gltf::Error` carries lifetimes we don't want to leak.
+fn load_glb(path: &str) -> Result<LoadedGlb, String> {
     // Phase 12 session 3: bundle-first lookup, filesystem fallback.
     let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| e.to_string())?;
     parse_glb_bytes(&bytes)
@@ -1400,9 +1638,7 @@ fn load_glb(path: &str) -> Result<(Vec<Vertex>, Vec<u32>, Option<AutoTextureData
 /// Inner loader exposed for tests — drives the gltf crate against
 /// an in-memory byte slice instead of a path so we can exercise
 /// the decode path without shipping binary fixtures.
-fn parse_glb_bytes(
-    bytes: &[u8],
-) -> Result<(Vec<Vertex>, Vec<u32>, Option<AutoTextureData>), String> {
+fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
     let (doc, buffers, images) = gltf::import_slice(bytes).map_err(|e| e.to_string())?;
     if doc.meshes().count() == 0 {
         return Err("glb has no meshes".to_string());
@@ -1411,10 +1647,9 @@ fn parse_glb_bytes(
     // Phase 19: walk the scene graph and flatten all nodes into a
     // single (vertices, indices) buffer. Each node's accumulated
     // transform (parent-multiplied) bakes into vertex positions and
-    // normals at load time. This is the "scene flatten" approach:
-    // a multi-node Blender export renders correctly without per-frame
-    // node-matrix math, at the cost of not being able to animate
-    // individual nodes (which lands in Phase 21).
+    // normals at load time — except for skinned primitives, whose
+    // positions stay in mesh-local space (the skin pass at render
+    // time resolves them via the joint matrices). Phase 24.
     let mut all_verts: Vec<Vertex> = Vec::new();
     let mut all_indices: Vec<u32> = Vec::new();
     let mut auto_texture: Option<AutoTextureData> = None;
@@ -1450,6 +1685,7 @@ fn parse_glb_bytes(
         flatten_primitive(
             &primitive,
             mat4_identity(),
+            false,
             &buffers,
             &images,
             &mut all_verts,
@@ -1461,7 +1697,112 @@ fn parse_glb_bytes(
     if all_verts.is_empty() {
         return Err("glb has zero vertices across all primitives".to_string());
     }
-    Ok((all_verts, all_indices, auto_texture))
+
+    // Phase 24: extract skin + animation data, if any. We pick the
+    // first skin referenced anywhere in the document; multi-skin
+    // documents are rare in practice and outside MVP scope.
+    let skin_data = extract_skin_data(&doc, &buffers, &scene);
+
+    Ok((all_verts, all_indices, auto_texture, skin_data))
+}
+
+/// Phase 24: extract skin + animation channels from the document.
+/// Returns `None` for unskinned glb files (the common case for
+/// static props / level geometry). When `Some`, the caller pairs
+/// this with a per-mesh joint UBO in `MeshSkin`.
+fn extract_skin_data(
+    doc: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+    scene: &gltf::Scene<'_>,
+) -> Option<LoadedSkinData> {
+    let skin = doc.skins().next()?;
+    let joint_node_indices: Vec<usize> = skin.joints().map(|n| n.index()).collect();
+    if joint_node_indices.is_empty() {
+        return None;
+    }
+    let reader = skin.reader(|b| Some(&buffers[b.index()]));
+    let inverse_bind_matrices: Vec<[[f32; 4]; 4]> = match reader.read_inverse_bind_matrices() {
+        Some(it) => it.collect(),
+        None => vec![mat4_identity(); joint_node_indices.len()],
+    };
+    let inverse_bind_matrices = if inverse_bind_matrices.len() == joint_node_indices.len() {
+        inverse_bind_matrices
+    } else {
+        vec![mat4_identity(); joint_node_indices.len()]
+    };
+
+    // Capture all nodes' rest-pose TRS + child indices. We index
+    // by node index, so any animation channel can target any node
+    // by `node.index()`.
+    let mut nodes: Vec<GltfNodeData> = Vec::with_capacity(doc.nodes().count());
+    for node in doc.nodes() {
+        let (t, r, s) = node.transform().decomposed();
+        nodes.push(GltfNodeData {
+            translation: t,
+            rotation: r,
+            scale: s,
+            children: node.children().map(|c| c.index()).collect(),
+        });
+    }
+
+    let scene_roots: Vec<usize> = scene.nodes().map(|n| n.index()).collect();
+
+    // Walk all animations; group channels by clip name.
+    let mut clips: HashMap<String, AnimClip> = HashMap::new();
+    for (i, anim) in doc.animations().enumerate() {
+        let name = anim
+            .name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("anim_{i}"));
+        let mut duration: f32 = 0.0;
+        let mut channels: Vec<AnimChannel> = Vec::new();
+        for chan in anim.channels() {
+            let target_node = chan.target().node().index();
+            let property = match chan.target().property() {
+                gltf::animation::Property::Translation => AnimProperty::Translation,
+                gltf::animation::Property::Rotation => AnimProperty::Rotation,
+                gltf::animation::Property::Scale => AnimProperty::Scale,
+                gltf::animation::Property::MorphTargetWeights => continue,
+            };
+            let sampler_reader = chan.reader(|b| Some(&buffers[b.index()]));
+            let times: Vec<f32> = match sampler_reader.read_inputs() {
+                Some(it) => it.collect(),
+                None => continue,
+            };
+            if let Some(&t_max) = times.last() {
+                if t_max > duration {
+                    duration = t_max;
+                }
+            }
+            let values = match sampler_reader.read_outputs() {
+                Some(gltf::animation::util::ReadOutputs::Translations(it)) => {
+                    AnimValues::Vec3(it.collect())
+                }
+                Some(gltf::animation::util::ReadOutputs::Scales(it)) => {
+                    AnimValues::Vec3(it.collect())
+                }
+                Some(gltf::animation::util::ReadOutputs::Rotations(it)) => {
+                    AnimValues::Vec4(it.into_f32().collect())
+                }
+                _ => continue,
+            };
+            channels.push(AnimChannel {
+                target_node,
+                property,
+                times,
+                values,
+            });
+        }
+        clips.insert(name, AnimClip { duration, channels });
+    }
+
+    Some(LoadedSkinData {
+        joint_node_indices,
+        inverse_bind_matrices,
+        nodes,
+        scene_roots,
+        clips,
+    })
 }
 
 /// Phase 19: 4×4 column-major identity matrix, used as the root
@@ -1512,8 +1853,302 @@ fn mat4_transform_dir(m: [[f32; 4]; 4], d: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// Phase 24: build a column-major TRS matrix from translation,
+/// rotation (quaternion x,y,z,w), and scale. Matches the glTF 2.0
+/// transform composition: M = T * R * S, applied to a point as
+/// p' = T * (R * (S * p)).
+fn mat4_from_trs(t: [f32; 3], r: [f32; 4], s: [f32; 3]) -> [[f32; 4]; 4] {
+    let (x, y, z, w) = (r[0], r[1], r[2], r[3]);
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let xz = x * z;
+    let yz = y * z;
+    let wx = w * x;
+    let wy = w * y;
+    let wz = w * z;
+    // Column-major: column 0 is the first array entry. Each column
+    // is the basis-axis image (e.g. column 0 = R*S * (1,0,0)).
+    [
+        [
+            (1.0 - 2.0 * (yy + zz)) * s[0],
+            2.0 * (xy + wz) * s[0],
+            2.0 * (xz - wy) * s[0],
+            0.0,
+        ],
+        [
+            2.0 * (xy - wz) * s[1],
+            (1.0 - 2.0 * (xx + zz)) * s[1],
+            2.0 * (yz + wx) * s[1],
+            0.0,
+        ],
+        [
+            2.0 * (xz + wy) * s[2],
+            2.0 * (yz - wx) * s[2],
+            (1.0 - 2.0 * (xx + yy)) * s[2],
+            0.0,
+        ],
+        [t[0], t[1], t[2], 1.0],
+    ]
+}
+
+/// Phase 24: linear interpolation between two vec3 keyframes.
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// Phase 24: shortest-path quaternion slerp. Flips one operand
+/// when the dot product is negative so the interpolation takes
+/// the short arc — matches the standard glTF animation rule.
+fn slerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let mut bb = b;
+    let mut dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    if dot < 0.0 {
+        bb = [-b[0], -b[1], -b[2], -b[3]];
+        dot = -dot;
+    }
+    if dot > 0.9995 {
+        // Near-parallel: lerp + normalize is more stable than slerp.
+        let r = [
+            a[0] + (bb[0] - a[0]) * t,
+            a[1] + (bb[1] - a[1]) * t,
+            a[2] + (bb[2] - a[2]) * t,
+            a[3] + (bb[3] - a[3]) * t,
+        ];
+        let len = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]).sqrt();
+        return [r[0] / len, r[1] / len, r[2] / len, r[3] / len];
+    }
+    let omega = dot.acos();
+    let sin_o = omega.sin();
+    let s_a = ((1.0 - t) * omega).sin() / sin_o;
+    let s_b = (t * omega).sin() / sin_o;
+    [
+        a[0] * s_a + bb[0] * s_b,
+        a[1] * s_a + bb[1] * s_b,
+        a[2] * s_a + bb[2] * s_b,
+        a[3] * s_a + bb[3] * s_b,
+    ]
+}
+
+/// Phase 24: bracket a time `t` against a sorted keyframe `times`
+/// vector and return `(i0, i1, alpha)` where `i0 < i1` are
+/// keyframe indices and `alpha ∈ [0, 1]` is the local interp
+/// parameter. Clamps to first/last when `t` is outside the range.
+fn bracket_keyframe(times: &[f32], t: f32) -> (usize, usize, f32) {
+    if times.is_empty() {
+        return (0, 0, 0.0);
+    }
+    if t <= times[0] {
+        return (0, 0, 0.0);
+    }
+    let last = times.len() - 1;
+    if t >= times[last] {
+        return (last, last, 0.0);
+    }
+    // Linear search is fine for typical animation channels
+    // (≤30 keyframes for a 1-second walk cycle at 30fps). For
+    // longer clips this becomes binary search.
+    for i in 0..last {
+        if t >= times[i] && t <= times[i + 1] {
+            let span = times[i + 1] - times[i];
+            let alpha = if span > 1e-6 {
+                (t - times[i]) / span
+            } else {
+                0.0
+            };
+            return (i, i + 1, alpha);
+        }
+    }
+    (last, last, 0.0)
+}
+
+/// Phase 24: sample one animation channel at time `t`, returning
+/// either a vec3 (Translation/Scale) or a vec4 (Rotation). The
+/// caller knows which property the channel targets and slots the
+/// value into the corresponding TRS field of the channel's node.
+enum SampledValue {
+    Vec3([f32; 3]),
+    Vec4([f32; 4]),
+}
+
+fn sample_channel(channel: &AnimChannel, t: f32) -> SampledValue {
+    let (i0, i1, alpha) = bracket_keyframe(&channel.times, t);
+    match (&channel.property, &channel.values) {
+        (AnimProperty::Translation, AnimValues::Vec3(v))
+        | (AnimProperty::Scale, AnimValues::Vec3(v)) => {
+            let a = v.get(i0).copied().unwrap_or([0.0; 3]);
+            let b = v.get(i1).copied().unwrap_or(a);
+            SampledValue::Vec3(lerp3(a, b, alpha))
+        }
+        (AnimProperty::Rotation, AnimValues::Vec4(v)) => {
+            let a = v.get(i0).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            let b = v.get(i1).copied().unwrap_or(a);
+            SampledValue::Vec4(slerp4(a, b, alpha))
+        }
+        // Mismatched property/value combos shouldn't happen for
+        // well-formed glTF; fall back to identity.
+        (AnimProperty::Translation | AnimProperty::Scale, _) => SampledValue::Vec3([0.0; 3]),
+        (AnimProperty::Rotation, _) => SampledValue::Vec4([0.0, 0.0, 0.0, 1.0]),
+    }
+}
+
+/// Phase 24: minimal animation snapshot read from the script-side
+/// `mesh_anim` state. The render path passes this to
+/// `compute_skinned_joint_matrices`, which samples the named clip
+/// at `time` and writes joint matrices.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct AnimSnapshot {
+    pub(crate) clip: String,
+    pub(crate) time: f32,
+    pub(crate) blend_clip: Option<String>,
+    pub(crate) blend_t: f32,
+}
+
+/// Phase 24: compute per-joint skin matrices at the current
+/// animation time. Returns a `JointsUniform` ready to upload.
+///
+/// Algorithm (standard glTF skinning):
+/// 1. Start each node at its rest-pose TRS.
+/// 2. Override TRS on nodes targeted by the active clip's channels.
+/// 3. Walk the scene roots, multiplying parent world × local TRS
+///    matrix, to get every node's world transform.
+/// 4. For each skin joint i, the skin matrix is
+///    `world(joint_node[i]) * inverse_bind_matrix[i]`.
+fn compute_skinned_joint_matrices(skin: &MeshSkin, anim: &AnimSnapshot) -> JointsUniform {
+    let n_nodes = skin.nodes.len();
+
+    // Start each node at its rest pose.
+    let mut trs: Vec<([f32; 3], [f32; 4], [f32; 3])> = skin
+        .nodes
+        .iter()
+        .map(|n| (n.translation, n.rotation, n.scale))
+        .collect();
+
+    // Apply primary clip overrides.
+    if !anim.clip.is_empty() {
+        if let Some(clip) = skin.clips.get(&anim.clip) {
+            // Loop time within clip duration when the clip has any
+            // duration. (Looping is the script's choice via
+            // `mesh_anim.play(h, name, true)`; the renderer wraps
+            // either way — non-looping holds the last frame because
+            // `bracket_keyframe` clamps, which is acceptable.)
+            let t_clip = if clip.duration > 0.0 {
+                anim.time.rem_euclid(clip.duration)
+            } else {
+                0.0
+            };
+            apply_clip(&mut trs, clip, t_clip);
+        }
+    }
+
+    // Optional blend: linearly interpolate the secondary clip on
+    // top of the primary by `blend_t`. For TRS this is component-
+    // wise lerp (translation/scale) and slerp (rotation).
+    if let Some(blend_name) = &anim.blend_clip {
+        if let Some(clip_b) = skin.clips.get(blend_name) {
+            let t_clip = if clip_b.duration > 0.0 {
+                anim.time.rem_euclid(clip_b.duration)
+            } else {
+                0.0
+            };
+            // Snapshot rest-pose-overlaid-with-A-only into `a_trs`
+            // so we can lerp toward B without trampling.
+            let a_trs = trs.clone();
+            let mut b_trs: Vec<([f32; 3], [f32; 4], [f32; 3])> = skin
+                .nodes
+                .iter()
+                .map(|n| (n.translation, n.rotation, n.scale))
+                .collect();
+            apply_clip(&mut b_trs, clip_b, t_clip);
+            for i in 0..n_nodes {
+                let t = anim.blend_t.clamp(0.0, 1.0);
+                trs[i] = (
+                    lerp3(a_trs[i].0, b_trs[i].0, t),
+                    slerp4(a_trs[i].1, b_trs[i].1, t),
+                    lerp3(a_trs[i].2, b_trs[i].2, t),
+                );
+            }
+        }
+    }
+
+    // Walk hierarchy from scene roots, multiplying parent world *
+    // local matrix, to get each node's world transform.
+    let mut world: Vec<[[f32; 4]; 4]> = vec![mat4_identity(); n_nodes];
+    let mut visited = vec![false; n_nodes];
+    let mut stack: Vec<(usize, [[f32; 4]; 4])> = skin
+        .scene_roots
+        .iter()
+        .map(|&i| (i, mat4_identity()))
+        .collect();
+    while let Some((idx, parent_world)) = stack.pop() {
+        if idx >= n_nodes || visited[idx] {
+            continue;
+        }
+        visited[idx] = true;
+        let (t, r, s) = trs[idx];
+        let local = mat4_from_trs(t, r, s);
+        let w = mat4_mul(parent_world, local);
+        world[idx] = w;
+        for &child in &skin.nodes[idx].children {
+            stack.push((child, w));
+        }
+    }
+
+    // Build skin matrices = world(joint) * IBM. Cap at MAX_JOINTS
+    // — anything beyond is clipped (a static error path that
+    // would only fire for >128-joint rigs).
+    let mut out = JointsUniform::identity();
+    let n_joints = skin.joint_node_indices.len().min(MAX_JOINTS);
+    for i in 0..n_joints {
+        let node_idx = skin.joint_node_indices[i];
+        let w = if node_idx < n_nodes {
+            world[node_idx]
+        } else {
+            mat4_identity()
+        };
+        out.matrices[i] = mat4_mul(w, skin.inverse_bind_matrices[i]);
+    }
+    out
+}
+
+/// Phase 24: apply one animation clip's channels onto a TRS table
+/// at time `t_clip`. Mutates the targeted nodes in place; nodes
+/// not referenced by any channel keep their rest-pose values.
+fn apply_clip(
+    trs: &mut [([f32; 3], [f32; 4], [f32; 3])],
+    clip: &AnimClip,
+    t_clip: f32,
+) {
+    for ch in &clip.channels {
+        if ch.target_node >= trs.len() {
+            continue;
+        }
+        match (sample_channel(ch, t_clip), ch.property) {
+            (SampledValue::Vec3(v), AnimProperty::Translation) => {
+                trs[ch.target_node].0 = v;
+            }
+            (SampledValue::Vec3(v), AnimProperty::Scale) => {
+                trs[ch.target_node].2 = v;
+            }
+            (SampledValue::Vec4(v), AnimProperty::Rotation) => {
+                trs[ch.target_node].1 = v;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Recursively walk a glTF node's subtree, accumulate transforms,
 /// and bake each primitive's vertices into the flattened output.
+/// Phase 24: pass-through skin awareness — when a node has a
+/// `node.skin()` reference, its primitives are flagged skinned so
+/// `flatten_primitive` skips world-baking (the skin pass at render
+/// time will resolve them via joint matrices).
 fn flatten_node(
     node: &gltf::Node<'_>,
     parent_transform: [[f32; 4]; 4],
@@ -1525,11 +2160,13 @@ fn flatten_node(
 ) {
     let local = node.transform().matrix();
     let world = mat4_mul(parent_transform, local);
+    let is_skinned = node.skin().is_some();
     if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
             flatten_primitive(
                 &primitive,
                 world,
+                is_skinned,
                 buffers,
                 images,
                 out_verts,
@@ -1552,11 +2189,14 @@ fn flatten_node(
 }
 
 /// Append one glTF primitive's vertices + indices to the flattened
-/// output, transformed by `world`. Index values are offset by the
-/// existing vertex count so multiple primitives share one buffer.
+/// output, transformed by `world` (or left in mesh-local space when
+/// skinned). Index values are offset by the existing vertex count
+/// so multiple primitives share one buffer.
+#[allow(clippy::too_many_arguments)]
 fn flatten_primitive(
     primitive: &gltf::Primitive<'_>,
     world: [[f32; 4]; 4],
+    is_skinned: bool,
     buffers: &[gltf::buffer::Data],
     images: &[gltf::image::Data],
     out_verts: &mut Vec<Vertex>,
@@ -1594,12 +2234,53 @@ fn flatten_primitive(
         None => vec![[0.0, 0.0]; positions.len()],
     };
 
+    // Phase 24: read JOINTS_0 / WEIGHTS_0 if present. When absent,
+    // default to (0,0,0,0) / (1,0,0,0) so the unskinned skin pass
+    // collapses to identity at render time.
+    let joints: Vec<[u16; 4]> = match reader.read_joints(0) {
+        Some(iter) => iter.into_u16().collect(),
+        None => vec![UNSKINNED_J; positions.len()],
+    };
+    let joints = if joints.len() == positions.len() {
+        joints
+    } else {
+        vec![UNSKINNED_J; positions.len()]
+    };
+    let weights: Vec<[f32; 4]> = match reader.read_weights(0) {
+        Some(iter) => iter.into_f32().collect(),
+        None => vec![UNSKINNED_W; positions.len()],
+    };
+    let weights = if weights.len() == positions.len() {
+        weights
+    } else {
+        vec![UNSKINNED_W; positions.len()]
+    };
+
+    // Phase 24: per glTF 2.0 spec, transforms of skinned mesh
+    // instances are NOT applied to the rendered mesh — joint
+    // transforms in the skin hierarchy already carry that
+    // information. So when this primitive is skinned, leave
+    // positions/normals in mesh-local space and let the skin pass
+    // in the vertex shader resolve them. Unskinned primitives
+    // bake the parent-multiplied world transform as before.
     let base_index = out_verts.len() as u32;
-    for ((p, n), uv) in positions.iter().zip(normals.iter()).zip(uvs.iter()) {
+    for (((p, n), uv), (j, w)) in positions
+        .iter()
+        .zip(normals.iter())
+        .zip(uvs.iter())
+        .zip(joints.iter().zip(weights.iter()))
+    {
+        let (pos, nrm) = if is_skinned {
+            (*p, *n)
+        } else {
+            (mat4_transform_point(world, *p), mat4_transform_dir(world, *n))
+        };
         out_verts.push(Vertex {
-            position: mat4_transform_point(world, *p),
-            normal: mat4_transform_dir(world, *n),
+            position: pos,
+            normal: nrm,
             uv: *uv,
+            joints: *j,
+            weights: *w,
         });
     }
 
@@ -1661,9 +2342,10 @@ fn load_and_upload_mesh(
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
+    joints_bgl: &wgpu::BindGroupLayout,
     path: &str,
 ) -> Result<GpuMesh, String> {
-    let (vertices, indices, auto_tex) = load_glb(path)?;
+    let (vertices, indices, auto_tex, skin_data) = load_glb(path)?;
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("twec-play3d mesh vertices"),
         contents: bytemuck::cast_slice(&vertices),
@@ -1729,12 +2411,48 @@ fn load_and_upload_mesh(
             ],
         })
     });
+    // Phase 24: build per-mesh skin GPU resources when the glb
+    // has a skinned mesh. Each skinned mesh owns its joint UBO,
+    // updated each frame from the script-driven `mesh_anim`.
+    let skin = skin_data.map(|sd| {
+        let joint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("twec-play3d mesh joints"),
+            size: std::mem::size_of::<JointsUniform>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // Initialize to identity so the first frame (before
+        // animation runs) draws the rest pose correctly.
+        queue.write_buffer(
+            &joint_buffer,
+            0,
+            bytemuck::bytes_of(&JointsUniform::identity()),
+        );
+        let joint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("twec-play3d mesh joints bg"),
+            layout: joints_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: joint_buffer.as_entire_binding(),
+            }],
+        });
+        MeshSkin {
+            joint_node_indices: sd.joint_node_indices,
+            inverse_bind_matrices: sd.inverse_bind_matrices,
+            nodes: sd.nodes,
+            scene_roots: sd.scene_roots,
+            clips: sd.clips,
+            joint_buffer,
+            joint_bind_group,
+        }
+    });
     Ok(GpuMesh {
         vertex_buffer,
         index_buffer,
         index_count: indices.len() as u32,
         index_format: wgpu::IndexFormat::Uint32,
         auto_texture,
+        skin,
     })
 }
 
@@ -1850,6 +2568,7 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
             &state.queue,
             &state.texture_bgl,
             &state.default_sampler,
+            &state.joints_bgl,
             &path,
         ) {
             Ok(gpu_mesh) => {
@@ -1983,6 +2702,32 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
             .write_buffer(&state.instance_buffer, 0, bytemuck::cast_slice(&instances));
     }
 
+    // 4d. Phase 24: update each skinned mesh's joint UBO from
+    //     the script-driven animation state. Walks every mesh
+    //     referenced this frame; for each that has a skin, looks
+    //     up the active clip in `mesh_anim` state, samples TRS
+    //     for every joint at the current time, builds skin
+    //     matrices, uploads to the per-mesh joint UBO. Unskinned
+    //     meshes skip this work.
+    let mesh_ids_this_frame: HashSet<u32> = mesh_groups.iter().map(|((id, _), _)| *id).collect();
+    for mesh_id in mesh_ids_this_frame {
+        let gpu_mesh = match state.mesh_cache.get(&mesh_id) {
+            Some(m) => m,
+            None => continue,
+        };
+        let skin = match &gpu_mesh.skin {
+            Some(s) => s,
+            None => continue,
+        };
+        let anim_state = crate::stdlib::mesh_anim_state(mesh_id);
+        let joints_uniform = compute_skinned_joint_matrices(skin, &anim_state);
+        state.queue.write_buffer(
+            &skin.joint_buffer,
+            0,
+            bytemuck::bytes_of(&joints_uniform),
+        );
+    }
+
     // 5. Acquire the swapchain texture and draw.
     let frame = state
         .surface
@@ -2027,6 +2772,11 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
             rpass.set_pipeline(&state.pipeline);
             rpass.set_bind_group(0, &state.camera_bind_group, &[]);
             rpass.set_bind_group(2, &state.lights_bind_group, &[]);
+            // Phase 24: bind the shared identity joint UBO as the
+            // default for unskinned draws (cube, sphere, glb
+            // without a skin). Skinned mesh draws override slot 3
+            // with their per-mesh joint bind group below.
+            rpass.set_bind_group(3, &state.identity_joints_bind_group, &[]);
             rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
             // Phase 17 session 3: helper closure that picks the
             // right texture bind group for a given texture id.
@@ -2095,9 +2845,23 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                     bind_for(*tex)
                 };
                 rpass.set_bind_group(1, bind, &[]);
+                // Phase 24: bind per-mesh joint UBO when the mesh
+                // has a skin; the joint matrices were uploaded in
+                // step 4c above. Unskinned meshes leave slot 3
+                // bound to the identity UBO from the outer setup.
+                if let Some(skin) = &gpu_mesh.skin {
+                    rpass.set_bind_group(3, &skin.joint_bind_group, &[]);
+                }
                 rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
                 rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
                 rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+                // Re-bind the identity joints for the next draw if
+                // we just used a skinned bind group, so subsequent
+                // unskinned draws don't accidentally read this
+                // mesh's joint matrices.
+                if gpu_mesh.skin.is_some() {
+                    rpass.set_bind_group(3, &state.identity_joints_bind_group, &[]);
+                }
             }
         }
     }
@@ -2356,7 +3120,7 @@ mod tests {
     #[test]
     fn parse_glb_extracts_positions_and_indices() {
         let bytes = make_minimal_glb();
-        let (vertices, indices, _auto_tex) = parse_glb_bytes(&bytes).expect("decode");
+        let (vertices, indices, _auto_tex, _skin) = parse_glb_bytes(&bytes).expect("decode");
         assert_eq!(vertices.len(), 3);
         assert_eq!(indices, vec![0, 1, 2]);
         assert_eq!(vertices[0].position, [0.0, 0.0, 0.0]);
@@ -2369,7 +3133,7 @@ mod tests {
         // The fixture omits NORMAL — loader fills with [0, 1, 0]
         // so the mesh still shades against the directional light.
         let bytes = make_minimal_glb();
-        let (vertices, _, _) = parse_glb_bytes(&bytes).expect("decode");
+        let (vertices, _, _, _) = parse_glb_bytes(&bytes).expect("decode");
         assert_eq!(vertices[0].normal, [0.0, 1.0, 0.0]);
     }
 
@@ -2405,7 +3169,7 @@ mod tests {
         let bytes = make_minimal_glb();
         std::fs::write(path, &bytes).expect("write fixture");
         // Round-trip check: the file we just wrote must decode.
-        let (vertices, indices, _) = load_glb(path.to_str().unwrap()).expect("decode");
+        let (vertices, indices, _, _) = load_glb(path.to_str().unwrap()).expect("decode");
         assert_eq!(vertices.len(), 3);
         assert_eq!(indices.len(), 3);
     }

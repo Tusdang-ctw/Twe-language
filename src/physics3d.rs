@@ -462,7 +462,7 @@ impl PhysicsWorld {
             .get_mut(rh)
             .ok_or_else(|| format!("physics.character_move: body vanished for handle {handle}"))?;
         let new_t = isometry.translation.vector + movement.translation;
-        body.set_next_kinematic_translation(new_t.into());
+        body.set_next_kinematic_translation(new_t);
         Ok((
             [movement.translation.x, movement.translation.y, movement.translation.z],
             movement.grounded,
@@ -514,11 +514,15 @@ impl Default for PhysicsWorld {
 // Physics doesn't need normals, UVs, or materials — just enough
 // to build a TriMeshShape. Lighter than play3d::parse_glb_bytes.
 
+/// Vertex positions + triangle indices extracted from a `.glb` for
+/// use as a static trimesh collider.
+pub type TrimeshGeometry = (Vec<[f32; 3]>, Vec<[u32; 3]>);
+
 /// Load a `.glb`'s first-mesh-first-primitive geometry as positions
 /// and packed u32 triangles. Used by `physics.static_mesh(path)` to
 /// turn a Blender-exported level mesh into a static trimesh
 /// collider. Errors are stringified at the boundary.
-pub fn load_glb_geometry(path: &str) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>), String> {
+pub fn load_glb_geometry(path: &str) -> Result<TrimeshGeometry, String> {
     let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| e.to_string())?;
     let (doc, buffers, _images) = gltf::import_slice(&bytes).map_err(|e| e.to_string())?;
     let mesh = doc
@@ -541,7 +545,7 @@ pub fn load_glb_geometry(path: &str) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>), S
         Some(idx) => idx.into_u32().collect(),
         None => (0..positions.len() as u32).collect(),
     };
-    if raw_indices.len() % 3 != 0 {
+    if !raw_indices.len().is_multiple_of(3) {
         return Err(format!(
             "physics.static_mesh: expected triangle list, got {} indices (not divisible by 3)",
             raw_indices.len()

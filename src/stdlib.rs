@@ -2726,6 +2726,26 @@ fn mesh_advance_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     Ok(Value::NIL)
 }
 
+/// Phase 24: expose the per-mesh animation state to the renderer
+/// in a form decoupled from `Value` ownership. Returns an empty
+/// snapshot (clip=""), which the renderer treats as "rest pose,
+/// no animation," when the script never called `mesh_anim.play`
+/// for this handle.
+pub(crate) fn mesh_anim_state(handle: u32) -> crate::play3d::AnimSnapshot {
+    MESH_ANIM_STATE.with(|s| {
+        let st = s.borrow();
+        match st.get(&handle) {
+            Some(e) => crate::play3d::AnimSnapshot {
+                clip: e.clip.clone(),
+                time: e.time,
+                blend_clip: e.blend_clip.clone(),
+                blend_t: e.blend_t,
+            },
+            None => crate::play3d::AnimSnapshot::default(),
+        }
+    })
+}
+
 // ---------- Phase 21: quat helpers ----------
 
 fn quat_to_value(q: [f32; 4]) -> Value {
