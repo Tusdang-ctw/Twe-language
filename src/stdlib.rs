@@ -1431,6 +1431,17 @@ fn install_sound(env: &mut Env) {
         "set_volume".to_string(),
         Value::from_builtin("sound.set_volume", &["handle", "volume"], sound_set_volume),
     );
+    // Phase 23: 3D spatial audio. Pans + attenuates a one-shot
+    // play based on distance from the camera. Uses the Phase 9
+    // audio layer underneath; no new crate dep.
+    sound.insert(
+        "play3d".to_string(),
+        Value::from_builtin(
+            "sound.play3d",
+            &["handle", "at", "radius"],
+            sound_play3d_impl,
+        ),
+    );
     env.set(
         "sound".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -1517,6 +1528,58 @@ fn sound_play_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     let path = sound_handle_path(&args[0], "sound.play_at")?;
     let volume = number(&args[1], "sound.play_at.volume")? as f32;
     play_sound_path(&path, "sound.play_at", volume.clamp(0.0, 1.0), false)?;
+    Ok(Value::NIL)
+}
+
+/// Phase 23: 3D spatial sound. Reads `camera.eye` from the env
+/// and computes a distance-based volume attenuation: 1.0 at the
+/// source position, 0.0 at radius. macroquad's audio layer is
+/// stereo-only with no built-in panning, so this is mono with
+/// volume falloff — sufficient for "explosions feel further away
+/// when you're further from them," not directional audio.
+fn sound_play3d_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "sound.play3d")?;
+    let path = sound_handle_path(&args[0], "sound.play3d")?;
+    let at = xyz_of(&args[1], "sound.play3d.at")?;
+    let radius = (number(&args[2], "sound.play3d.radius")? as f32).max(0.0);
+    // Pull camera.eye if available; default to origin.
+    let cam = env.get("camera");
+    let eye = cam
+        .and_then(|cam| {
+            if !cam.is_object() {
+                return None;
+            }
+            let rc = cam.as_object();
+            let o = rc.borrow();
+            o.get_field("eye").and_then(|v| {
+                if v.is_tuple() && v.as_tuple().len() == 3 {
+                    let elems = v.as_tuple();
+                    Some([
+                        number(&elems[0], "camera.eye").unwrap_or(0.0) as f32,
+                        number(&elems[1], "camera.eye").unwrap_or(0.0) as f32,
+                        number(&elems[2], "camera.eye").unwrap_or(0.0) as f32,
+                    ])
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or([0.0, 0.0, 0.0]);
+    let dx = at[0] - eye[0];
+    let dy = at[1] - eye[1];
+    let dz = at[2] - eye[2];
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    let vol = if radius <= 0.0 || dist >= radius {
+        0.0
+    } else {
+        let t = 1.0 - (dist / radius);
+        // Quadratic falloff matches the point-light attenuation
+        // model so 3D audio "feels" the same as point lights.
+        t * t
+    };
+    if vol > 0.0 {
+        play_sound_path(&path, "sound.play3d", vol, false)?;
+    }
     Ok(Value::NIL)
 }
 

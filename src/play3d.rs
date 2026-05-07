@@ -88,11 +88,11 @@ fn mouse_button_name(b: MouseButton) -> Option<&'static str> {
     }
 }
 
-/// Cap on instances per frame. Keeps the per-instance buffer at a
-/// fixed size — no reallocation on the hot path. 4096 cubes is
-/// well past what a single Twe scene can usefully push at 60fps;
-/// raise if the bottleneck moves elsewhere.
-const MAX_INSTANCES: u64 = 4096;
+/// Phase 23: starting capacity for the instance buffer. The buffer
+/// grows on demand (doubling on full) — the old fixed 4096 cap is
+/// gone. 4096 stays as the initial size because a typical scene
+/// (a few hundred draws) fits comfortably without any reallocation.
+const INITIAL_INSTANCE_CAPACITY: u64 = 4096;
 
 /// `twec play3d <file>` entry. Parses + runs the file's top-level
 /// code once, then enters the wgpu render loop until the window
@@ -614,6 +614,9 @@ struct RenderState {
     sphere_index_buffer: wgpu::Buffer,
     sphere_index_count: u32,
     instance_buffer: wgpu::Buffer,
+    /// Phase 23: current capacity in instances. The buffer grows
+    /// (by doubling) when a frame's instance count exceeds this.
+    instance_capacity: u64,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     /// Phase 20: lighting uniform buffer + bind group. Updated
@@ -1054,14 +1057,18 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         usage: wgpu::BufferUsages::INDEX,
     });
 
-    // Instance buffer — preallocated up to MAX_INSTANCES, written
-    // each frame from `env.render_queue3d`.
+    // Phase 23: dynamic instance buffer. Starts at
+    // INITIAL_INSTANCE_CAPACITY but grows by doubling whenever a
+    // frame needs more than the current capacity. Removes the
+    // hard 4096 cap from the original implementation; large open
+    // scenes can push thousands of draws without surface error.
     let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("twec-play3d instances"),
-        size: MAX_INSTANCES * std::mem::size_of::<Instance>() as u64,
+        size: INITIAL_INSTANCE_CAPACITY * std::mem::size_of::<Instance>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    let instance_capacity = INITIAL_INSTANCE_CAPACITY;
 
     // Camera uniform.
     let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1261,6 +1268,7 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         sphere_index_buffer,
         sphere_index_count,
         instance_buffer,
+        instance_capacity,
         camera_buffer,
         camera_bind_group,
         lights_buffer,
@@ -1807,8 +1815,11 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     //    here — `render_frame3d` re-clears next frame, but
     //    draining now keeps the contract clean.
     let queue: Vec<DrawCall3d> = env.render_queue3d.drain(..).collect();
-    let mut instances: Vec<Instance> = Vec::with_capacity(queue.len().min(MAX_INSTANCES as usize));
-    let cap = MAX_INSTANCES as usize;
+    let mut instances: Vec<Instance> = Vec::with_capacity(queue.len());
+    // Phase 23: cap is the upper bound we'll write to the GPU
+    // buffer this frame. Tracks the current capacity; if the
+    // queue exceeds it we'll grow the buffer below before writing.
+    let cap = usize::MAX;
 
     // 4a. Lazy-load any `.glb` paths referenced this frame but not
     //     yet on the GPU. v0.2 session 1.
@@ -1949,6 +1960,24 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         .map(|(k, list)| (*k, push_group(list, &mut instances)))
         .collect();
     if !instances.is_empty() {
+        // Phase 23: grow the instance buffer if this frame needs
+        // more instances than the current capacity. Doubling keeps
+        // amortized growth cost O(1); the realloc is rare in
+        // practice (only on first frame past 4096, then 8192, etc.).
+        let needed = instances.len() as u64;
+        if needed > state.instance_capacity {
+            let mut new_cap = state.instance_capacity.max(1);
+            while new_cap < needed {
+                new_cap *= 2;
+            }
+            state.instance_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("twec-play3d instances (grown)"),
+                size: new_cap * std::mem::size_of::<Instance>() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            state.instance_capacity = new_cap;
+        }
         state
             .queue
             .write_buffer(&state.instance_buffer, 0, bytemuck::cast_slice(&instances));
