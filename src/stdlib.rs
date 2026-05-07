@@ -341,12 +341,24 @@ pub fn install(env: &mut Env) {
         Value::from_builtin("physics.gravity", &["v"], physics_gravity_impl),
     );
     physics_fields.insert(
+        "character".to_string(),
+        Value::from_builtin(
+            "physics.character",
+            &["at", "height", "radius"],
+            physics_character_impl,
+        ),
+    );
+    physics_fields.insert(
         "character_move".to_string(),
         Value::from_builtin(
             "physics.character_move",
             &["handle", "dir", "dt"],
             physics_character_move_impl,
         ),
+    );
+    physics_fields.insert(
+        "collisions".to_string(),
+        Value::from_builtin("physics.collisions", &[], physics_collisions_impl),
     );
     physics_fields.insert(
         "despawn".to_string(),
@@ -5538,18 +5550,60 @@ fn physics_gravity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
     Ok(Value::NIL)
 }
 
+fn physics_character_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics.character")?;
+    let at = xyz_of(&args[0], "physics.character.at")?;
+    let height = number(&args[1], "physics.character.height")? as f32;
+    let radius = number(&args[2], "physics.character.radius")? as f32;
+    Ok(Value::from_int(
+        crate::physics3d::character(at, height, radius) as i64,
+    ))
+}
+
 fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.character_move")?;
     let handle = handle_int(&args[0], "physics.character_move")?;
     let dir = xyz_of(&args[1], "physics.character_move.dir")?;
     let dt = number(&args[2], "physics.character_move.dt")? as f32;
-    crate::physics3d::character_move(handle, dir, dt).map_err(|e| RuntimeError {
-        line: 0,
-        col: 0,
-        message: e,
-        help: None,
-    })?;
-    Ok(Value::NIL)
+    let (translation, grounded) =
+        crate::physics3d::character_move(handle, dir, dt).map_err(|e| RuntimeError {
+            line: 0,
+            col: 0,
+            message: e,
+            help: None,
+        })?;
+    let mut fields = HashMap::new();
+    fields.insert(
+        "translation".to_string(),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(translation[0] as f64),
+            Value::from_float(translation[1] as f64),
+            Value::from_float(translation[2] as f64),
+        ])),
+    );
+    fields.insert("grounded".to_string(), Value::from_bool(grounded));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "character_move",
+    }))))
+}
+
+fn physics_collisions_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    let events = crate::physics3d::drain_collisions();
+    let list: Vec<Value> = events
+        .into_iter()
+        .map(|(a, b, started)| {
+            let mut fields = HashMap::new();
+            fields.insert("a".to_string(), Value::from_int(a as i64));
+            fields.insert("b".to_string(), Value::from_int(b as i64));
+            fields.insert("started".to_string(), Value::from_bool(started));
+            Value::from_object(Rc::new(RefCell::new(Object {
+                fields,
+                kind: "collision_event",
+            })))
+        })
+        .collect();
+    Ok(Value::from_list(Rc::new(RefCell::new(list))))
 }
 
 fn physics_despawn_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

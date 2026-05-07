@@ -1,0 +1,154 @@
+# Phase 18 finish — full FPS prototype.
+#
+# Run with:  twec play3d examples/fps_demo.twe
+#
+# Demonstrates the complete Phase 18 surface together:
+# - First-person camera (mouse delta + cursor lock from Phase 17)
+# - Character body + KinematicCharacterController (proper slope
+#   handling and stair stepping via physics.character_move)
+# - Static trimesh world geometry (commented placeholder; replace
+#   the static_box calls with physics.static_mesh("level.glb")
+#   once you have a Blender export)
+# - Raycast aim — pressing space casts a ray forward and prints
+#   what it hit
+# - Collision events polled each frame for pickup logic
+# - Dynamic bodies for collectible items
+
+# --- Player + camera state ---
+var yaw = 0.0
+var pitch = 0.0
+var on_ground = false
+
+# --- World setup ---
+let floor = physics.static_box((0.0, -0.5, 0.0), (40.0, 1.0, 40.0))
+# A few walls
+let wall_n = physics.static_box((0.0, 1.5, -10.0), (20.0, 3.0, 1.0))
+let wall_s = physics.static_box((0.0, 1.5, 10.0), (20.0, 3.0, 1.0))
+let wall_e = physics.static_box((10.0, 1.5, 0.0), (1.0, 3.0, 20.0))
+let wall_w = physics.static_box((-10.0, 1.5, 0.0), (1.0, 3.0, 20.0))
+# A box obstacle
+let crate1 = physics.static_box((3.0, 0.75, 2.0), (1.5, 1.5, 1.5))
+
+# --- Player character body ---
+let player = physics.character((0.0, 1.0, 0.0), 1.8, 0.4)
+
+# --- Some collectible coins (dynamic spheres) ---
+var coins = [
+    physics.body("sphere", (4.0, 1.0, 0.0), 1.0),
+    physics.body("sphere", (-3.0, 1.0, 4.0), 1.0),
+    physics.body("sphere", (0.0, 1.0, -5.0), 1.0),
+]
+var score = 0
+
+# Lock the cursor for FPS-style mouse look. cursor.unlock() after
+# alt-tab if needed; for the demo we keep it locked.
+cursor.lock()
+
+# Camera follows the character body each frame.
+camera.eye = vec3(0.0, 1.6, 0.0)
+camera.target = vec3(0.0, 1.6, -1.0)
+camera.up = vec3(0.0, 1.0, 0.0)
+
+let mouse_sens = 0.0025
+let walk_speed = 4.0
+
+on update(dt):
+    # --- Mouse look. mouse.dx/mouse.dy are integrated over the
+    #     last frame (DeviceEvent::MouseMotion). Multiply by a
+    #     sensitivity constant. Pitch clamps to ±π/2 so the
+    #     player can't flip upside down. ---
+    yaw -= mouse.dx * mouse_sens
+    pitch -= mouse.dy * mouse_sens
+    if pitch > 1.5: pitch = 1.5
+    if pitch < -1.5: pitch = -1.5
+
+    # Forward + right unit vectors derived from yaw. Pitch only
+    # affects look direction, not movement, so the player walks
+    # horizontally even while looking up/down.
+    let fwd_x = math.sin(yaw)
+    let fwd_z = math.cos(yaw)
+    let right_x = math.cos(yaw)
+    let right_z = -math.sin(yaw)
+
+    # --- WASD movement ---
+    var dx = 0.0
+    var dz = 0.0
+    if key.w:
+        dx -= fwd_x
+        dz -= fwd_z
+    if key.s:
+        dx += fwd_x
+        dz += fwd_z
+    if key.a:
+        dx -= right_x
+        dz -= right_z
+    if key.d:
+        dx += right_x
+        dz += right_z
+    let mag = math.sqrt(dx * dx + dz * dz)
+    if mag > 0.0:
+        dx = dx / mag * walk_speed
+        dz = dz / mag * walk_speed
+
+    # Apply gravity manually for a kinematic body (the KCC doesn't
+    # apply forces — we feed it a desired translation each frame).
+    var dy = -9.81 * dt
+    if on_ground and key_press.space:
+        dy = 5.0  # one-frame jump impulse
+
+    let move = physics.character_move(player, (dx, dy, dz), dt)
+    on_ground = move.grounded
+
+    # Update camera to follow the player's head position.
+    let pos = physics.position(player)
+    let eye = (pos.x, pos.y + 0.7, pos.z)
+    camera.eye = eye
+    # Look direction: forward vector pitched up/down.
+    let cp = math.cos(pitch)
+    let look_x = -math.sin(yaw) * cp
+    let look_y = math.sin(pitch)
+    let look_z = -math.cos(yaw) * cp
+    camera.target = (eye.x + look_x, eye.y + look_y, eye.z + look_z)
+
+    # --- Pickup: scan collision events. When the player handle
+    #     appears in any event, find the other body in our coins
+    #     list and despawn it. ---
+    for ev in physics.collisions():
+        if ev.started:
+            var hit = 0
+            if ev.a == player:
+                hit = ev.b
+            elif ev.b == player:
+                hit = ev.a
+            if hit != 0:
+                if coins.contains(hit):
+                    physics.despawn(hit)
+                    score += 1
+                    print("score: {score}")
+
+    # --- Raycast aim: when the player presses F, cast a ray
+    #     forward and print what was hit. Useful for debug; a real
+    #     game would wire this to a "shoot" or "interact" action. ---
+    if key_press.r:
+        let look = (look_x, look_y, look_z)
+        let hit = physics.raycast(eye, look, 50.0)
+        if hit:
+            print("hit handle {hit.handle} at distance {hit.distance}")
+        else:
+            print("no hit within 50 units")
+
+on render():
+    # Floor as a flat slab.
+    cube(at: (0.0, -0.5, 0.0), color: (0.2, 0.5, 0.25, 1.0), size: 40.0)
+    # Walls.
+    cube(at: (0.0, 1.5, -10.0), color: (0.6, 0.5, 0.4, 1.0), size: 1.0)
+    cube(at: (0.0, 1.5, 10.0), color: (0.6, 0.5, 0.4, 1.0), size: 1.0)
+    cube(at: (10.0, 1.5, 0.0), color: (0.6, 0.5, 0.4, 1.0), size: 1.0)
+    cube(at: (-10.0, 1.5, 0.0), color: (0.6, 0.5, 0.4, 1.0), size: 1.0)
+    # Crate obstacle.
+    cube(at: (3.0, 0.75, 2.0), color: (0.7, 0.4, 0.2, 1.0), size: 1.5)
+    # Coins (only render the ones that haven't been despawned).
+    for h in coins:
+        let p = physics.position(h)
+        if p:
+            sphere(at: p, color: color.yellow, size: 0.4)
