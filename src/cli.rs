@@ -109,7 +109,9 @@ fn run_embedded(mut reader: crate::bundle::BundleReader) -> i32 {
         }
     };
     crate::bundle::set_active_bundle(reader);
-    crate::play::launch_embedded(src)
+    let code = crate::play::launch_embedded(src);
+    crate::play::shutdown_gilrs();
+    code
 }
 
 fn handle_play(args: &[String]) -> i32 {
@@ -125,10 +127,12 @@ fn handle_play(args: &[String]) -> i32 {
             return 2;
         }
     };
-    match parsed.backend {
+    let code = match parsed.backend {
         Backend::Tree => crate::play::launch(path),
         Backend::Bytecode => crate::play::launch_bytecode(path),
-    }
+    };
+    crate::play::shutdown_gilrs();
+    code
 }
 
 /// `twec play3d <file>` — wgpu-driven 3D backend (Phase 5 task 5

@@ -103,6 +103,20 @@ pub fn clear_gamepad_state() {
     PREV_GAMEPAD.with(|p| *p.borrow_mut() = [false; 14]);
 }
 
+/// Drop the gilrs context before process::exit. gilrs 0.10 on Windows
+/// panics in Gilrs::drop when process::exit triggers TLS cleanup while
+/// the background polling thread handle is already consumed. Replacing
+/// the state with Uninit here (inside catch_unwind) drops the Gilrs box
+/// while we still have a normal stack frame; the TLS destructor then
+/// finds Uninit and does nothing.
+pub fn shutdown_gilrs() {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        GILRS.with(|g| {
+            *g.borrow_mut() = GilrsState::Uninit;
+        });
+    }));
+}
+
 /// Phase 11 session 4: hot-reload reliability gate.
 ///
 /// Editor save sequences are typically `truncate → write → close` on

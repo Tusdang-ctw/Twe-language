@@ -2,7 +2,7 @@
 
 > **Goal:** Bring Twe from its current minimal 3D scaffolding to full commercial/production 3D game capability.
 >
-> Current 3D state: fixed Lambertian shader, first-mesh-first-primitive glTF loading, no textures, no physics, no animation, no mouse delta. Not shippable.
+> **Status (2026-05-07):** Phases 17 + 18 are **codebase-closed**. Textures, mouse look, cursor lock, vec3 math, glTF material auto-extraction, full rapier3d physics with character controller, raycasts, and collision events all ship. Closeout notes in `docs/changes/2026-05-07-phase-{17,18}-closeout.md`. Phases 19–23 (full glTF scene graph, lights + shadows, skeletal animation, scene management, polish + perf) remain.
 
 ---
 
