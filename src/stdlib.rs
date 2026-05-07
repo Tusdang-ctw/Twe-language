@@ -718,6 +718,14 @@ static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 // Single-slot (last write wins) is fine — issuing two screenshot calls
 // in the same frame is degenerate.
 thread_local! {
+    /// Phase 21: per-mesh-handle animation state. Keyed by the
+    /// texture-handle u32 the script passed to `mesh_textured`
+    /// (we reuse texture handles as the mesh-instance identity
+    /// for animation; a future revision could split them). Stores
+    /// active clip name, current time, looping flag, and optional
+    /// blend target for cross-fades.
+    static MESH_ANIM_STATE: RefCell<HashMap<u32, MeshAnimEntry>> =
+        RefCell::new(HashMap::new());
     /// Phase 20: script-controlled lighting state. The play3d loop
     /// reads this once per frame and uploads to the GPU lights
     /// uniform. Up to 8 simultaneous point lights; light.add()
@@ -1744,6 +1752,42 @@ fn install_math(env: &mut Env) {
         Value::from_builtin("noise", &["point"], math_noise),
     );
 
+    // Phase 21: quat namespace. Stored as a tagged 4-element list
+    // Object with kind="quat" — same scheme as mat4. Order is
+    // (x, y, z, w) matching glTF / WGSL convention.
+    let mut quat = HashMap::new();
+    quat.insert(
+        "identity".to_string(),
+        Value::from_builtin("quat.identity", &[], quat_identity_impl),
+    );
+    quat.insert(
+        "from_axis_angle".to_string(),
+        Value::from_builtin(
+            "quat.from_axis_angle",
+            &["axis", "angle"],
+            quat_from_axis_angle_impl,
+        ),
+    );
+    quat.insert(
+        "slerp".to_string(),
+        Value::from_builtin("quat.slerp", &["a", "b", "t"], quat_slerp_impl),
+    );
+    quat.insert(
+        "to_mat4".to_string(),
+        Value::from_builtin("quat.to_mat4", &["q"], quat_to_mat4_impl),
+    );
+    quat.insert(
+        "mul".to_string(),
+        Value::from_builtin("quat.mul", &["a", "b"], quat_mul_impl),
+    );
+    env.set(
+        "quat".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: quat,
+            kind: "module",
+        }))),
+    );
+
     // Phase 19: mat4 namespace. Stored as a 16-element tagged
     // Object with kind="mat4" — no new Value variant, no GC
     // changes, no parser changes. Element order is column-major
@@ -2341,6 +2385,288 @@ fn math_length(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let v = tuple_floats(&args[0], "math.length.v")?;
     let sq: f64 = v.iter().map(|x| x * x).sum();
     Ok(Value::from_float(sq.sqrt()))
+}
+
+// ---------- Phase 21: animation state ----------
+
+#[derive(Clone, Default)]
+struct MeshAnimEntry {
+    /// Active clip name; empty string = stopped.
+    clip: String,
+    /// Time elapsed since clip started, in seconds.
+    time: f32,
+    /// Whether the clip loops at the end (vs holding the last frame).
+    looping: bool,
+    /// Optional blend target — when present, the renderer (or the
+    /// script's own logic) interpolates joints between `clip` and
+    /// `blend_clip` by `blend_t` ∈ [0, 1].
+    blend_clip: Option<String>,
+    blend_t: f32,
+}
+
+fn mesh_play_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "mesh.play")?;
+    let handle = handle_int(&args[0], "mesh.play")?;
+    let clip = string_arg(&args[1], "mesh.play", "clip")?;
+    let looping = if args[2].is_bool() {
+        args[2].as_bool()
+    } else {
+        false
+    };
+    MESH_ANIM_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let entry = st.entry(handle).or_default();
+        if entry.clip != clip {
+            entry.time = 0.0;
+        }
+        entry.clip = clip;
+        entry.looping = looping;
+        entry.blend_clip = None;
+        entry.blend_t = 0.0;
+    });
+    Ok(Value::NIL)
+}
+
+fn mesh_stop_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mesh.stop")?;
+    let handle = handle_int(&args[0], "mesh.stop")?;
+    MESH_ANIM_STATE.with(|s| {
+        s.borrow_mut().remove(&handle);
+    });
+    Ok(Value::NIL)
+}
+
+fn mesh_blend_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "mesh.blend")?;
+    let handle = handle_int(&args[0], "mesh.blend")?;
+    let clip_a = string_arg(&args[1], "mesh.blend", "clip_a")?;
+    let clip_b = string_arg(&args[2], "mesh.blend", "clip_b")?;
+    let t = (number(&args[3], "mesh.blend.t")? as f32).clamp(0.0, 1.0);
+    MESH_ANIM_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let entry = st.entry(handle).or_default();
+        if entry.clip != clip_a {
+            entry.clip = clip_a;
+            entry.time = 0.0;
+        }
+        entry.blend_clip = Some(clip_b);
+        entry.blend_t = t;
+    });
+    Ok(Value::NIL)
+}
+
+fn mesh_current_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mesh.current")?;
+    let handle = handle_int(&args[0], "mesh.current")?;
+    MESH_ANIM_STATE.with(|s| {
+        let st = s.borrow();
+        let entry = st.get(&handle).cloned().unwrap_or_default();
+        let mut fields = HashMap::new();
+        fields.insert(
+            "clip".to_string(),
+            Value::from_string(entry.clip.clone()),
+        );
+        fields.insert(
+            "time".to_string(),
+            Value::from_float(entry.time as f64),
+        );
+        fields.insert(
+            "looping".to_string(),
+            Value::from_bool(entry.looping),
+        );
+        Ok(Value::from_object(Rc::new(RefCell::new(Object {
+            fields,
+            kind: "anim_state",
+        }))))
+    })
+}
+
+fn mesh_advance_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mesh.advance")?;
+    let dt = number(&args[0], "mesh.advance.dt")? as f32;
+    MESH_ANIM_STATE.with(|s| {
+        for entry in s.borrow_mut().values_mut() {
+            entry.time += dt;
+        }
+    });
+    Ok(Value::NIL)
+}
+
+// ---------- Phase 21: quat helpers ----------
+
+fn quat_to_value(q: [f32; 4]) -> Value {
+    let elems: Vec<Value> = q.iter().map(|f| Value::from_float(*f as f64)).collect();
+    let mut fields = HashMap::new();
+    fields.insert(
+        "data".to_string(),
+        Value::from_list(Rc::new(RefCell::new(elems))),
+    );
+    Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "quat",
+    })))
+}
+
+fn quat_from_value(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
+    if !v.is_object() {
+        let other = *v;
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: expected a quat, got {}", other.type_name()),
+            help: Some("create one with quat.identity() / quat.from_axis_angle(axis, angle)".to_string()),
+        });
+    }
+    let rc = v.as_object();
+    let o = rc.borrow();
+    if o.kind != "quat" {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: expected a quat Object, got kind '{}'", o.kind),
+            help: None,
+        });
+    }
+    let data = o.get_field("data").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{what}: quat missing data field"),
+        help: None,
+    })?;
+    if !data.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: quat.data is not a list"),
+            help: None,
+        });
+    }
+    let list = data.as_list();
+    let list = list.borrow();
+    if list.len() != 4 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: quat.data has {} elements, expected 4", list.len()),
+            help: None,
+        });
+    }
+    let mut out = [0.0f32; 4];
+    for (i, e) in list.iter().enumerate() {
+        out[i] = number(e, what)? as f32;
+    }
+    Ok(out)
+}
+
+fn quat_identity_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+    Ok(quat_to_value([0.0, 0.0, 0.0, 1.0]))
+}
+
+fn quat_from_axis_angle_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "quat.from_axis_angle")?;
+    let axis = xyz_of(&args[0], "quat.from_axis_angle.axis")?;
+    let angle = number(&args[1], "quat.from_axis_angle.angle")? as f32;
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if len < 1e-6 {
+        return Ok(quat_to_value([0.0, 0.0, 0.0, 1.0]));
+    }
+    let half = angle * 0.5;
+    let s = half.sin() / len;
+    Ok(quat_to_value([
+        axis[0] * s,
+        axis[1] * s,
+        axis[2] * s,
+        half.cos(),
+    ]))
+}
+
+fn quat_slerp_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "quat.slerp")?;
+    let a = quat_from_value(&args[0], "quat.slerp.a")?;
+    let b = quat_from_value(&args[1], "quat.slerp.b")?;
+    let t = number(&args[2], "quat.slerp.t")? as f32;
+    // Standard slerp with shortest-path cosine flip.
+    let mut dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    let mut bn = b;
+    if dot < 0.0 {
+        dot = -dot;
+        bn = [-b[0], -b[1], -b[2], -b[3]];
+    }
+    if dot > 0.9995 {
+        // Near-parallel — fall back to linear interp + normalize.
+        let mut r = [
+            a[0] + t * (bn[0] - a[0]),
+            a[1] + t * (bn[1] - a[1]),
+            a[2] + t * (bn[2] - a[2]),
+            a[3] + t * (bn[3] - a[3]),
+        ];
+        let n = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]).sqrt();
+        if n > 1e-6 {
+            r[0] /= n;
+            r[1] /= n;
+            r[2] /= n;
+            r[3] /= n;
+        }
+        return Ok(quat_to_value(r));
+    }
+    let theta_0 = dot.acos();
+    let theta = theta_0 * t;
+    let sin_theta_0 = theta_0.sin();
+    let s1 = ((theta_0 - theta).sin()) / sin_theta_0;
+    let s2 = theta.sin() / sin_theta_0;
+    Ok(quat_to_value([
+        a[0] * s1 + bn[0] * s2,
+        a[1] * s1 + bn[1] * s2,
+        a[2] * s1 + bn[2] * s2,
+        a[3] * s1 + bn[3] * s2,
+    ]))
+}
+
+fn quat_mul_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "quat.mul")?;
+    let a = quat_from_value(&args[0], "quat.mul.a")?;
+    let b = quat_from_value(&args[1], "quat.mul.b")?;
+    Ok(quat_to_value([
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]))
+}
+
+fn quat_to_mat4_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "quat.to_mat4")?;
+    let q = quat_from_value(&args[0], "quat.to_mat4.q")?;
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let xz = x * z;
+    let yz = y * z;
+    let wx = w * x;
+    let wy = w * y;
+    let wz = w * z;
+    // Column-major to match the rest of the mat4 surface.
+    let m: [f32; 16] = [
+        1.0 - 2.0 * (yy + zz),
+        2.0 * (xy + wz),
+        2.0 * (xz - wy),
+        0.0,
+        2.0 * (xy - wz),
+        1.0 - 2.0 * (xx + zz),
+        2.0 * (yz + wx),
+        0.0,
+        2.0 * (xz + wy),
+        2.0 * (yz - wx),
+        1.0 - 2.0 * (xx + yy),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ];
+    Ok(mat4_to_value(&m))
 }
 
 // ---------- Phase 19: mat4 helpers ----------
@@ -5369,6 +5695,50 @@ fn install_3d(env: &mut Env) {
     env.set(
         "texture".to_string(),
         Value::from_builtin("texture", &["path"], texture_impl),
+    );
+
+    // Phase 21: animation API surface. mesh.play(handle, clip)
+    // selects which animation clip plays for a textured mesh
+    // handle. v0.1 of this surface stores the active clip + time
+    // but does not yet apply skinning to the rendered vertices —
+    // GPU skinning is a follow-on. The clip-name + time state
+    // can be queried for game logic (e.g. "is the attack
+    // animation finished?") even before visual skinning lands.
+    let mut mesh_anim = HashMap::new();
+    mesh_anim.insert(
+        "play".to_string(),
+        Value::from_builtin(
+            "mesh.play",
+            &["handle", "clip", "looping"],
+            mesh_play_impl,
+        ),
+    );
+    mesh_anim.insert(
+        "stop".to_string(),
+        Value::from_builtin("mesh.stop", &["handle"], mesh_stop_impl),
+    );
+    mesh_anim.insert(
+        "blend".to_string(),
+        Value::from_builtin(
+            "mesh.blend",
+            &["handle", "clip_a", "clip_b", "t"],
+            mesh_blend_impl,
+        ),
+    );
+    mesh_anim.insert(
+        "current".to_string(),
+        Value::from_builtin("mesh.current", &["handle"], mesh_current_impl),
+    );
+    mesh_anim.insert(
+        "advance".to_string(),
+        Value::from_builtin("mesh.advance", &["dt"], mesh_advance_impl),
+    );
+    env.set(
+        "mesh_anim".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: mesh_anim,
+            kind: "module",
+        }))),
     );
     env.set(
         "cube_textured".to_string(),
