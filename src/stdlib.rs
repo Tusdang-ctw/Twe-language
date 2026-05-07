@@ -4971,6 +4971,26 @@ fn install_3d(env: &mut Env) {
     // primitive of the first mesh is used; multi-primitive scenes
     // and node transforms are a follow-on. v0.2 session 1.
     env.set(
+        "texture".to_string(),
+        Value::from_builtin("texture", &["path"], texture_impl),
+    );
+    env.set(
+        "cube_textured".to_string(),
+        Value::from_builtin(
+            "cube_textured",
+            &["at", "color", "size", "texture"],
+            cube_textured_impl,
+        ),
+    );
+    env.set(
+        "mesh_textured".to_string(),
+        Value::from_builtin(
+            "mesh_textured",
+            &["path", "at", "color", "size", "texture"],
+            mesh_textured_impl,
+        ),
+    );
+    env.set(
         "mesh".to_string(),
         Value::from_builtin("mesh", &["path", "at", "color", "size"], mesh_impl),
     );
@@ -5182,6 +5202,7 @@ fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         at,
         color,
         size,
+        texture: 0,
     });
     Ok(Value::NIL)
 }
@@ -5197,6 +5218,7 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         at,
         color,
         size,
+        texture: 0,
     });
     Ok(Value::NIL)
 }
@@ -5228,8 +5250,147 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         at,
         color,
         size,
+        texture: 0,
     });
     Ok(Value::NIL)
+}
+
+/// Phase 17 session 3: textured mesh draw. Mirrors `mesh()` but
+/// takes a 5th texture-handle argument (the value returned by
+/// `texture("path.png")`). Same split pattern as
+/// `sound.play` / `sound.play_at` — Twe's calling convention
+/// requires every kwarg supplied, so the texture variant is its
+/// own name rather than an optional arg.
+fn mesh_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "mesh_textured")?;
+    arity(args, 5, "mesh_textured")?;
+    let path = {
+        let t = &args[0];
+        if t.is_str() {
+            t.as_string().clone()
+        } else {
+            let other = *t;
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "mesh_textured.path expects a string, got {}",
+                    other.type_name()
+                ),
+                help: Some("e.g. `mesh_textured(\"crate.glb\", at, color, size, tex)`".to_string()),
+            });
+        }
+    };
+    let at = xyz_of(&args[1], "mesh_textured.at")?;
+    let color = rgba_of(&args[2], "mesh_textured.color")?;
+    let size = number(&args[3], "mesh_textured.size")? as f32;
+    let tex_id = texture_handle_id(&args[4], "mesh_textured.texture")?;
+    let id = env.intern_mesh_path(&path);
+    env.render_queue3d.push(crate::value::DrawCall3d {
+        primitive: crate::value::Primitive::Mesh(id),
+        at,
+        color,
+        size,
+        texture: tex_id,
+    });
+    Ok(Value::NIL)
+}
+
+/// Phase 17 session 3: textured cube. Same pattern.
+fn cube_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "cube_textured")?;
+    arity(args, 4, "cube_textured")?;
+    let at = xyz_of(&args[0], "cube_textured.at")?;
+    let color = rgba_of(&args[1], "cube_textured.color")?;
+    let size = number(&args[2], "cube_textured.size")? as f32;
+    let tex_id = texture_handle_id(&args[3], "cube_textured.texture")?;
+    env.render_queue3d.push(crate::value::DrawCall3d {
+        primitive: crate::value::Primitive::Cube,
+        at,
+        color,
+        size,
+        texture: tex_id,
+    });
+    Ok(Value::NIL)
+}
+
+/// Phase 17 session 3: `texture(path)` builtin. Returns a handle
+/// `{ id, path, kind: "texture" }` whose `id` is the interned
+/// texture-path identifier. Path existence is checked here so
+/// typos fail fast rather than at render time.
+fn texture_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "texture")?;
+    let path = string_arg(&args[0], "texture", "path")?;
+    if !std::path::Path::new(&path).exists() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("texture: file not found: {path}"),
+            help: Some("path is resolved relative to the working directory".to_string()),
+        });
+    }
+    let id = env.intern_texture_path(&path);
+    let mut fields = HashMap::new();
+    fields.insert("id".to_string(), Value::from_int(id as i64));
+    fields.insert("path".to_string(), Value::from_string(path));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "texture",
+    }))))
+}
+
+/// Pull a texture id out of a value returned by `texture(...)`.
+/// Accepts either the handle Object or a bare integer id (for
+/// scripts that want to pass the id around as a primitive).
+fn texture_handle_id(v: &Value, what: &str) -> Result<u32, RuntimeError> {
+    if v.is_int() {
+        let i = v.as_int();
+        if i < 0 {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{what}: texture id can't be negative ({i})"),
+                help: None,
+            });
+        }
+        return Ok(i as u32);
+    }
+    if v.is_object() {
+        let rc = v.as_object();
+        let o = rc.borrow();
+        if o.kind != "texture" {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "{what} expects a texture handle (from `texture(\"...\")`), got an object of kind '{}'",
+                    o.kind
+                ),
+                help: None,
+            });
+        }
+        if let Some(v) = o.get_field("id") {
+            if v.is_int() {
+                return Ok(v.as_int() as u32);
+            }
+        }
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: texture handle missing id field"),
+            help: None,
+        });
+    }
+    let other = *v;
+    Err(RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!(
+            "{what} expects a texture handle, got {}",
+            other.type_name()
+        ),
+        help: Some("create one with `texture(\"path.png\")`".to_string()),
+    })
 }
 
 /// Pull a 3-component float vector out of a Twe tuple. Used by the

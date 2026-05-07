@@ -61,6 +61,12 @@ arboard = "3"
 # round-trip without touching the codec.
 zstd = "0.13"
 
+# Phase 17 session 3: PNG/JPEG texture loading for the 3D
+# pipeline. `image` is already transitive via macroquad/gltf so
+# this is a no-cost dep. Default features include common formats;
+# we restrict to png + jpeg to avoid the ICO / TGA / etc. weight.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
 # Phase 12 session 5: `twe.toml` project manifest parsing. TOML is
 # the de-facto Rust config format and v1.0 will need it for several
 # more things (asset-pipeline rules, cross-platform build matrix,

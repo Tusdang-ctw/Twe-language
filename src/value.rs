@@ -279,6 +279,12 @@ pub struct Env {
     /// the new env intern-orders match — typically yes since
     /// `mesh()` calls run in source order). v0.2 session 1.
     pub mesh_paths: Vec<String>,
+    /// Phase 17 session 3: path-interning registry for textures
+    /// referenced via `texture("foo.png")`. The handle returned by
+    /// `texture()` carries the interned id; the play3d loop reads
+    /// `DrawCall3d::texture` and uploads/binds the matching PNG.
+    /// Id 0 is reserved for "no texture" (white fallback).
+    pub texture_paths: Vec<String>,
     rng_state: u64,
     /// Phase 13 session 3: cache of evaluated modules keyed by their
     /// canonical filesystem path (as a string for hashability). The
@@ -303,6 +309,10 @@ pub struct DrawCall3d {
     pub at: [f32; 3],
     pub color: [f32; 4],
     pub size: f32,
+    /// Phase 17 session 3: interned texture path id, or 0 for the
+    /// white fallback (an untextured / tint-only draw). Applies to
+    /// cube / sphere / mesh uniformly.
+    pub texture: u32,
 }
 
 /// The mesh shape behind a `DrawCall3d`. Each variant has its own
@@ -355,6 +365,7 @@ impl Env {
             call_depth: 0,
             render_queue3d: Vec::new(),
             mesh_paths: Vec::new(),
+            texture_paths: Vec::new(),
             // xorshift64* seeded from a fixed constant for deterministic
             // tests. CLI can override via `twec run --seed N`.
             rng_state: 0x9E37_79B9_7F4A_7C15,
@@ -382,6 +393,31 @@ impl Env {
     /// hot-reload that drops a `mesh()` call).
     pub fn mesh_path(&self, id: u32) -> Option<&str> {
         self.mesh_paths.get(id as usize).map(String::as_str)
+    }
+
+    /// Phase 17 session 3: find-or-insert a texture path. Returns a
+    /// 1-based interned id (0 is reserved for "no texture / white
+    /// fallback"). Used by the `texture()` builtin and threaded
+    /// through `DrawCall3d::texture` to the play3d loop.
+    pub fn intern_texture_path(&mut self, path: &str) -> u32 {
+        if let Some(idx) = self.texture_paths.iter().position(|p| p == path) {
+            return (idx + 1) as u32;
+        }
+        let idx = self.texture_paths.len() as u32 + 1;
+        self.texture_paths.push(path.to_string());
+        idx
+    }
+
+    /// Reverse lookup for textures. `id == 0` returns None (white
+    /// fallback). `id >= 1` indexes into `texture_paths` (offset by
+    /// 1 because 0 is reserved).
+    pub fn texture_path(&self, id: u32) -> Option<&str> {
+        if id == 0 {
+            return None;
+        }
+        self.texture_paths
+            .get((id - 1) as usize)
+            .map(String::as_str)
     }
 
     /// xorshift64* PRNG. Deterministic given a fixed seed.

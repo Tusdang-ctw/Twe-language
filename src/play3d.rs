@@ -187,16 +187,21 @@ struct Vertex {
     /// instance.
     position: [f32; 3],
     /// Per-face outward normal. Same value for all four corners
-    /// of a face. Used for Lambertian diffuse shading: the
-    /// fragment color is `instance_color * (ambient + max(0, n·L))`
-    /// where L is the directional sun.
+    /// of a face. Used for Lambertian diffuse shading.
     normal: [f32; 3],
+    /// Texture coordinate. Phase 17 session 2: cube/sphere ship
+    /// `[0.0, 0.0]` because they don't carry meaningful UVs (the
+    /// fallback white texture sampled at any uv produces the same
+    /// pixel). glb-loaded meshes write the `TEXCOORD_0` accessor
+    /// here when present, `[0.0, 0.0]` otherwise.
+    uv: [f32; 2],
 }
 
 impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x3,
+        4 => Float32x2,
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -246,9 +251,16 @@ struct Camera {
 
 @group(0) @binding(0) var<uniform> camera: Camera;
 
+// Phase 17 session 3: texture sampler. Bound per draw call by
+// the play loop — fallback white 1x1 texture is bound when the
+// mesh has no texture, so untextured rendering still works.
+@group(1) @binding(0) var t_diffuse: texture_2d<f32>;
+@group(1) @binding(1) var s_diffuse: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(4) uv: vec2<f32>,
 };
 
 struct InstanceInput {
@@ -260,6 +272,7 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
     @location(1) base_color: vec3<f32>,
+    @location(2) tex_coord: vec2<f32>,
 };
 
 // Hardcoded sun direction (towards the light) and intensities.
@@ -275,12 +288,9 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     let model_pos = vert.position * inst.inst_pos_size.w + inst.inst_pos_size.xyz;
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
-    // Cubes are uniformly scaled and unrotated, so the normal
-    // doesn't need a model-matrix transform — it already lives in
-    // world space. When non-uniform scale or rotation lands, this
-    // becomes `(model_inv_transpose * vec4(normal, 0)).xyz`.
     out.world_normal = vert.normal;
     out.base_color = inst.inst_color.rgb;
+    out.tex_coord = vert.uv;
     return out;
 }
 
@@ -290,7 +300,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let l = normalize(SUN_DIR);
     let diffuse = max(dot(n, l), 0.0);
     let lit = AMBIENT + diffuse * (1.0 - AMBIENT);
-    return vec4<f32>(in.base_color * lit, 1.0);
+    // Sample the bound texture and modulate by the per-instance
+    // color tint. For untextured meshes the fallback white texture
+    // makes this a no-op (1.0 * tint) so existing scenes look the
+    // same. Phase 17 session 3.
+    let tex = textureSample(t_diffuse, s_diffuse, in.tex_coord);
+    return vec4<f32>(in.base_color * tex.rgb * lit, tex.a);
 }
 "#;
 
@@ -312,37 +327,46 @@ const N_TOP: [f32; 3] = [0.0, 1.0, 0.0];
 const N_BOTTOM: [f32; 3] = [0.0, -1.0, 0.0];
 
 #[rustfmt::skip]
+// Phase 17 session 2: per-face UVs run (0,0) at top-left to (1,1)
+// at bottom-right of each face, so a 2x3 atlas of face textures
+// could decorate the cube. For untextured cubes the fallback
+// white texture means the value is irrelevant.
+const UV_TL: [f32; 2] = [0.0, 0.0];
+const UV_TR: [f32; 2] = [1.0, 0.0];
+const UV_BR: [f32; 2] = [1.0, 1.0];
+const UV_BL: [f32; 2] = [0.0, 1.0];
+
 const CUBE_VERTICES: &[Vertex] = &[
     // +z (front)
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_FRONT },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_FRONT },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_FRONT },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_FRONT },
+    Vertex { position: [-0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BL },
+    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_FRONT,  uv: UV_BR },
+    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TR },
+    Vertex { position: [-0.5,  0.5,  0.5], normal: N_FRONT,  uv: UV_TL },
     // -z (back)
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BACK },
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BACK },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_BACK },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_BACK },
+    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BL },
+    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BACK,   uv: UV_BR },
+    Vertex { position: [-0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TR },
+    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_BACK,   uv: UV_TL },
     // +x (right)
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_RIGHT },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_RIGHT },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_RIGHT },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_RIGHT },
+    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_RIGHT,  uv: UV_BL },
+    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_RIGHT,  uv: UV_BR },
+    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_RIGHT,  uv: UV_TR },
+    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_RIGHT,  uv: UV_TL },
     // -x (left)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_LEFT },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_LEFT },
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_LEFT },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_LEFT },
+    Vertex { position: [-0.5, -0.5, -0.5], normal: N_LEFT,   uv: UV_BL },
+    Vertex { position: [-0.5, -0.5,  0.5], normal: N_LEFT,   uv: UV_BR },
+    Vertex { position: [-0.5,  0.5,  0.5], normal: N_LEFT,   uv: UV_TR },
+    Vertex { position: [-0.5,  0.5, -0.5], normal: N_LEFT,   uv: UV_TL },
     // +y (top)
-    Vertex { position: [-0.5,  0.5,  0.5], normal: N_TOP },
-    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_TOP },
-    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_TOP },
-    Vertex { position: [-0.5,  0.5, -0.5], normal: N_TOP },
+    Vertex { position: [-0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BL },
+    Vertex { position: [ 0.5,  0.5,  0.5], normal: N_TOP,    uv: UV_BR },
+    Vertex { position: [ 0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TR },
+    Vertex { position: [-0.5,  0.5, -0.5], normal: N_TOP,    uv: UV_TL },
     // -y (bottom)
-    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BOTTOM },
-    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BOTTOM },
-    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_BOTTOM },
-    Vertex { position: [-0.5, -0.5,  0.5], normal: N_BOTTOM },
+    Vertex { position: [-0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BL },
+    Vertex { position: [ 0.5, -0.5, -0.5], normal: N_BOTTOM, uv: UV_BR },
+    Vertex { position: [ 0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TR },
+    Vertex { position: [-0.5, -0.5,  0.5], normal: N_BOTTOM, uv: UV_TL },
 ];
 
 #[rustfmt::skip]
@@ -395,6 +419,8 @@ fn sphere_mesh() -> (Vec<Vertex>, Vec<u16>) {
             vertices.push(Vertex {
                 position: [nx * 0.5, ny * 0.5, nz * 0.5],
                 normal: [nx, ny, nz],
+                // Standard UV-sphere mapping: longitude → u, latitude → v.
+                uv: [u, v],
             });
         }
     }
@@ -522,6 +548,18 @@ struct RenderState {
     /// the stderr noise on every subsequent frame; the user can
     /// fix the path and hot-reload to retry.
     mesh_load_failures: HashSet<u32>,
+    /// Phase 17 session 3: texture bind group layout (reused for
+    /// every per-texture bind group), default linear sampler, and
+    /// fallback white 1×1 texture's bind group. Untextured meshes
+    /// bind `white_bind_group` so the fragment shader's
+    /// `textureSample` call always has something to sample.
+    texture_bgl: wgpu::BindGroupLayout,
+    default_sampler: wgpu::Sampler,
+    white_bind_group: wgpu::BindGroup,
+    /// Lazy-loaded textures keyed by `Env::texture_paths` interned id.
+    /// Each entry is the bind group ready to set on render group 1.
+    texture_cache: HashMap<u32, wgpu::BindGroup>,
+    texture_load_failures: HashSet<u32>,
 }
 
 /// Per-mesh GPU buffers loaded from a `.glb` file. v0.2 session 1.
@@ -668,6 +706,8 @@ impl ApplicationHandler for App {
                         // because of this.
                         state.mesh_cache.clear();
                         state.mesh_load_failures.clear();
+                        state.texture_cache.clear();
+                        state.texture_load_failures.clear();
                         self.env = new_env;
                     }
                     // A failed re-init keeps the current env so the
@@ -958,13 +998,86 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         }],
     });
 
+    // Phase 17 session 3: texture bind group layout — sampled
+    // 2D float texture + a filtering sampler. One layout, reused
+    // for every per-mesh texture binding (including the fallback
+    // white texture used by untextured meshes).
+    let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("twec-play3d texture bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    // White 1x1 fallback texture so untextured meshes draw correctly
+    // (sampling any uv produces white, which multiplied by the
+    // per-instance tint gives the unmodified tint).
+    let white_texture = device.create_texture_with_data(
+        &queue,
+        &wgpu::TextureDescriptor {
+            label: Some("twec-play3d white fallback"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::default(),
+        &[255, 255, 255, 255],
+    );
+    let white_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("twec-play3d sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d white bg"),
+        layout: &texture_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&white_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&default_sampler),
+            },
+        ],
+    });
+
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("twec-play3d shader"),
         source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d pipeline layout"),
-        bind_group_layouts: &[&camera_bgl],
+        bind_group_layouts: &[&camera_bgl, &texture_bgl],
         push_constant_ranges: &[],
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1028,7 +1141,77 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         depth_view,
         mesh_cache: HashMap::new(),
         mesh_load_failures: HashSet::new(),
+        texture_bgl,
+        default_sampler,
+        white_bind_group,
+        texture_cache: HashMap::new(),
+        texture_load_failures: HashSet::new(),
     })
+}
+
+/// Phase 17 session 3: PNG/JPEG texture loader. Decodes via the
+/// `image` crate, uploads as Rgba8UnormSrgb, returns a bind group
+/// ready to set on render group 1. Path is resolved through the
+/// bundle-aware loader so built `.exe`s work.
+fn load_and_upload_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    path: &str,
+) -> Result<wgpu::BindGroup, String> {
+    let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| e.to_string())?;
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("twec-play3d texture"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d texture bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    }))
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -1106,12 +1289,30 @@ fn parse_glb_bytes(bytes: &[u8]) -> Result<(Vec<Vertex>, Vec<u32>), String> {
         None => vec![[0.0, 1.0, 0.0]; positions.len()],
     };
 
+    // Phase 17 session 2: read TEXCOORD_0 if present. Most Blender /
+    // Mixamo exports include it. Falls back to (0, 0) per vertex —
+    // sampling the fallback white texture at any uv produces white,
+    // so untextured meshes still render correctly.
+    let uvs: Vec<[f32; 2]> = match reader.read_tex_coords(0) {
+        Some(iter) => {
+            let v: Vec<[f32; 2]> = iter.into_f32().collect();
+            if v.len() == positions.len() {
+                v
+            } else {
+                vec![[0.0, 0.0]; positions.len()]
+            }
+        }
+        None => vec![[0.0, 0.0]; positions.len()],
+    };
+
     let vertices: Vec<Vertex> = positions
         .iter()
         .zip(normals.iter())
-        .map(|(p, n)| Vertex {
+        .zip(uvs.iter())
+        .map(|((p, n), uv)| Vertex {
             position: *p,
             normal: *n,
+            uv: *uv,
         })
         .collect();
 
@@ -1246,29 +1447,72 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         }
     }
 
-    let cubes: Vec<&DrawCall3d> = queue
-        .iter()
-        .filter(|d| d.primitive == Primitive::Cube)
-        .collect();
-    let spheres: Vec<&DrawCall3d> = queue
-        .iter()
-        .filter(|d| d.primitive == Primitive::Sphere)
-        .collect();
-    // Group mesh draws by id. Each unique id becomes its own
-    // instanced draw call; preserves draw order across distinct
-    // meshes (within an id, instance order = queue order).
-    let mut mesh_groups: Vec<(u32, Vec<&DrawCall3d>)> = Vec::new();
+    // 4b. Phase 17 session 3: lazy-load any texture paths referenced
+    //     this frame but not yet on the GPU. Same pattern as the
+    //     mesh cache above.
+    let mut needed_texture_ids: Vec<u32> = Vec::new();
     for d in &queue {
-        if let Primitive::Mesh(id) = d.primitive {
-            // Only schedule draws for meshes that loaded
-            // successfully. Skipped failures keep their on-screen
-            // absence; the stderr noise already explained why.
-            if !state.mesh_cache.contains_key(&id) {
+        let id = d.texture;
+        if id != 0
+            && !state.texture_cache.contains_key(&id)
+            && !state.texture_load_failures.contains(&id)
+            && !needed_texture_ids.contains(&id)
+        {
+            needed_texture_ids.push(id);
+        }
+    }
+    for id in needed_texture_ids {
+        let path = match env.texture_path(id) {
+            Some(p) => p.to_string(),
+            None => {
+                state.texture_load_failures.insert(id);
                 continue;
             }
-            match mesh_groups.iter_mut().find(|(gid, _)| *gid == id) {
+        };
+        match load_and_upload_texture(
+            &state.device,
+            &state.queue,
+            &state.texture_bgl,
+            &state.default_sampler,
+            &path,
+        ) {
+            Ok(bg) => {
+                state.texture_cache.insert(id, bg);
+            }
+            Err(e) => {
+                eprintln!("error: texture load `{path}`: {e}");
+                state.texture_load_failures.insert(id);
+            }
+        }
+    }
+
+    // Phase 17 session 3: group draws by (primitive, texture_id).
+    // Each unique combination becomes its own instanced draw call
+    // because group 1's bind group changes between textures.
+    // Within a group, instance order = queue order (preserves any
+    // back-to-front ordering the script established).
+    let mut cube_groups: Vec<(u32, Vec<&DrawCall3d>)> = Vec::new();
+    let mut sphere_groups: Vec<(u32, Vec<&DrawCall3d>)> = Vec::new();
+    let mut mesh_groups: Vec<((u32, u32), Vec<&DrawCall3d>)> = Vec::new();
+    for d in &queue {
+        match d.primitive {
+            Primitive::Cube => match cube_groups.iter_mut().find(|(t, _)| *t == d.texture) {
                 Some((_, list)) => list.push(d),
-                None => mesh_groups.push((id, vec![d])),
+                None => cube_groups.push((d.texture, vec![d])),
+            },
+            Primitive::Sphere => match sphere_groups.iter_mut().find(|(t, _)| *t == d.texture) {
+                Some((_, list)) => list.push(d),
+                None => sphere_groups.push((d.texture, vec![d])),
+            },
+            Primitive::Mesh(id) => {
+                if !state.mesh_cache.contains_key(&id) {
+                    continue;
+                }
+                let key = (id, d.texture);
+                match mesh_groups.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, list)) => list.push(d),
+                    None => mesh_groups.push((key, vec![d])),
+                }
             }
         }
     }
@@ -1288,11 +1532,17 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         let end = out.len() as u32;
         (start, end)
     };
-    let cube_range = push_group(&cubes, &mut instances);
-    let sphere_range = push_group(&spheres, &mut instances);
-    let mesh_ranges: Vec<(u32, (u32, u32))> = mesh_groups
+    let cube_ranges: Vec<(u32, (u32, u32))> = cube_groups
         .iter()
-        .map(|(id, list)| (*id, push_group(list, &mut instances)))
+        .map(|(t, list)| (*t, push_group(list, &mut instances)))
+        .collect();
+    let sphere_ranges: Vec<(u32, (u32, u32))> = sphere_groups
+        .iter()
+        .map(|(t, list)| (*t, push_group(list, &mut instances)))
+        .collect();
+    let mesh_ranges: Vec<((u32, u32), (u32, u32))> = mesh_groups
+        .iter()
+        .map(|(k, list)| (*k, push_group(list, &mut instances)))
         .collect();
     if !instances.is_empty() {
         state
@@ -1344,17 +1594,38 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
             rpass.set_pipeline(&state.pipeline);
             rpass.set_bind_group(0, &state.camera_bind_group, &[]);
             rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-            // One instanced draw per primitive. Each draws its own
-            // mesh's vertices/indices but shares the same instance
-            // buffer (each `set_vertex_buffer(1, ..)` is a no-op
-            // when the binding hasn't changed).
-            if cube_range.1 > cube_range.0 {
+            // Phase 17 session 3: helper closure that picks the
+            // right texture bind group for a given texture id.
+            // 0 = white fallback; loaded ids look up texture_cache;
+            // missing/failed ids fall through to white.
+            let bind_for = |tex_id: u32| -> &wgpu::BindGroup {
+                if tex_id == 0 {
+                    return &state.white_bind_group;
+                }
+                state
+                    .texture_cache
+                    .get(&tex_id)
+                    .unwrap_or(&state.white_bind_group)
+            };
+            // Cube draws — one per (texture) group.
+            for (tex, range) in &cube_ranges {
+                if range.1 <= range.0 {
+                    continue;
+                }
+                rpass.set_bind_group(1, bind_for(*tex), &[]);
                 rpass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                rpass
-                    .set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                rpass.draw_indexed(0..state.cube_index_count, 0, cube_range.0..cube_range.1);
+                rpass.set_index_buffer(
+                    state.cube_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                rpass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
             }
-            if sphere_range.1 > sphere_range.0 {
+            // Sphere draws — one per (texture) group.
+            for (tex, range) in &sphere_ranges {
+                if range.1 <= range.0 {
+                    continue;
+                }
+                rpass.set_bind_group(1, bind_for(*tex), &[]);
                 rpass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
                 rpass.set_index_buffer(
                     state.sphere_index_buffer.slice(..),
@@ -1363,20 +1634,20 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
                 rpass.draw_indexed(
                     0..state.sphere_index_count,
                     0,
-                    sphere_range.0..sphere_range.1,
+                    range.0..range.1,
                 );
             }
-            // One instanced draw per loaded `.glb` mesh. The shared
-            // instance buffer's range was assigned in step 4. v0.2
-            // session 1.
-            for (id, range) in &mesh_ranges {
+            // Mesh draws — one per (mesh id, texture) group. Each
+            // unique combination is its own instanced draw call.
+            for ((mesh_id, tex), range) in &mesh_ranges {
                 if range.1 <= range.0 {
                     continue;
                 }
-                let gpu_mesh = match state.mesh_cache.get(id) {
+                let gpu_mesh = match state.mesh_cache.get(mesh_id) {
                     Some(m) => m,
                     None => continue,
                 };
+                rpass.set_bind_group(1, bind_for(*tex), &[]);
                 rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
                 rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
                 rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
