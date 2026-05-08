@@ -12,3 +12,16 @@ examples/*/dist/
 
 # Phase 11 crash dumps land at the repo root by default.
 twec-crash-*.log
+
+# Local stdout/stderr captures from running twec — repo-root by habit.
+twec_out.log
+twec_err.log
+
+# Save-system artifacts written by running examples locally.
+*.save
+
+# Scratch scripts kept at the repo root for quick iteration.
+practice.twe
+
+# Claude Code's per-project conversation + memory state.
+.claude/
