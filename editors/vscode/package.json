@@ -1,8 +1,8 @@
 {
   "name": "twe-language",
   "displayName": "Twe Language",
-  "description": "Syntax highlighting + LSP for the Twe game scripting language: diagnostics, hover-with-types, go-to-definition, completion, strict-mode type errors.",
-  "version": "0.1.0",
+  "description": "A game-first scripting language with state machines, scenes, dialogue, and a wgpu 3D runtime. Editor side: syntax, diagnostics, hover types, go-to-definition, completion.",
+  "version": "0.1.1",
   "publisher": "twena-inc",
   "license": "MIT",
   "repository": {
@@ -26,6 +26,7 @@
   },
   "categories": ["Programming Languages"],
   "main": "./extension.js",
+  "icon": "icon.png",
   "contributes": {
     "languages": [
       {

@@ -30,65 +30,54 @@ first-class state machines, scenes, dialogue, and a wgpu-driven
 Backed by `twec lsp`, the in-process language server in
 [`src/lsp.rs`](../../src/lsp.rs).
 
-## Install (development)
+## Install
 
-The extension is not yet published to the VS Code marketplace —
-publishing rides the v0.1 release cut. To run it from source:
+From the VS Code Marketplace:
+
+```
+code --install-extension twena-inc.twe-language
+```
+
+Or open the Extensions panel (`Ctrl+Shift+X`), search for **Twe Language**, click **Install**.
+
+You also need `twec` on your `PATH` — the extension drives diagnostics, hover, and go-to-definition by spawning `twec lsp` as an LSP child process. Two ways to get it:
+
+- **Download a release binary** from the [GitHub Releases page](https://github.com/Tusdang-ctw/Twe-language/releases) and put it on your `PATH`.
+- **Build from source:** `cargo install --path .` from the repo root.
+
+If `twec` lives somewhere off-`PATH`, set `twe.serverPath` in VS Code settings to its absolute path (e.g. `D:/IT/twe-language/target/release/twec.exe`).
+
+## Install (development, from a source checkout)
+
+To run the extension straight from this directory instead of the published package:
 
 ```bash
 cd editors/vscode
 npm install                 # pulls vscode-languageclient
 ```
 
-Then launch a VS Code "Extension Development Host" by opening
-this directory in VS Code and pressing `F5`. Open any `.twe`
-file in the new window and edits will get live diagnostics,
-hover types, completion, and go-to-definition.
+Then open this directory in VS Code and press `F5` — that launches an "Extension Development Host" window. Open any `.twe` file in the new window and edits will get live diagnostics, hover types, completion, and go-to-definition.
 
-`twec` must be on your `PATH` (or you can set
-`twe.serverPath` in settings to an absolute path; e.g.
-`D:/IT/twe-language/target/release/twec.exe`).
+## Publishing (maintainers)
 
-## Install (packaged `.vsix`)
+The extension is published as `twena-inc.twe-language`. To cut a new release:
 
-Once `vsce package` runs cleanly (see "Publishing" below), you
-can sideload the resulting `.vsix` into any VS Code:
-
-```
-code --install-extension twe-language-0.1.0-pre.vsix
-```
-
-This is the recommended path for users who don't want to run
-from a checkout.
-
-## Publishing
-
-Marketplace publishing is gated on the v0.1 release per the
-roadmap. The mechanics:
-
-```bash
+```powershell
 npm install -g @vscode/vsce          # one-time
 cd editors/vscode
 
-# Verify the package builds cleanly. This produces a `.vsix`
-# in the current directory.
+# Bump version in package.json (Marketplace rejects re-publishing the same version).
+
+# Verify the package builds cleanly. Produces a .vsix in the current directory.
 vsce package
 
-# Once a publisher account exists at marketplace.visualstudio.com:
-vsce login twe-lang
-vsce publish
+# Publish using a Personal Access Token (env var or -p flag):
+vsce publish -p $env:VSCE_PAT
 ```
 
-The `publisher` field in `package.json` (`twe-lang`) must match a
-real Marketplace publisher you control. The README, repository,
-homepage, license, and keyword fields all flow into the listing
-page — keep them honest.
+The PAT is an Azure DevOps token created at `https://dev.azure.com/<org>/_usersSettings/tokens` with **All accessible organizations** + **Marketplace → Manage** scope.
 
-`.vscodeignore` (sibling file) lists the paths excluded from the
-published package: `node_modules/` is excluded because the
-runtime install pulls dependencies fresh; the LSP itself is
-expected on the user's PATH (the extension does not bundle
-`twec`).
+`.vscodeignore` (sibling file) lists paths excluded from the published package: `node_modules/` is excluded because the runtime install pulls dependencies fresh; the LSP itself is expected on the user's `PATH` (the extension does not bundle `twec`).
 
 ## How it talks to twec
 
@@ -106,7 +95,6 @@ between sessions; killing the editor kills the server.
 
 ## Roadmap
 
-- **Marketplace publish** — gated on v0.1 release.
 - **Code actions** for the `did_you_mean` suggestions surfaced by
   strict-mode diagnostics — turn the help text into a click-to-fix.
 - **Inlay hints** for inferred types on `let` / `var` bindings,
