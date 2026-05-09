@@ -645,12 +645,14 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ## Phase 30 — Post-v1.0 — WASM / web target
 
+**Status:** **codebase-closed 2026-05-09** per `docs/changes/2026-05-09-phase-30-closeout.md`. All six sessions shipped: `BuildTarget::Wasm32` + `build_wasm_target()` + WASM play loop (1), localStorage save/load via `quad-url` (2), click-to-start overlay / AudioContext unlock (3), CSS `aspect-ratio` letterbox (4), `.github/workflows/wasm-demo.yml` CI deploy-to-Pages (5), closeout (6). Browser playtest of the GitHub Pages demo is the remaining manual step. Honest deferrals: end-to-end browser test in CI, `survive_beta` WASM (asset size + wasm-opt), installed-twec WASM build path, 3D WASM, IndexedDB (shipped localStorage instead — synchronous, sufficient for game saves).
+
 **Theme:** browser-playable 2D unlocks distribution (itch.io HTML5 page, embeddable demos, Show-HN-grade reach). macroquad already supports WASM, so most of this is build-pipeline work. Defers the 3D wgpu path on web (browser support uneven).
 
 **Components:**
 
 - `twec build --target wasm32` produces `.html` + `.wasm` + asset bundle. Fourth row in the Phase 12 build matrix.
-- File I/O reroute — saves to IndexedDB, assets via `fetch`.
+- File I/O reroute — saves to localStorage (quad-url), assets via `fetch`.
 - Audio context unlock on first user gesture (browser autoplay policy).
 - Variable canvas sizing — preserve aspect ratio + letterbox.
 - CI pipeline — auto-publish `examples/flappy.twe` as web demo on every release.
@@ -754,7 +756,7 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 27 — 2D genre reference examples | post-v1.0 | M (closed 2026-05-09; 5 sessions; 4 stdlib helpers) |
 | 28 — 3D commercial polish | post-v1.0 | L (closed 2026-05-09; 6 sessions; 4 postfx builtins; DoF deferred) |
 | 29 — Determinism layer | post-v1.0 | L (planned; closes 3× speedup gap) |
-| 30 — WASM / web target | post-v1.0 | L (planned) |
+| 30 — WASM / web target | post-v1.0 | L (closed 2026-05-09; 6 sessions; localStorage saves; CSS letterbox; Pages CI) |
 | 31 — Multiplayer foundation | post-v1.0 | XL (gated on netcode RFC) |
 | 32 — Open-world 3D foundation | post-v1.0 | XL (gated on lock revision) |
 

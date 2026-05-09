@@ -885,22 +885,47 @@ pub fn render_depot_build_vdf(depot_id: u32) -> String {
 
 // ─── Phase 30 session 1: WASM / web target ──────────────────────────────────
 
-/// HTML template for the web output. Embeds a click-to-start overlay
-/// (Phase 30 session 3) that unlocks the browser AudioContext on first
-/// user gesture. macroquad's `mq_js_bundle.js` handles WASM
-/// instantiation; `load("game.wasm")` is macroquad's standard entry.
+/// HTML template for the web output. Embeds:
+/// - Session 3: click-to-start overlay (AudioContext unlock)
+/// - Session 4: CSS `aspect-ratio` letterbox that fills the viewport
+///   while preserving the 640×480 game canvas. `image-rendering:
+///   pixelated` keeps pixel art crisp on non-integer zoom levels.
+///   macroquad sets `width`/`height` attributes on the canvas element;
+///   CSS only controls the display size, so internal resolution stays
+///   at 640×480 regardless of window size.
 fn wasm_html(game_name: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{name}</title>
   <style>
-    *   {{ margin:0; padding:0; box-sizing:border-box; }}
-    body {{ background:#111; display:flex; justify-content:center;
-            align-items:center; height:100vh; overflow:hidden; }}
-    canvas {{ display:block; }}
+    * {{ margin:0; padding:0; box-sizing:border-box; }}
+    body {{
+      background:#111;
+      display:flex;
+      justify-content:center;
+      align-items:center;
+      width:100vw;
+      height:100vh;
+      overflow:hidden;
+    }}
+    /* Phase 30 session 4: letterbox.
+       aspect-ratio keeps 640:480 at any window size.
+       max-width/max-height clamp it inside the viewport.
+       image-rendering:pixelated preserves crisp pixels at integer
+       zoom levels (important for pixel-art games). */
+    canvas {{
+      display:block;
+      max-width:100vw;
+      max-height:100vh;
+      aspect-ratio:640/480;
+      image-rendering:pixelated;
+      image-rendering:crisp-edges;
+    }}
+    /* Phase 30 session 3: click-to-start overlay. */
     #start-overlay {{
       position:fixed; inset:0;
       background:rgba(0,0,0,0.85);
@@ -917,11 +942,9 @@ fn wasm_html(game_name: &str) -> String {
 <body>
   <canvas id="glcanvas" tabindex="1"></canvas>
 
-  <!-- Phase 30 session 3: click-to-start overlay.
-       The first click dismisses the overlay AND satisfies the browser
-       user-gesture requirement that unlocks AudioContext playback.
-       macroquad's mq_js_bundle.js resumes the AudioContext on any
-       user interaction, so a single click covers both. -->
+  <!-- Session 3: first click dismisses overlay + focuses canvas for
+       keyboard input + satisfies browser autoplay policy. macroquad's
+       mq_js_bundle.js resumes the AudioContext on any user gesture. -->
   <div id="start-overlay"
        onclick="this.remove(); document.getElementById('glcanvas').focus();">
     <h1>{name}</h1>

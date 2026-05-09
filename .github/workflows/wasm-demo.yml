@@ -1,0 +1,78 @@
+name: wasm-demo
+
+# Phase 30 session 5: build examples/flappy.twe as a browser-playable
+# WASM demo and publish it to GitHub Pages on every push to main and
+# every GitHub Release.
+#
+# One-time manual setup (repository owner):
+#   Settings → Pages → Source: "Deploy from a branch"
+#   Branch: gh-pages   Folder: / (root)
+#
+# After that, every push to main updates the demo at:
+#   https://<owner>.github.io/<repo>/
+#
+# How it works:
+#   1. Build twec for the Linux host (cargo build --release).
+#   2. Wrap examples/flappy.twe in a minimal project directory.
+#   3. Run `twec build --target wasm32 _flappy_demo/` which internally
+#      invokes `cargo build --target wasm32-unknown-unknown` to produce
+#      game.wasm, then copies index.html + mq_js_bundle.js + main.twe.
+#   4. Push dist/web/ to the gh-pages branch via peaceiris/actions-gh-pages.
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-deploy:
+    name: Build WASM + deploy to Pages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to push to gh-pages branch
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # Cache both the host build and the wasm32 build artifacts.
+      # The WASM build is the expensive part (~3 min first run, ~30 s
+      # after; cargo skips a rebuild if sources + env vars are unchanged).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-wasm-
+
+      - name: Build twec (Linux host)
+        run: cargo build --release
+
+      - name: Prepare flappy demo project layout
+        run: |
+          mkdir -p _flappy_demo
+          cp examples/flappy.twe _flappy_demo/main.twe
+
+      - name: Build WASM
+        run: ./target/release/twec build --target wasm32 _flappy_demo/
+
+      # Deploy the contents of dist/web/ to the gh-pages branch.
+      # peaceiris/actions-gh-pages creates the branch on first run and
+      # force-pushes it on subsequent runs (no history accumulation).
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: _flappy_demo/dist/web
+          commit_message: "wasm-demo: ${{ github.ref_name }} (${{ github.sha }})"
