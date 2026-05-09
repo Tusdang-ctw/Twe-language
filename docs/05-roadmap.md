@@ -601,6 +601,8 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ## Phase 28 — Post-v1.0 — 3D commercial polish
 
+**Status:** **codebase-closed 2026-05-09** per `docs/changes/2026-05-09-phase-28-closeout.md`. All six sessions shipped: mipmap pyramid + 16× anisotropic filtering (1), cascaded shadow maps with 3 cascades on a 2D-array depth texture + view-z cascade selection (2), inline 12-tap bloom (3), vignette tint color (4), async `.glb` parse on background worker threads (5), closeout (6). New `postfx.*` Twe surface: `bloom(intensity)`, `bloom_threshold(t)`, `vignette_color(c)`. Three new tests in `tests/eval.rs`; **745 passing.** DoF + view-frustum-fitted CSM + multi-tier bloom downsample + linear-space mip resample deferred with explicit re-entry conditions. Visual playtest of `examples/crystal_hunter.twe` is the remaining manual step.
+
 **Theme:** the deferred items from `docs/changes/2026-05-07-phase-24-26-closeout.md`, rolled up. Difference between "playable 3D" and "shippable 3D."
 
 **Components:**
@@ -748,7 +750,7 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 16 — Stable | v1.0 | S (codebase-closed 2026-05-06; 6-month API stability window begins; itch.io ships pending) |
 | 17–26 — 3D commercial roadmap | v1.0 (3D arc) | XL across 10 phases (codebase-closed 2026-05-07; see `docs/3d-roadmap.md` + `docs/changes/2026-05-07-phase-{17,18,19-23,24-26}-closeout.md`) |
 | 27 — 2D genre reference examples | post-v1.0 | M (closed 2026-05-09; 5 sessions; 4 stdlib helpers) |
-| 28 — 3D commercial polish | post-v1.0 | L (planned) |
+| 28 — 3D commercial polish | post-v1.0 | L (closed 2026-05-09; 6 sessions; 4 postfx builtins; DoF deferred) |
 | 29 — Determinism layer | post-v1.0 | L (planned; closes 3× speedup gap) |
 | 30 — WASM / web target | post-v1.0 | L (planned) |
 | 31 — Multiplayer foundation | post-v1.0 | XL (gated on netcode RFC) |
