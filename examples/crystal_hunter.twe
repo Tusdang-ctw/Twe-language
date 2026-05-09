@@ -108,8 +108,21 @@ let torch_sw = light.add((-18.0, 4.5,  18.0), (1.0, 0.55, 0.20, 1.0), 14.0)
 let torch_se = light.add(( 18.0, 4.5,  18.0), (1.0, 0.55, 0.20, 1.0), 14.0)
 
 # === Post-FX ===
+# Phase 28 sessions 2-4: cascaded shadows (3 cascades) ride under
+# the existing `sun.shadow(true)` switch elsewhere in the scene
+# setup; here we drive the post-process surface introduced this
+# phase: ACES + bloom + tinted vignette.
 postfx.tonemap(true)
+# Inline 12-tap bloom. Threshold 1.2 keeps the bloom subtle —
+# only the brightest crystal highlights and torch cores glow.
+postfx.bloom(0.55)
+postfx.bloom_threshold(1.2)
+# Vignette darkens to a deep purple-blue at the edges instead of
+# full black; matches the dusk-cavern atmosphere the scene aims
+# for. Drop `vignette_color((0, 0, 0))` to revert to classic
+# darkening.
 postfx.vignette(0.30)
+postfx.vignette_color((0.04, 0.02, 0.10))
 
 # === Cursor lock for FPS-style mouse look ===
 cursor.lock()

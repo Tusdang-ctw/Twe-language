@@ -1078,6 +1078,43 @@ fn runs_tilemap_aabb() {
     );
 }
 
+// Phase 28 session 3 + 4: postfx state setters. Verifies the
+// new builtins are callable from Twe and the side-effect persists
+// in the thread-local store the play3d render loop reads. The
+// render loop itself is exercised by `twec play3d ...`, which a
+// terminal can't drive — these are the closest-to-end-to-end
+// checks short of opening a wgpu window.
+#[test]
+fn postfx_bloom_setters() {
+    let _ = run_program_str("postfx.bloom(0.42)\n").expect("should run");
+    assert!(
+        (twec::stdlib::bloom_intensity() - 0.42).abs() < 1e-5,
+        "bloom intensity = {}",
+        twec::stdlib::bloom_intensity()
+    );
+    let _ = run_program_str("postfx.bloom_threshold(0.7)\n").expect("should run");
+    assert!(
+        (twec::stdlib::bloom_threshold() - 0.7).abs() < 1e-5,
+        "bloom threshold = {}",
+        twec::stdlib::bloom_threshold()
+    );
+}
+
+#[test]
+fn postfx_vignette_color_setter() {
+    let _ = run_program_str("postfx.vignette_color((0.10, 0.20, 0.30))\n").expect("should run");
+    let c = twec::stdlib::vignette_color();
+    assert!((c[0] - 0.10).abs() < 1e-5, "vignette r = {}", c[0]);
+    assert!((c[1] - 0.20).abs() < 1e-5, "vignette g = {}", c[1]);
+    assert!((c[2] - 0.30).abs() < 1e-5, "vignette b = {}", c[2]);
+}
+
+#[test]
+fn postfx_bloom_clamps_negative_intensity_to_zero() {
+    let _ = run_program_str("postfx.bloom(-0.5)\n").expect("should run");
+    assert_eq!(twec::stdlib::bloom_intensity(), 0.0);
+}
+
 #[test]
 fn runs_interpolation() {
     let out = run_program("tests/programs/interpolation.twe").expect("program should run");
