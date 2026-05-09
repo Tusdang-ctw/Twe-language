@@ -9,6 +9,8 @@
 > - Phases 19–23 — multi-node glTF + mat4 + lighting + animation API + typed save + dynamic instances + spatial audio. Single combined closeout at `docs/changes/2026-05-07-phase-19-23-closeout.md`.
 >
 > **Major deferrals tracked in closeouts:** GPU skinning (Phase 21), shadow maps (Phase 20), frustum culling (Phase 23), post-processing (Phase 23), per-instance dynamic transforms (Phase 19). The Twe-facing API surface for these is stable where applicable; what lands later is the GPU pipeline implementation.
+>
+> **Post-v1.0 follow-ons.** The polish-tier deferrals (bloom, depth of field, cascaded shadow maps, mipmaps + anisotropic, async asset preload) are scheduled as **Phase 28** in `docs/05-roadmap.md`. The Phase 22 streaming + LRU GPU cache work below is the bottom layer; **Phase 32** in `docs/05-roadmap.md` extends it with spatial partitioning, mesh + texture LOD chains, terrain heightfield tiling, and occlusion culling for Tunic-scale open worlds (gated on a `CLAUDE.md` lock revision authorizing engine-internal worker pools).
 
 ---
 
@@ -215,6 +217,8 @@ on update(dt):
 **Size: M (2–4 weeks)**
 
 Multi-scene games need clean transitions. This is the difference between a tech demo and a game.
+
+> **See also:** Post-v1.0 **Phase 32** (`docs/05-roadmap.md`) extends this phase's streaming + LRU GPU cache work with spatial partitioning, LOD chains, terrain tiling, and occlusion culling. Phase 22 is the multi-scene transition layer; Phase 32 is the streaming-open-world layer on top.
 
 ### Sessions
 

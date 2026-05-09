@@ -269,7 +269,7 @@ This is the phase where the design becomes mature.
 
 After v0.1 cuts, Twe is "stable enough to recommend to others" but **not stable enough to ship a paid game on**. Phases 8–16 close that gap. The thesis: **v1.0 means a developer can ship a Vampire-Survivors-class commercial 2D game on Steam using Twe.**
 
-Use case #1 from `README.md` ("2D systematic / RPG hybrid") drives prioritization. 3D continues in maintenance mode but is off the v1.0 critical path; Roblox-class 3D is multi-year and out of scope. See `docs/changes/` for closeout notes that record what slipped from each phase and why.
+Use case #1 from `README.md` ("2D systematic / RPG hybrid") drives prioritization. The 3D commercial arc — Phases 17–26, documented in `docs/3d-roadmap.md` and the four closeout notes under `docs/changes/2026-05-07-…` — runs as a parallel track and closes alongside v1.0, shipping rapier3d physics, glTF 2.0 multi-node scenes, GPU skinning, shadow maps, and HDR + ACES tone mapping. Roblox-class 3D remains multi-year and out of scope; Tunic-scale open-world is now scheduled as Phase 32 (post-v1.0). See `docs/changes/` for closeout notes that record what slipped from each phase and why.
 
 ---
 
@@ -561,17 +561,162 @@ Session breakdown (twelve, mirroring Phase 10 / 11 cadence):
 
 ---
 
+## Post-v1.0 — Phases 27–32
+
+After v1.0 cuts, the LTS phase begins (`v1.x` branch, 12-month security backports). Six follow-on phases extend the language to genres v1.0 doesn't cover, in user-priority order:
+
+| Phase | Theme | Size |
+|-------|-------|------|
+| 27 — 2D genre reference examples | Platformer / Tetris / cards prove out the existing stdlib | M |
+| 28 — 3D commercial polish | Bloom, DoF, cascaded shadows, mipmaps, async preload | L |
+| 29 — Determinism layer | Fixed timestep, bounded GC, replay/record, sample-accurate audio, close the 3× speedup gap | L |
+| 30 — WASM / web target | `twec build --target wasm32`; browser-playable 2D | L |
+| 31 — Multiplayer foundation | Netcode RFC + lockstep over UDP/WebSocket | XL (gated on RFC) |
+| 32 — Open-world 3D foundation | Streaming, LOD, terrain, spatial partitioning | XL (gated on lock revision) |
+
+Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Phase 32 requires extending CLAUDE.md "What is locked" to authorize an engine-internal worker pool (single-threaded VM stays single-threaded for Twe authors; engine internals get parallelism). Total scope is ~50–70 sessions, ~12–18 months at one session/week.
+
+---
+
+## Phase 27 — Post-v1.0 — 2D genre reference examples
+
+**Theme:** prove the v1.0 stdlib survives genres `survive_beta` didn't pressure. Each example pressures one stdlib axis the existing examples missed.
+
+**Components:**
+
+- `examples/platformer.twe` — coyote time, jump buffer, swept-AABB tile collision, one-way platforms. Pressure-tests whether the v0.2 tilemap stdlib needs a swept-AABB helper.
+- `examples/tetris.twe` — 7-bag randomizer, SRS rotation, line clears, DAS/ARR. Pressure-tests key-repeat input handling.
+- `examples/cards.twe` — Klondike or a small TCG. Pressure-tests mouse drag-and-drop, layered z-order, modal animation.
+- Stdlib gap closure pass — close whatever the three examples reveal.
+
+**Exit criteria:**
+
+- Each example ≤ 500 lines.
+- No new stdlib functions added without a Principle 1 / Principle 3 justification.
+- README examples gallery updated.
+
+---
+
+## Phase 28 — Post-v1.0 — 3D commercial polish
+
+**Theme:** the deferred items from `docs/changes/2026-05-07-phase-24-26-closeout.md`, rolled up. Difference between "playable 3D" and "shippable 3D."
+
+**Components:**
+
+- Mipmap pyramid + anisotropic filtering (closes the Phase 17 deferral).
+- Cascaded shadow maps (2 cascades, then 3) extending Phase 19–23's directional shadow path.
+- Bloom — HDR threshold + downsample + upsample chain.
+- Vignette extension + optional depth-of-field.
+- Async asset preload — Rust-side job queue, decouples `.glb` parse from frame loop.
+
+**Exit criteria:**
+
+- `examples/crystal_hunter.twe` runs at 60fps with bloom + cascades on a 4-year-old GPU.
+- `examples/survive_beta.exe` shows zero regression on the Phase 11 bench harness (`benches/vm.rs`).
+- No new language surface — engine-only phase.
+
+---
+
+## Phase 29 — Post-v1.0 — Determinism layer
+
+**Theme:** the only path to fighting / rhythm games AND a hard prerequisite for Phase 31 (lockstep multiplayer). Also closes the unresolved 3× bytecode-VM speedup gap from `docs/changes/2026-05-01-phase-8.5-closeout.md`.
+
+**Components:**
+
+- Fixed-timestep update loop separated from variable-rate render — Glenn Fiedler "Fix Your Timestep!" pattern. Expose `physics_dt` constant.
+- Bounded GC pauses — enforce per-frame budget on the Phase 8.5 tracing GC; carry collection across frames if the budget is exceeded.
+- Close the 3× speedup gap — replace predicate-dispatch chains in `binary_arith` / `compare` with a tight switch. Bench against `benches/vm.rs`.
+- Input frame log + replay primitive — `replay.record(path)` / `replay.play(path)` builtins.
+- Sample-accurate audio scheduling — `sound.play_at(beat)` for rhythm games.
+
+**Exit criteria:**
+
+- 60-second replay of `survive_beta` reproduces frame-for-frame across two runs on the same machine.
+- `cargo bench` shows ≥ 3× over pre-tag baseline on `sum_loop`.
+- `examples/rhythm_demo.twe` measured at < 8ms input-to-pixel latency.
+
+---
+
+## Phase 30 — Post-v1.0 — WASM / web target
+
+**Theme:** browser-playable 2D unlocks distribution (itch.io HTML5 page, embeddable demos, Show-HN-grade reach). macroquad already supports WASM, so most of this is build-pipeline work. Defers the 3D wgpu path on web (browser support uneven).
+
+**Components:**
+
+- `twec build --target wasm32` produces `.html` + `.wasm` + asset bundle. Fourth row in the Phase 12 build matrix.
+- File I/O reroute — saves to IndexedDB, assets via `fetch`.
+- Audio context unlock on first user gesture (browser autoplay policy).
+- Variable canvas sizing — preserve aspect ratio + letterbox.
+- CI pipeline — auto-publish `examples/flappy.twe` as web demo on every release.
+
+**Exit criteria:**
+
+- `examples/flappy.twe` runs in Chrome + Firefox at 60fps with sound + keyboard, served from a static host.
+- `survive_beta` is deferred to a Phase 31+ follow-on (asset size + perf).
+
+---
+
+## Phase 31 — Post-v1.0 — Multiplayer foundation
+
+**Theme:** the biggest scope of the post-v1.0 set. Gated on `docs/changes/<date>-multiplayer-rfc.md` choosing one netcode model. Adding lockstep + rollback + authoritative C-S all at once would violate Principle 2; pick one.
+
+**Recommendation in the RFC:** lockstep over UDP. Smallest surface, leverages the Phase 29 determinism work directly, fits Principle 2's "one obvious way."
+
+**Components** (assuming RFC picks lockstep):
+
+- Netcode RFC committed and merged.
+- UDP + WebSocket transport behind one `net.*` API.
+- `net.host(port)` / `net.connect(addr)` returning peer handles.
+- Lockstep runner — per-tick input exchange, hash-check determinism, configurable input delay.
+- Snapshot serialization — reuse Phase 13 verified-mode JSON for debug + a binary tier for production.
+- `examples/pong_net.twe`.
+
+**Out of scope explicitly:** matchmaking, central servers, lobby UI. Direct-IP and Steam P2P only.
+
+**Exit criteria:**
+
+- `examples/pong_net.twe` plays peer-to-peer over LAN with 4-frame input delay, deterministic across two machines.
+- RFC merged and frozen for the Phase 31 implementation cycle.
+
+---
+
+## Phase 32 — Post-v1.0 — Open-world 3D foundation
+
+**Theme:** Tunic-scale open world. Not Roblox-scale — that's a multi-year follow-on. Open only after Phase 28 + the lock revision land.
+
+**Lock conflict to settle first:** the **single-threaded VM** lock in `CLAUDE.md` "What is locked" must be extended to authorize an engine-internal worker pool for asset I/O / physics step / frustum culling. User-facing Twe code stays single-threaded (Principle 2 intact); engine internals get parallelism (Principle 5 extended). Action: add a one-line addendum to `CLAUDE.md` before Phase 32 session 1.
+
+**Components:**
+
+- Spatial partitioning — loose grid for dynamic objects, BVH for static.
+- Chunked streaming with budget-bound async loads (executes the deferral from `docs/3d-roadmap.md` Phase 22).
+- Mesh + texture LOD chains.
+- Terrain heightfield with chunk tiling.
+- Occlusion culling — extension to the Phase 19–23 frustum culling.
+- GPU instancing buffer expansion — extension to the Phase 23 dynamic instance buffer.
+- Author-facing API stays minimal: `world.stream_radius(m)`, `entity Tree: lod = [near.glb, far.glb]`. No new keywords.
+
+**Exit criteria:**
+
+- 4km × 4km test scene with 50k static props + 500 dynamic NPCs runs at 60fps with < 512MB VRAM.
+- Author-facing API stable for 6 months before the v1.x release tag.
+
+---
+
 ## What's intentionally *not* in the v1.0 plan
 
-These are deferred to post-v1.0 (the v1.x or v2.0 era), with cause:
+These are deferred to post-v1.0 (the v1.x or v2.0 era), with cause. Items now scheduled into Phases 27–32 are noted inline:
 
-- **3D rendering polish** — textures, animation, physics, multi-primitive `.glb`, mouse-driven 3D, `mat4` / `quat`. Stays alive in maintenance mode (current `play3d` keeps working) but is off the v1.0 critical path. The user's "2D commercial game" goal does not require Roblox-class 3D, and Roblox-class 3D is multi-year work.
-- **Native code generation** (Luau-style). Post-v1.0; the bytecode VM with NaN tagging + GC is the v1.0 perf story.
-- **Multiplayer / determinism**. Post-v1.0. Different design conversation entirely (rollback netcode? lockstep? client-server?).
-- **User-defined generics**. Conflict with Principle 2.
-- **Macros / metaprogramming**. Off the table per `CLAUDE.md` "What is locked".
-- **Sandboxing for user-generated content**. Post-v1.0.
-- **Workshop / mod APIs**. Post-v1.0.
+- **3D rendering polish** — textures, animation, physics, multi-primitive `.glb`, mouse-driven 3D, `mat4` / `quat`. Bulk of this shipped in Phases 17–26 already; remaining polish (bloom, DoF, cascaded shadows, mipmaps, async preload) is **Phase 28**. Roblox-class 3D is multi-year and remains out of scope.
+- **Native code generation** (Luau-style). Post-v1.0; the bytecode VM with NaN tagging + GC is the v1.0 perf story. The 3× speedup gap closure is **Phase 29**, not native codegen.
+- **Multiplayer / determinism**. Determinism layer is **Phase 29**; multiplayer foundation is **Phase 31** (gated on netcode RFC). Rollback and authoritative C-S remain post-v1.x.
+- **Open-world / streaming / LOD**. Tunic-scale is **Phase 32** (gated on the lock revision authorizing engine-internal worker pools). Roblox-scale is post-v1.x.
+- **WASM / web target**. **Phase 30**.
+- **2D genre coverage** (platformer / Tetris / cards). **Phase 27**.
+- **User-defined generics**. Conflicts with Principle 2. Remains post-v1.x.
+- **Macros / metaprogramming**. Off the table per `CLAUDE.md` "What is locked". Remains post-v1.x.
+- **Sandboxing for user-generated content**. Post-v1.x.
+- **Workshop / mod APIs**. Post-v1.x.
 
 ---
 
@@ -599,6 +744,13 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 14 — Beta + dogfood | v0.8 | XL (codebase-closed 2026-05-06; itch.io ship + reviews pending) |
 | 15 — Release candidate | v0.9 | M (codebase-closed 2026-05-06; Steam AppID test + crash-report criterion pending) |
 | 16 — Stable | v1.0 | S (codebase-closed 2026-05-06; 6-month API stability window begins; itch.io ships pending) |
+| 17–26 — 3D commercial roadmap | v1.0 (3D arc) | XL across 10 phases (codebase-closed 2026-05-07; see `docs/3d-roadmap.md` + `docs/changes/2026-05-07-phase-{17,18,19-23,24-26}-closeout.md`) |
+| 27 — 2D genre reference examples | post-v1.0 | M (planned) |
+| 28 — 3D commercial polish | post-v1.0 | L (planned) |
+| 29 — Determinism layer | post-v1.0 | L (planned; closes 3× speedup gap) |
+| 30 — WASM / web target | post-v1.0 | L (planned) |
+| 31 — Multiplayer foundation | post-v1.0 | XL (gated on netcode RFC) |
+| 32 — Open-world 3D foundation | post-v1.0 | XL (gated on lock revision) |
 
 The realistic v1.0 ETA is *whenever the beta and RC games ship*, not a wall-clock date. Don't promise dates.
 
@@ -610,18 +762,22 @@ The realistic v1.0 ETA is *whenever the beta and RC games ship*, not a wall-cloc
 
 The LTS commitment begins at v1.0: security and critical fixes backport to the `v1.x` branch for 12 months minimum. Breaking changes to the public Twe language surface or `twec` CLI require a `@deprecated` cycle.
 
-**Open post-v1.0 work items** (prioritised by real game pressure, not speculation):
+**Open post-v1.0 work items.** Bigger items are now phased (see Phases 27–32 above). The following are smaller scratch items not large enough to merit a phase of their own:
 
-| Item | Driver |
-|------|--------|
-| macOS / Linux auto-pause-on-blur | `NSApplication.isActive` / `_NET_ACTIVE_WINDOW` paths; Windows ships |
-| Bytecode VM kwarg-builtin support | All widget-using examples fall back to tree-walker; closes a known limitation |
-| 3× bytecode-VM speedup gap from Phase 8.5 | Criterion bench harness ships; perf tuning driven by profiling |
-| `save SaveSlot:` block syntax | v0.3+ follow-on from Phase 8; key/value layer ships |
-| `tilemap Dungeon:` block syntax | v0.3+ follow-on from Phase 8 |
-| Per-state pause opt-out (`pause: false`) | Open syntax question |
-| 3D rendering polish (textures, animation, physics) | Post-v1.0 per the roadmap |
-| Community game support | Link + track third-party games in the README gallery |
+| Item | Driver | Status |
+|------|--------|--------|
+| macOS / Linux auto-pause-on-blur | `NSApplication.isActive` / `_NET_ACTIVE_WINDOW` paths; Windows ships | Sub-day session each, opportunistic |
+| Bytecode VM kwarg-builtin support | All widget-using examples fall back to tree-walker; closes a known limitation | Tracked, not yet phased |
+| 3× bytecode-VM speedup gap from Phase 8.5 | Criterion bench harness ships; perf tuning driven by profiling | **Now Phase 29** |
+| `save SaveSlot:` block syntax | v0.3+ follow-on from Phase 8; key/value layer ships | Tracked, not yet phased |
+| `tilemap Dungeon:` block syntax | v0.3+ follow-on from Phase 8 | Tracked, not yet phased |
+| Per-state pause opt-out (`pause: false`) | Open syntax question | Open |
+| 3D rendering polish (bloom / DoF / cascades / mipmaps / async preload) | Per `docs/changes/2026-05-07-phase-24-26-closeout.md` polish-tier deferrals | **Now Phase 28** |
+| 2D genre coverage (platformer / Tetris / cards) | Stdlib pressure-test; plug a marketing gap | **Now Phase 27** |
+| WASM / web target | Distribution unlock for 2D | **Now Phase 30** |
+| Multiplayer | Per-genre game pressure; needs netcode RFC | **Now Phase 31** |
+| Open-world 3D streaming + LOD | Tunic-scale games; needs lock revision | **Now Phase 32** |
+| Community game support | Link + track third-party games in the README gallery | Ongoing |
 
 ---
 

@@ -106,7 +106,7 @@ twec build examples/survive_beta
 
 ## Examples gallery
 
-27 single-file examples + 7 multi-file projects, covering every major surface:
+30 single-file examples + 7 multi-file projects, covering every major surface:
 
 | File | What it shows |
 |------|--------------|
@@ -115,6 +115,10 @@ twec build examples/survive_beta
 | `examples/hello_3d.twe` / `hello_glb.twe` | 3D primitives + glTF mesh import |
 | `examples/pong.twe` | Paddles, ball physics, AI, state machine |
 | `examples/snake.twe` | Classic Snake — entity-less version |
+| `examples/flappy.twe` | Flappy Bird — gravity + recycled obstacles + state machine |
+| `examples/platformer.twe` | Coyote time, jump buffer, variable jump, AABB tile collision, one-way platforms |
+| `examples/tetris.twe` | 7-bag, simplified SRS, line clears, DAS/ARR, ghost piece |
+| `examples/cards.twe` | Solitaire-Lite — drag-and-drop, layered z-order, snap-back |
 | `examples/survive_beta/` | Full Vampire-Survivors clone (~1300 lines) |
 | `examples/rpg_demo/` | Dialogue, rooms, pickups, save / load |
 | `examples/visual_fire.twe` | Procedural fire via `visual` → WGSL |
