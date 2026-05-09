@@ -1347,6 +1347,12 @@ struct RenderState {
     /// the stderr noise on every subsequent frame; the user can
     /// fix the path and hot-reload to retry.
     mesh_load_failures: HashSet<u32>,
+    /// Phase 28 session 5: in-flight async .glb loads. The render
+    /// loop spawns a worker thread for any uncached mesh referenced
+    /// this frame, polls `is_finished()` next frame, and does the
+    /// GPU upload on the main thread when the worker completes. The
+    /// map is keyed by the same id used for the mesh cache.
+    mesh_load_jobs: HashMap<u32, std::thread::JoinHandle<Result<LoadedGlb, String>>>,
     /// Phase 17 session 3: texture bind group layout (reused for
     /// every per-texture bind group), default linear sampler, and
     /// fallback white 1×1 texture's bind group. Untextured meshes
@@ -1601,6 +1607,11 @@ impl ApplicationHandler for App {
                         // because of this.
                         state.mesh_cache.clear();
                         state.mesh_load_failures.clear();
+                        // Phase 28 session 5: in-flight async loads
+                        // also reference the old env's path/id pairs
+                        // — drop them so the new env's first frame
+                        // re-spawns workers from current paths.
+                        state.mesh_load_jobs.clear();
                         state.texture_cache.clear();
                         state.texture_load_failures.clear();
                         // Phase 18: drop all rigid bodies; the new
@@ -2453,6 +2464,7 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         hdr_size: (0, 0),
         mesh_cache: HashMap::new(),
         mesh_load_failures: HashSet::new(),
+        mesh_load_jobs: HashMap::new(),
         texture_bgl,
         default_sampler,
         white_bind_group,
@@ -3503,18 +3515,21 @@ fn widen_rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Load `.glb` at `path`, upload CPU-side data to GPU, return a
-/// `GpuMesh` ready for rendering. Logs the failure path to stderr
-/// on any error so the user sees what went wrong.
-fn load_and_upload_mesh(
+/// Phase 28 session 5: GPU-upload portion of mesh load, split out
+/// from `load_and_upload_mesh` so the disk I/O + glb parse half can
+/// run on a background worker thread. Takes pre-parsed CPU data
+/// (a `LoadedGlb` from `load_glb`) and turns it into a renderable
+/// `GpuMesh`. All wgpu calls happen on the calling thread, which
+/// is the main render thread.
+fn upload_loaded_glb(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     joints_bgl: &wgpu::BindGroupLayout,
-    path: &str,
-) -> Result<GpuMesh, String> {
-    let (vertices, indices, auto_tex, skin_data) = load_glb(path)?;
+    loaded: LoadedGlb,
+) -> GpuMesh {
+    let (vertices, indices, auto_tex, skin_data) = loaded;
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("twec-play3d mesh vertices"),
         contents: bytemuck::cast_slice(&vertices),
@@ -3610,7 +3625,7 @@ fn load_and_upload_mesh(
         bound_radius = 0.5; // fallback for empty / degenerate meshes
     }
 
-    Ok(GpuMesh {
+    GpuMesh {
         bound_radius,
         vertex_buffer,
         index_buffer,
@@ -3618,7 +3633,23 @@ fn load_and_upload_mesh(
         index_format: wgpu::IndexFormat::Uint32,
         auto_texture,
         skin,
-    })
+    }
+}
+
+/// Synchronous load + upload kept for the texture-only `texture()`
+/// path and tests. The render loop's mesh path uses the async
+/// background-load + main-thread-upload split below.
+#[allow(dead_code)]
+fn load_and_upload_mesh(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    joints_bgl: &wgpu::BindGroupLayout,
+    path: &str,
+) -> Result<GpuMesh, String> {
+    let loaded = load_glb(path)?;
+    Ok(upload_loaded_glb(device, queue, layout, sampler, joints_bgl, loaded))
 }
 
 // ---------- Per-frame render ----------
@@ -3712,43 +3743,76 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     // queue exceeds it we'll grow the buffer below before writing.
     let cap = usize::MAX;
 
-    // 4a. Lazy-load any `.glb` paths referenced this frame but not
-    //     yet on the GPU. v0.2 session 1.
+    // 4a. Phase 28 session 5: async `.glb` load. The CPU-bound
+    //     half of mesh loading (file read + glb parse) runs on a
+    //     background worker thread per uncached id; the main
+    //     thread polls completion and does the GPU upload. The
+    //     first frame a mesh is referenced spawns a worker but
+    //     draws nothing for that mesh; the upload typically lands
+    //     a frame or two later. For interactive scenes this means
+    //     loading a complex `.glb` no longer freezes the frame —
+    //     the worst case is one missing-mesh frame followed by a
+    //     normal upload.
     let mut needed_mesh_ids: Vec<u32> = Vec::new();
     for d in &queue {
         if let Primitive::Mesh(id) = d.primitive {
             if !state.mesh_cache.contains_key(&id)
                 && !state.mesh_load_failures.contains(&id)
+                && !state.mesh_load_jobs.contains_key(&id)
                 && !needed_mesh_ids.contains(&id)
             {
                 needed_mesh_ids.push(id);
             }
         }
     }
+    // Spawn workers for every newly-referenced mesh.
     for id in needed_mesh_ids {
         let path = match env.mesh_path(id) {
             Some(p) => p.to_string(),
             None => {
-                // Stale id — env was hot-reloaded between
-                // `mesh()` and the render. Treat as a load failure
-                // so we don't keep retrying.
                 state.mesh_load_failures.insert(id);
                 continue;
             }
         };
-        match load_and_upload_mesh(
-            &state.device,
-            &state.queue,
-            &state.texture_bgl,
-            &state.default_sampler,
-            &state.joints_bgl,
-            &path,
-        ) {
-            Ok(gpu_mesh) => {
+        let handle = std::thread::Builder::new()
+            .name(format!("twec-glb-load-{id}"))
+            .spawn(move || load_glb(&path))
+            .expect("failed to spawn mesh-load worker thread");
+        state.mesh_load_jobs.insert(id, handle);
+    }
+    // Drain finished workers and upload them to the GPU on the
+    // main thread. Polled via `is_finished()`; we never call
+    // `join()` until we know the worker has exited so the main
+    // thread doesn't block on a slow .glb parse.
+    let completed_ids: Vec<u32> = state
+        .mesh_load_jobs
+        .iter()
+        .filter(|(_, h)| h.is_finished())
+        .map(|(id, _)| *id)
+        .collect();
+    for id in completed_ids {
+        let handle = state
+            .mesh_load_jobs
+            .remove(&id)
+            .expect("just enumerated this id");
+        match handle.join() {
+            Ok(Ok(loaded)) => {
+                let gpu_mesh = upload_loaded_glb(
+                    &state.device,
+                    &state.queue,
+                    &state.texture_bgl,
+                    &state.default_sampler,
+                    &state.joints_bgl,
+                    loaded,
+                );
                 state.mesh_cache.insert(id, gpu_mesh);
             }
-            Err(e) => {
-                eprintln!("error: mesh load `{path}`: {e}");
+            Ok(Err(e)) => {
+                eprintln!("error: mesh load: {e}");
+                state.mesh_load_failures.insert(id);
+            }
+            Err(_) => {
+                eprintln!("error: mesh-load worker thread panicked");
                 state.mesh_load_failures.insert(id);
             }
         }
