@@ -4,17 +4,18 @@
 #
 # Run with:  twec play examples/tetris.twe
 #
-# Phase 27 session 2. Pressure-tests v1.0 stdlib in three places:
+# Phase 27 session 2 (sessions 4 + 5 closed three of the four
+# friction points this example surfaced). Pressure-tests:
 #   1. Key-repeat with DAS/ARR — does Twe's `key.X` / `key_press.X`
 #      pair work for arcade-grade input timing?  (Yes; the cost is
-#      ~30 lines of bookkeeping per direction. See GAP-2.)
-#   2. Nested-list-of-int board mutation — does `.set()` on a
-#      flat 200-element list survive a busy update loop with line
-#      clears every few seconds?  (Yes.)
-#   3. 7-bag randomization — `random.int(0..<n)` + Fisher-Yates is
-#      ~10 lines without `random.shuffle`. (See GAP-3.)
-#
-# Frictions tagged inline as "GAP-N". Inputs to Phase 27 session 4.
+#      ~30 lines of bookkeeping per direction. STILL OPEN — a
+#      `key_repeat(name, das, arr)` helper would compress it.)
+#   2. Nested-list-of-int board mutation via `.set()` — fine.
+#   3. 7-bag randomization — closed: `random.shuffle` shipped in
+#      session 4.
+#   4. Integer modulo for rotation wrap — closed: `math.mod`
+#      shipped in session 4 (`%` is the percent-literal suffix
+#      and isn't a binary operator).
 #
 # Controls
 #   ←/→         move (with DAS/ARR auto-repeat after 170ms)
@@ -155,19 +156,11 @@ var game_over = false
 # ---------------------------------------------------------------
 
 function refill_bag():
-    # Standard 7-bag: shuffle [0..6] with Fisher-Yates, push to bag.
-    #
-    # GAP-3: no `random.shuffle` builtin; manual Fisher-Yates is
-    # ~10 lines per call. Captured for session 4.
+    # Standard 7-bag: shuffle [0..6] in place and push to the bag.
+    # Phase 27 session 4 introduced `random.shuffle(list)` so this
+    # is now two lines instead of ten.
     var arr = [0, 1, 2, 3, 4, 5, 6]
-    var i = 6
-    while i > 0:
-        let upper = i + 1
-        let j = random.int(0..<upper)
-        let tmp = arr[i]
-        arr.set(i, arr[j])
-        arr.set(j, tmp)
-        i -= 1
+    random.shuffle(arr)
     var k = 0
     while k < 7:
         bag.append(arr[k])
@@ -284,13 +277,9 @@ function try_move(dx):
         current_x += dx
 
 function try_rotate(direction):
-    # Twe's `%` is the percent-literal suffix, not int modulo.
-    # GAP-4: `math.mod(a, b)` would absorb the manual wrap below.
-    var new_rot = current_rot + direction
-    if new_rot < 0:
-        new_rot += 4
-    if new_rot >= 4:
-        new_rot -= 4
+    # Twe's `%` is the percent-literal suffix, not int modulo, so
+    # rotation wrap goes through `math.mod` (Phase 27 session 4).
+    let new_rot = math.mod(current_rot + direction, 4)
     var k = 0
     while k < 4:
         let kx = kick_dx[k]

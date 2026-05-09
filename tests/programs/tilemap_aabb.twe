@@ -1,0 +1,51 @@
+# Phase 27 session 4 — tilemap_solid_aabb + tilemap_aabb_touches.
+#
+# 5×3 layout, 32×32 tiles. `#` is solid, `^` is a spike (deadly
+# trait), `.` is empty.
+#   col: 0    1    2    3    4
+#   row 0: . . . . .
+#   row 1: # # . ^ .
+#   row 2: # # # # #
+let layout = ".....\n##.^.\n#####"
+
+let map = tilemap(
+    layout: layout,
+    tile_size: 32,
+    tiles: [
+        (".", "sky", []),
+        ("#", "wall", ["solid"]),
+        ("^", "spike", ["deadly"]),
+    ]
+)
+
+# AABB fully inside an empty area (col 0-1, row 0) → not solid.
+if not tilemap_solid_aabb(map, 4.0, 4.0, 24.0, 24.0):
+    print("ok empty")
+else:
+    print("bad empty")
+
+# AABB at (0, 32) — exactly on top of the wall in row 1 col 0.
+if tilemap_solid_aabb(map, 0.0, 32.0, 16.0, 16.0):
+    print("ok solid_at_corner")
+else:
+    print("bad solid_at_corner")
+
+# AABB straddling the boundary between row 0 (sky) and row 1 (wall).
+# Bottom-left corner enters the wall → solid.
+if tilemap_solid_aabb(map, 0.0, 24.0, 24.0, 16.0):
+    print("ok solid_straddle")
+else:
+    print("bad solid_straddle")
+
+# AABB sitting in the spike tile at (col 3, row 1) — pixel range
+# x in [96, 128), y in [32, 64).
+if tilemap_aabb_touches(map, 100.0, 40.0, 16.0, 16.0, "spike"):
+    print("ok spike_touch")
+else:
+    print("bad spike_touch")
+
+# AABB nowhere near the spike → no touch.
+if not tilemap_aabb_touches(map, 4.0, 4.0, 16.0, 16.0, "spike"):
+    print("ok no_spike")
+else:
+    print("bad no_spike")

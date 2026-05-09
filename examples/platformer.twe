@@ -96,55 +96,30 @@ var buffer_t = 0.0
 var deaths = 0
 
 # ---------------------------------------------------------------
-# Tile-query helpers. All assume (x, y) is the AABB's top-left
-# corner; player_w / player_h are the extents.
+# Tile-query helpers.
 #
-# GAP-1: the same 4-corner sample pattern repeats three times
-# below (solid, named-tile, one-way). A stdlib helper like
-# `tilemap_solid_aabb(map, x, y, w, h)` and a matching
-# `tilemap_aabb_touches(map, x, y, w, h, name)` would absorb all
-# three. Captured for Phase 27 session 4.
+# `tilemap_solid_aabb(map, x, y, w, h)` and `tilemap_aabb_touches(
+# map, x, y, w, h, name)` are stdlib builtins as of Phase 27
+# session 4 — they replace the 4-corner sample pattern that
+# earlier drafts of this example were repeating three times.
 #
-# GAP-2: the 4-corner sample is not a swept-AABB. At very high
-# velocity (e.g. a long fall capped only by max_fall_v) the player
-# could tunnel through a 1-tile-thick wall in a single frame. The
-# `max_fall_v = 900` cap masks this in practice — but a real
-# `tilemap_sweep(map, x, y, w, h, dx, dy)` returning the safe
-# move + the hit normal would let us drop the speed cap and also
-# fix the corner-snap that 4-corner sampling does badly.
+# REMAINING-GAP: still no swept-AABB primitive. At very high
+# velocity the player could tunnel through a 1-tile-thick wall in
+# a single frame. The `max_fall_v = 900` cap masks this in
+# practice. A future `tilemap_sweep(map, x, y, w, h, dx, dy)`
+# returning the safe move + the hit normal would let us drop the
+# speed cap. Captured for a follow-on session.
 # ---------------------------------------------------------------
-
-function aabb_solid(x, y):
-    if tilemap_solid_at(map, x, y):
-        return true
-    if tilemap_solid_at(map, x + player_w - 1.0, y):
-        return true
-    if tilemap_solid_at(map, x, y + player_h - 1.0):
-        return true
-    if tilemap_solid_at(map, x + player_w - 1.0, y + player_h - 1.0):
-        return true
-    return false
-
-function aabb_touches(x, y, name):
-    if tilemap_at(map, x, y) == name:
-        return true
-    if tilemap_at(map, x + player_w - 1.0, y) == name:
-        return true
-    if tilemap_at(map, x, y + player_h - 1.0) == name:
-        return true
-    if tilemap_at(map, x + player_w - 1.0, y + player_h - 1.0) == name:
-        return true
-    return false
 
 # One-way platform check. Solid only when the player is moving
 # downward AND the previous-frame bottom edge was above the
 # platform's top edge (so we're entering from above, not poking
 # our head up through it).
 #
-# GAP-3: this needs `prev_bottom` and `vy` at file scope. A swept
-# stdlib helper that returns "did the bottom edge cross this row
-# this frame?" would replace the math in this function entirely
-# and remove the file-scope `prev_bottom` plumbing.
+# REMAINING-GAP: this still needs `prev_bottom` and `vy` at file
+# scope. A swept stdlib helper that returns "did the bottom edge
+# cross this row this frame?" would replace the math in this
+# function entirely. Captured for the same follow-on as sweep.
 function aabb_one_way(x, y):
     if vy < 0:
         return false
@@ -222,13 +197,14 @@ scene Platformer:
             prev_bottom = py + player_h
 
             let nx = px + vx * dt
-            if not aabb_solid(nx, py):
+            if not tilemap_solid_aabb(map, nx, py, player_w, player_h):
                 px = nx
             else:
                 vx = 0.0
 
             let ny = py + vy * dt
-            if not aabb_solid(px, ny) and not aabb_one_way(px, ny):
+            let solid = tilemap_solid_aabb(map, px, ny, player_w, player_h)
+            if not solid and not aabb_one_way(px, ny):
                 py = ny
                 grounded = false
             else:
@@ -238,13 +214,13 @@ scene Platformer:
                 vy = 0.0
 
             # --- Death traps ---
-            if aabb_touches(px, py, "spike"):
+            if tilemap_aabb_touches(map, px, py, player_w, player_h, "spike"):
                 respawn()
             if py > view_h + 100.0:
                 respawn()
 
             # --- Goal ---
-            if aabb_touches(px, py, "goal"):
+            if tilemap_aabb_touches(map, px, py, player_w, player_h, "goal"):
                 -> won
 
         on render():

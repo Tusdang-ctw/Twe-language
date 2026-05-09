@@ -1,0 +1,51 @@
+# Phase 27 session 4 — random.shuffle (in-place Fisher-Yates).
+
+# Empty + single-element lists are no-ops.
+var empty = []
+random.shuffle(empty)
+print(empty.length)
+
+var one = [42]
+random.shuffle(one)
+print(one[0])
+
+# Determinism: same seed → same permutation.
+random.seed(7)
+var a = [1, 2, 3, 4, 5]
+random.shuffle(a)
+random.seed(7)
+var b = [1, 2, 3, 4, 5]
+random.shuffle(b)
+var i = 0
+var match = true
+while i < 5:
+    if a[i] != b[i]:
+        match = false
+    i += 1
+if match:
+    print("ok determinism")
+else:
+    print("bad determinism")
+
+# Shuffled list is a permutation of the original — every element
+# present exactly once.
+random.seed(123)
+var c = [10, 20, 30, 40, 50]
+random.shuffle(c)
+let expected = [10, 20, 30, 40, 50]
+var all_present = true
+var k = 0
+while k < 5:
+    var found = false
+    var j = 0
+    while j < 5:
+        if c[j] == expected[k]:
+            found = true
+        j += 1
+    if not found:
+        all_present = false
+    k += 1
+if all_present:
+    print("ok permutation")
+else:
+    print("bad permutation")

@@ -1,0 +1,21 @@
+# Phase 27 session 4 — math.mod (Euclidean remainder).
+
+# Positive int / int.
+print(math.mod(7, 3))
+print(math.mod(6, 3))
+print(math.mod(0, 5))
+
+# Negative int / int — Euclidean (always non-negative when b > 0).
+print(math.mod(-1, 4))
+print(math.mod(-5, 3))
+
+# Float arg promotes the result to float.
+print(math.mod(7.5, 2.0))
+print(math.mod(-1.5, 1.0))
+
+# Wrap-around use-case from examples/tetris.twe rotation: forward
+# and backward rotation through the four states.
+let states = 4
+print(math.mod(0 + 1, states))
+print(math.mod(0 + -1 + states, states))
+print(math.mod(3 + 1, states))

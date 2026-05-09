@@ -614,6 +614,7 @@ math.floor(3.7)        # 3
 math.ceil(3.1)         # 4
 math.min(2, 5)         # 2
 math.max(2, 5)         # 5
+math.mod(-1, 4)        # 3 — Euclidean modulo. `%` is reserved for percent literals.
 math.sin(math.pi)      # ~0
 math.cos(0.0)          # 1.0
 math.noise((x, y))     # deterministic 2D value noise, range [-1, 1]
@@ -630,6 +631,8 @@ random.float()              # float in [0, 1)
 random.int(0..<10)          # int in [0, 9]
 random.in_circle(radius: 40.0)    # (x, y) tuple uniformly in a circle
 random.choice(["a", "b", "c"])    # random element from a list
+random.shuffle(deck)              # in-place Fisher-Yates; returns nil
+random.seed(42)                   # re-seed the PRNG (testing / replays)
 ```
 
 ### 7.4 Color
@@ -755,6 +758,28 @@ let sfx   = sound.load("assets/hit.wav")
 ```
 
 All loads are eager path-checked, lazy decoded. Errors on missing files fail fast.
+
+### 7.9b Tilemaps
+
+```twe
+# Build a tilemap from a string layout. Each character is one tile.
+let map = tilemap(
+    layout: "...\n###\n...",
+    tile_size: 32,
+    tiles: [
+        (".", "sky", []),
+        ("#", "wall", ["solid"]),
+    ]
+)
+
+tilemap_render(map, at: (0, 0))                     # blit
+tilemap_at(map, x, y)                               # tile name at pixel (x, y), or ""
+tilemap_solid_at(map, x, y)                         # tile carries the `solid` trait
+tilemap_solid_aabb(map, x, y, w, h)                 # any corner of the AABB is solid
+tilemap_aabb_touches(map, x, y, w, h, "spike")      # any corner of the AABB is named
+```
+
+The `_aabb` helpers sample all four corners of the box; they fit the platformer "is the player AABB clipping a tile?" pattern without a userland 4-corner loop. They do not sweep — at very high velocity an AABB can tunnel through a 1-tile-thick wall in a single frame, so cap fall speed accordingly. (A future swept primitive is on the roadmap.)
 
 ### 7.10 Audio
 

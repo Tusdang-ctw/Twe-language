@@ -255,6 +255,20 @@ fn runs_math_stdlib() {
     assert_eq!(out, "7\n3.14\n3.0\n1.4142135623730951\n2\n3\n1\n3\n0.5\n");
 }
 
+// Phase 27 session 4: Euclidean modulo. Negative operands wrap to
+// the [0, b) range — needed for examples/tetris.twe rotation.
+#[test]
+fn runs_math_mod() {
+    let out = run_program("tests/programs/math_mod.twe").expect("program should run");
+    assert_eq!(out, "1\n0\n0\n3\n1\n1.5\n0.5\n1\n3\n0\n");
+}
+
+#[test]
+fn math_mod_by_zero_errors() {
+    let err = run_program_str("print(math.mod(7, 0))\n").expect_err("should fail");
+    assert!(err.contains("math.mod by zero"), "got: {err}");
+}
+
 #[test]
 fn vm_death_event_handler_fires_once() {
     // Phase 11 session 10: bytecode-VM mirror of the tree-walker
@@ -1035,6 +1049,33 @@ fn random_int_on_empty_range_errors() {
 fn random_choice_on_empty_list_errors() {
     let err = run_program_str("print(random.choice([]))\n").expect_err("should fail");
     assert!(err.contains("empty list"), "got: {err}");
+}
+
+// Phase 27 session 4: Fisher-Yates in-place shuffle. Tests
+// determinism (re-seeding gives the same permutation), permutation
+// preservation (no element added or dropped), and the no-op edge
+// cases (empty / single-element).
+#[test]
+fn runs_random_shuffle() {
+    let out = run_program("tests/programs/random_shuffle.twe").expect("program should run");
+    assert_eq!(out, "0\n42\nok determinism\nok permutation\n");
+}
+
+#[test]
+fn random_shuffle_on_non_list_errors() {
+    let err = run_program_str("random.shuffle(42)\n").expect_err("should fail");
+    assert!(err.contains("expected a list"), "got: {err}");
+}
+
+// Phase 27 session 4: AABB-vs-tile collision queries. Replaces the
+// 4-corner sample pattern examples/platformer.twe was repeating.
+#[test]
+fn runs_tilemap_aabb() {
+    let out = run_program("tests/programs/tilemap_aabb.twe").expect("program should run");
+    assert_eq!(
+        out,
+        "ok empty\nok solid_at_corner\nok solid_straddle\nok spike_touch\nok no_spike\n"
+    );
 }
 
 #[test]

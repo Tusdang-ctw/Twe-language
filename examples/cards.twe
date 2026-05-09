@@ -279,15 +279,8 @@ function reset_game():
             deck.append((s, r))
             r += 1
         s += 1
-    # Fisher-Yates shuffle.
-    var i = deck.length - 1
-    while i > 0:
-        let upper = i + 1
-        let j = random.int(0..<upper)
-        let tmp = deck[i]
-        deck.set(i, deck[j])
-        deck.set(j, tmp)
-        i -= 1
+    # In-place shuffle. Phase 27 session 4 added `random.shuffle`.
+    random.shuffle(deck)
     # Deal 4 to each tableau column.
     var k = 0
     var col = 0

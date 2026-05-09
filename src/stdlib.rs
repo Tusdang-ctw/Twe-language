@@ -1929,6 +1929,14 @@ fn install_math(env: &mut Env) {
         "max".to_string(),
         Value::from_builtin("math.max", &["a", "b"], math_max),
     );
+    // Phase 27 session 4: int / float modulo. Twe's `%` is the
+    // percent-literal suffix, not a binary modulo operator (see
+    // docs/06-design-document.md §3.6). `math.mod(a, b)` fills the
+    // gap surfaced by examples/tetris.twe rotation wrap.
+    math.insert(
+        "mod".to_string(),
+        Value::from_builtin("math.mod", &["a", "b"], math_mod),
+    );
     math.insert(
         "sin".to_string(),
         Value::from_builtin("math.sin", &["x"], math_sin),
@@ -2438,6 +2446,40 @@ fn math_max(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let af = as_f64(&args[0], "math.max")?;
     let bf = as_f64(&args[1], "math.max")?;
     Ok(Value::from_float(af.max(bf)))
+}
+
+// Phase 27 session 4: int / float modulo. Returns the Euclidean
+// remainder so that `math.mod(-1, 4) == 3` (not -1) — matches the
+// "rotation wrap" intuition that a negative angle is just the
+// positive equivalent. `math.mod(a, 0)` errors. Result is int when
+// both args are ints; float otherwise.
+fn math_mod(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "math.mod")?;
+    if args[0].is_int_or_boxed_int() && args[1].is_int_or_boxed_int() {
+        let b = args[1].as_int();
+        if b == 0 {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: "math.mod by zero".to_string(),
+                help: None,
+            });
+        }
+        let a = args[0].as_int();
+        let r = a.rem_euclid(b);
+        return Ok(Value::from_int(r));
+    }
+    let bf = as_f64(&args[1], "math.mod")?;
+    if bf == 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "math.mod by zero".to_string(),
+            help: None,
+        });
+    }
+    let af = as_f64(&args[0], "math.mod")?;
+    Ok(Value::from_float(af.rem_euclid(bf)))
 }
 
 fn math_sin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -3263,6 +3305,14 @@ fn install_random(env: &mut Env) {
         "choice".to_string(),
         Value::from_builtin("random.choice", &["list"], random_choice),
     );
+    // Phase 27 session 4: in-place Fisher-Yates shuffle. Mutates
+    // the list. Returns nil. Replaces ~10 lines of inline shuffling
+    // every example needed (tetris 7-bag, cards deal, level
+    // randomizers).
+    random.insert(
+        "shuffle".to_string(),
+        Value::from_builtin("random.shuffle", &["list"], random_shuffle),
+    );
     random.insert(
         "seed".to_string(),
         Value::from_builtin("random.seed", &["seed"], random_seed),
@@ -3337,6 +3387,40 @@ fn random_choice(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             })
         }
     }
+}
+
+// Phase 27 session 4: Fisher-Yates in-place shuffle. Returns nil.
+// Empty / single-element lists are no-ops (already "shuffled").
+fn random_shuffle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "random.shuffle")?;
+    if !args[0].is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "random.shuffle expected a list, got {}",
+                args[0].type_name()
+            ),
+            help: None,
+        });
+    }
+    let rc = args[0].as_list();
+    let mut v = rc.borrow_mut();
+    let n = v.len();
+    if n < 2 {
+        return Ok(Value::NIL);
+    }
+    let mut i = n - 1;
+    while i > 0 {
+        // Uniform pick in 0..=i. `next_random_u64() % (i + 1)` has
+        // a small bias for non-power-of-two upper bounds; matches
+        // what `random.int(0..<n)` already does, so two independent
+        // shuffles seeded the same way produce the same permutation.
+        let j = (env.next_random_u64() as usize) % (i + 1);
+        v.swap(i, j);
+        i -= 1;
+    }
+    Ok(Value::NIL)
 }
 
 fn random_seed(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -3692,6 +3776,28 @@ fn install_tilemap(env: &mut Env) {
     env.set(
         "tilemap_solid_at".to_string(),
         Value::from_builtin("tilemap_solid_at", &["map", "x", "y"], tilemap_solid_at),
+    );
+    // Phase 27 session 4: AABB-vs-tile collision queries. Each
+    // samples the four corners of an axis-aligned box at pixel
+    // coords (x, y) extending (w, h) and returns true if any
+    // corner satisfies the inner predicate (`solid` trait /
+    // matching tile name). Replaces the 4-corner sample pattern
+    // examples/platformer.twe was repeating three times.
+    env.set(
+        "tilemap_solid_aabb".to_string(),
+        Value::from_builtin(
+            "tilemap_solid_aabb",
+            &["map", "x", "y", "w", "h"],
+            tilemap_solid_aabb,
+        ),
+    );
+    env.set(
+        "tilemap_aabb_touches".to_string(),
+        Value::from_builtin(
+            "tilemap_aabb_touches",
+            &["map", "x", "y", "w", "h", "name"],
+            tilemap_aabb_touches,
+        ),
     );
 }
 
@@ -4204,6 +4310,80 @@ fn tilemap_solid_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
         })
         .unwrap_or(false);
     Ok(Value::from_bool(solid))
+}
+
+// Phase 27 session 4: shared trait-lookup for the AABB helpers.
+// Returns true if the tile under pixel (x, y) carries the named
+// trait. Returns false on out-of-bounds, missing tile spec, or
+// missing traits list. Mirrors the inline lookup in
+// `tilemap_solid_at` but is parameterised on the trait name.
+fn tile_has_trait(map: &Rc<RefCell<Object>>, x: f32, y: f32, trait_name: &str) -> bool {
+    let name = tilemap_name_at(map, x, y);
+    if name.is_empty() {
+        return false;
+    }
+    let m = map.borrow();
+    let tile_specs = match m.get_field("tiles") {
+        Some(t) if t.is_object() => t.as_object(),
+        _ => return false,
+    };
+    let specs = tile_specs.borrow();
+    let tile = match specs.get_field(&name) {
+        Some(t) if t.is_object() => t.as_object(),
+        _ => return false,
+    };
+    let traits = match tile.borrow().get_field("traits") {
+        Some(t) if t.is_list() => t.as_list().clone(),
+        _ => return false,
+    };
+    let result = traits
+        .borrow()
+        .iter()
+        .any(|v| v.is_str() && v.as_string() == trait_name);
+    result
+}
+
+fn tilemap_solid_aabb(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "tilemap_solid_aabb")?;
+    let map = expect_tilemap(&args[0], "tilemap_solid_aabb.map")?;
+    let x = number(&args[1], "tilemap_solid_aabb.x")? as f32;
+    let y = number(&args[2], "tilemap_solid_aabb.y")? as f32;
+    let w = number(&args[3], "tilemap_solid_aabb.w")? as f32;
+    let h = number(&args[4], "tilemap_solid_aabb.h")? as f32;
+    let corners = [
+        (x, y),
+        (x + w - 1.0, y),
+        (x, y + h - 1.0),
+        (x + w - 1.0, y + h - 1.0),
+    ];
+    for (cx, cy) in corners {
+        if tile_has_trait(&map, cx, cy, "solid") {
+            return Ok(Value::TRUE);
+        }
+    }
+    Ok(Value::FALSE)
+}
+
+fn tilemap_aabb_touches(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 6, "tilemap_aabb_touches")?;
+    let map = expect_tilemap(&args[0], "tilemap_aabb_touches.map")?;
+    let x = number(&args[1], "tilemap_aabb_touches.x")? as f32;
+    let y = number(&args[2], "tilemap_aabb_touches.y")? as f32;
+    let w = number(&args[3], "tilemap_aabb_touches.w")? as f32;
+    let h = number(&args[4], "tilemap_aabb_touches.h")? as f32;
+    let name = string_arg(&args[5], "tilemap_aabb_touches", "name")?;
+    let corners = [
+        (x, y),
+        (x + w - 1.0, y),
+        (x, y + h - 1.0),
+        (x + w - 1.0, y + h - 1.0),
+    ];
+    for (cx, cy) in corners {
+        if tilemap_name_at(&map, cx, cy) == name {
+            return Ok(Value::TRUE);
+        }
+    }
+    Ok(Value::FALSE)
 }
 
 fn tilemap_name_at(map: &Rc<RefCell<Object>>, x: f32, y: f32) -> String {
