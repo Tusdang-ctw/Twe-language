@@ -1118,6 +1118,10 @@ Err(RuntimeError {
             }
         }
         self.active_entities.retain(|e| !e.borrow().despawned);
+        // Phase 29 session 5: advance audio simulation clock and
+        // dispatch any due scheduled plays. Mirrors the eval-side
+        // call at the end of `eval::tick_frame`.
+        crate::stdlib::tick_audio_schedule(dt);
         Ok(())
     }
 

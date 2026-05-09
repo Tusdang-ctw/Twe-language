@@ -19,6 +19,7 @@ pub mod play3d;
 pub mod play_visual;
 pub mod printer;
 pub mod profile;
+pub mod replay;
 pub mod save;
 pub mod stdlib;
 pub mod steam;

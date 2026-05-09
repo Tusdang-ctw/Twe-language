@@ -82,6 +82,11 @@ pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     }
     tick_entities(env, dt)?;
     prune_despawned(env);
+    // Phase 29 session 5: advance the audio simulation clock and
+    // dispatch any scheduled one-shots whose deadline has passed.
+    // Done last so a sound the script just queued can fire on the
+    // same tick if its `when` is at or before the new clock value.
+    crate::stdlib::tick_audio_schedule(dt);
     Ok(())
 }
 

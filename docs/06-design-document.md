@@ -630,6 +630,18 @@ gc.bytes_alive()         # live heap bytes since the last sweep cycle finished.
 
 **Phase 29 session 2:** sweep is incremental. The play-loop safepoint runs the mark phase once per cycle, then sweeps up to `gc.budget_ms` worth of objects per call; the cursor persists across frames so a large heap is collected over multiple safepoints rather than stalling one. Allocations during an in-flight sweep are pre-marked so they survive the round. The mark phase itself is still stop-the-world; bounding mark requires tri-color which lands as a follow-on.
 
+The `replay` module captures and replays input frame logs:
+
+```twe
+replay.record("session.log")   # start writing input ambients each frame
+replay.play("session.log")     # start replaying — synthetic input
+                               #  overrides real keyboard/mouse
+replay.stop()                  # end recording or playback
+replay.is_playing()            # bool — true while replaying
+```
+
+**Phase 29 session 4:** the play loop calls into the replay subsystem after `update_key_state` and before the fixed-step accumulator runs. Recording snapshots the `key`, `key_press`, `mouse`, `mouse_held`, and `mouse_press` ambients to a small text log; playback overrides those ambients from the log so the script sees identical input across runs. Format details and what's not recorded (gamepad, system time, RNG reseeding) live in the module-level docs.
+
 ### 7.2 Math
 
 All functions available as `math.<name>` and as bare names inside `visual` blocks.
@@ -827,9 +839,18 @@ The `_aabb` helpers sample all four corners of the box; they fit the platformer 
 sound.play(sfx)                     # play once
 sound.play_at(sfx, (x, y))         # positional (attenuates with distance)
 sound.volume(sfx, 0.5)             # set volume 0–1
+
+# Phase 29 session 5: tick-accurate scheduling for rhythm games.
+sound.now()                         # simulation time in seconds
+sound.schedule(sfx, when, vol)      # queue a one-shot for time `when`
+sound.scheduled_count()             # how many entries are queued
 ```
 
 WAV and Ogg Vorbis supported.
+
+`sound.now()` returns the simulation clock that `sound.schedule(...)` deadlines compare against. The clock advances by exactly `time.physics_dt` (1/60s) per fixed-step substep, so a sound queued for `t = sound.now() + 0.5` fires on the same tick across two runs of the same input — the foundation for rhythm-game determinism.
+
+**Honest deferral:** the underlying audio backend (macroquad's quad-snd) is buffer-aligned, not sample-aligned. Scheduled sounds fire on the simulation tick that crosses their deadline, giving ±1/60s ≈ ±16.7ms accuracy. True sample-accurate scheduling would require a different audio crate (cpal + custom mixer) — captured as a follow-on phase.
 
 ### 7.11 Save / load
 

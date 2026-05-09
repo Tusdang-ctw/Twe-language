@@ -2504,3 +2504,104 @@ fn time_physics_dt_is_60hz_constant() {
         "expected {expected}, got {printed}"
     );
 }
+
+#[test]
+fn sound_now_advances_with_fixed_step_ticks() {
+    // Phase 29 session 5: `sound.now()` is the simulation clock that
+    // sound.schedule deadlines compare against. After 60 ticks at
+    // dt=1/60, it should read ~1.0 (modulo float accumulation
+    // error ≤ 1 ULP per tick).
+    twec::stdlib::reset_audio_schedule();
+    let src = r#"
+print(sound.now())
+"#;
+    // Drive 60 ticks via run_with_frames — tick_frame calls
+    // tick_audio_schedule under the hood.
+    let prog = parser::parse(&lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    eval::run_top_level(&mut env, &prog).expect("top");
+    for _ in 0..60 {
+        eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+    }
+    // After 60 ticks, sim time should be ~1.0s. Tolerance covers
+    // f64 accumulation drift.
+    let src2 = r#"
+print(sound.now())
+"#;
+    let prog2 = parser::parse(&lexer::lex(src2).expect("lex")).expect("parse");
+    eval::run_top_level(&mut env, &prog2).expect("read");
+    let printed = env
+        .out
+        .lines()
+        .last()
+        .expect("at least one print")
+        .parse::<f64>()
+        .expect("float");
+    assert!(
+        (printed - 1.0).abs() < 1e-9,
+        "expected sim time ≈ 1.0 after 60 ticks, got {printed}"
+    );
+}
+
+#[test]
+fn sound_schedule_drains_when_deadline_passes() {
+    // Phase 29 session 5: schedule three one-shots at staggered
+    // deadlines and tick past the latest one. The schedule queue
+    // must drain in deadline order, and end at zero entries.
+    //
+    // Test uses non-multiples-of-1/60 deadlines (0.1s, 0.2s, 0.4s)
+    // so float accumulation in SIM_TIME_S can't park exactly on a
+    // boundary. After enough ticks each `when` is comfortably
+    // exceeded.
+    //
+    // Headless: macroquad's audio backend requires a window
+    // (THREAD_ID assertion). The dispatch step is suppressed via
+    // `set_audio_dispatch_disabled(true)`; SOUND_DISPATCHED_COUNT
+    // still increments per fired entry so we can assert on
+    // dispatches without invoking macroquad.
+    twec::stdlib::reset_audio_schedule();
+    twec::stdlib::set_audio_dispatch_disabled(true);
+    let src = r#"
+let snd = sound.load("tests/programs/physics_dt.twe")
+sound.schedule(snd, 0.4, 1.0)
+sound.schedule(snd, 0.1, 1.0)
+sound.schedule(snd, 0.2, 1.0)
+"#;
+    let prog = parser::parse(&lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    eval::run_top_level(&mut env, &prog).expect("top");
+
+    // Three entries queued; none dispatched.
+    let count_prog =
+        parser::parse(&lexer::lex("print(sound.scheduled_count())").expect("lex")).expect("parse");
+    eval::run_top_level(&mut env, &count_prog).expect("read");
+    let count: i64 = env.out.lines().last().unwrap().parse().expect("count");
+    env.out.clear();
+    assert_eq!(count, 3, "expected 3 queued entries before any tick");
+
+    // 7 ticks ≈ 0.117s — only the 0.1s entry fires.
+    for _ in 0..7 {
+        eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+    }
+    eval::run_top_level(&mut env, &count_prog).expect("read");
+    let after_7: i64 = env.out.lines().last().unwrap().parse().expect("count");
+    env.out.clear();
+    assert_eq!(after_7, 2, "0.1s entry should have drained by tick 7");
+
+    // Drive past 0.4s. 30 more ticks ≈ 0.5s sim time → all entries
+    // gone.
+    for _ in 0..30 {
+        eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+    }
+    eval::run_top_level(&mut env, &count_prog).expect("read");
+    let after_37: i64 = env.out.lines().last().unwrap().parse().expect("count");
+    assert_eq!(after_37, 0, "all entries should have drained past 0.4s");
+    // Restore default so other tests on the same thread aren't
+    // surprised by dispatch suppression.
+    twec::stdlib::set_audio_dispatch_disabled(false);
+    // Three entries fired — assert via the dispatched counter.
+    let dispatched = twec::stdlib::sound_dispatched_count();
+    assert_eq!(dispatched, 3, "expected 3 dispatches, got {dispatched}");
+}

@@ -342,6 +342,12 @@ async fn run_loop(path: String) {
         }
 
         update_key_state(&mut env);
+        // Phase 29 session 4: replay hook. When recording, snapshot
+        // the just-refreshed input ambients to the log. When
+        // playing, overwrite them from the log so `tick_frame` sees
+        // synthetic input identical to the captured run. Idle in
+        // between — zero-cost when not recording or playing.
+        crate::replay::tick(&mut env);
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
         idle.tick(frame_dt);
@@ -947,6 +953,8 @@ async fn run_loop_embedded(source: String) {
         }
 
         update_key_state(&mut env);
+        // Phase 29 session 4: replay hook (see run_loop for context).
+        crate::replay::tick(&mut env);
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
         idle.tick(frame_dt);

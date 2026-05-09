@@ -124,6 +124,11 @@ pub fn clear_asset_caches() {
         s.focused_key_input = None;
         s.scroll_y.clear();
     });
+    // Phase 29 session 5: hot-reload restarts the audio simulation
+    // clock + drops any pending scheduled plays. Without this, a
+    // reloaded script would inherit the previous run's `sound.now()`
+    // and stale pending entries.
+    reset_audio_schedule();
 }
 
 /// Decay the camera-shake timer by `dt` seconds. The play loop calls
@@ -720,6 +725,7 @@ pub fn install(env: &mut Env) {
     install_settings(env);
     install_lang(env);
     install_gc(env);
+    install_replay(env);
     // Phase 10 session 8: explicit pause primitive. `pause(flag)`
     // toggles the runtime pause flag; `is_paused()` queries it.
     // While paused, the play loop skips `tick_frame` (no fibers
@@ -1639,6 +1645,28 @@ fn install_sound(env: &mut Env) {
         "play_at".to_string(),
         Value::from_builtin("sound.play_at", &["handle", "volume"], sound_play_at),
     );
+    // Phase 29 session 5: tick-accurate scheduling. The fixed-step
+    // accumulator from session 1 advances simulation time by exactly
+    // PHYSICS_DT per tick, so a sound queued for `t = 0.5s` fires
+    // on the same tick across two runs. Underlying audio backend
+    // (macroquad's quad-snd) is buffer-aligned, not sample-aligned —
+    // honest deferral is in the closeout note.
+    sound.insert(
+        "schedule".to_string(),
+        Value::from_builtin(
+            "sound.schedule",
+            &["handle", "when", "volume"],
+            sound_schedule,
+        ),
+    );
+    sound.insert(
+        "now".to_string(),
+        Value::from_builtin("sound.now", &[], sound_now),
+    );
+    sound.insert(
+        "scheduled_count".to_string(),
+        Value::from_builtin("sound.scheduled_count", &[], sound_scheduled_count),
+    );
     sound.insert(
         "stop".to_string(),
         Value::from_builtin("sound.stop", &["handle"], sound_stop),
@@ -1901,6 +1929,140 @@ fn sound_handle_path(v: &Value, callee: &str) -> Result<String, RuntimeError> {
     }
 }
 
+// ---------- Phase 29 session 5: tick-accurate audio scheduling ----------
+
+thread_local! {
+    /// Simulation time in seconds, accumulated by `tick_audio_schedule`.
+    /// Advances by exactly `PHYSICS_DT` per substep under the
+    /// session-1 fixed-timestep loop. Reset on `clear_asset_caches`
+    /// (which is also called on hot-reload) so a reloaded script
+    /// starts from t=0.
+    static SIM_TIME_S: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+
+    /// Pending one-shots, ordered by `when` ascending. Inserted in
+    /// sorted position by `sound_schedule`; drained from the front
+    /// by `tick_audio_schedule` whenever `when <= SIM_TIME_S`.
+    static SCHEDULED_SOUNDS: RefCell<Vec<ScheduledSound>> = const { RefCell::new(Vec::new()) };
+
+    /// Test/observability counter: number of scheduled sounds
+    /// dispatched (i.e., handed to the audio backend) since program
+    /// start. Tests assert on this in lieu of inspecting macroquad's
+    /// audio mixer directly (no headless audio backend exists in
+    /// the test harness).
+    static SOUND_DISPATCHED_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[derive(Clone)]
+struct ScheduledSound {
+    when: f64,
+    path: String,
+    volume: f32,
+}
+
+thread_local! {
+    /// Test mode flag: when true, `tick_audio_schedule` skips the
+    /// macroquad `play_sound` call (which requires a real window
+    /// context) and just counts dispatches in
+    /// `SOUND_DISPATCHED_COUNT`. Production code never sets this;
+    /// the headless test harness in `tests/eval.rs` does.
+    static AUDIO_DISPATCH_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test-only: suppress real audio dispatch. Subsequent
+/// `tick_audio_schedule` calls drain the queue and bump the
+/// dispatched counter but skip the `play_sound_path` call. Used by
+/// tests that drive `tick_frame` headlessly — macroquad's audio
+/// backend asserts a thread-local THREAD_ID that's only set up by
+/// the play loop.
+pub fn set_audio_dispatch_disabled(disabled: bool) {
+    AUDIO_DISPATCH_DISABLED.with(|c| c.set(disabled));
+}
+
+/// Called by `eval::tick_frame` once per fixed-step substep. Advances
+/// the simulation clock by `dt` and dispatches any scheduled sounds
+/// whose deadline has passed. Failures (cache miss, decode error)
+/// are surfaced to stderr and the entry is dropped — a broken sound
+/// shouldn't kill the simulation.
+pub fn tick_audio_schedule(dt: f64) {
+    SIM_TIME_S.with(|t| t.set(t.get() + dt));
+    let now = SIM_TIME_S.with(|t| t.get());
+    let due: Vec<ScheduledSound> = SCHEDULED_SOUNDS.with(|s| {
+        let mut q = s.borrow_mut();
+        let mut split = 0usize;
+        while split < q.len() && q[split].when <= now {
+            split += 1;
+        }
+        q.drain(..split).collect()
+    });
+    let dispatch_disabled = AUDIO_DISPATCH_DISABLED.with(|c| c.get());
+    for s in due {
+        if !dispatch_disabled {
+            // play_sound_path tolerates missing files etc. — surface
+            // the error but don't bubble it to the script (the
+            // schedule call already succeeded; this is the deferred
+            // fire).
+            if let Err(e) = play_sound_path(&s.path, "sound.schedule", s.volume, false) {
+                eprintln!("[twec] scheduled audio dispatch failed: {e}");
+            }
+        }
+        SOUND_DISPATCHED_COUNT.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// Reset audio scheduling state. Called by `clear_asset_caches` so
+/// hot-reload starts fresh, and from tests via the same path.
+pub fn reset_audio_schedule() {
+    SIM_TIME_S.with(|t| t.set(0.0));
+    SCHEDULED_SOUNDS.with(|s| s.borrow_mut().clear());
+    SOUND_DISPATCHED_COUNT.with(|c| c.set(0));
+}
+
+fn sound_schedule(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "sound.schedule")?;
+    let path = sound_handle_path(&args[0], "sound.schedule")?;
+    let when = number(&args[1], "sound.schedule.when")?;
+    let volume = number(&args[2], "sound.schedule.volume")?.clamp(0.0, 1.0) as f32;
+    if !when.is_finite() || when < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("sound.schedule expects a non-negative finite `when`, got {when}"),
+            help: Some("`when` is absolute simulation seconds; use `sound.now() + offset` for relative".to_string()),
+        });
+    }
+    let entry = ScheduledSound {
+        when,
+        path,
+        volume,
+    };
+    SCHEDULED_SOUNDS.with(|s| {
+        let mut q = s.borrow_mut();
+        // Insertion sort — typical schedule depth is small (a handful
+        // of upcoming beats). For deeper schedules a BinaryHeap would
+        // be faster but we'd lose the simple drain-from-front pattern.
+        let pos = q.partition_point(|x| x.when <= entry.when);
+        q.insert(pos, entry);
+    });
+    Ok(Value::NIL)
+}
+
+fn sound_now(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "sound.now")?;
+    Ok(Value::from_float(SIM_TIME_S.with(|t| t.get())))
+}
+
+fn sound_scheduled_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "sound.scheduled_count")?;
+    let count = SCHEDULED_SOUNDS.with(|s| s.borrow().len());
+    Ok(Value::from_int(count as i64))
+}
+
+/// Test-only accessor for the dispatched counter. Production code
+/// shouldn't need it.
+pub fn sound_dispatched_count() -> u32 {
+    SOUND_DISPATCHED_COUNT.with(|c| c.get())
+}
+
 /// Decode-then-play helper. Caches decoded `Sound` values per
 /// path; subsequent plays of the same file skip the decode.
 /// v0.2 session 5 generalizes the old `sound_play` body.
@@ -2019,6 +2181,76 @@ fn gc_last_collect_ms(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
 fn gc_bytes_alive(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "gc.bytes_alive")?;
     Ok(Value::from_int(crate::heap::gc_bytes_alive() as i64))
+}
+
+/// Phase 29 session 4: `replay.*` namespace. Captures input ambient
+/// state per frame to a file, or replays from one — the foundation
+/// for deterministic regression tests, lockstep multiplayer (Phase
+/// 31), and bug-report-with-input-log workflows. The play loop calls
+/// `crate::replay::tick(env)` once per simulation step; recording
+/// snapshots `key`, `key_press`, `mouse`, `mouse_held`, `mouse_press`
+/// to a small text log; playback overrides those ambients from the
+/// log so the script sees identical input across runs.
+fn install_replay(env: &mut Env) {
+    let mut r = HashMap::new();
+    r.insert(
+        "record".to_string(),
+        Value::from_builtin("replay.record", &["path"], replay_record),
+    );
+    r.insert(
+        "play".to_string(),
+        Value::from_builtin("replay.play", &["path"], replay_play),
+    );
+    r.insert(
+        "stop".to_string(),
+        Value::from_builtin("replay.stop", &[], replay_stop),
+    );
+    r.insert(
+        "is_playing".to_string(),
+        Value::from_builtin("replay.is_playing", &[], replay_is_playing),
+    );
+    env.set(
+        "replay".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: r,
+            kind: "module",
+        }))),
+    );
+}
+
+fn replay_record(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "replay.record")?;
+    let path = string_arg(&args[0], "replay.record", "path")?;
+    crate::replay::start_recording(&path).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: e,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+fn replay_play(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "replay.play")?;
+    let path = string_arg(&args[0], "replay.play", "path")?;
+    crate::replay::start_playing(&path).map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: e,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+fn replay_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "replay.stop")?;
+    crate::replay::stop();
+    Ok(Value::NIL)
+}
+
+fn replay_is_playing(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "replay.is_playing")?;
+    Ok(Value::from_bool(crate::replay::is_playing()))
 }
 
 fn install_math(env: &mut Env) {
