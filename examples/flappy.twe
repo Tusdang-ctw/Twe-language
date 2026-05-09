@@ -1,0 +1,287 @@
+# Flappy — the smallest example that's still a real game.
+#
+# Run with:  twec play examples/flappy.twe
+#
+# SPACE flaps. The bird falls under gravity; pipes scroll in
+# from the right with a randomized gap. Touch a pipe or the
+# ground and it's over. R to restart.
+#
+# Pairs with pong.twe as a "second game in 30 minutes" tutorial
+# target — one scene, three states (ready / playing / dead),
+# four recycled pipes, no entities or fibers.
+#
+# Twe's default play window is 640x480 landscape so the layout
+# below uses those dimensions. Treating the bird as a fixed-x
+# point and scrolling the world past it is the trick that keeps
+# endless-runner games trivial: there's only one moving thing
+# per pipe, not a moving camera.
+
+let view_w = 640.0
+let view_h = 480.0
+let ground_h = 60.0
+let sky_h = 420.0  # view_h - ground_h
+
+let bird_x = 140.0
+let bird_size = 24.0
+
+# Tuned for the classic feel — gravity is high, the flap impulse
+# is strong but ramps off fast, so the bird's path is sharp arcs.
+# Lowering gravity feels floaty; raising flap_v makes single taps
+# overshoot the gap.
+let gravity = 1500.0
+let flap_v = -420.0
+
+let pipe_w = 56.0
+let gap_h = 140.0
+let pipe_speed = 200.0
+# Distance between consecutive pipes. With 4 recycled pipes and
+# 220px spacing, the trailing pipe enters the right edge as the
+# leading one exits the left — a continuous wall.
+let pipe_spacing = 220.0
+# Vertical range for the gap top. Clamped so neither end of the
+# gap clips the ceiling or the ground strip.
+let pipe_min_y = 60.0
+let pipe_max_y = 220.0  # sky_h - gap_h - 60
+
+scene Flappy:
+    var bird_y = 200.0
+    var bird_vy = 0.0
+    var score = 0
+    var best = 0
+    # Tracks elapsed seconds in the `ready` state so the bird can
+    # bob with math.sin — gives the title screen a heartbeat
+    # without a separate animation system.
+    var hover_t = 0.0
+
+    # Four recycled pipes. When pipe i scrolls off the left edge
+    # it teleports to "rightmost x + spacing" and randomizes its
+    # gap. `passed[i]` flips true the first frame the bird crosses
+    # the pipe's right edge, so score increments exactly once per
+    # pipe instead of every frame the bird is past it.
+    #
+    # All three lists are mutated in-place via .set() — never
+    # rebound to a new list. Re-binding scene-field-typed lists
+    # mid-run is fragile in current Twe; .set() is the load-bearing
+    # idiom for in-place updates (same pattern crystal_hunter.twe
+    # uses on its crystal_alive[] list).
+    var pipe_xs = [700.0, 920.0, 1140.0, 1360.0]
+    var pipe_gaps = [160.0, 200.0, 120.0, 180.0]
+    var passed = [false, false, false, false]
+
+    initial: ready
+
+    state ready:
+        on update(dt):
+            hover_t += dt
+            bird_y = 200.0 + math.sin(hover_t * 4.0) * 8.0
+            if key_press.space or key_press.up:
+                bird_vy = flap_v
+                -> playing
+
+        on render():
+            rect(at: (0, 0), size: (view_w, sky_h), color: color.cyan)
+            rect(
+                at: (0, sky_h),
+                size: (view_w, ground_h),
+                color: (0.4, 0.3, 0.1, 1.0),
+            )
+            rect(
+                at: (bird_x, bird_y),
+                size: (bird_size, bird_size),
+                color: color.yellow,
+            )
+            text(
+                "FLAPPY",
+                at: (view_w * 0.5 - 100, 80),
+                size: 40,
+                color: color.white,
+            )
+            text(
+                "Press SPACE to start",
+                at: (view_w * 0.5 - 110, 280),
+                size: 20,
+                color: color.white,
+            )
+            if best > 0:
+                text(
+                    "Best: {best}",
+                    at: (view_w * 0.5 - 40, 320),
+                    size: 16,
+                    color: color.gray,
+                )
+
+    state playing:
+        on update(dt):
+            # ---- Bird physics ----
+            if key_press.space or key_press.up:
+                bird_vy = flap_v
+            bird_vy += gravity * dt
+            bird_y += bird_vy * dt
+
+            # ---- Pipes scroll left ----
+            # `crashed` is set inside the loop and the state
+            # transition fires once after the loop completes.
+            # Avoids `-> dead` from inside a nested if/while,
+            # which is correct per eval.rs but fragile in
+            # practice.
+            var crashed = false
+            var i = 0
+            while i < 4:
+                let new_x = pipe_xs[i] - pipe_speed * dt
+                pipe_xs.set(i, new_x)
+
+                # Recycle when this pipe goes off-screen left.
+                # Spawn it `pipe_spacing` past the rightmost pipe
+                # so the wall stays unbroken.
+                if new_x < -pipe_w:
+                    var j = 0
+                    var max_x = new_x
+                    while j < 4:
+                        if pipe_xs[j] > max_x:
+                            max_x = pipe_xs[j]
+                        j += 1
+                    pipe_xs.set(i, max_x + pipe_spacing)
+                    let span = pipe_max_y - pipe_min_y
+                    pipe_gaps.set(i, pipe_min_y + random.float() * span)
+                    passed.set(i, false)
+
+                # Score once when the bird passes the pipe's right
+                # edge. The `not passed[i]` guard makes this an
+                # edge-trigger, not a level-trigger.
+                if not passed[i] and pipe_xs[i] + pipe_w < bird_x:
+                    passed.set(i, true)
+                    score += 1
+
+                # AABB collision against this pipe's two halves.
+                let px = pipe_xs[i]
+                let gy = pipe_gaps[i]
+                if bird_x + bird_size > px and bird_x < px + pipe_w:
+                    if bird_y < gy or bird_y + bird_size > gy + gap_h:
+                        crashed = true
+                i += 1
+
+            # Ground.
+            if bird_y + bird_size > sky_h:
+                bird_y = sky_h - bird_size
+                crashed = true
+
+            # Ceiling.
+            if bird_y < 0.0:
+                bird_y = 0.0
+                bird_vy = 0.0
+
+            if crashed:
+                if score > best:
+                    best = score
+                -> dead
+
+        on render():
+            rect(at: (0, 0), size: (view_w, sky_h), color: color.cyan)
+
+            var i = 0
+            while i < 4:
+                let px = pipe_xs[i]
+                let gy = pipe_gaps[i]
+                rect(at: (px, 0), size: (pipe_w, gy), color: color.green)
+                rect(
+                    at: (px, gy + gap_h),
+                    size: (pipe_w, sky_h - gy - gap_h),
+                    color: color.green,
+                )
+                i += 1
+
+            rect(
+                at: (0, sky_h),
+                size: (view_w, ground_h),
+                color: (0.4, 0.3, 0.1, 1.0),
+            )
+            rect(
+                at: (bird_x, bird_y),
+                size: (bird_size, bird_size),
+                color: color.yellow,
+            )
+            text(
+                "{score}",
+                at: (view_w * 0.5 - 14, 30),
+                size: 48,
+                color: color.white,
+            )
+
+    state dead:
+        on update(dt):
+            # Let the bird drop after death — keeps the moment
+            # legible without a dedicated falling state.
+            if bird_y + bird_size < sky_h:
+                bird_vy += gravity * dt
+                bird_y += bird_vy * dt
+                if bird_y + bird_size > sky_h:
+                    bird_y = sky_h - bird_size
+
+        # Top-level state handler — matches snake.twe's restart
+        # pattern. Reset by mutating each list slot in place
+        # (same .set() calls the playing state uses), then
+        # transition back to ready.
+        on key_press.r:
+            bird_y = 200.0
+            bird_vy = 0.0
+            hover_t = 0.0
+            score = 0
+            var i = 0
+            while i < 4:
+                pipe_xs.set(i, 700.0 + i * 220.0)
+                pipe_gaps.set(i, 160.0)
+                passed.set(i, false)
+                i += 1
+            -> ready
+
+        on render():
+            # Freeze the playfield behind the dead banner so the
+            # player sees what they hit.
+            rect(at: (0, 0), size: (view_w, sky_h), color: color.cyan)
+            var i = 0
+            while i < 4:
+                let px = pipe_xs[i]
+                let gy = pipe_gaps[i]
+                rect(at: (px, 0), size: (pipe_w, gy), color: color.green)
+                rect(
+                    at: (px, gy + gap_h),
+                    size: (pipe_w, sky_h - gy - gap_h),
+                    color: color.green,
+                )
+                i += 1
+            rect(
+                at: (0, sky_h),
+                size: (view_w, ground_h),
+                color: (0.4, 0.3, 0.1, 1.0),
+            )
+            rect(
+                at: (bird_x, bird_y),
+                size: (bird_size, bird_size),
+                color: color.yellow,
+            )
+
+            rect(at: (80, 130), size: (view_w - 160, 200), color: color.black)
+            text(
+                "GAME OVER",
+                at: (view_w * 0.5 - 100, 160),
+                size: 32,
+                color: color.red,
+            )
+            text(
+                "Score: {score}",
+                at: (view_w * 0.5 - 60, 220),
+                size: 24,
+                color: color.white,
+            )
+            text(
+                "Best: {best}",
+                at: (view_w * 0.5 - 50, 260),
+                size: 20,
+                color: color.yellow,
+            )
+            text(
+                "Press R to restart",
+                at: (view_w * 0.5 - 100, 300),
+                size: 18,
+                color: color.gray,
+            )

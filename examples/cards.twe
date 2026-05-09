@@ -1,0 +1,455 @@
+# Solitaire-Lite — drag-and-drop, layered z-order, snap-back on
+# illegal drop, modal "you win" overlay.
+#
+# Run with:  twec play examples/cards.twe
+#
+# Phase 27 session 3. Pressure-tests v1.0 stdlib in three places:
+#   1. Drag-and-drop with mouse APIs — does `mouse.pos` +
+#      `mouse_press.left` + `mouse_held.left` give arcade-grade
+#      drag detection? (Yes; see GAP-1 for what's missing.)
+#   2. Layered z-order — does drawing the dragged card last give
+#      the right "card on top" feel? (Yes — render order is
+#      first-to-last z, so the drag layer goes at the end.)
+#   3. Modal animation — snap-back when the drop is illegal.
+#      (Inline in the drop handler. Not a stdlib gap.)
+#
+# Frictions tagged inline as "GAP-N". Inputs to Phase 27 session 4.
+#
+# Rules (mini-Klondike with a 16-card deck, no stock):
+#   - 16 cards: 4 suits × 4 ranks (A, 2, 3, 4).
+#   - 4 tableau columns dealt face-up (4 cards each).
+#   - 4 foundation piles at top (one per suit).
+#   - Drag the TOP card of any tableau (or the top of a foundation
+#     back down) to:
+#       * a foundation: must be same suit + next rank up
+#         (or Ace onto an empty foundation).
+#       * a tableau column: must be one rank lower than that
+#         column's top, opposite color (red/black).
+#         Empty columns accept any card.
+#   - Win: all 16 cards in foundations.
+#   - Click R to restart.
+
+# ---------------------------------------------------------------
+# Constants.
+# ---------------------------------------------------------------
+
+let view_w = 640.0
+let view_h = 480.0
+
+let card_w = 56.0
+let card_h = 80.0
+let card_overlap = 28.0  # vertical offset between stacked cards
+
+# Layout: 4 columns of cards, centered. Each column = card_w + 8
+# horizontal slot. 4 columns → total 4 * 64 = 256, centered:
+#   first_x = (640 - 256) / 2 = 192
+let col_x_0 = 192.0
+let col_step = 64.0
+
+let foundation_y = 20.0
+let tableau_y = 130.0
+
+# Suits: 0=Hearts (red), 1=Diamonds (red), 2=Clubs (black), 3=Spades (black)
+let suit_letters = ["H", "D", "C", "S"]
+# Rank glyphs. Ranks are 1..4; index 0 unused.
+let rank_glyphs = ["?", "A", "2", "3", "4"]
+
+let red = (0.85, 0.18, 0.22, 1.0)
+let black = (0.12, 0.12, 0.16, 1.0)
+let card_face = (0.96, 0.96, 0.96, 1.0)
+let card_back = (0.32, 0.34, 0.42, 1.0)
+let empty_slot = (0.18, 0.20, 0.24, 1.0)
+let valid_target = (0.30, 0.65, 0.30, 0.35)
+
+# ---------------------------------------------------------------
+# State. Cards encoded as (suit, rank) tuples.
+#
+# foundations: list of 4 lists. foundations[s] holds the cards
+# currently stacked on suit s (lowest at index 0, top = last).
+# tableaus: list of 4 lists, same shape.
+#
+# Twe lists are reference-typed — `tableaus[c].append(card)` and
+# `tableaus[c].pop_back()` mutate the inner list in place. That's
+# the same load-bearing pattern survive_beta uses for entity sets.
+# ---------------------------------------------------------------
+
+var foundations = [[], [], [], []]
+var tableaus = [[], [], [], []]
+
+# Drag state. Inactive when drag_active = false; the rest of the
+# fields are stale in that case and shouldn't be read.
+var drag_active = false
+var drag_suit = 0
+var drag_rank = 0
+var drag_from_kind = ""   # "tableau" or "foundation"
+var drag_from_idx = 0
+var drag_offset_x = 0.0   # mouse-to-card offset captured at pickup
+var drag_offset_y = 0.0
+
+# was_held lets us synthesize a "release" edge — Twe's mouse API
+# exposes press + held but not release. GAP-2 captures this.
+var was_held = false
+
+var moves = 0
+var won = false
+
+# ---------------------------------------------------------------
+# Card-rule helpers.
+# ---------------------------------------------------------------
+
+function is_red(suit):
+    if suit < 2:
+        return true
+    return false
+
+function tableau_col_x(col):
+    return col_x_0 + col * col_step
+
+function foundation_x(suit):
+    return col_x_0 + suit * col_step
+
+function legal_to_foundation(suit, rank, target_suit):
+    if suit != target_suit:
+        return false
+    let stack = foundations[target_suit]
+    let n = stack.length
+    if n == 0:
+        if rank == 1:
+            return true
+        return false
+    let top = stack[n - 1]
+    if rank == top.y + 1:
+        return true
+    return false
+
+function legal_to_tableau(suit, rank, target_col):
+    let stack = tableaus[target_col]
+    let n = stack.length
+    if n == 0:
+        return true
+    let top = stack[n - 1]
+    if rank != top.y - 1:
+        return false
+    if is_red(suit) == is_red(top.x):
+        return false
+    return true
+
+# ---------------------------------------------------------------
+# Hit testing. Returns (col, card_index_in_stack) for a tableau
+# pile or (suit, -1) for a foundation. Uses out-of-band sentinels
+# (col = -1) when the point misses both regions.
+#
+# GAP-3: hit-testing 8 piles (4 + 4) plus the dragged-from-top
+# constraint is ~30 lines of arithmetic. A `hit_box(at, size)`
+# stdlib helper would compress each per-region check to one line.
+# Captured for session 4.
+# ---------------------------------------------------------------
+
+function point_in(px, py, x, y, w, h):
+    if px < x:
+        return false
+    if px >= x + w:
+        return false
+    if py < y:
+        return false
+    if py >= y + h:
+        return false
+    return true
+
+function tableau_col_under(px, py):
+    var c = 0
+    while c < 4:
+        let x = tableau_col_x(c)
+        let n = tableaus[c].length
+        # Empty column = single empty-slot box.
+        if n == 0:
+            if point_in(px, py, x, tableau_y, card_w, card_h):
+                return c
+        else:
+            let h = card_h + (n - 1) * card_overlap
+            if point_in(px, py, x, tableau_y, card_w, h):
+                return c
+        c += 1
+    return -1
+
+function foundation_suit_under(px, py):
+    var s = 0
+    while s < 4:
+        if point_in(px, py, foundation_x(s), foundation_y, card_w, card_h):
+            return s
+        s += 1
+    return -1
+
+# ---------------------------------------------------------------
+# Drag pickup / drop.
+# ---------------------------------------------------------------
+
+function try_pickup(px, py):
+    # Tableau top.
+    let tcol = tableau_col_under(px, py)
+    if tcol >= 0:
+        let stack = tableaus[tcol]
+        let n = stack.length
+        if n == 0:
+            return
+        # Only the topmost card is draggable in this simplification.
+        let top_y = tableau_y + (n - 1) * card_overlap
+        if not point_in(px, py, tableau_col_x(tcol), top_y, card_w, card_h):
+            return
+        let card = stack[n - 1]
+        drag_active = true
+        drag_suit = card.x
+        drag_rank = card.y
+        drag_from_kind = "tableau"
+        drag_from_idx = tcol
+        drag_offset_x = px - tableau_col_x(tcol)
+        drag_offset_y = py - top_y
+        stack.pop_back()
+        return
+    # Foundation top.
+    let fsuit = foundation_suit_under(px, py)
+    if fsuit >= 0:
+        let stack = foundations[fsuit]
+        let n = stack.length
+        if n == 0:
+            return
+        let card = stack[n - 1]
+        drag_active = true
+        drag_suit = card.x
+        drag_rank = card.y
+        drag_from_kind = "foundation"
+        drag_from_idx = fsuit
+        drag_offset_x = px - foundation_x(fsuit)
+        drag_offset_y = py - foundation_y
+        stack.pop_back()
+
+function snap_back():
+    if drag_from_kind == "tableau":
+        tableaus[drag_from_idx].append((drag_suit, drag_rank))
+    else:
+        foundations[drag_from_idx].append((drag_suit, drag_rank))
+
+function try_drop(px, py):
+    # Try foundation first (higher visual priority).
+    let fsuit = foundation_suit_under(px, py)
+    if fsuit >= 0:
+        if legal_to_foundation(drag_suit, drag_rank, fsuit):
+            foundations[fsuit].append((drag_suit, drag_rank))
+            moves += 1
+            check_win()
+            return
+        snap_back()
+        return
+    let tcol = tableau_col_under(px, py)
+    if tcol >= 0:
+        if legal_to_tableau(drag_suit, drag_rank, tcol):
+            tableaus[tcol].append((drag_suit, drag_rank))
+            moves += 1
+            return
+        snap_back()
+        return
+    # Dropped on empty space — snap back.
+    snap_back()
+
+function check_win():
+    var total = 0
+    var s = 0
+    while s < 4:
+        total += foundations[s].length
+        s += 1
+    if total == 16:
+        won = true
+
+# ---------------------------------------------------------------
+# Setup + reset.
+# ---------------------------------------------------------------
+
+function reset_game():
+    foundations = [[], [], [], []]
+    tableaus = [[], [], [], []]
+    drag_active = false
+    moves = 0
+    won = false
+    # Build deck: 4 suits × 4 ranks.
+    var deck = []
+    var s = 0
+    while s < 4:
+        var r = 1
+        while r <= 4:
+            deck.append((s, r))
+            r += 1
+        s += 1
+    # Fisher-Yates shuffle.
+    var i = deck.length - 1
+    while i > 0:
+        let upper = i + 1
+        let j = random.int(0..<upper)
+        let tmp = deck[i]
+        deck.set(i, deck[j])
+        deck.set(j, tmp)
+        i -= 1
+    # Deal 4 to each tableau column.
+    var k = 0
+    var col = 0
+    while col < 4:
+        var c = 0
+        while c < 4:
+            tableaus[col].append(deck[k])
+            k += 1
+            c += 1
+        col += 1
+
+# ---------------------------------------------------------------
+# Render helpers.
+# ---------------------------------------------------------------
+
+function suit_color(suit):
+    if is_red(suit):
+        return red
+    return black
+
+function draw_card(x, y, suit, rank):
+    rect(at: (x, y), size: (card_w, card_h), color: card_face)
+    # 1px border via a slightly smaller white inner — skip for now;
+    # the simple flat rect reads fine at 56×80.
+    let col = suit_color(suit)
+    text(rank_glyphs[rank], at: (x + 6.0, y + 4.0), size: 22, color: col)
+    text(suit_letters[suit], at: (x + 6.0, y + 30.0), size: 22, color: col)
+    # Mirrored corner for that real-card look.
+    text(rank_glyphs[rank], at: (x + card_w - 18.0, y + card_h - 28.0),
+         size: 22, color: col)
+
+function draw_empty_slot(x, y):
+    rect(at: (x, y), size: (card_w, card_h), color: empty_slot)
+
+function draw_foundations():
+    var s = 0
+    while s < 4:
+        let x = foundation_x(s)
+        let stack = foundations[s]
+        let n = stack.length
+        if n == 0:
+            draw_empty_slot(x, foundation_y)
+            text(suit_letters[s], at: (x + card_w * 0.5 - 6.0, foundation_y + card_h * 0.5 - 12.0),
+                 size: 22, color: suit_color(s))
+        else:
+            # Draw the top card. Lower cards are visually invisible
+            # in foundations (no fan-out).
+            let top = stack[n - 1]
+            draw_card(x, foundation_y, top.x, top.y)
+        s += 1
+
+function draw_tableaus():
+    var c = 0
+    while c < 4:
+        let x = tableau_col_x(c)
+        let stack = tableaus[c]
+        let n = stack.length
+        if n == 0:
+            draw_empty_slot(x, tableau_y)
+        else:
+            var i = 0
+            while i < n:
+                let card = stack[i]
+                draw_card(x, tableau_y + i * card_overlap, card.x, card.y)
+                i += 1
+        c += 1
+
+function draw_drag_target_hint(px, py):
+    # Highlight a legal drop target under the cursor.
+    let fs = foundation_suit_under(px, py)
+    if fs >= 0:
+        if legal_to_foundation(drag_suit, drag_rank, fs):
+            rect(at: (foundation_x(fs), foundation_y),
+                 size: (card_w, card_h), color: valid_target)
+            return
+    let tc = tableau_col_under(px, py)
+    if tc >= 0:
+        if legal_to_tableau(drag_suit, drag_rank, tc):
+            let stack = tableaus[tc]
+            let n = stack.length
+            var hy = tableau_y
+            if n > 0:
+                hy = tableau_y + n * card_overlap
+            rect(at: (tableau_col_x(tc), hy),
+                 size: (card_w, card_h), color: valid_target)
+
+function draw_drag_card(px, py):
+    let x = px - drag_offset_x
+    let y = py - drag_offset_y
+    draw_card(x, y, drag_suit, drag_rank)
+
+# ---------------------------------------------------------------
+# Init before the scene starts handling updates.
+# ---------------------------------------------------------------
+
+reset_game()
+
+# ---------------------------------------------------------------
+# Scene.
+# ---------------------------------------------------------------
+
+scene Cards:
+    initial: playing
+
+    state playing:
+        on update(dt):
+            if won:
+                -> done
+
+            let px = mouse.x
+            let py = mouse.y
+
+            # GAP-2: Twe's mouse stdlib has press + held but no
+            # release edge. Synthesizing it from `was_held && not
+            # mouse_held.left` works but is boilerplate every drag
+            # UI repeats. A `mouse_release.left` (or similar) would
+            # absorb the `was_held` plumbing. Captured for session 4.
+            let just_released = was_held and not mouse_held.left
+            was_held = mouse_held.left
+
+            if mouse_press.left and not drag_active:
+                try_pickup(px, py)
+
+            if just_released and drag_active:
+                try_drop(px, py)
+                drag_active = false
+
+            if key_press.r:
+                reset_game()
+
+        on render():
+            draw_foundations()
+            draw_tableaus()
+            if drag_active:
+                draw_drag_target_hint(mouse.x, mouse.y)
+                draw_drag_card(mouse.x, mouse.y)
+            text("Solitaire-Lite",
+                 at: (16, 12), size: 18, color: color.white)
+            text("Moves: {moves}",
+                 at: (16, 38), size: 14, color: color.gray)
+            text("Drag cards to foundations (top) or tableau columns.",
+                 at: (16, view_h - 38), size: 12, color: color.gray)
+            text("Foundation: same suit, A → 4.    Tableau: descending, alt color.    R restarts.",
+                 at: (16, view_h - 20), size: 12, color: color.gray)
+
+    state done:
+        on update(dt):
+            if key_press.r:
+                reset_game()
+                -> playing
+
+        on render():
+            draw_foundations()
+            draw_tableaus()
+            rect(at: (60, 160), size: (view_w - 120.0, 160),
+                 color: (0, 0, 0, 0.75))
+            text("YOU WIN",
+                 at: (view_w * 0.5 - 90.0, 200),
+                 size: 36, color: color.green)
+            text("Moves: {moves}",
+                 at: (view_w * 0.5 - 60.0, 250),
+                 size: 22, color: color.white)
+            text("Press R to restart",
+                 at: (view_w * 0.5 - 100.0, 290),
+                 size: 18, color: color.gray)

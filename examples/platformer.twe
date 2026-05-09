@@ -1,0 +1,280 @@
+# Platformer — coyote time, jump buffer, variable jump height,
+# AABB tile collision, one-way platforms.
+#
+# Run with:  twec play examples/platformer.twe
+#
+# Phase 27 session 1. The point of this example is twofold:
+#   1. Prove that the v1.0 stdlib supports a real platformer's
+#      feel — coyote time, jump buffer, variable jump height —
+#      without adding new builtins.
+#   2. Surface the friction the tilemap stdlib doesn't yet absorb,
+#      so Phase 27 session 4 (stdlib gap closure) has a punch list.
+#
+# Known frictions are tagged inline as "GAP-N" comments — those
+# are the inputs to the session 4 retrospective.
+#
+# Goal: walk + jump from the bottom-left to the flag in the upper
+# right. Spikes kill (respawn from start). Falling off-screen
+# kills. R restarts after winning.
+#
+# Controls
+#   ←/A,  →/D    move
+#   SPACE,  W,  ↑   jump (hold for higher jump)
+#   R                restart after winning
+
+# ---------------------------------------------------------------
+# Constants and tuning.
+# ---------------------------------------------------------------
+
+let view_w = 640.0
+let view_h = 480.0
+let tile_size = 32.0
+
+# Player AABB. 18×26 fits comfortably under one-tile gaps.
+let player_w = 18.0
+let player_h = 26.0
+
+# Tuning notes — these match a Mario/Celeste snappy feel:
+#   - Walk top-speed is reached instantly (no acceleration ramp);
+#     classic platformers feel responsive, not floaty.
+#   - Jump apex ≈ 3 tiles when held to the top of the arc. With
+#     gravity = 1500 and jump_v = 540, h = v²/(2g) ≈ 97px.
+#   - Releasing jump early caps upward velocity at 50% — the
+#     "variable jump height" feel.
+#   - Coyote and buffer windows are 0.10s each (~6 frames at
+#     60fps), the canonical forgiveness budget.
+let walk_v = 180.0
+let gravity = 1500.0
+let jump_v = 540.0
+let jump_cut_factor = 0.5
+let coyote_window = 0.1
+let buffer_window = 0.1
+let max_fall_v = 900.0
+
+# Player starts at column 0, standing on the floor row.
+let start_x = 16.0
+let start_y = 14.0 * 32.0 - 26.0  # bottom of AABB rests on floor
+
+# ---------------------------------------------------------------
+# Level. 20 wide × 15 tall × 32px tiles = 640×480 (fills the view).
+#
+# Path: walk right along the floor, jump onto the row-10 ====
+# platform, hop up to row-8, then to the long row-7 platform,
+# walk right to the row-6 pedestal, touch G.
+#
+# Spikes at row 11 col 5 and row 9 cols 6–8 punish missed jumps.
+# ---------------------------------------------------------------
+
+let layout = "....................\n....................\n....................\n....................\n....................\n...............G....\n..............###...\n..........=========.\n....=====...........\n......^^^...........\n....===.............\n.....^..............\n....................\n....................\n####################"
+
+let map = tilemap(
+    layout: layout,
+    tile_size: 32,
+    tiles: [
+        (".", "sky", []),
+        ("#", "wall", ["solid"]),
+        ("=", "platform", ["one_way"]),
+        ("^", "spike", ["deadly"]),
+        ("G", "goal", ["goal"]),
+    ]
+)
+
+# ---------------------------------------------------------------
+# Mutable game state. File-scope so the helper functions below
+# can mutate it (top-level functions can't reach inside a scene).
+# Same pattern survive_beta.twe uses.
+# ---------------------------------------------------------------
+
+var px = start_x
+var py = start_y
+var vx = 0.0
+var vy = 0.0
+var grounded = false
+var prev_bottom = start_y + player_h
+var coyote_t = 0.0
+var buffer_t = 0.0
+var deaths = 0
+
+# ---------------------------------------------------------------
+# Tile-query helpers. All assume (x, y) is the AABB's top-left
+# corner; player_w / player_h are the extents.
+#
+# GAP-1: the same 4-corner sample pattern repeats three times
+# below (solid, named-tile, one-way). A stdlib helper like
+# `tilemap_solid_aabb(map, x, y, w, h)` and a matching
+# `tilemap_aabb_touches(map, x, y, w, h, name)` would absorb all
+# three. Captured for Phase 27 session 4.
+#
+# GAP-2: the 4-corner sample is not a swept-AABB. At very high
+# velocity (e.g. a long fall capped only by max_fall_v) the player
+# could tunnel through a 1-tile-thick wall in a single frame. The
+# `max_fall_v = 900` cap masks this in practice — but a real
+# `tilemap_sweep(map, x, y, w, h, dx, dy)` returning the safe
+# move + the hit normal would let us drop the speed cap and also
+# fix the corner-snap that 4-corner sampling does badly.
+# ---------------------------------------------------------------
+
+function aabb_solid(x, y):
+    if tilemap_solid_at(map, x, y):
+        return true
+    if tilemap_solid_at(map, x + player_w - 1.0, y):
+        return true
+    if tilemap_solid_at(map, x, y + player_h - 1.0):
+        return true
+    if tilemap_solid_at(map, x + player_w - 1.0, y + player_h - 1.0):
+        return true
+    return false
+
+function aabb_touches(x, y, name):
+    if tilemap_at(map, x, y) == name:
+        return true
+    if tilemap_at(map, x + player_w - 1.0, y) == name:
+        return true
+    if tilemap_at(map, x, y + player_h - 1.0) == name:
+        return true
+    if tilemap_at(map, x + player_w - 1.0, y + player_h - 1.0) == name:
+        return true
+    return false
+
+# One-way platform check. Solid only when the player is moving
+# downward AND the previous-frame bottom edge was above the
+# platform's top edge (so we're entering from above, not poking
+# our head up through it).
+#
+# GAP-3: this needs `prev_bottom` and `vy` at file scope. A swept
+# stdlib helper that returns "did the bottom edge cross this row
+# this frame?" would replace the math in this function entirely
+# and remove the file-scope `prev_bottom` plumbing.
+function aabb_one_way(x, y):
+    if vy < 0:
+        return false
+    let bottom = y + player_h
+    let foot_l = tilemap_at(map, x + 2.0, bottom - 1.0) == "platform"
+    let foot_r = tilemap_at(map, x + player_w - 3.0, bottom - 1.0) == "platform"
+    if not foot_l and not foot_r:
+        return false
+    let row_top = math.floor(bottom / tile_size) * tile_size
+    if prev_bottom > row_top:
+        return false
+    return true
+
+function respawn():
+    px = start_x
+    py = start_y
+    vx = 0.0
+    vy = 0.0
+    grounded = false
+    coyote_t = 0.0
+    buffer_t = 0.0
+    prev_bottom = start_y + player_h
+    deaths += 1
+
+# ---------------------------------------------------------------
+# Scene. Two states: playing → won. R from won restarts the run.
+# ---------------------------------------------------------------
+
+scene Platformer:
+    initial: playing
+
+    state playing:
+        on update(dt):
+            # --- Input buffering ---
+            if key_press.space or key_press.up or key_press.w:
+                buffer_t = buffer_window
+
+            buffer_t -= dt
+            coyote_t -= dt
+
+            # --- Horizontal velocity (instant; no accel ramp) ---
+            var move = 0.0
+            if key.a or key.left:
+                move -= 1.0
+            if key.d or key.right:
+                move += 1.0
+            vx = move * walk_v
+
+            # --- Jump (with coyote + buffer) ---
+            #
+            # The combined gate is what gives the snappy feel:
+            # `grounded or coyote_t > 0` lets you jump for ~6
+            # frames after walking off a ledge; `buffer_t > 0`
+            # lets you press jump up to 6 frames before landing.
+            if (grounded or coyote_t > 0.0) and buffer_t > 0.0:
+                vy = -jump_v
+                grounded = false
+                coyote_t = 0.0
+                buffer_t = 0.0
+
+            # --- Variable jump height (cut on release) ---
+            if not key.space and vy < -jump_v * jump_cut_factor:
+                vy = -jump_v * jump_cut_factor
+
+            # --- Gravity + fall-speed cap ---
+            vy += gravity * dt
+            if vy > max_fall_v:
+                vy = max_fall_v
+
+            # --- Move on each axis separately so we slide ---
+            #
+            # Stash prev_bottom BEFORE the Y move so the one-way
+            # check below can tell whether we just crossed a
+            # platform's top edge this frame.
+            prev_bottom = py + player_h
+
+            let nx = px + vx * dt
+            if not aabb_solid(nx, py):
+                px = nx
+            else:
+                vx = 0.0
+
+            let ny = py + vy * dt
+            if not aabb_solid(px, ny) and not aabb_one_way(px, ny):
+                py = ny
+                grounded = false
+            else:
+                if vy > 0.0:
+                    grounded = true
+                    coyote_t = coyote_window
+                vy = 0.0
+
+            # --- Death traps ---
+            if aabb_touches(px, py, "spike"):
+                respawn()
+            if py > view_h + 100.0:
+                respawn()
+
+            # --- Goal ---
+            if aabb_touches(px, py, "goal"):
+                -> won
+
+        on render():
+            tilemap_render(map, at: (0, 0))
+            rect(at: (px, py), size: (player_w, player_h),
+                 color: color.yellow)
+            text("Deaths: {deaths}",
+                 at: (10, 10), size: 18, color: color.white)
+            text("A/D move,  SPACE jump (hold for higher)",
+                 at: (10, view_h - 24), size: 14, color: color.gray)
+
+    state won:
+        on update(dt):
+            if key_press.r:
+                respawn()
+                deaths = 0
+                -> playing
+
+        on render():
+            tilemap_render(map, at: (0, 0))
+            rect(at: (px, py), size: (player_w, player_h),
+                 color: color.yellow)
+            rect(at: (80, 160), size: (view_w - 160.0, 160),
+                 color: (0, 0, 0, 0.7))
+            text("LEVEL CLEAR",
+                 at: (view_w * 0.5 - 100.0, 200),
+                 size: 36, color: color.green)
+            text("Deaths: {deaths}",
+                 at: (view_w * 0.5 - 50.0, 250),
+                 size: 22, color: color.white)
+            text("Press R to restart",
+                 at: (view_w * 0.5 - 100.0, 290),
+                 size: 18, color: color.gray)

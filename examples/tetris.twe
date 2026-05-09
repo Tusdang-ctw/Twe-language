@@ -1,0 +1,513 @@
+# Tetris — 7-bag randomizer, simplified SRS rotation, line clears,
+# DAS/ARR (Delayed Auto-Shift / Auto-Repeat Rate), ghost piece,
+# next-piece preview, level-up cadence.
+#
+# Run with:  twec play examples/tetris.twe
+#
+# Phase 27 session 2. Pressure-tests v1.0 stdlib in three places:
+#   1. Key-repeat with DAS/ARR — does Twe's `key.X` / `key_press.X`
+#      pair work for arcade-grade input timing?  (Yes; the cost is
+#      ~30 lines of bookkeeping per direction. See GAP-2.)
+#   2. Nested-list-of-int board mutation — does `.set()` on a
+#      flat 200-element list survive a busy update loop with line
+#      clears every few seconds?  (Yes.)
+#   3. 7-bag randomization — `random.int(0..<n)` + Fisher-Yates is
+#      ~10 lines without `random.shuffle`. (See GAP-3.)
+#
+# Frictions tagged inline as "GAP-N". Inputs to Phase 27 session 4.
+#
+# Controls
+#   ←/→         move (with DAS/ARR auto-repeat after 170ms)
+#   ↑ / X       rotate clockwise
+#   Z           rotate counter-clockwise
+#   ↓           soft drop
+#   SPACE       hard drop
+#   R           restart after game over
+
+# ---------------------------------------------------------------
+# Constants.
+# ---------------------------------------------------------------
+
+let view_w = 640.0
+let view_h = 480.0
+
+let cell = 22.0
+let board_cols = 10
+let board_rows = 20
+let board_x = 200.0
+let board_y = 16.0
+
+# DAS = how long to hold ←/→ before auto-repeat kicks in.
+# ARR = the auto-repeat interval once DAS fires.
+# 170ms / 50ms is the modern competitive default.
+let das_delay = 0.17
+let arr_interval = 0.05
+let soft_drop_factor = 20.0
+
+# ---------------------------------------------------------------
+# Piece data. 4×4 bounding box, top-left origin. Each piece has
+# 4 rotation states; each state is 4 (col, row) cell offsets.
+# Indices: 0=I, 1=O, 2=T, 3=S, 4=Z, 5=J, 6=L.
+# ---------------------------------------------------------------
+
+let I_rotations = [
+    [(0, 1), (1, 1), (2, 1), (3, 1)],
+    [(2, 0), (2, 1), (2, 2), (2, 3)],
+    [(0, 2), (1, 2), (2, 2), (3, 2)],
+    [(1, 0), (1, 1), (1, 2), (1, 3)],
+]
+
+# O is rotation-invariant; same cells for all 4 states.
+let O_cells = [(1, 0), (2, 0), (1, 1), (2, 1)]
+let O_rotations = [O_cells, O_cells, O_cells, O_cells]
+
+let T_rotations = [
+    [(1, 0), (0, 1), (1, 1), (2, 1)],
+    [(1, 0), (1, 1), (2, 1), (1, 2)],
+    [(0, 1), (1, 1), (2, 1), (1, 2)],
+    [(1, 0), (0, 1), (1, 1), (1, 2)],
+]
+
+let S_rotations = [
+    [(1, 0), (2, 0), (0, 1), (1, 1)],
+    [(1, 0), (1, 1), (2, 1), (2, 2)],
+    [(1, 1), (2, 1), (0, 2), (1, 2)],
+    [(0, 0), (0, 1), (1, 1), (1, 2)],
+]
+
+let Z_rotations = [
+    [(0, 0), (1, 0), (1, 1), (2, 1)],
+    [(2, 0), (1, 1), (2, 1), (1, 2)],
+    [(0, 1), (1, 1), (1, 2), (2, 2)],
+    [(1, 0), (0, 1), (1, 1), (0, 2)],
+]
+
+let J_rotations = [
+    [(0, 0), (0, 1), (1, 1), (2, 1)],
+    [(1, 0), (2, 0), (1, 1), (1, 2)],
+    [(0, 1), (1, 1), (2, 1), (2, 2)],
+    [(1, 0), (1, 1), (0, 2), (1, 2)],
+]
+
+let L_rotations = [
+    [(2, 0), (0, 1), (1, 1), (2, 1)],
+    [(1, 0), (1, 1), (1, 2), (2, 2)],
+    [(0, 1), (1, 1), (2, 1), (0, 2)],
+    [(0, 0), (1, 0), (1, 1), (1, 2)],
+]
+
+let pieces = [
+    I_rotations, O_rotations, T_rotations,
+    S_rotations, Z_rotations, J_rotations, L_rotations,
+]
+
+let piece_colors = [
+    (0.0, 0.85, 0.95, 1.0),
+    (1.0, 0.85, 0.0, 1.0),
+    (0.6, 0.2, 0.85, 1.0),
+    (0.2, 0.85, 0.2, 1.0),
+    (0.95, 0.2, 0.2, 1.0),
+    (0.2, 0.4, 0.95, 1.0),
+    (0.95, 0.55, 0.0, 1.0),
+]
+
+# Wall-kick attempts after a rotation. Try the rotated position
+# first; if blocked, nudge ±1 column, then try shifting up by 1.
+#
+# GAP-1: full SRS uses per-piece-per-rotation kick tables (J/L/S/T/Z
+# share one, I has its own, O is fixed). This 4-step kick is close
+# enough to feel right but won't reproduce every T-spin / kick that
+# competitive players expect. A stdlib helper is wrong here — kick
+# tables are example-specific tuning. Captured for session 5
+# closeout, not session 4 (not a stdlib gap).
+#
+# Encoded as parallel int lists to avoid `(-1, 0)` tuple parsing.
+let kick_dx = [0, -1, 1, 0]
+let kick_dy = [0, 0, 0, -1]
+
+# ---------------------------------------------------------------
+# Mutable state. File-scope so top-level helpers can mutate it.
+# ---------------------------------------------------------------
+
+# Board: flat 200-element list. -1 = empty, 0..6 = locked color id.
+var board = []
+var bag = []
+
+var current_piece = 0
+var current_rot = 0
+var current_x = 3
+var current_y = 0
+var preview_piece = 0
+
+var score = 0
+var lines_cleared = 0
+var level = 1
+
+var drop_t = 0.0
+
+var das_left_t = 0.0
+var das_right_t = 0.0
+
+var game_over = false
+
+# ---------------------------------------------------------------
+# Helpers.
+# ---------------------------------------------------------------
+
+function refill_bag():
+    # Standard 7-bag: shuffle [0..6] with Fisher-Yates, push to bag.
+    #
+    # GAP-3: no `random.shuffle` builtin; manual Fisher-Yates is
+    # ~10 lines per call. Captured for session 4.
+    var arr = [0, 1, 2, 3, 4, 5, 6]
+    var i = 6
+    while i > 0:
+        let upper = i + 1
+        let j = random.int(0..<upper)
+        let tmp = arr[i]
+        arr.set(i, arr[j])
+        arr.set(j, tmp)
+        i -= 1
+    var k = 0
+    while k < 7:
+        bag.append(arr[k])
+        k += 1
+
+function pop_bag():
+    if bag.length == 0:
+        refill_bag()
+    let last_idx = bag.length - 1
+    let idx = bag[last_idx]
+    bag.pop_back()
+    return idx
+
+function peek_bag():
+    if bag.length == 0:
+        refill_bag()
+    return bag[bag.length - 1]
+
+function piece_collides(piece, rot, x, y):
+    let cells = pieces[piece][rot]
+    var i = 0
+    while i < 4:
+        let c = cells[i]
+        let cx = x + c.x
+        let cy = y + c.y
+        # Sides + bottom out-of-bounds.
+        if cx < 0:
+            return true
+        if cx >= board_cols:
+            return true
+        if cy >= board_rows:
+            return true
+        # Above the top of the board is allowed (spawn buffer).
+        if cy >= 0:
+            if board[cy * board_cols + cx] != -1:
+                return true
+        i += 1
+    return false
+
+function spawn_next():
+    current_piece = pop_bag()
+    current_rot = 0
+    current_x = 3
+    current_y = 0
+    preview_piece = peek_bag()
+    if piece_collides(current_piece, current_rot, current_x, current_y):
+        game_over = true
+
+function lock_piece():
+    let cells = pieces[current_piece][current_rot]
+    var i = 0
+    while i < 4:
+        let c = cells[i]
+        let cx = current_x + c.x
+        let cy = current_y + c.y
+        if cy >= 0 and cy < board_rows and cx >= 0 and cx < board_cols:
+            board.set(cy * board_cols + cx, current_piece)
+        i += 1
+    clear_lines()
+    spawn_next()
+
+function clear_lines():
+    var lines = 0
+    var r = board_rows - 1
+    while r >= 0:
+        var full = true
+        var c = 0
+        while c < board_cols:
+            if board[r * board_cols + c] == -1:
+                full = false
+            c += 1
+        if full:
+            lines += 1
+            # Shift everything above row r down by one row.
+            var rr = r
+            while rr > 0:
+                var cc = 0
+                while cc < board_cols:
+                    board.set(rr * board_cols + cc,
+                              board[(rr - 1) * board_cols + cc])
+                    cc += 1
+                rr -= 1
+            # Clear the new top row.
+            var c2 = 0
+            while c2 < board_cols:
+                board.set(c2, -1)
+                c2 += 1
+            # Re-check this row index — it just inherited the row above.
+        else:
+            r -= 1
+    if lines > 0:
+        if lines == 1:
+            score += 100
+        elif lines == 2:
+            score += 300
+        elif lines == 3:
+            score += 500
+        else:
+            score += 800
+        lines_cleared += lines
+        let new_level = lines_cleared / 10 + 1
+        if new_level > level:
+            level = new_level
+
+function drop_interval():
+    # Level 1 = 0.5s/row; gets faster by 0.04s per level; floor 0.05s.
+    var iv = 0.5 - (level - 1) * 0.04
+    if iv < 0.05:
+        iv = 0.05
+    return iv
+
+function try_move(dx):
+    if not piece_collides(current_piece, current_rot, current_x + dx, current_y):
+        current_x += dx
+
+function try_rotate(direction):
+    # Twe's `%` is the percent-literal suffix, not int modulo.
+    # GAP-4: `math.mod(a, b)` would absorb the manual wrap below.
+    var new_rot = current_rot + direction
+    if new_rot < 0:
+        new_rot += 4
+    if new_rot >= 4:
+        new_rot -= 4
+    var k = 0
+    while k < 4:
+        let kx = kick_dx[k]
+        let ky = kick_dy[k]
+        if not piece_collides(current_piece, new_rot, current_x + kx, current_y + ky):
+            current_rot = new_rot
+            current_x += kx
+            current_y += ky
+            return true
+        k += 1
+    return false
+
+function hard_drop():
+    while not piece_collides(current_piece, current_rot, current_x, current_y + 1):
+        current_y += 1
+        score += 2
+    lock_piece()
+
+function ghost_y():
+    var gy = current_y
+    while not piece_collides(current_piece, current_rot, current_x, gy + 1):
+        gy += 1
+    return gy
+
+function reset_game():
+    board = []
+    var i = 0
+    while i < board_cols * board_rows:
+        board.append(-1)
+        i += 1
+    bag = []
+    score = 0
+    lines_cleared = 0
+    level = 1
+    drop_t = 0.0
+    das_left_t = 0.0
+    das_right_t = 0.0
+    game_over = false
+    refill_bag()
+    spawn_next()
+
+# ---------------------------------------------------------------
+# Render helpers.
+# ---------------------------------------------------------------
+
+function draw_cell(col, row, c):
+    rect(at: (board_x + col * cell, board_y + row * cell),
+         size: (cell - 1.0, cell - 1.0), color: c)
+
+function draw_board_bg():
+    rect(at: (board_x - 2.0, board_y - 2.0),
+         size: (board_cols * cell + 4.0, board_rows * cell + 4.0),
+         color: (0.12, 0.12, 0.16, 1.0))
+    var r = 0
+    while r < board_rows:
+        var c = 0
+        while c < board_cols:
+            let v = board[r * board_cols + c]
+            if v != -1:
+                draw_cell(c, r, piece_colors[v])
+            c += 1
+        r += 1
+
+function draw_active():
+    let cells = pieces[current_piece][current_rot]
+    let col = piece_colors[current_piece]
+    var i = 0
+    while i < 4:
+        let p = cells[i]
+        let cx = current_x + p.x
+        let cy = current_y + p.y
+        if cy >= 0:
+            draw_cell(cx, cy, col)
+        i += 1
+
+function draw_ghost():
+    let gy = ghost_y()
+    if gy == current_y:
+        return
+    let cells = pieces[current_piece][current_rot]
+    let ghost = (0.6, 0.6, 0.7, 0.3)
+    var i = 0
+    while i < 4:
+        let p = cells[i]
+        let cx = current_x + p.x
+        let cyg = gy + p.y
+        if cyg >= 0:
+            draw_cell(cx, cyg, ghost)
+        i += 1
+
+function draw_hud():
+    text("SCORE", at: (16, 30), size: 14, color: color.gray)
+    text("{score}", at: (16, 50), size: 22, color: color.white)
+    text("LINES", at: (16, 90), size: 14, color: color.gray)
+    text("{lines_cleared}", at: (16, 110), size: 22, color: color.white)
+    text("LEVEL", at: (16, 150), size: 14, color: color.gray)
+    text("{level}", at: (16, 170), size: 22, color: color.white)
+
+    let nx = board_x + board_cols * cell + 16.0
+    text("NEXT", at: (nx, 30), size: 14, color: color.gray)
+    let preview_cells = pieces[preview_piece][0]
+    let preview_color = piece_colors[preview_piece]
+    var i = 0
+    while i < 4:
+        let p = preview_cells[i]
+        rect(at: (nx + p.x * cell, 50.0 + p.y * cell),
+             size: (cell - 1.0, cell - 1.0), color: preview_color)
+        i += 1
+
+    text("←/→ move",     at: (nx, 180), size: 12, color: color.gray)
+    text("↑/X rotate CW", at: (nx, 200), size: 12, color: color.gray)
+    text("Z rotate CCW",  at: (nx, 220), size: 12, color: color.gray)
+    text("↓ soft drop",   at: (nx, 240), size: 12, color: color.gray)
+    text("SPC hard drop", at: (nx, 260), size: 12, color: color.gray)
+
+# ---------------------------------------------------------------
+# Init the board before the scene starts handling updates.
+# ---------------------------------------------------------------
+
+reset_game()
+
+# ---------------------------------------------------------------
+# Scene.
+# ---------------------------------------------------------------
+
+scene Tetris:
+    initial: playing
+
+    state playing:
+        on update(dt):
+            if game_over:
+                -> over
+
+            # ---- DAS/ARR: left ----
+            #
+            # GAP-2: ~30 lines per direction for arcade-grade key
+            # repeat. A `key_repeat(name, das, arr)` stdlib helper
+            # would compress this to one line each. Captured for
+            # session 4.
+            if key.left and not key.right:
+                if key_press.left:
+                    try_move(-1)
+                    das_left_t = das_delay
+                else:
+                    das_left_t -= dt
+                    if das_left_t <= 0.0:
+                        try_move(-1)
+                        das_left_t = arr_interval
+            else:
+                das_left_t = 0.0
+
+            # ---- DAS/ARR: right ----
+            if key.right and not key.left:
+                if key_press.right:
+                    try_move(1)
+                    das_right_t = das_delay
+                else:
+                    das_right_t -= dt
+                    if das_right_t <= 0.0:
+                        try_move(1)
+                        das_right_t = arr_interval
+            else:
+                das_right_t = 0.0
+
+            # ---- Rotation (instant, no auto-repeat) ----
+            if key_press.up or key_press.x:
+                try_rotate(1)
+            if key_press.z:
+                try_rotate(-1)
+
+            # ---- Hard drop ----
+            if key_press.space:
+                hard_drop()
+                drop_t = 0.0
+                return
+
+            # ---- Soft drop / gravity ----
+            var factor = 1.0
+            if key.down:
+                factor = soft_drop_factor
+            drop_t += dt * factor
+            let iv = drop_interval()
+            while drop_t >= iv:
+                drop_t -= iv
+                if not piece_collides(current_piece, current_rot, current_x, current_y + 1):
+                    current_y += 1
+                    if key.down:
+                        score += 1
+                else:
+                    lock_piece()
+                    drop_t = 0.0
+                    return
+
+        on render():
+            draw_board_bg()
+            draw_ghost()
+            draw_active()
+            draw_hud()
+
+    state over:
+        on update(dt):
+            if key_press.r:
+                reset_game()
+                -> playing
+
+        on render():
+            draw_board_bg()
+            draw_active()
+            draw_hud()
+            rect(at: (60, 160), size: (view_w - 120.0, 160),
+                 color: (0, 0, 0, 0.75))
+            text("GAME OVER",
+                 at: (view_w * 0.5 - 110.0, 200),
+                 size: 36, color: color.red)
+            text("Score: {score}",
+                 at: (view_w * 0.5 - 60.0, 250),
+                 size: 22, color: color.white)
+            text("Press R to restart",
+                 at: (view_w * 0.5 - 100.0, 290),
+                 size: 18, color: color.gray)
