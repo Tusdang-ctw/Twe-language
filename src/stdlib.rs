@@ -719,6 +719,7 @@ pub fn install(env: &mut Env) {
     install_os(env);
     install_settings(env);
     install_lang(env);
+    install_gc(env);
     // Phase 10 session 8: explicit pause primitive. `pause(flag)`
     // toggles the runtime pause flag; `is_paused()` queries it.
     // While paused, the play loop skips `tick_frame` (no fibers
@@ -1941,8 +1942,20 @@ fn install_time(env: &mut Env) {
     // `every` clocks (which receive no implicit dt) and other code can
     // read the live frame delta instead of hardcoding `0.016`. Closes
     // Phase-2 frustration F8.
+    //
+    // Phase 29 session 1: under the new fixed-timestep loop, `time.dt`
+    // equals `time.physics_dt` (60 Hz default) on every tick. The
+    // `physics_dt` field is exposed as a stable read-only constant
+    // that scripts can read at top level (before any `tick_frame`
+    // has run, when `time.dt` is still 0.0) — useful for sizing
+    // velocity-per-step state or comparing against the simulation
+    // rate the engine guarantees.
     let mut fields = HashMap::new();
     fields.insert("dt".to_string(), Value::from_float(0.0));
+    fields.insert(
+        "physics_dt".to_string(),
+        Value::from_float(crate::eval::PHYSICS_DT),
+    );
     env.set(
         "time".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -1950,6 +1963,62 @@ fn install_time(env: &mut Env) {
             kind: "module",
         }))),
     );
+}
+
+/// Phase 29 session 2: `gc.*` namespace. Exposes the per-frame sweep
+/// budget and observability into the tracing-GC heap. The play loop
+/// drains a budgeted sweep step at every safepoint; scripts can
+/// adjust the budget if they need a different latency / throughput
+/// trade-off, and read `gc.last_collect_ms()` to see how a tuning
+/// choice played out.
+fn install_gc(env: &mut Env) {
+    let mut gc = HashMap::new();
+    gc.insert(
+        "budget_ms".to_string(),
+        Value::from_builtin("gc.budget_ms", &["ms"], gc_budget_ms),
+    );
+    gc.insert(
+        "last_collect_ms".to_string(),
+        Value::from_builtin("gc.last_collect_ms", &[], gc_last_collect_ms),
+    );
+    gc.insert(
+        "bytes_alive".to_string(),
+        Value::from_builtin("gc.bytes_alive", &[], gc_bytes_alive),
+    );
+    env.set(
+        "gc".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: gc,
+            kind: "module",
+        }))),
+    );
+}
+
+fn gc_budget_ms(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "gc.budget_ms")?;
+    let ms = as_f64(&args[0], "gc.budget_ms")?;
+    if !ms.is_finite() || ms < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("gc.budget_ms expects a non-negative finite number, got {ms}"),
+            help: Some("pass 0 to drain greedily, or a positive ms cap per safepoint".to_string()),
+        });
+    }
+    let ns = (ms * 1_000_000.0).round() as u64;
+    crate::heap::gc_set_budget_ns(ns.max(1));
+    Ok(Value::NIL)
+}
+
+fn gc_last_collect_ms(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "gc.last_collect_ms")?;
+    let ns = crate::heap::gc_last_collect_ns();
+    Ok(Value::from_float(ns as f64 / 1_000_000.0))
+}
+
+fn gc_bytes_alive(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "gc.bytes_alive")?;
+    Ok(Value::from_int(crate::heap::gc_bytes_alive() as i64))
 }
 
 fn install_math(env: &mut Env) {

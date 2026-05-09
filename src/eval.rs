@@ -12,8 +12,31 @@ use crate::value::{
     Object, OnUpdateHandler, PathEntry, RuntimeError, StateDef, Value,
 };
 
+/// Phase 29 session 1: fixed-timestep simulation rate. Glenn Fiedler
+/// "Fix Your Timestep!" pattern — the play loop accumulates wall-clock
+/// frame time and calls `tick_frame` zero-or-more times per render
+/// frame at this rate, so simulation state advances deterministically
+/// regardless of display refresh rate. 60 Hz is the rate every
+/// shipped Twe example was already authored against.
+pub const PHYSICS_DT: f64 = 1.0 / 60.0;
+
+/// Cap on a single render frame's contribution to the accumulator.
+/// Without this, a hot-reload pause or breakpoint would generate a
+/// huge `frame_dt`, the accumulator would overflow, and the next
+/// frame would tick the simulation thousands of times trying to
+/// catch up — the "spiral of death." 0.25s is Glenn Fiedler's
+/// recommended cap.
+pub const MAX_FRAME_DT: f64 = 0.25;
+
+/// Hard cap on substeps per render frame. Belt-and-suspenders for
+/// `MAX_FRAME_DT`: if a single tick takes longer than `PHYSICS_DT`
+/// to compute, the accumulator never drains and we'd still spiral.
+/// 8 substeps per frame at 60 Hz = up to 8/60 ≈ 133ms of simulation
+/// per render. Hitting the cap drops the residual accumulator.
+pub const MAX_SUBSTEPS: u32 = 8;
+
 pub fn run(program: &Program) -> Result<String, RuntimeError> {
-    run_with_frames(program, 0, 1.0 / 60.0)
+    run_with_frames(program, 0, PHYSICS_DT)
 }
 
 pub fn run_with_frames(program: &Program, frames: u32, dt: f64) -> Result<String, RuntimeError> {

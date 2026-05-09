@@ -1,0 +1,6 @@
+# Phase 29 session 1: `time.physics_dt` is the fixed simulation rate
+# the engine guarantees (1/60s). Inside `on update(dt)` the parameter
+# `dt` should equal `time.physics_dt` — the loop drives ticks at the
+# fixed rate, so the dt the script observes is constant.
+
+print(time.physics_dt)

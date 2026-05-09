@@ -2489,3 +2489,18 @@ Pause()
         "expected the wait-context error, got: {err}"
     );
 }
+
+#[test]
+fn time_physics_dt_is_60hz_constant() {
+    // Phase 29 session 1: `time.physics_dt` is the fixed simulation
+    // rate the engine guarantees. Scripts read it at top level — when
+    // `time.dt` is still 0.0 — to size velocity-per-step state. The
+    // value must equal 1/60 exactly.
+    let out = run_program("tests/programs/physics_dt.twe").expect("program should run");
+    let printed: f64 = out.trim().parse().expect("expected a single float");
+    let expected = 1.0_f64 / 60.0;
+    assert!(
+        (printed - expected).abs() < 1e-12,
+        "expected {expected}, got {printed}"
+    );
+}

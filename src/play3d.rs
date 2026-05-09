@@ -1219,6 +1219,11 @@ struct App {
     /// Mouse buttons whose `Pressed` event arrived since the last
     /// frame — Twe `mouse_press.<name>`. Edge-triggered.
     mouse_buttons_pressed_this_frame: HashSet<&'static str>,
+    /// Phase 29 session 1: fixed-timestep accumulator. Same Glenn
+    /// Fiedler pattern as the 2D macroquad path in `src/play.rs`.
+    /// We drain `eval::PHYSICS_DT`-sized slices through
+    /// `physics3d::step` + `eval::tick_frame` before each render.
+    sim_accumulator: f64,
     exit_code: i32,
 }
 
@@ -1239,6 +1244,7 @@ impl App {
             mouse_wheel_y: 0.0,
             mouse_buttons_held: HashSet::new(),
             mouse_buttons_pressed_this_frame: HashSet::new(),
+            sim_accumulator: 0.0,
             exit_code: 0,
         }
     }
@@ -1662,9 +1668,27 @@ impl ApplicationHandler for App {
                 }
 
                 let now = Instant::now();
-                let dt = now.duration_since(self.last_frame_at).as_secs_f32();
+                let frame_dt = now.duration_since(self.last_frame_at).as_secs_f32();
                 self.last_frame_at = now;
-                if let Err(e) = render(state, &mut self.env, dt) {
+                // Phase 29 session 1: drain fixed-step substeps before
+                // composing the frame. `step_simulation_3d` runs
+                // physics3d::step + eval::tick_frame at PHYSICS_DT;
+                // `render` does GPU work only.
+                let frame_dt_clamped =
+                    (frame_dt as f64).min(crate::eval::MAX_FRAME_DT);
+                self.sim_accumulator += frame_dt_clamped;
+                let mut substeps: u32 = 0;
+                while self.sim_accumulator >= crate::eval::PHYSICS_DT
+                    && substeps < crate::eval::MAX_SUBSTEPS
+                {
+                    step_simulation_3d(&mut self.env, crate::eval::PHYSICS_DT as f32);
+                    self.sim_accumulator -= crate::eval::PHYSICS_DT;
+                    substeps += 1;
+                }
+                if substeps >= crate::eval::MAX_SUBSTEPS {
+                    self.sim_accumulator = 0.0;
+                }
+                if let Err(e) = render(state, &mut self.env) {
                     eprintln!("render error: {e}");
                 }
                 state.window.request_redraw();
@@ -3654,7 +3678,11 @@ fn load_and_upload_mesh(
 
 // ---------- Per-frame render ----------
 
-fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String> {
+/// Phase 29 session 1: one fixed-timestep simulation slice. Steps
+/// rapier3d at the same rate as the script's `on update(dt)` body so
+/// physics state and script state advance in lockstep. Called zero
+/// or more times per render frame from the App event loop.
+fn step_simulation_3d(env: &mut Env, dt: f32) {
     // Phase 18: step the rapier3d world before the Twe `on update`
     // body runs, so script logic reads authoritative positions.
     // Scripts own intent (velocity / impulse), the integrator owns
@@ -3662,13 +3690,10 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     // world's empty body set means step() returns near-instantly.
     crate::physics3d::step(dt);
 
-    // 1. Tick the per-frame logic — top-level `on update(dt):`
-    //    plus any active scene / entity tick. The macroquad path
-    //    does the same in `src/play.rs::run_loop`, separating
-    //    "advance simulation" (tick_frame) from "compose this
-    //    frame" (render_frame3d). Without this the script's
-    //    `on update(dt):` never fires, so anything that reads
-    //    `key.*` to drive state stays frozen.
+    // Tick the per-frame logic — top-level `on update(dt):`
+    // plus any active scene / entity tick. Without this the script's
+    // `on update(dt):` never fires, so anything that reads
+    // `key.*` to drive state stays frozen.
     if let Err(e) = eval::tick_frame(env, dt as f64) {
         eprintln!(
             "render error in `on update(dt)`: {}:{}: {}",
@@ -3679,7 +3704,9 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         print!("{}", env.out);
         env.out.clear();
     }
+}
 
+fn render(state: &mut RenderState, env: &mut Env) -> Result<(), String> {
     // 2. Run the script's `on render():` body. It pushes cubes
     //    onto `env.render_queue3d` (cleared by `render_frame3d`
     //    before the body runs).

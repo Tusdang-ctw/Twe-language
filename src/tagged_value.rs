@@ -257,6 +257,18 @@ impl TaggedValue {
         }
     }
 
+    /// Phase 29 session 3: encode an `i64` whose magnitude is known
+    /// to fit in i48. Skips the bounds branch in `from_int`. Used by
+    /// VM hot paths where the result of two i48 operands stays in
+    /// i48 range under typical game workloads. **Wraps silently if
+    /// the input is outside i48** — only call when overflow is
+    /// genuinely impossible (e.g., a small constant add).
+    #[inline]
+    pub fn from_imm_int_unchecked(n: i64) -> Self {
+        let payload = (n as u64) & PAYLOAD_MASK;
+        Self(QNAN | TAG_INT | payload)
+    }
+
     /// Encode an `f64`. Canonicalizes NaN to a single bit pattern
     /// so a payload that happens to look like one of our tags
     /// can't be misread as Nil/Bool/etc.
@@ -434,13 +446,7 @@ impl TaggedValue {
     #[inline]
     pub fn as_int(&self) -> i64 {
         if self.is_int() {
-            // Sign-extend the 48-bit payload to i64.
-            let payload = self.0 & PAYLOAD_MASK;
-            return if payload & (1 << 47) != 0 {
-                (payload | !PAYLOAD_MASK) as i64
-            } else {
-                payload as i64
-            };
+            return self.as_imm_int_unchecked();
         }
         if self.is_obj() {
             return self.with_obj_body(|b| match b {
@@ -449,6 +455,21 @@ impl TaggedValue {
             });
         }
         panic!("as_int on non-int value")
+    }
+
+    /// Phase 29 session 3: read the i48 payload of an immediate-int
+    /// value without re-running the tag predicate. Caller MUST have
+    /// already verified `is_int()` is true. Used by VM hot paths
+    /// (`binary_arith`, `compare`) where the predicate has just been
+    /// checked and the redundant `as_int` branch is the difference
+    /// between a single signed-shift extract and a chain of compares.
+    #[inline]
+    pub fn as_imm_int_unchecked(&self) -> i64 {
+        debug_assert!(self.is_int(), "as_imm_int_unchecked on non-immediate-int");
+        // Sign-extend bit 47 across the high 16 bits via arithmetic
+        // shift on the signed cast — one instruction on every modern
+        // ISA, vs the previous compare-and-or branch.
+        ((self.0 << 16) as i64) >> 16
     }
 
     /// True for either the i48 immediate path or the

@@ -59,6 +59,28 @@ use crate::tagged_value::{HeapBody, HeapBodyKind, HeapObject, TaggedValue};
 /// Interpreters* §26.4. v0.3 tuning lands in 8i.
 const INITIAL_GC_THRESHOLD: usize = 1024 * 1024;
 
+/// Phase 29 session 2: default per-frame sweep budget. The play-loop
+/// safepoint (eval/vm) calls `gc_collect_with` with this much wall
+/// time; if a sweep can't complete in the budget, the cursor is
+/// preserved across frames and the next safepoint resumes. Default
+/// 2ms of a 16.7ms frame ≈ 12% — leaves headroom for game logic.
+/// Scripts override via `gc.budget_ms(f)`.
+const DEFAULT_GC_BUDGET_NS: u64 = 2_000_000;
+
+/// Phase 29 session 2: incremental-sweep state machine.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SweepPhase {
+    /// No sweep in flight. The next `gc_collect_with` will mark roots
+    /// and start a fresh sweep.
+    Idle,
+    /// Mark phase done; sweep cursor is mid-list. The next
+    /// `gc_collect_with` skips marking and resumes sweeping from
+    /// `sweep_cur`. Allocations during this phase set
+    /// `mark = true` on the new object so it survives the in-flight
+    /// round (it didn't exist when roots were scanned).
+    Sweeping,
+}
+
 /// Heap manager. Owns every `HeapObject` allocated via
 /// [`gc_alloc`]. Threaded onto an intrusive linked list rooted at
 /// `all_objects` so [`collect`] can walk every allocation during
@@ -72,6 +94,27 @@ pub struct Heap {
     pub bytes_allocated: usize,
     /// GC trigger threshold. Grown adaptively in `collect()`.
     pub threshold: usize,
+    /// Phase 29 session 2: where the in-flight sweep is up to.
+    sweep_phase: SweepPhase,
+    /// Sweep cursor — predecessor in the intrusive list, used to
+    /// rewire links when freeing the current object.
+    sweep_prev: *mut HeapObject,
+    /// Sweep cursor — current object under inspection.
+    sweep_cur: *mut HeapObject,
+    /// Per-call sweep budget in nanoseconds. Lowering this makes
+    /// individual safepoints cheaper at the cost of more frames
+    /// before sweep finishes. Set to `u64::MAX` to disable budget
+    /// (test path uses this for full synchronous collect).
+    sweep_budget_ns: u64,
+    /// Wall-clock total of the most recently completed sweep cycle,
+    /// in nanoseconds. Aggregates across however many incremental
+    /// steps the cycle took. Read via `gc.last_collect_ms()` from
+    /// scripts; useful for tuning the budget.
+    last_collect_ns: u64,
+    /// Wall-clock accumulator for the in-flight cycle. Reset to 0
+    /// when a new mark+sweep cycle starts; published into
+    /// `last_collect_ns` when the cycle completes.
+    in_flight_collect_ns: u64,
 }
 
 impl Heap {
@@ -80,6 +123,12 @@ impl Heap {
             all_objects: std::ptr::null_mut(),
             bytes_allocated: 0,
             threshold: INITIAL_GC_THRESHOLD,
+            sweep_phase: SweepPhase::Idle,
+            sweep_prev: std::ptr::null_mut(),
+            sweep_cur: std::ptr::null_mut(),
+            sweep_budget_ns: DEFAULT_GC_BUDGET_NS,
+            last_collect_ns: 0,
+            in_flight_collect_ns: 0,
         }
     }
 
@@ -87,10 +136,19 @@ impl Heap {
     /// pointer; the heap owns it through the linked list.
     /// Repeatedly calling this without ever calling
     /// [`collect`] leaks until the thread-local Heap drops.
+    ///
+    /// Phase 29 session 2 invariant: when an incremental sweep is
+    /// in progress (`sweep_phase == Sweeping`), brand-new objects
+    /// inherit `mark = true`. Without this, a fresh allocation
+    /// landing ahead of the sweep cursor (we always prepend to
+    /// `all_objects`, so it lands right at the head) would be
+    /// scanned as unmarked and freed before the script ever
+    /// stored a reference to it. The mark is reset normally on
+    /// the next sweep cycle.
     pub fn alloc(&mut self, body: HeapBody) -> *mut HeapObject {
         let body_kind = HeapBodyKind::of(&body);
         let obj = Box::new(HeapObject {
-            mark: Cell::new(false),
+            mark: Cell::new(self.sweep_phase == SweepPhase::Sweeping),
             body_kind,
             next: Cell::new(self.all_objects),
             body: RefCell::new(body),
@@ -104,43 +162,78 @@ impl Heap {
     /// Stop-the-world mark + sweep with a flat root slice. Wraps
     /// the closure-based [`gc_collect_with`] entry point for
     /// tests / callers that already have a Vec of root refs.
+    /// Always runs to completion (synchronous) — useful for tests
+    /// that expect a deterministic post-collect heap state.
     pub fn collect(&mut self, roots: &[&TaggedValue]) {
         for r in roots {
             mark_value(r);
         }
-        self.sweep();
+        self.start_or_continue_sweep_to_completion();
     }
 
-    /// Sweep half of mark+sweep. Walk the `all_objects` linked list:
-    /// keep marked objects (and reset their mark for the next cycle),
-    /// unlink + free unmarked objects. Adapts the GC threshold based
-    /// on post-sweep live size, per *Crafting Interpreters* §26.4.
-    pub fn sweep(&mut self) {
-        let mut prev: *mut HeapObject = std::ptr::null_mut();
-        let mut cur = self.all_objects;
+    /// Phase 29 session 2: begin (or, if already in flight, continue)
+    /// an incremental sweep. Walks at most `budget_ns` worth of
+    /// objects from the cursor and yields. Returns `true` if the
+    /// sweep cycle completed this call.
+    pub fn sweep_step(&mut self, budget_ns: u64) -> bool {
+        if self.sweep_phase == SweepPhase::Idle {
+            self.sweep_prev = std::ptr::null_mut();
+            self.sweep_cur = self.all_objects;
+            self.sweep_phase = SweepPhase::Sweeping;
+        }
+
+        let start = std::time::Instant::now();
         unsafe {
-            while !cur.is_null() {
+            while !self.sweep_cur.is_null() {
+                let cur = self.sweep_cur;
                 let next = (*cur).next.get();
                 if (*cur).mark.replace(false) {
                     // Marked black → keep, reset to white.
-                    prev = cur;
+                    self.sweep_prev = cur;
                 } else {
                     // White → unlink and free.
-                    if prev.is_null() {
+                    if self.sweep_prev.is_null() {
                         self.all_objects = next;
                     } else {
-                        (*prev).next.set(next);
+                        (*self.sweep_prev).next.set(next);
                     }
                     let _ = Box::from_raw(cur);
                 }
-                cur = next;
+                self.sweep_cur = next;
+
+                // Budget check is per-object — Instant::now() is
+                // cheap on Win/Mac/Linux (rdtsc-backed). Checking
+                // every N objects would amortize but the sweep loop
+                // is already cheap enough that the per-object check
+                // doesn't dominate.
+                if start.elapsed().as_nanos() as u64 >= budget_ns {
+                    self.in_flight_collect_ns += start.elapsed().as_nanos() as u64;
+                    return false;
+                }
             }
         }
+        // Sweep completed.
+        self.in_flight_collect_ns += start.elapsed().as_nanos() as u64;
+        self.last_collect_ns = self.in_flight_collect_ns;
+        self.in_flight_collect_ns = 0;
+        self.sweep_phase = SweepPhase::Idle;
+        self.sweep_prev = std::ptr::null_mut();
+        self.sweep_cur = std::ptr::null_mut();
 
         // Adaptive threshold: if we freed a lot, lower the bar; if
         // not, raise it. Simple heuristic mirroring CI §26.4.
         self.bytes_allocated = self.live_byte_count();
         self.threshold = (self.bytes_allocated * 2).max(INITIAL_GC_THRESHOLD);
+        true
+    }
+
+    /// Drain the in-flight sweep to completion, ignoring any
+    /// configured budget. Used by the synchronous `collect()` path
+    /// (tests + tooling) which expect a fully-collected heap on
+    /// return.
+    fn start_or_continue_sweep_to_completion(&mut self) {
+        // u64::MAX budget → loop never yields early.
+        let _ = self.sweep_step(u64::MAX);
     }
 
     /// Walk `all_objects` and sum the bytes. Used by `collect()`
@@ -216,20 +309,38 @@ pub fn gc_collect(roots: &[&TaggedValue]) {
 /// sweep, so it's safe to allocate (transitively trigger
 /// [`gc_alloc`]) inside scan — though scan should be allocation-free
 /// in practice.
+///
+/// Phase 29 session 2: this is now incremental. Marking happens only
+/// when the previous sweep cycle has completed (`sweep_phase` was
+/// `Idle`); otherwise the in-flight cycle resumes directly. The
+/// sweep step yields after `sweep_budget_ns` — typically 2 ms — and
+/// the cursor persists across calls, so a large heap is collected
+/// over multiple safepoints rather than stalling one.
 pub fn gc_collect_with(scan: impl FnOnce()) {
-    scan();
-    HEAP.with(|h| h.borrow_mut().sweep());
+    let in_flight = HEAP.with(|h| h.borrow().sweep_phase == SweepPhase::Sweeping);
+    if !in_flight {
+        // Fresh cycle — scan roots before starting sweep.
+        scan();
+    }
+    let budget = HEAP.with(|h| h.borrow().sweep_budget_ns);
+    HEAP.with(|h| {
+        let _ = h.borrow_mut().sweep_step(budget);
+    });
 }
 
 /// Returns true if the heap's `bytes_allocated` has crossed
 /// `threshold`, meaning the next safepoint should trigger collection.
 /// Hot path: called from every VM-dispatch / eval-statement safepoint;
 /// must be cheap when over threshold is false.
+///
+/// Phase 29 session 2: also returns true while a sweep is in flight,
+/// so safepoints continue draining the cursor across frames until
+/// the cycle completes.
 #[inline]
 pub fn gc_should_collect() -> bool {
     HEAP.with(|h| {
         let h = h.borrow();
-        h.bytes_allocated >= h.threshold
+        h.bytes_allocated >= h.threshold || h.sweep_phase == SweepPhase::Sweeping
     })
 }
 
@@ -237,6 +348,34 @@ pub fn gc_should_collect() -> bool {
 /// sooner. Production code should not use this.
 pub fn gc_set_threshold(threshold: usize) {
     HEAP.with(|h| h.borrow_mut().threshold = threshold);
+}
+
+/// Phase 29 session 2: configure the per-safepoint sweep budget in
+/// nanoseconds. Lower = smoother frame times but slower memory
+/// reclamation; `u64::MAX` disables the budget (sweep always
+/// finishes synchronously). Exposed to scripts as `gc.budget_ms(f)`.
+pub fn gc_set_budget_ns(budget_ns: u64) {
+    HEAP.with(|h| h.borrow_mut().sweep_budget_ns = budget_ns);
+}
+
+/// Phase 29 session 2: read the current sweep budget in nanoseconds.
+pub fn gc_budget_ns() -> u64 {
+    HEAP.with(|h| h.borrow().sweep_budget_ns)
+}
+
+/// Phase 29 session 2: wall-clock cost of the most recently completed
+/// sweep cycle, in nanoseconds. Aggregates across however many
+/// incremental steps the cycle took. Returns 0 before any cycle has
+/// completed. Exposed to scripts as `gc.last_collect_ms()`.
+pub fn gc_last_collect_ns() -> u64 {
+    HEAP.with(|h| h.borrow().last_collect_ns)
+}
+
+/// Phase 29 session 2: number of bytes currently held by live
+/// objects on the thread-local heap. Recomputed at the end of each
+/// sweep cycle; reflects the bytes_allocated counter between cycles.
+pub fn gc_bytes_alive() -> usize {
+    HEAP.with(|h| h.borrow().bytes_allocated)
 }
 
 /// Number of objects currently alive on the thread-local heap.
@@ -494,5 +633,84 @@ mod tests {
         gc_collect(&[&obj]);
         // Object survived; cycle didn't crash.
         assert!(obj.is_object());
+    }
+
+    #[test]
+    fn incremental_sweep_yields_then_resumes() {
+        // Phase 29 session 2: a tight per-step budget should leave
+        // sweep mid-list, and the next call should resume rather
+        // than restart. Even with a 1ns budget — basically "yield
+        // immediately" — repeated calls must eventually reclaim
+        // every unrooted allocation.
+        gc_collect(&[]); // start from a known clean state
+        let baseline = live();
+
+        // Allocate a bunch of unrooted strings.
+        for _ in 0..50 {
+            let _ = TaggedValue::from_borrowed_str("unrooted");
+        }
+        assert!(live() >= baseline + 50);
+
+        // Mark phase only — drives sweep_phase to Sweeping with no
+        // roots, so all 50 strings are scheduled to die.
+        gc_set_budget_ns(1);
+        for _ in 0..200 {
+            // Drive sweep through gc_collect_with so the no-mark path
+            // for in-flight cycles is exercised. After many tiny
+            // budgeted steps the cycle must complete.
+            gc_collect_with(|| {
+                // No roots — everything is collectable.
+            });
+            if live() <= baseline {
+                break;
+            }
+        }
+        // Restore generous budget so other tests behave normally.
+        gc_set_budget_ns(u64::MAX);
+
+        let after = live();
+        assert!(
+            after <= baseline,
+            "incremental sweep should drain to baseline; after={after} baseline={baseline}"
+        );
+    }
+
+    #[test]
+    fn allocations_during_sweep_survive_the_round() {
+        // Phase 29 session 2: an object allocated mid-sweep must be
+        // pre-marked so the cursor doesn't free it before the script
+        // ever stored a root reference. We simulate this by starting
+        // a sweep with a 1ns budget (yields immediately), allocating
+        // a fresh string while sweep_phase == Sweeping, and asserting
+        // the string survives the sweep cycle's eventual completion.
+        gc_collect(&[]); // start clean
+        gc_set_budget_ns(1);
+        // Force the heap into Sweeping with no live roots — the prev
+        // cycle's leftover allocations are queued for sweep.
+        let _ = TaggedValue::from_borrowed_str("about to die");
+        gc_collect_with(|| {});
+        // Now allocate during in-flight sweep. The new object should
+        // be pre-marked.
+        let survivor = TaggedValue::from_borrowed_str("born during sweep");
+        // Drain sweep to completion.
+        for _ in 0..1000 {
+            gc_collect_with(|| {});
+            // Eventually the in-flight cycle finishes and a new one
+            // can't start without scan picking up `survivor`. Since
+            // we pass an empty closure, `survivor` is unrooted from
+            // the GC's perspective; it survives only because of the
+            // mid-sweep pre-mark.
+            if !heap_in_sweep() {
+                break;
+            }
+        }
+        gc_set_budget_ns(u64::MAX);
+        // The string's heap pointer is still readable.
+        assert!(survivor.is_str());
+        assert_eq!(survivor.as_string(), "born during sweep");
+    }
+
+    fn heap_in_sweep() -> bool {
+        HEAP.with(|h| h.borrow().sweep_phase == SweepPhase::Sweeping)
     }
 }

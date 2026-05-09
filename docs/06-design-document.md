@@ -603,6 +603,33 @@ assert(hp >= 0, "negative hp")  # panics with message when false
 
 `print` accepts any value; interpolation `{expr}` converts to string automatically.
 
+The `time` module exposes the simulation clock:
+
+```twe
+time.dt              # seconds since the last tick — equals time.physics_dt
+                     #  inside `on update(dt)`. 0.0 before the first tick.
+time.physics_dt      # constant 1/60s — the fixed-timestep simulation rate
+                     #  the engine guarantees. Read at top level to size
+                     #  velocity-per-step state independently of dt being 0.0
+                     #  before any frame has run.
+```
+
+**Phase 29 session 1:** the play loop drives ticks at the fixed `time.physics_dt` rate using a Glenn Fiedler accumulator. On display refresh rates above 60 Hz, some renders skip a tick; below 60 Hz, some renders run two. Either way, `dt` inside `on update(dt)` is constant — required for replay determinism and lockstep multiplayer.
+
+The `gc` module configures the tracing-GC budget and exposes observability:
+
+```twe
+gc.budget_ms(2.0)        # cap per-safepoint sweep work at 2ms (default 2ms).
+                         #  Lower → smoother frame times, slower reclamation.
+                         #  Pass a tiny number like 0.5 for tight pacing budgets.
+gc.last_collect_ms()     # wall-clock cost of the last completed sweep cycle,
+                         #  in ms. Aggregates across however many incremental
+                         #  steps the cycle took.
+gc.bytes_alive()         # live heap bytes since the last sweep cycle finished.
+```
+
+**Phase 29 session 2:** sweep is incremental. The play-loop safepoint runs the mark phase once per cycle, then sweeps up to `gc.budget_ms` worth of objects per call; the cursor persists across frames so a large heap is collected over multiple safepoints rather than stalling one. Allocations during an in-flight sweep are pre-marked so they survive the round. The mark phase itself is still stop-the-world; bounding mark requires tri-color which lands as a follow-on.
+
 ### 7.2 Math
 
 All functions available as `math.<name>` and as bare names inside `visual` blocks.

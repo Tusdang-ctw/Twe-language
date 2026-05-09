@@ -2054,11 +2054,20 @@ Err(RuntimeError {
         }
         let l = self.stack[len - 2];
         let r = self.stack[len - 1];
-        // Hot fast path for int+int — bypasses apply_arith's
-        // string + tuple + mixed branches entirely.
-        if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
-            let a = l.as_int();
-            let b = r.as_int();
+        // Phase 29 session 3: immediate-int hot path.
+        // The previous `is_int_or_boxed_int` predicate compiled to
+        // a chain of tag-bit, then OBJ-tag, then HeapBody-kind
+        // probes; the `as_int` extractor then re-checked the same
+        // predicate before sign-extending. Replacing both with
+        // `is_int` + `as_imm_int_unchecked` collapses to one
+        // tag-mask compare and a branchless arithmetic shift per
+        // operand. Boxed-i64 (numbers outside ±2^47) fall through
+        // to `apply_arith`'s slower path — that path stays
+        // correct, the win is dropping one boxed branch from
+        // every immediate-int dispatch.
+        if l.is_int() && r.is_int() {
+            let a = l.as_imm_int_unchecked();
+            let b = r.as_imm_int_unchecked();
             let v = match op {
                 ArithOp::Div if b == 0 => return Err(division_by_zero(line)),
                 ArithOp::Add => Value::from_int(a + b),
@@ -2084,7 +2093,8 @@ Err(RuntimeError {
             self.stack[len - 2] = v;
             return Ok(());
         }
-        // Slow path: strings, tuples, mixed int/float, errors.
+        // Slow path: strings, tuples, mixed int/float, errors,
+        // and the rare boxed-i64 case.
         let result = apply_arith(op, &l, &r, line)?;
         self.stack.truncate(len - 1);
         self.stack[len - 2] = result;
@@ -2148,10 +2158,17 @@ Err(RuntimeError {
         }
         let l = self.stack[len - 2];
         let r = self.stack[len - 1];
-        let result = if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
-            Value::from_bool(int_cmp(l.as_int(), r.as_int()))
+        // Phase 29 session 3: immediate-int + immediate-int hot path
+        // first. Rest of the chain unchanged — boxed-i64 + mixed-type
+        // paths fall through to the original `is_int_or_boxed_int`
+        // predicate. The fast path handles nearly every loop counter
+        // and `for i in 0..N` body in shipped Twe code.
+        let result = if l.is_int() && r.is_int() {
+            Value::from_bool(int_cmp(l.as_imm_int_unchecked(), r.as_imm_int_unchecked()))
         } else if l.is_float() && r.is_float() {
             Value::from_bool(float_cmp(l.as_float(), r.as_float()))
+        } else if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
+            Value::from_bool(int_cmp(l.as_int(), r.as_int()))
         } else if l.is_int_or_boxed_int() && r.is_float() {
             Value::from_bool(float_cmp(l.as_int() as f64, r.as_float()))
         } else if l.is_float() && r.is_int_or_boxed_int() {

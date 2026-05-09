@@ -308,6 +308,10 @@ async fn run_loop(path: String) {
     let mut gate = ReloadGate::new(current_mtime(&path_ref));
     let mut idle = IdleAutoPause::new();
     let mut blur = BlurAutoPause::new();
+    // Phase 29 session 1: fixed-timestep accumulator. See `eval.rs`
+    // PHYSICS_DT / MAX_FRAME_DT / MAX_SUBSTEPS for the rate, clamp,
+    // and spiral cap.
+    let mut accumulator: f64 = 0.0;
     flush_output(&mut env);
 
     loop {
@@ -328,6 +332,7 @@ async fn run_loop(path: String) {
                     crate::stdlib::clear_asset_caches();
                     clear_gamepad_state();
                     env = new_env;
+                    accumulator = 0.0;
                     flush_output(&mut env);
                 }
                 Err(()) => {
@@ -337,9 +342,9 @@ async fn run_loop(path: String) {
         }
 
         update_key_state(&mut env);
-        let dt = get_frame_time() as f64;
-        hud_record(dt);
-        idle.tick(dt);
+        let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
+        hud_record(frame_dt);
+        idle.tick(frame_dt);
         idle.apply();
         blur.tick(crate::window_focus::is_focused());
         // Phase 10 session 8: when paused, skip `tick_frame` so no
@@ -347,11 +352,35 @@ async fn run_loop(path: String) {
         // render path live so a "PAUSED" overlay or settings menu
         // can draw. Render-side `button` / `slider` etc. read mouse
         // state directly so the pause menu still interacts.
+        //
+        // Phase 29 session 1: drive ticks via a fixed-step accumulator.
+        // Each render frame, drain as many PHYSICS_DT slices as the
+        // wall-clock budget allows (capped at MAX_SUBSTEPS). 60 Hz
+        // simulation on a 144 Hz display means most renders skip a
+        // tick; on 30 Hz displays most renders run two. Either way,
+        // the simulation sees a constant dt — required for replay
+        // determinism + sample-accurate audio + stable physics.
+        let mut tick_err: Option<crate::value::RuntimeError> = None;
         if !crate::stdlib::is_paused() {
-            if let Err(e) = crate::eval::tick_frame(&mut env, dt) {
-                eprintln!("{path_ref}: runtime error: {e}");
-                break;
+            accumulator += frame_dt;
+            let mut substeps: u32 = 0;
+            while accumulator >= crate::eval::PHYSICS_DT
+                && substeps < crate::eval::MAX_SUBSTEPS
+            {
+                if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
+                    tick_err = Some(e);
+                    break;
+                }
+                accumulator -= crate::eval::PHYSICS_DT;
+                substeps += 1;
             }
+            if substeps >= crate::eval::MAX_SUBSTEPS {
+                accumulator = 0.0;
+            }
+        }
+        if let Some(e) = tick_err {
+            eprintln!("{path_ref}: runtime error: {e}");
+            break;
         }
         flush_output(&mut env);
 
@@ -365,7 +394,12 @@ async fn run_loop(path: String) {
         // (origin top-left, +y down) keeps working unchanged.
         // Convention when opted in: camera.pos is the world-space
         // coordinate that ends up at the screen center.
-        crate::stdlib::camera_tick(dt);
+        //
+        // Phase 29 session 1: camera-shake decay runs once per render
+        // on wall-clock `frame_dt` rather than per substep — shake is
+        // a visual effect, not deterministic gameplay state, so smooth
+        // decay at display rate is the right behaviour.
+        crate::stdlib::camera_tick(frame_dt);
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
@@ -818,6 +852,9 @@ async fn run_loop_bytecode(path: String) {
     let mut idle = IdleAutoPause::new();
     let mut blur = BlurAutoPause::new();
     flush_vm_output(&mut vm);
+    // Phase 29 session 1: same fixed-timestep accumulator as the
+    // tree-walker loop — `vm.tick` substitutes for `eval::tick_frame`.
+    let mut accumulator: f64 = 0.0;
 
     loop {
         if is_key_pressed(KeyCode::Escape) {
@@ -831,6 +868,7 @@ async fn run_loop_bytecode(path: String) {
                     crate::stdlib::clear_asset_caches();
                     clear_gamepad_state();
                     vm = new_vm;
+                    accumulator = 0.0;
                     flush_vm_output(&mut vm);
                 }
                 Err(()) => {
@@ -840,12 +878,30 @@ async fn run_loop_bytecode(path: String) {
         }
 
         update_vm_input(&vm);
-        let dt = get_frame_time() as f64;
-        hud_record(dt);
-        idle.tick(dt);
+        let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
+        hud_record(frame_dt);
+        idle.tick(frame_dt);
         idle.apply();
         blur.tick(crate::window_focus::is_focused());
-        if let Err(e) = vm.tick(dt) {
+        // Note: bytecode VM doesn't currently expose a pause flag the
+        // way the tree-walker does (`stdlib::is_paused`). Pause-aware
+        // bytecode play is its own follow-on; here we just feed every
+        // wall-clock millisecond into the accumulator.
+        accumulator += frame_dt;
+        let mut substeps: u32 = 0;
+        let mut tick_err: Option<crate::value::RuntimeError> = None;
+        while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
+            if let Err(e) = vm.tick(crate::eval::PHYSICS_DT) {
+                tick_err = Some(e);
+                break;
+            }
+            accumulator -= crate::eval::PHYSICS_DT;
+            substeps += 1;
+        }
+        if substeps >= crate::eval::MAX_SUBSTEPS {
+            accumulator = 0.0;
+        }
+        if let Some(e) = tick_err {
             eprintln!("{path_ref}: runtime error: {e}");
             break;
         }
@@ -880,6 +936,9 @@ async fn run_loop_embedded(source: String) {
     };
     let mut idle = IdleAutoPause::new();
     let mut blur = BlurAutoPause::new();
+    // Phase 29 session 1: fixed-timestep accumulator (same as
+    // run_loop). Embedded games run with the determinism layer too.
+    let mut accumulator: f64 = 0.0;
     flush_output(&mut env);
 
     loop {
@@ -888,22 +947,38 @@ async fn run_loop_embedded(source: String) {
         }
 
         update_key_state(&mut env);
-        let dt = get_frame_time() as f64;
-        hud_record(dt);
-        idle.tick(dt);
+        let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
+        hud_record(frame_dt);
+        idle.tick(frame_dt);
         idle.apply();
         blur.tick(crate::window_focus::is_focused());
+        let mut tick_err: Option<crate::value::RuntimeError> = None;
         if !crate::stdlib::is_paused() {
-            if let Err(e) = crate::eval::tick_frame(&mut env, dt) {
-                eprintln!("{LABEL}: runtime error: {e}");
-                break;
+            accumulator += frame_dt;
+            let mut substeps: u32 = 0;
+            while accumulator >= crate::eval::PHYSICS_DT
+                && substeps < crate::eval::MAX_SUBSTEPS
+            {
+                if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
+                    tick_err = Some(e);
+                    break;
+                }
+                accumulator -= crate::eval::PHYSICS_DT;
+                substeps += 1;
             }
+            if substeps >= crate::eval::MAX_SUBSTEPS {
+                accumulator = 0.0;
+            }
+        }
+        if let Some(e) = tick_err {
+            eprintln!("{LABEL}: runtime error: {e}");
+            break;
         }
         flush_output(&mut env);
 
         clear_background(BLACK);
         env.in_render = true;
-        crate::stdlib::camera_tick(dt);
+        crate::stdlib::camera_tick(frame_dt);
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;

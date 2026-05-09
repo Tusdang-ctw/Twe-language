@@ -265,7 +265,7 @@ These are unresolved and will need answering before serious implementation:
 
 4. **Sandboxing.** User-generated content (Roblox-style) requires sandboxed execution. Defer to v1.0; design with isolation hooks in mind.
 
-5. **Determinism.** Multiplayer / netcode demands deterministic execution. Float math is the usual culprit. Defer hard guarantees to v1.0+; ship "best effort" determinism in v0.x.
+5. **Determinism.** Multiplayer / netcode demands deterministic execution. Float math is the usual culprit. Defer hard guarantees to v1.0+; ship "best effort" determinism in v0.x. **Phase 29 session 1 (2026-05-09)** ships the first deterministic-runtime primitive: a fixed-timestep update loop. The play / play3d / bytecode / embedded loops accumulate wall-clock frame time and call `tick_frame` zero-or-more times per render at `eval::PHYSICS_DT` (1/60s). `MAX_FRAME_DT` (0.25s) clamps a single frame's contribution and `MAX_SUBSTEPS` (8) caps the catch-up burst — together they prevent the spiral of death after a hot-reload pause or breakpoint. `time.physics_dt` exposes the rate to scripts. `on update(dt)` parameters now see a constant `dt` regardless of display refresh rate, which is the foundation for replay (Phase 29 session 4) and lockstep multiplayer (Phase 31).
 
 ---
 
