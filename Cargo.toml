@@ -22,7 +22,34 @@ unsafe_code = "deny"
 all = { level = "warn", priority = -1 }
 
 [dependencies]
+# macroquad is the 2D backend and supports wasm32 natively —
+# stays in the unconditional section.
 macroquad = { version = "0.4", default-features = false, features = ["audio"] }
+
+# Phase 12 session 5: `twe.toml` project manifest parsing. Pure Rust,
+# compiles on all targets including wasm32.
+toml = "0.8"
+
+# Phase 15 session 3: optional Steam SDK integration. Requires the
+# Steamworks SDK redistributable at link time (steam_api.dll on
+# Windows). Only compiled when `--features steam` is passed —
+# default builds have zero Steam overhead.
+[features]
+steam = ["dep:steamworks"]
+
+[dependencies.steamworks]
+version = "0.11"
+optional = true
+
+# ── Native-only dependencies (not compiled for wasm32-unknown-unknown) ──
+#
+# Phase 30 session 1: all deps that use C libraries, platform-specific
+# OS APIs, or are only referenced by modules excluded from WASM builds
+# (play3d / play_visual / physics3d / cli / build) move here. This
+# lets `cargo build --target wasm32-unknown-unknown` succeed without a
+# C toolchain configured for WASM. The corresponding modules are gated
+# with `#[cfg(not(target_arch = "wasm32"))]` in src/lib.rs.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Phase 5 task 5 session 1: wgpu-driven 3D rendering for `twec play3d`.
 # winit handles the window + event loop; pollster blocks on the few
 # async wgpu calls (adapter + device acquisition). bytemuck only
@@ -31,79 +58,43 @@ wgpu = "22.0"
 winit = "0.30"
 pollster = "0.3"
 # Phase 5 task 5 session (b): vertex / uniform buffer layout via
-# `#[derive(Pod, Zeroable)]`. Required as soon as the GPU sees
-# anything other than a clear color.
+# `#[derive(Pod, Zeroable)]`.
 bytemuck = { version = "1", features = ["derive"] }
-# v0.2 session 1: glTF 2.0 mesh import. Pure-Rust, no native deps.
-# Default features pull the `image` crate (texture decoding) which
-# we don't need yet — disabled. `import` gives us `gltf::import` for
-# .glb loading; `utils` exposes the `Reader` API used to extract
-# POSITION / NORMAL / index accessors.
+# v0.2 session 1: glTF 2.0 mesh import. Pure-Rust crate but only
+# referenced by play3d / physics3d which are excluded from WASM.
 gltf = { version = "1", default-features = false, features = ["import", "utils", "names"] }
-# Phase 9 session 5: cross-platform gamepad input. Macroquad 0.4 has
-# no gamepad support of its own (input.rs ships a "and gamepads soon"
-# header and zero functions); gilrs is the canonical Rust gamepad
-# crate, uses XInput on Windows, evdev on Linux, IOKit on macOS. No
-# native build deps on any of the target platforms.
+# Phase 9 session 5: cross-platform gamepad input via XInput / evdev /
+# IOKit. gilrs has no WASM backend; gamepad is no-op on the web target.
 gilrs = "0.10"
-# Phase 10 session 5b: cross-platform OS clipboard. Settings menus need
-# Ctrl+V paste in text inputs and the eventual share / export-link UI
-# will need write. arboard is the de-facto Rust clipboard crate
-# (Win32, NSPasteboard, X11, Wayland) and adds no native build deps
-# on the Windows + macOS + Linux trio that v1.0 targets.
+# Phase 10 session 5b: cross-platform OS clipboard (Win32, NSPasteboard,
+# X11, Wayland). Not available in the browser sandbox.
 arboard = "3"
-
-# Phase 18: rapier3d for collision + rigid-body physics in
-# `twec play3d`. Pure Rust, no native deps. Default features
-# include `dim3` + `f32` precision; we drop `parallel` (rayon)
-# because the play loop is single-threaded and rayon would only
-# add startup cost.
+# Phase 18: rapier3d physics (referenced only by physics3d.rs which is
+# excluded from WASM). Pure Rust — could compile to wasm32, but the
+# 3D play loop is native-only for Phase 30.
 rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f32"] }
-
-# Phase 12 session 8: zstd bundle-body compression. Roadmap names
-# zstd specifically — it's the modern speed/ratio sweet spot and
-# what Steam Depot uses internally. The `zstd` crate vendors libzstd
-# via cc, so no external native dep on Windows / macOS / Linux. Only
-# enabled via the bundle's `flags` bit 0; uncompressed bundles still
-# round-trip without touching the codec.
+# Phase 12 session 8: zstd bundle compression. Links libzstd via `cc`
+# which requires a C toolchain configured for the target; not available
+# for wasm32-unknown-unknown without emscripten/wasi-sdk. WASM builds
+# produce uncompressed asset copies; bundles stay native-only.
 zstd = "0.13"
-
-# Phase 17 session 3: PNG/JPEG texture loading for the 3D
-# pipeline. `image` is already transitive via macroquad/gltf so
-# this is a no-cost dep. Default features include common formats;
-# we restrict to png + jpeg to avoid the ICO / TGA / etc. weight.
+# Phase 17 session 3: PNG/JPEG texture loading for the 3D pipeline.
+# Transitively available via macroquad on WASM, but the explicit dep
+# is only needed by play3d which is native-only.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
-# Phase 12 session 5: `twe.toml` project manifest parsing. TOML is
-# the de-facto Rust config format and v1.0 will need it for several
-# more things (asset-pipeline rules, cross-platform build matrix,
-# Steam Depot config). `toml = "0.8"` is the canonical crate;
-# keeping defaults gives us the parse + display features. Pulls
-# serde transitively but serde is already in our build via wgpu /
-# gltf so the marginal cost is small.
-toml = "0.8"
-
-# Phase 11 follow-on (deeper): true auto-pause-on-window-blur. macroquad
-# 0.4 doesn't surface desktop focus events, so the play loop polls
-# `GetForegroundWindow` once per frame and compares the owning PID
-# to our own. windows-sys is the official low-level binding crate;
-# only `Win32_UI_WindowsAndMessaging` is enabled — the smallest
-# feature set that covers `GetForegroundWindow` /
-# `GetWindowThreadProcessId`. Builds vanish on non-Windows targets.
-# Phase 15 session 3: optional Steam SDK integration. Requires the
-# Steamworks SDK redistributable at link time (steam_api.dll on
-# Windows). Only compiled when `--features steam` is passed —
-# default builds have zero Steam overhead. Enabled automatically by
-# `twec build --steam` (Phase 12 session 9 adds the --steam flag).
-[features]
-steam = ["dep:steamworks"]
-
-[dependencies.steamworks]
-version = "0.11"
-optional = true
-
+# Phase 11 follow-on: Win32 bindings for GetForegroundWindow polling.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
+
+# ── WASM-only dependencies ──
+#
+# Phase 30 session 2: quad_url provides synchronous localStorage access
+# via miniquad's JS-FFI layer. Used by save.rs to reroute save_to_path /
+# load_from_path to localStorage on the web target. Only compiled when
+# targeting wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+quad-url = "0.1"
 
 [dev-dependencies]
 insta = "1.41"

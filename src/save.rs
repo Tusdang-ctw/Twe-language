@@ -250,10 +250,49 @@ fn tagged(tag: &str, fields: &[(&str, json::Value)]) -> json::Value {
     json::Value::Object(map)
 }
 
+// ─── Phase 30 session 2: WASM save / load via localStorage ──────────────────
+//
+// std::fs is unavailable on wasm32-unknown-unknown. Save data is
+// rerouted to `localStorage` via quad_url's thin miniquad JS-FFI layer.
+// The key used is the forward-slash path string — games that save to
+// "data/progress.sav" get localStorage key "data/progress.sav". The
+// 5 MB per-origin localStorage limit is sufficient for game-save sizes;
+// large binary blobs (e.g. replay logs) should not be saved this way.
+//
+// Non-WASM: unchanged atomic-write path below.
+
+/// WASM implementation: encode → JSON string → localStorage.
+#[cfg(target_arch = "wasm32")]
+pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
+    let json_value = encode(value)?;
+    let serialized = json::to_string(&json_value);
+    let key = path.to_string_lossy().to_string();
+    quad_url::set_program_parameter(&key, &serialized);
+    Ok(())
+}
+
+/// WASM implementation: localStorage → JSON string → Value.
+#[cfg(target_arch = "wasm32")]
+pub fn load_from_path(path: &Path) -> Result<Value, String> {
+    let key = path.to_string_lossy().to_string();
+    let text = quad_url::get_program_parameter(&key).ok_or_else(|| {
+        format!(
+            "no save data for '{}' — game may not have been saved yet",
+            path.display()
+        )
+    })?;
+    let json_value = json::parse(&text)
+        .map_err(|e| format!("save data for '{}' is not valid JSON: {e}", path.display()))?;
+    Ok(decode(&json_value))
+}
+
+// ─── Native save / load (non-WASM) ───────────────────────────────────────────
+
 /// Atomic write: encode, write to `<path>.tmp`, rename to `<path>`.
 /// `rename(2)` is atomic on POSIX and on NTFS via
 /// `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`. v0.2 session 4 —
 /// `fsync` is deferred to Phase 11 hardening.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
     let json_value = encode(value)?;
     let serialized = json::to_string(&json_value);
@@ -290,6 +329,7 @@ pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
 
 /// Read + parse + decode. Errors carry the path + the underlying
 /// IO / parse failure for debug-ability.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load_from_path(path: &Path) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let text = std::str::from_utf8(&bytes)

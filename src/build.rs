@@ -28,6 +28,11 @@ pub enum BuildTarget {
     MacOsAarch64,
     MacOsX86_64,
     LinuxX86_64,
+    /// Phase 30 session 1: browser-playable WASM build. Produces
+    /// `dist/web/` with `index.html`, `game.wasm`, `mq_js_bundle.js`,
+    /// and a flat copy of `assets/`. The WASM binary is a generic Twe
+    /// player that fetches `main.twe` from the same origin at startup.
+    Wasm32,
 }
 
 impl BuildTarget {
@@ -41,6 +46,7 @@ impl BuildTarget {
             "linux-x86_64" | "x86_64-unknown-linux-gnu" | "x86_64-unknown-linux-musl" => {
                 Some(BuildTarget::LinuxX86_64)
             }
+            "wasm32" | "wasm32-unknown-unknown" => Some(BuildTarget::Wasm32),
             _ => None,
         }
     }
@@ -82,7 +88,11 @@ impl BuildTarget {
     pub fn binary_extension(self) -> &'static str {
         match self {
             BuildTarget::WindowsX86_64 => ".exe",
-            BuildTarget::MacOsAarch64 | BuildTarget::MacOsX86_64 | BuildTarget::LinuxX86_64 => "",
+            BuildTarget::MacOsAarch64
+            | BuildTarget::MacOsX86_64
+            | BuildTarget::LinuxX86_64 => "",
+            // WASM output is a directory, not a file; extension unused.
+            BuildTarget::Wasm32 => "",
         }
     }
 
@@ -92,6 +102,7 @@ impl BuildTarget {
             BuildTarget::MacOsAarch64 => "macos-aarch64",
             BuildTarget::MacOsX86_64 => "macos-x86_64",
             BuildTarget::LinuxX86_64 => "linux-x86_64",
+            BuildTarget::Wasm32 => "wasm32",
         }
     }
 }
@@ -612,6 +623,7 @@ pub fn run(mut args: BuildArgs) -> i32 {
             .map(|s| s.enabled)
             .unwrap_or(false);
     let exit = match args.target {
+        BuildTarget::Wasm32 => build_wasm_target(&project, &args),
         BuildTarget::WindowsX86_64 if BuildTarget::host() == BuildTarget::WindowsX86_64 => {
             build_self_extracting(&project, &out_path, &args, &resolved)
         }
@@ -870,6 +882,218 @@ pub fn render_depot_build_vdf(depot_id: u32) -> String {
          }}\n"
     )
 }
+
+// ─── Phase 30 session 1: WASM / web target ──────────────────────────────────
+
+/// HTML template for the web output. Embeds a click-to-start overlay
+/// (Phase 30 session 3) that unlocks the browser AudioContext on first
+/// user gesture. macroquad's `mq_js_bundle.js` handles WASM
+/// instantiation; `load("game.wasm")` is macroquad's standard entry.
+fn wasm_html(game_name: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{name}</title>
+  <style>
+    *   {{ margin:0; padding:0; box-sizing:border-box; }}
+    body {{ background:#111; display:flex; justify-content:center;
+            align-items:center; height:100vh; overflow:hidden; }}
+    canvas {{ display:block; }}
+    #start-overlay {{
+      position:fixed; inset:0;
+      background:rgba(0,0,0,0.85);
+      display:flex; flex-direction:column;
+      justify-content:center; align-items:center;
+      cursor:pointer; z-index:100;
+      color:#eee; font-family:monospace;
+      user-select:none;
+    }}
+    #start-overlay h1 {{ font-size:2.4em; margin-bottom:0.4em; letter-spacing:0.05em; }}
+    #start-overlay p  {{ font-size:1em; opacity:0.55; }}
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" tabindex="1"></canvas>
+
+  <!-- Phase 30 session 3: click-to-start overlay.
+       The first click dismisses the overlay AND satisfies the browser
+       user-gesture requirement that unlocks AudioContext playback.
+       macroquad's mq_js_bundle.js resumes the AudioContext on any
+       user interaction, so a single click covers both. -->
+  <div id="start-overlay"
+       onclick="this.remove(); document.getElementById('glcanvas').focus();">
+    <h1>{name}</h1>
+    <p>click to start</p>
+  </div>
+
+  <script src="mq_js_bundle.js"></script>
+  <script>load("game.wasm");</script>
+</body>
+</html>
+"#,
+        name = game_name,
+    )
+}
+
+/// Walk the cargo registry looking for macroquad's `mq_js_bundle.js`.
+/// macroquad ships this file in its crate source; on a machine where
+/// twec was built from source it lives in `~/.cargo/registry/src/…/
+/// macroquad-<ver>/js/mq_js_bundle.js`.
+fn find_mq_js_bundle() -> Option<Vec<u8>> {
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(|h| PathBuf::from(h).join(".cargo"))
+        })?;
+    let registry_src = cargo_home.join("registry").join("src");
+    let mirror_iter = fs::read_dir(&registry_src).ok()?;
+    for mirror in mirror_iter {
+        let mirror = mirror.ok()?.path();
+        if !mirror.is_dir() {
+            continue;
+        }
+        let pkg_iter = fs::read_dir(&mirror).ok()?;
+        for pkg in pkg_iter {
+            let pkg = pkg.ok()?.path();
+            let name = pkg.file_name()?.to_string_lossy();
+            if name.starts_with("macroquad-") {
+                let js_path = pkg.join("js").join("mq_js_bundle.js");
+                if js_path.exists() {
+                    if let Ok(bytes) = fs::read(&js_path) {
+                        return Some(bytes);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Phase 30 session 1: produce `dist/web/` with `index.html`,
+/// `game.wasm`, `mq_js_bundle.js`, and a flat copy of `assets/`.
+///
+/// The WASM binary is built by invoking `cargo build --target
+/// wasm32-unknown-unknown --release` in the twec workspace directory
+/// (the directory that contains the twec `Cargo.toml`, embedded at
+/// compile time via `CARGO_MANIFEST_DIR`). The user must have the
+/// `wasm32-unknown-unknown` target installed:
+///   rustup target add wasm32-unknown-unknown
+fn build_wasm_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
+    let web_dir = match &args.out {
+        Some(p) => p.clone(),
+        None => project.root.join("dist").join("web"),
+    };
+
+    if let Err(e) = fs::create_dir_all(&web_dir) {
+        eprintln!("error: cannot create '{}': {e}", web_dir.display());
+        return 1;
+    }
+
+    // index.html (sessions 1 + 3 combined).
+    if let Err(e) = fs::write(web_dir.join("index.html"), wasm_html(&project.name)) {
+        eprintln!("error: cannot write index.html: {e}");
+        return 1;
+    }
+
+    // Copy game source to dist/web/main.twe so the WASM player can
+    // fetch it at runtime.
+    if let Err(e) = fs::copy(&project.main, web_dir.join("main.twe")) {
+        eprintln!("error: cannot copy main.twe: {e}");
+        return 1;
+    }
+
+    // Copy assets flat into dist/web/ (preserving sub-paths).
+    for asset in &project.assets {
+        let dest = web_dir.join(&asset.bundle_key);
+        if let Some(p) = dest.parent() {
+            let _ = fs::create_dir_all(p);
+        }
+        if let Err(e) = fs::copy(&asset.abs, &dest) {
+            eprintln!(
+                "error: cannot copy asset '{}': {e}",
+                asset.abs.display()
+            );
+            return 1;
+        }
+    }
+
+    // mq_js_bundle.js from the macroquad crate in the cargo registry.
+    match find_mq_js_bundle() {
+        Some(js) => {
+            if let Err(e) = fs::write(web_dir.join("mq_js_bundle.js"), &js) {
+                eprintln!("error: cannot write mq_js_bundle.js: {e}");
+                return 1;
+            }
+            eprintln!(
+                "[twec build] mq_js_bundle.js  ({} bytes)",
+                js.len()
+            );
+        }
+        None => {
+            eprintln!(
+                "[twec build] warning: mq_js_bundle.js not found in cargo registry.\n\
+                 Copy it from macroquad's source: js/mq_js_bundle.js → {}",
+                web_dir.join("mq_js_bundle.js").display()
+            );
+        }
+    }
+
+    // The WASM player is built by recompiling twec itself for
+    // wasm32-unknown-unknown. CARGO_MANIFEST_DIR is the twec workspace
+    // root (embedded at compile time).
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+
+    eprintln!("[twec build] cargo build --target wasm32-unknown-unknown --release …");
+    let status = std::process::Command::new(&cargo)
+        .args(["build", "--target", "wasm32-unknown-unknown", "--release"])
+        .env("TWEC_WASM_GAME_NAME", &project.name)
+        .current_dir(&workspace)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "error: cargo build failed (exit {})\n\
+                 hint: install the target with:  rustup target add wasm32-unknown-unknown",
+                s.code().unwrap_or(1)
+            );
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("error: could not invoke cargo: {e}");
+            return 1;
+        }
+    }
+
+    let wasm_src = workspace
+        .join("target")
+        .join("wasm32-unknown-unknown")
+        .join("release")
+        .join("twec.wasm");
+
+    if let Err(e) = fs::copy(&wasm_src, web_dir.join("game.wasm")) {
+        eprintln!(
+            "error: cannot copy '{}': {e}",
+            wasm_src.display()
+        );
+        return 1;
+    }
+
+    eprintln!(
+        "[twec build] → {}   (serve with: basic-http-server {} -a 0.0.0.0:4000)",
+        web_dir.display(),
+        web_dir.display()
+    );
+    0
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Phase 12 session 4: produce a single self-extracting `.exe` by
 /// (a) encoding the bundle to memory, (b) copying the running
@@ -1377,6 +1601,11 @@ mod tests {
             Some(BuildTarget::MacOsAarch64)
         );
         assert_eq!(BuildTarget::parse("nonsense"), None);
+        assert_eq!(BuildTarget::parse("wasm32"), Some(BuildTarget::Wasm32));
+        assert_eq!(
+            BuildTarget::parse("wasm32-unknown-unknown"),
+            Some(BuildTarget::Wasm32)
+        );
     }
 
     #[test]

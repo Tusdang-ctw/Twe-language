@@ -101,10 +101,16 @@ const MOUSE_BUTTONS: &[(&str, MouseButton)] = &[
     ("right", MouseButton::Right),
 ];
 
+// Phase 30 session 1: gilrs has no WASM backend; all gamepad items
+// (constants, thread-locals, state enum, functions) are compiled only
+// on non-wasm32 targets. WASM stubs keep the call sites in
+// update_key_state / run_loop compiling without changes.
+
 /// Phase 9 session 5: Twe field name → gilrs::Button mapping. Order
 /// must mirror the `GAMEPAD_BUTTON_NAMES` const in stdlib (since
 /// scripts read fields by name, the Rust list is the source of truth
 /// for which buttons we poll).
+#[cfg(not(target_arch = "wasm32"))]
 const GAMEPAD_BUTTONS: &[(&str, gilrs::Button)] = &[
     ("a", gilrs::Button::South),
     ("b", gilrs::Button::East),
@@ -126,6 +132,7 @@ const GAMEPAD_BUTTONS: &[(&str, gilrs::Button)] = &[
 /// `LeftZ` / `RightZ` (gilrs's analog trigger axes); the `lt` / `rt`
 /// fields on `gamepad` and `gamepad_press` are the thresholded
 /// boolean variants.
+#[cfg(not(target_arch = "wasm32"))]
 const GAMEPAD_AXES: &[(&str, gilrs::Axis)] = &[
     ("lx", gilrs::Axis::LeftStickX),
     ("ly", gilrs::Axis::LeftStickY),
@@ -135,6 +142,7 @@ const GAMEPAD_AXES: &[(&str, gilrs::Axis)] = &[
     ("rt", gilrs::Axis::RightZ),
 ];
 
+#[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     /// Lazily-initialised gilrs context. None means "tried and failed
     /// to initialise" — we log the error once and continue without
@@ -146,6 +154,7 @@ thread_local! {
     static PREV_GAMEPAD: RefCell<[bool; 14]> = const { RefCell::new([false; 14]) };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum GilrsState {
     Uninit,
     // Boxed: gilrs::Gilrs is ~230 bytes (XInput buffers + connection
@@ -157,16 +166,17 @@ enum GilrsState {
 
 /// Reset the previous-frame gamepad state so a hot reload doesn't
 /// produce phantom press events.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn clear_gamepad_state() {
     PREV_GAMEPAD.with(|p| *p.borrow_mut() = [false; 14]);
 }
+#[cfg(target_arch = "wasm32")]
+pub fn clear_gamepad_state() {}
 
 /// Drop the gilrs context before process::exit. gilrs 0.10 on Windows
 /// panics in Gilrs::drop when process::exit triggers TLS cleanup while
-/// the background polling thread handle is already consumed. Replacing
-/// the state with Uninit here (inside catch_unwind) drops the Gilrs box
-/// while we still have a normal stack frame; the TLS destructor then
-/// finds Uninit and does nothing.
+/// the background polling thread handle is already consumed.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn shutdown_gilrs() {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         GILRS.with(|g| {
@@ -174,6 +184,8 @@ pub fn shutdown_gilrs() {
         });
     }));
 }
+#[cfg(target_arch = "wasm32")]
+pub fn shutdown_gilrs() {}
 
 /// Phase 11 session 4: hot-reload reliability gate.
 ///
@@ -273,6 +285,116 @@ pub fn launch_embedded(source: String) -> i32 {
     macroquad::Window::from_config(conf, run_loop_embedded(source));
     0
 }
+
+// ─── Phase 30 session 1: WASM entry ─────────────────────────────────────────
+//
+// On wasm32-unknown-unknown the runtime is a generic "Twe player": it
+// fetches `main.twe` from the same origin as the page, then runs it
+// with the same fixed-timestep loop used by the embedded native path.
+// `launch_wasm` is called from src/main.rs via the WASM-specific
+// `fn main()` entry.  The window title is embedded at compile time via
+// TWEC_WASM_GAME_NAME (set by `twec build --target wasm32`); it
+// defaults to "Twe Game" so a manually-built WASM still runs.
+
+/// Phase 30 session 1: WASM entry point — fetches main.twe via the
+/// macroquad file API (uses `fetch` internally on wasm32), then runs
+/// the fixed-timestep game loop.
+#[cfg(target_arch = "wasm32")]
+pub fn launch_wasm() -> i32 {
+    let title = option_env!("TWEC_WASM_GAME_NAME").unwrap_or("Twe Game");
+    let conf = Conf {
+        window_title: title.to_string(),
+        window_width: 640,
+        window_height: 480,
+        high_dpi: false,
+        fullscreen: false,
+        sample_count: 1,
+        window_resizable: false,
+        platform: Default::default(),
+        icon: None,
+    };
+    macroquad::Window::from_config(conf, run_loop_wasm());
+    0
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn run_loop_wasm() {
+    const LABEL: &str = "main.twe";
+    // Fetch the game source from the web server (same origin as the
+    // HTML page). macroquad's load_file uses XMLHttpRequest / fetch
+    // on WASM so no std::fs is needed.
+    let source = match macroquad::file::load_string(LABEL).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not fetch main.twe: {e}");
+            return;
+        }
+    };
+    let mut env = match initialize_from_source(&source, LABEL) {
+        Ok(e) => e,
+        Err(()) => return,
+    };
+    let mut accumulator: f64 = 0.0;
+    flush_output(&mut env);
+
+    loop {
+        update_key_state(&mut env);
+        crate::replay::tick(&mut env);
+        let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
+        hud_record(frame_dt);
+        let mut tick_err: Option<crate::value::RuntimeError> = None;
+        if !crate::stdlib::is_paused() {
+            accumulator += frame_dt;
+            let mut substeps: u32 = 0;
+            while accumulator >= crate::eval::PHYSICS_DT
+                && substeps < crate::eval::MAX_SUBSTEPS
+            {
+                if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
+                    tick_err = Some(e);
+                    break;
+                }
+                accumulator -= crate::eval::PHYSICS_DT;
+                substeps += 1;
+            }
+            if substeps >= crate::eval::MAX_SUBSTEPS {
+                accumulator = 0.0;
+            }
+        }
+        if let Some(e) = tick_err {
+            eprintln!("{LABEL}: runtime error: {e}");
+            break;
+        }
+        flush_output(&mut env);
+
+        clear_background(BLACK);
+        env.in_render = true;
+        crate::stdlib::camera_tick(frame_dt);
+        let ((px, py), zoom) = crate::stdlib::camera_view(&env);
+        let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
+        let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
+        if cam_active {
+            let cam = build_camera2d(px + sx, py + sy, zoom);
+            set_camera(&cam);
+        }
+        let render_result = crate::eval::render_frame(&mut env);
+        if cam_active {
+            set_default_camera();
+        }
+        if let Err(e) = render_result {
+            eprintln!("{LABEL}: runtime error: {e}");
+            env.in_render = false;
+            break;
+        }
+        env.in_render = false;
+        flush_output(&mut env);
+
+        hud_draw();
+        write_pending_screenshot();
+
+        next_frame().await;
+    }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn window_conf() -> Conf {
     // high_dpi=false keeps the GL surface at the requested 640×480
@@ -1265,12 +1387,17 @@ fn update_key_state(env: &mut Env) {
     poll_gamepad(env);
 }
 
+// Phase 30 session 1: WASM stub — no gamepad on the web.
+#[cfg(target_arch = "wasm32")]
+fn poll_gamepad(_env: &mut Env) {}
+
 /// Phase 9 session 5: poll gilrs and write button + axis state to
 /// the `gamepad`, `gamepad_press`, and `gamepad_axis` ambients. The
 /// first connected gamepad wins; multi-gamepad routing is a follow-on.
 /// `gamepad_press` is derived by diffing `PREV_GAMEPAD` against the
 /// current state (gilrs's event stream is drained but we don't use
 /// it directly — diffing keeps the surface symmetric with `key_press`).
+#[cfg(not(target_arch = "wasm32"))]
 fn poll_gamepad(env: &mut Env) {
     GILRS.with(|g| {
         // Lazy init the first time we're called inside the macroquad

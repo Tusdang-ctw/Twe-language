@@ -1132,9 +1132,15 @@ fn install_os(env: &mut Env) {
 
 fn clipboard_read(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "os.clipboard.read")?;
+    // Phase 30 session 1: arboard is native-only; clipboard is a no-op
+    // on WASM (browser clipboard access requires async + user permission
+    // which doesn't fit the sync builtin model).
+    #[cfg(not(target_arch = "wasm32"))]
     let s = arboard::Clipboard::new()
         .and_then(|mut c| c.get_text())
         .unwrap_or_default();
+    #[cfg(target_arch = "wasm32")]
+    let s = String::new();
     Ok(Value::from_string(s))
 }
 
@@ -1148,7 +1154,10 @@ fn clipboard_write(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
             (*v).display()
         }
     };
-    let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
+    }
     Ok(Value::NIL)
 }
 
@@ -6084,6 +6093,7 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         let ctrl_held = macroquad::input::is_key_down(macroquad::input::KeyCode::LeftControl)
             || macroquad::input::is_key_down(macroquad::input::KeyCode::RightControl);
         if ctrl_held && macroquad::input::is_key_pressed(macroquad::input::KeyCode::V) {
+            #[cfg(not(target_arch = "wasm32"))]
             if let Ok(mut c) = arboard::Clipboard::new() {
                 if let Ok(s) = c.get_text() {
                     for ch in s.chars() {

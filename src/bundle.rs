@@ -245,15 +245,28 @@ pub fn encode_with_options<W: Write>(
     // Tiny v0.6-scale projects (<1MB) make this trivial to hold in
     // memory; multi-GB bundles aren't on the v1.0 critical path.
     let on_disk: Vec<Vec<u8>> = if opts.compress {
-        files
-            .iter()
-            .map(|(_, body)| {
-                // Level 3 is zstd's CLI default — good ratio/speed
-                // balance, and Steam's depot tooling lands in the
-                // same neighborhood. A `level` knob is post-v0.6.
-                zstd::encode_all(body.as_slice(), 3)
-            })
-            .collect::<io::Result<Vec<_>>>()?
+        // Phase 30 session 1: zstd is a native-only dep; WASM builds
+        // never request compression (build.rs is excluded), but the
+        // function must compile cleanly on all targets.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            files
+                .iter()
+                .map(|(_, body)| {
+                    // Level 3 is zstd's CLI default — good ratio/speed
+                    // balance, and Steam's depot tooling lands in the
+                    // same neighborhood. A `level` knob is post-v0.6.
+                    zstd::encode_all(body.as_slice(), 3)
+                })
+                .collect::<io::Result<Vec<_>>>()?
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "zstd compression is not available on WASM",
+            ));
+        }
     } else {
         files.iter().map(|(_, b)| b.clone()).collect()
     };
@@ -426,8 +439,18 @@ impl BundleReader {
         let mut buf = vec![0u8; len as usize];
         self.file.read_exact(&mut buf)?;
         if self.header.flags & FLAG_ZSTD != 0 {
-            let decoded = zstd::decode_all(buf.as_slice())?;
-            return Ok(Some(decoded));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let decoded = zstd::decode_all(buf.as_slice())?;
+                return Ok(Some(decoded));
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "cannot decompress zstd bundle on WASM",
+                ));
+            }
         }
         Ok(Some(buf))
     }
@@ -556,7 +579,22 @@ pub fn read_asset_bytes(path: &str) -> io::Result<Vec<u8>> {
             }
         }
     }
-    std::fs::read(path)
+    // Phase 30 session 1: std::fs is unavailable on wasm32. Assets
+    // on the web target are served over HTTP; macroquad's own loaders
+    // (load_sound / load_texture) use fetch internally. Direct binary
+    // reads through this path return an error on WASM — callers fall
+    // back to macroquad's async API.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::read(path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "filesystem reads are not available on WASM; assets are served over HTTP",
+        ))
+    }
 }
 
 fn read_u16<R: Read>(r: &mut R, ctx: &str) -> io::Result<u16> {

@@ -1121,7 +1121,7 @@ dependencies = [
  "libc",
  "libloading",
  "thiserror 1.0.69",
- "widestring",
+ "widestring 1.2.1",
  "winapi",
 ]
 
@@ -2338,6 +2338,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quad-url"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1843b2c8bd2cf5c43fa99dc53bc9f977bd032d386c54491ceeee2499c2d5020f"
+dependencies = [
+ "sapp-jsutils",
+ "webbrowser",
+]
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2563,6 +2573,12 @@ checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
 ]
+
+[[package]]
+name = "sapp-jsutils"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6673c9c245fda02a1e826e199133d1c3d1b8e4a392c9dfe55e4f90a2489b149"
 
 [[package]]
 name = "scoped-tls"
@@ -3061,6 +3077,7 @@ dependencies = [
  "macroquad",
  "naga",
  "pollster",
+ "quad-url",
  "rapier3d",
  "steamworks",
  "toml",
@@ -3375,6 +3392,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "webbrowser"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecad156490d6b620308ed411cfee90d280b3cbd13e189ea0d3fada8acc89158a"
+dependencies = [
+ "web-sys",
+ "widestring 0.4.3",
+ "winapi",
+]
+
+[[package]]
 name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3495,6 +3523,12 @@ dependencies = [
  "bytemuck",
  "safe_arch",
 ]
+
+[[package]]
+name = "widestring"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c168940144dd21fd8046987c16a46a33d5fc84eec29ef9dcddc2ac9e31526b7c"
 
 [[package]]
 name = "widestring"
