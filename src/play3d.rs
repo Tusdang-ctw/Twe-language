@@ -1868,6 +1868,18 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         &[255, 255, 255, 255],
     );
     let white_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    // Phase 28 session 1: trilinear filtering + 16x anisotropy.
+    // - mipmap_filter Linear (was Nearest) trilinears between mip
+    //   levels, so distant textures don't show the harsh seams that
+    //   point-sampled mips produce.
+    // - anisotropy_clamp 16 enables anisotropic filtering for grazing
+    //   surface angles. The wgpu spec allows any power of 2 in
+    //   [1, 16]; backends silently clamp to whatever the GPU supports
+    //   (real hardware tops out at 16x in practice).
+    // - Both are no-ops without a populated mip chain, which is what
+    //   `upload_texture_with_mips` builds for game textures. The
+    //   white 1x1 fallback retains its single level — sampling a
+    //   1x1 with mipmap_filter Linear degenerates to level 0.
     let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("twec-play3d sampler"),
         address_mode_u: wgpu::AddressMode::Repeat,
@@ -1875,7 +1887,8 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         address_mode_w: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Linear,
+        anisotropy_clamp: 16,
         ..Default::default()
     });
     let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2276,39 +2289,7 @@ fn load_and_upload_texture(
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("twec-play3d texture"),
-        size: wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::ImageCopyTexture {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &rgba,
-        wgpu::ImageDataLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * w),
-            rows_per_image: Some(h),
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
+    let texture = upload_texture_with_mips(device, queue, "twec-play3d texture", &rgba, w, h);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twec-play3d texture bg"),
@@ -2324,6 +2305,99 @@ fn load_and_upload_texture(
             },
         ],
     }))
+}
+
+/// Phase 28 session 1: upload an RGBA8 texture with a full mip
+/// chain. Mip levels are generated CPU-side via
+/// `image::imageops::resize` with Triangle filtering. Each level
+/// is resampled from the original (slower than chained box
+/// downsample but produces cleaner downscales for non-power-of-two
+/// textures, which is the common case for game textures from
+/// `.glb` files).
+///
+/// **Gamma caveat.** Triangle filtering on `Rgba8UnormSrgb` byte
+/// values resamples in sRGB space, not linear. The visual error is
+/// minor but present (mips trend slightly darker than ideal). A
+/// proper linear-space resize is a follow-on if it ever becomes
+/// visible — most engines just live with it.
+fn upload_texture_with_mips(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    let max_dim = width.max(height).max(1);
+    let mip_level_count = (max_dim as f32).log2().floor() as u32 + 1;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        rgba,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * width),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    if mip_level_count > 1 {
+        let source: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+            image::ImageBuffer::from_raw(width, height, rgba.to_vec())
+                .expect("rgba slice length should be width * height * 4");
+        for level in 1..mip_level_count {
+            let mw = (width >> level).max(1);
+            let mh = (height >> level).max(1);
+            let mip = image::imageops::resize(
+                &source,
+                mw,
+                mh,
+                image::imageops::FilterType::Triangle,
+            );
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &mip,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * mw),
+                    rows_per_image: Some(mh),
+                },
+                wgpu::Extent3d {
+                    width: mw,
+                    height: mh,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    texture
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -3231,38 +3305,13 @@ fn load_and_upload_mesh(
     // texture) leave `auto_texture: None`; the render flow falls
     // back to the global white 1x1 in that case.
     let auto_texture = auto_tex.map(|tex| {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("twec-play3d glb auto texture"),
-            size: wgpu::Extent3d {
-                width: tex.width,
-                height: tex.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
+        let texture = upload_texture_with_mips(
+            device,
+            queue,
+            "twec-play3d glb auto texture",
             &tex.pixels,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * tex.width),
-                rows_per_image: Some(tex.height),
-            },
-            wgpu::Extent3d {
-                width: tex.width,
-                height: tex.height,
-                depth_or_array_layers: 1,
-            },
+            tex.width,
+            tex.height,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         device.create_bind_group(&wgpu::BindGroupDescriptor {
