@@ -580,6 +580,8 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ## Phase 27 — Post-v1.0 — 2D genre reference examples
 
+**Status:** **codebase-closed 2026-05-09** per `docs/changes/2026-05-09-phase-27-closeout.md`. All five sessions shipped: platformer (1), tetris (2), cards (3), stdlib gap closure adding `math.mod` / `random.shuffle` / `tilemap_solid_aabb` / `tilemap_aabb_touches` (4), closeout (5). Five new tests; **742 passing.** Four of the eight inline `GAP-N` markers closed; the rest deferred with explicit re-entry phases (sweep / key_repeat / mouse_release / hit_box). Visual playtest is the remaining manual step.
+
 **Theme:** prove the v1.0 stdlib survives genres `survive_beta` didn't pressure. Each example pressures one stdlib axis the existing examples missed.
 
 **Components:**
@@ -745,7 +747,7 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 15 — Release candidate | v0.9 | M (codebase-closed 2026-05-06; Steam AppID test + crash-report criterion pending) |
 | 16 — Stable | v1.0 | S (codebase-closed 2026-05-06; 6-month API stability window begins; itch.io ships pending) |
 | 17–26 — 3D commercial roadmap | v1.0 (3D arc) | XL across 10 phases (codebase-closed 2026-05-07; see `docs/3d-roadmap.md` + `docs/changes/2026-05-07-phase-{17,18,19-23,24-26}-closeout.md`) |
-| 27 — 2D genre reference examples | post-v1.0 | M (planned) |
+| 27 — 2D genre reference examples | post-v1.0 | M (closed 2026-05-09; 5 sessions; 4 stdlib helpers) |
 | 28 — 3D commercial polish | post-v1.0 | L (planned) |
 | 29 — Determinism layer | post-v1.0 | L (planned; closes 3× speedup gap) |
 | 30 — WASM / web target | post-v1.0 | L (planned) |
