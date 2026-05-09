@@ -356,6 +356,26 @@ pub fn install(env: &mut Env) {
         Value::from_builtin("postfx.vignette", &["strength"], postfx_vignette_impl),
     );
     postfx_fields.insert(
+        "vignette_color".to_string(),
+        Value::from_builtin(
+            "postfx.vignette_color",
+            &["color"],
+            postfx_vignette_color_impl,
+        ),
+    );
+    postfx_fields.insert(
+        "bloom".to_string(),
+        Value::from_builtin("postfx.bloom", &["intensity"], postfx_bloom_impl),
+    );
+    postfx_fields.insert(
+        "bloom_threshold".to_string(),
+        Value::from_builtin(
+            "postfx.bloom_threshold",
+            &["threshold"],
+            postfx_bloom_threshold_impl,
+        ),
+    );
+    postfx_fields.insert(
         "frustum_cull".to_string(),
         Value::from_builtin(
             "postfx.frustum_cull",
@@ -879,6 +899,20 @@ thread_local! {
     /// Applied during the tonemap pass. Default off; opt-in via
     /// `postfx.vignette(strength)`.
     static VIGNETTE_STRENGTH: RefCell<f32> = const { RefCell::new(0.0) };
+    /// Phase 28 session 4: vignette tint color (RGB, 0..1). Default
+    /// black for the classic darkening look. Set via
+    /// `postfx.vignette_color(r, g, b)` for stylised effects (e.g.
+    /// twilight purples, dusk oranges).
+    static VIGNETTE_COLOR: RefCell<[f32; 3]> = const { RefCell::new([0.0, 0.0, 0.0]) };
+    /// Phase 28 session 3: inline-bloom intensity, 0.0 (off) to ~1.0
+    /// (strong). Multiplied against the 12-tap bright-pixel sum
+    /// before the ACES tonemap. Opt-in via `postfx.bloom(strength)`.
+    static BLOOM_INTENSITY: RefCell<f32> = const { RefCell::new(0.0) };
+    /// Phase 28 session 3: HDR luminance threshold above which a
+    /// pixel contributes to bloom. 1.0 means "only blown highlights
+    /// glow"; 0.5 means "anything brighter than mid-grey glows".
+    /// Tune in tandem with bloom intensity.
+    static BLOOM_THRESHOLD: RefCell<f32> = const { RefCell::new(1.0) };
     static PENDING_SCREENSHOT: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Phase 17 session 3: pending cursor-mode change requested by
     /// the script via cursor.lock() / cursor.unlock(). The play3d
@@ -922,6 +956,21 @@ pub fn tonemap_enabled() -> bool {
 /// Phase 26: read the script-controlled vignette strength.
 pub fn vignette_strength() -> f32 {
     VIGNETTE_STRENGTH.with(|s| *s.borrow())
+}
+
+/// Phase 28 session 4: read the script-controlled vignette tint.
+pub fn vignette_color() -> [f32; 3] {
+    VIGNETTE_COLOR.with(|s| *s.borrow())
+}
+
+/// Phase 28 session 3: read the script-controlled bloom intensity.
+pub fn bloom_intensity() -> f32 {
+    BLOOM_INTENSITY.with(|s| *s.borrow())
+}
+
+/// Phase 28 session 3: read the script-controlled bloom threshold.
+pub fn bloom_threshold() -> f32 {
+    BLOOM_THRESHOLD.with(|s| *s.borrow())
 }
 
 /// Phase 17 session 3: drain the cursor-mode request slot. play3d
@@ -6927,6 +6976,40 @@ fn postfx_vignette_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
     arity(args, 1, "postfx.vignette")?;
     let s = (number(&args[0], "postfx.vignette.strength")? as f32).clamp(0.0, 1.0);
     VIGNETTE_STRENGTH.with(|st| *st.borrow_mut() = s);
+    Ok(Value::NIL)
+}
+
+// Phase 28 session 4: vignette tint color. Accepts an (r, g, b)
+// or (r, g, b, a) tuple — alpha is ignored. Components clamp to
+// [0, 1] so any color literal or color.* constant is valid input.
+fn postfx_vignette_color_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.vignette_color")?;
+    let (r, g, b, _a) = rgba(&args[0], "postfx.vignette_color.color")?;
+    VIGNETTE_COLOR.with(|c| {
+        *c.borrow_mut() = [
+            (r as f32).clamp(0.0, 1.0),
+            (g as f32).clamp(0.0, 1.0),
+            (b as f32).clamp(0.0, 1.0),
+        ]
+    });
+    Ok(Value::NIL)
+}
+
+// Phase 28 session 3: bloom intensity. 0 disables (default). 1.0
+// is a strong-but-not-overpowering value for typical scenes.
+fn postfx_bloom_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.bloom")?;
+    let s = (number(&args[0], "postfx.bloom.intensity")? as f32).max(0.0);
+    BLOOM_INTENSITY.with(|st| *st.borrow_mut() = s);
+    Ok(Value::NIL)
+}
+
+// Phase 28 session 3: bloom threshold. HDR luminance below this
+// value contributes nothing; above it, the excess blooms.
+fn postfx_bloom_threshold_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.bloom_threshold")?;
+    let t = (number(&args[0], "postfx.bloom_threshold.threshold")? as f32).max(0.0);
+    BLOOM_THRESHOLD.with(|st| *st.borrow_mut() = t);
     Ok(Value::NIL)
 }
 

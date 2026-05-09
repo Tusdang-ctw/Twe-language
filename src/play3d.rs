@@ -358,32 +358,39 @@ impl Default for LightsUniform {
     }
 }
 
-/// Phase 25: shadow uniform — light-space view-projection matrix
-/// used by both the shadow pass (as the "camera") and the main
-/// pass (to transform fragments into shadow-map UV space). The
-/// extent and direction are derived each frame from `sun.direction`,
-/// a shadow center (defaulting to the camera target), and an
-/// extent value configurable via `sun.shadow_extent`.
+/// Phase 28 session 2: cascaded shadow maps. Three concentric
+/// orthographic projections from the sun direction, each rendered
+/// into one layer of a 2D-array depth texture. The fragment
+/// shader picks a cascade per pixel by comparing the pixel's
+/// view-space depth against `split_distances`.
+///
+/// Cascade 0 is the tightest (highest texel density, used near
+/// the camera target); cascade 2 is the loosest (covers the far
+/// scene). `split_distances` are camera-space forward distances
+/// (positive looking away from the camera) where the cutoffs sit.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct ShadowUniform {
-    pub light_space_matrix: [[f32; 4]; 4],
-    /// xyz = currently unused, w = `1.0` if shadows are enabled
-    /// for this frame, `0.0` otherwise. The fragment shader uses
-    /// the flag to short-circuit the shadow lookup so disabling
-    /// shadows is a real perf win, not a same-cost no-op.
+    /// One light-space view-projection matrix per cascade.
+    pub light_space_matrices: [[[f32; 4]; 4]; CASCADE_COUNT],
+    /// xyz = view-space z thresholds: pixels with view_z < x use
+    /// cascade 0; < y use cascade 1; otherwise cascade 2. w pad.
+    pub split_distances: [f32; 4],
+    /// xyz unused, w = 1.0 if shadows are enabled this frame.
     pub flags: [f32; 4],
 }
 
 impl ShadowUniform {
     pub fn disabled() -> Self {
+        let id = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
         Self {
-            light_space_matrix: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
+            light_space_matrices: [id; CASCADE_COUNT],
+            split_distances: [0.0; 4],
             flags: [0.0; 4],
         }
     }
@@ -395,10 +402,40 @@ impl Default for ShadowUniform {
     }
 }
 
+/// Phase 28 session 2: per-pass uniform for the shadow depth
+/// pass. Holds the active cascade's matrix; rewritten between
+/// passes so a single `vs_shadow` runs once per cascade.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct ShadowPassUniform {
+    pub light_space_matrix: [[f32; 4]; 4],
+}
+
+impl ShadowPassUniform {
+    pub fn identity() -> Self {
+        Self {
+            light_space_matrix: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        }
+    }
+}
+
 /// Phase 25: dimension of the shadow map. 2048 is a balanced
 /// default — sharp enough for indoor / mid-range outdoor scenes,
 /// not so big that 16 MB of GPU memory is allocated for it.
+/// Phase 28 session 2: with `CASCADE_COUNT` layers the budget is
+/// CASCADE_COUNT × 16 MB = 48 MB of depth memory at 2048².
 pub const SHADOW_MAP_SIZE: u32 = 2048;
+
+/// Phase 28 session 2: number of shadow cascades. Three is the
+/// standard sweet spot for outdoor scenes — far enough to cover
+/// 100m view distance with one cascade per ~5×, no waste from
+/// over-cascading.
+pub const CASCADE_COUNT: usize = 3;
 
 /// Phase 24: joint matrix array bound at @group(3). Each skinned
 /// mesh uploads its computed per-joint matrices (joint world ×
@@ -478,16 +515,19 @@ struct Joints {
 };
 @group(3) @binding(0) var<uniform> joints_u: Joints;
 
-// Phase 25: shadow map + light-space matrix at @group(4).
-// `flags.w == 1.0` means shadows are active this frame; the
-// fragment shader skips the shadow lookup when the flag is 0
-// (e.g. when the script disables shadows via `sun.shadow(false)`).
+// Phase 28 session 2: cascaded shadow maps. `light_space_matrices`
+// holds one mat4 per cascade; `split_distances` xyz are the
+// view-space depth thresholds for cascade selection. `flags.w`
+// carries the runtime enable bit (0 means short-circuit the
+// shadow lookup, e.g. when the script disables shadows via
+// `sun.shadow(false)`).
 struct Shadow {
-    light_space_matrix: mat4x4<f32>,
+    light_space_matrices: array<mat4x4<f32>, 3>,
+    split_distances: vec4<f32>,
     flags: vec4<f32>,
 };
 @group(4) @binding(0) var<uniform> shadow_u: Shadow;
-@group(4) @binding(1) var t_shadow: texture_depth_2d;
+@group(4) @binding(1) var t_shadow: texture_depth_2d_array;
 @group(4) @binding(2) var s_shadow: sampler_comparison;
 
 struct VertexInput {
@@ -509,6 +549,11 @@ struct VertexOutput {
     @location(1) base_color: vec3<f32>,
     @location(2) tex_coord: vec2<f32>,
     @location(3) world_pos: vec3<f32>,
+    // Phase 28 session 2: view-space forward depth, used to pick
+    // the shadow cascade. For the standard reverse-Z perspective
+    // matrix in this codebase, clip.w equals view-space `-z`, i.e.
+    // positive distance away from the eye.
+    @location(4) view_z: f32,
 };
 
 @vertex
@@ -531,19 +576,35 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     out.base_color = inst.inst_color.rgb;
     out.tex_coord = vert.uv;
     out.world_pos = model_pos;
+    // Reverse-Z: clip.w is positive view-space distance forward.
+    out.view_z = out.clip_position.w;
     return out;
 }
 
-// Phase 25: 3x3 PCF shadow sample. Returns 1.0 = fully lit,
-// 0.0 = fully in shadow. The 0.5 / size offset gives texel-aligned
-// taps for sharp results without over-sampling.
-fn sample_shadow(world_pos: vec3<f32>) -> f32 {
+// Phase 28 session 2: cascaded 3x3 PCF shadow sample.
+//
+// Cascade selection is by view-space forward depth: pixels close
+// to the camera fall into cascade 0 (tightest ortho, sharpest
+// texels); pixels further out land in cascade 1 or 2.
+//
+// Returns 1.0 = fully lit, 0.0 = fully in shadow. The bias scales
+// per-cascade so the looser cascades don't shadow-acne — wider
+// orthos have larger world-space texels and need a bigger bias.
+fn sample_shadow(world_pos: vec3<f32>, view_z: f32) -> f32 {
     if (shadow_u.flags.w < 0.5) {
         return 1.0;
     }
-    let light_pos = shadow_u.light_space_matrix * vec4<f32>(world_pos, 1.0);
+    var cascade: i32 = 2;
+    if (view_z < shadow_u.split_distances.x) {
+        cascade = 0;
+    } else if (view_z < shadow_u.split_distances.y) {
+        cascade = 1;
+    } else if (view_z >= shadow_u.split_distances.z) {
+        // Beyond the last cascade: no shadow.
+        return 1.0;
+    }
+    let light_pos = shadow_u.light_space_matrices[cascade] * vec4<f32>(world_pos, 1.0);
     var shadow_uv = light_pos.xyz / light_pos.w;
-    // Convert from clip space [-1, 1] to texture UV [0, 1].
     shadow_uv = vec3<f32>(
         shadow_uv.x * 0.5 + 0.5,
         shadow_uv.y * -0.5 + 0.5,
@@ -554,11 +615,19 @@ fn sample_shadow(world_pos: vec3<f32>) -> f32 {
      || shadow_uv.z < 0.0 || shadow_uv.z > 1.0) {
         return 1.0;
     }
-    // Bias to combat self-shadowing acne. Subtracting from the
-    // reference depth makes a fragment "deeper" so coincident
-    // shadow-map texels still pass the comparison.
-    let bias = 0.0008;
-    let ref_depth = shadow_uv.z - bias;
+    // Cascade-scaled bias. Cascade 0 wants the tight 0.0008 the
+    // single-cascade path used; cascades 1/2 cover larger world
+    // areas per texel and need proportionally larger biases or
+    // they shadow-acne. Cascade scale ratios are 4× per step
+    // (extent goes 0.25 → 1.0 → 4.0 in compute_shadow_uniform),
+    // so biases follow roughly the same ratio.
+    var cascade_bias: f32 = 0.0008;
+    if (cascade == 1) {
+        cascade_bias = 0.003;
+    } else if (cascade == 2) {
+        cascade_bias = 0.012;
+    }
+    let ref_depth = shadow_uv.z - cascade_bias;
     let dim = vec2<f32>(textureDimensions(t_shadow));
     let inv = vec2<f32>(1.0 / dim.x, 1.0 / dim.y);
     var sum = 0.0;
@@ -569,6 +638,7 @@ fn sample_shadow(world_pos: vec3<f32>) -> f32 {
                 t_shadow,
                 s_shadow,
                 shadow_uv.xy + off,
+                cascade,
                 ref_depth,
             );
         }
@@ -587,7 +657,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Phase 25: shadow attenuates only the sun term, not
         // ambient or point lights — same convention as Unity /
         // Unreal so artists can still see geometry in shadow.
-        let shadow = sample_shadow(in.world_pos);
+        let shadow = sample_shadow(in.world_pos, in.view_z);
         lit = lit + lights.sun_dir.www * (d * shadow);
     }
     // Up to 8 point lights with quadratic attenuation. radius==0
@@ -622,11 +692,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 /// Phase 26: ACES filmic tone mapping shader. Reads an HDR
 /// linear-light texture and writes sRGB-encoded LDR to the
-/// swapchain. Optional radial vignette in the same pass.
+/// swapchain.
+///
+/// Phase 28 session 3 (bloom) + session 4 (vignette extension)
+/// extend this pass with:
+///   - inline bloom: a 12-tap circular kernel sampled around the
+///     current pixel. Each tap contributes `max(sample - threshold, 0)`,
+///     summed and averaged then scaled by `bloom_intensity`. v1
+///     bloom — small radius (~12 pixels), no multi-tier downsample
+///     chain. Cheaper than real bloom but visually credible for
+///     bright lights / sun glints. Multi-tier downsample is a
+///     follow-on whenever wider haloes are needed.
+///   - color-tinted vignette: instead of darkening to black, the
+///     vignette can lerp toward a user-supplied tint colour. Set
+///     `vignette_color` to (0, 0, 0) for the classic black
+///     vignette; (0.05, 0.0, 0.1) for a "twilight" feel; etc.
 pub(crate) const TONEMAP_SHADER_SRC: &str = r#"
 struct Params {
-    /// x = ACES on/off (1.0 / 0.0), yz = unused, w = vignette strength.
+    /// x = ACES on/off (1.0 / 0.0)
+    /// y = bloom intensity (0.0 = bloom off)
+    /// z = bloom threshold (HDR luminance above which bloom kicks in)
+    /// w = vignette strength
     flags: vec4<f32>,
+    /// xyz = vignette tint color (defaults to black for classic
+    /// darkening); w padding.
+    vignette_color: vec4<f32>,
 };
 
 @group(0) @binding(0) var t_hdr: texture_2d<f32>;
@@ -670,9 +760,55 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// Phase 28 session 3: 12-tap inline bloom. Each tap samples the
+// HDR texture at a small offset, subtracts the bloom threshold,
+// clamps to non-negative (so only bright pixels contribute), and
+// the average becomes the additive bloom term.
+//
+// Radius is fixed in pixels — the offsets divided by texture
+// dimensions to get UV offsets. Pattern is a 12-vertex circle at
+// 6 pixels + a second ring at 12 pixels for a soft falloff.
+fn bloom_inline(uv: vec2<f32>, threshold: f32) -> vec3<f32> {
+    let dim = vec2<f32>(textureDimensions(t_hdr));
+    let inv = vec2<f32>(1.0 / dim.x, 1.0 / dim.y);
+    // 12 offsets — two concentric rings, six taps each.
+    let r1 = 6.0;
+    let r2 = 12.0;
+    var offsets = array<vec2<f32>, 12>(
+        vec2<f32>( 1.0,  0.0) * r1,
+        vec2<f32>( 0.5,  0.866) * r1,
+        vec2<f32>(-0.5,  0.866) * r1,
+        vec2<f32>(-1.0,  0.0) * r1,
+        vec2<f32>(-0.5, -0.866) * r1,
+        vec2<f32>( 0.5, -0.866) * r1,
+        vec2<f32>( 1.0,  0.0) * r2,
+        vec2<f32>( 0.5,  0.866) * r2,
+        vec2<f32>(-0.5,  0.866) * r2,
+        vec2<f32>(-1.0,  0.0) * r2,
+        vec2<f32>(-0.5, -0.866) * r2,
+        vec2<f32>( 0.5, -0.866) * r2,
+    );
+    var sum = vec3<f32>(0.0);
+    for (var i: i32 = 0; i < 12; i = i + 1) {
+        let off = offsets[i] * inv;
+        let s = textureSample(t_hdr, s_hdr, uv + off).rgb;
+        // Only the part above threshold blooms.
+        sum = sum + max(s - vec3<f32>(threshold), vec3<f32>(0.0));
+    }
+    return sum / 12.0;
+}
+
 @fragment
 fn fs_tonemap(in: VOut) -> @location(0) vec4<f32> {
-    let hdr = textureSample(t_hdr, s_hdr, in.uv).rgb;
+    var hdr = textureSample(t_hdr, s_hdr, in.uv).rgb;
+    // Phase 28 session 3: inline bloom. Adds the bloom term to
+    // the HDR base before tonemap so the bright halo gets the
+    // same ACES curve as the source highlights.
+    let bloom_intensity = params.flags.y;
+    if (bloom_intensity > 0.001) {
+        let bloom = bloom_inline(in.uv, params.flags.z);
+        hdr = hdr + bloom * bloom_intensity;
+    }
     var col: vec3<f32>;
     if (params.flags.x > 0.5) {
         col = aces(hdr);
@@ -681,13 +817,15 @@ fn fs_tonemap(in: VOut) -> @location(0) vec4<f32> {
         // when ACES is off.
         col = clamp(hdr, vec3<f32>(0.0), vec3<f32>(1.0));
     }
-    // Optional vignette: smooth radial darken centered at screen
-    // center. Strength 0 disables.
+    // Phase 28 session 4: color-tinted vignette. Smooth radial
+    // lerp from the LDR color toward `vignette_color` — strength 0
+    // disables, strength 1 fully replaces the corner pixels with
+    // the tint color. Black tint = classic vignette darkening.
     if (params.flags.w > 0.001) {
         let centered = in.uv - vec2<f32>(0.5, 0.5);
         let r2 = dot(centered, centered) * 4.0; // 0 at center, 1 at corner
-        let v = 1.0 - clamp(r2 * params.flags.w, 0.0, 0.85);
-        col = col * v;
+        let t = clamp(r2 * params.flags.w, 0.0, 0.85);
+        col = mix(col, params.vignette_color.rgb, t);
     }
     return vec4<f32>(col, 1.0);
 }
@@ -704,12 +842,16 @@ const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// distance-to-sun. Reuses the same vertex layout (position +
 /// joints + weights) so a single vertex buffer per mesh feeds
 /// both passes.
+///
+/// Phase 28 session 2: takes a per-cascade `ShadowPass` uniform
+/// (just the active cascade's matrix) instead of the full
+/// `ShadowUniform`. The render loop rebinds a different bind
+/// group between cascades; one shader execution per cascade.
 pub(crate) const SHADOW_SHADER_SRC: &str = r#"
-struct Shadow {
+struct ShadowPass {
     light_space_matrix: mat4x4<f32>,
-    flags: vec4<f32>,
 };
-@group(0) @binding(0) var<uniform> shadow_u: Shadow;
+@group(0) @binding(0) var<uniform> shadow_u: ShadowPass;
 
 struct Joints {
     matrices: array<mat4x4<f32>, 128>,
@@ -1148,23 +1290,28 @@ struct RenderState {
     /// pass. Reuses the same vertex + instance layouts as the
     /// main pipeline so vertex buffers are shared between passes.
     shadow_pipeline: wgpu::RenderPipeline,
-    /// Per-frame shadow uniform: light-space view-projection +
-    /// enable/disable flag.
+    /// Per-frame shadow lookup uniform: 3 cascade matrices +
+    /// split distances + enable flag. Bound at @group(4) of the
+    /// main pipeline; the depth pass uses `shadow_pass_bgs`
+    /// instead. Phase 28 session 2.
     shadow_buffer: wgpu::Buffer,
-    /// Bound at @group(0) of the shadow pipeline (so it acts as
-    /// the camera) and at @group(4) binding 0 of the main
-    /// pipeline.
-    shadow_uniform_bg_for_pass: wgpu::BindGroup,
+    /// Phase 28 session 2: per-cascade pass uniform buffers + bind
+    /// groups. Each holds a single mat4 (the cascade's light-space
+    /// matrix). The depth pass binds index `i` while rendering
+    /// cascade `i`'s layer of the shadow array.
+    shadow_pass_buffers: [wgpu::Buffer; CASCADE_COUNT],
+    shadow_pass_bgs: [wgpu::BindGroup; CASCADE_COUNT],
     /// Combined bind group used by the main pipeline at @group(4):
-    /// shadow uniform + shadow texture view + comparison sampler.
+    /// shadow lookup uniform + shadow texture array view +
+    /// comparison sampler.
     shadow_combined_bg: wgpu::BindGroup,
-    /// Depth texture written by the shadow pass, sampled in the
-    /// main pass via `t_shadow` + `s_shadow`. Resolution =
-    /// `SHADOW_MAP_SIZE × SHADOW_MAP_SIZE`.
+    /// 2D-array depth texture; one layer per cascade. Phase 28
+    /// session 2.
     #[allow(dead_code)]
     shadow_texture: wgpu::Texture,
-    /// Depth-only attachment view for the shadow pass.
-    shadow_depth_view: wgpu::TextureView,
+    /// Per-cascade depth-attachment views (one layer each) for
+    /// the three shadow passes.
+    shadow_layer_views: [wgpu::TextureView; CASCADE_COUNT],
     depth_view: wgpu::TextureView,
     /// Phase 26: post-FX pipeline — fullscreen triangle that
     /// reads the HDR offscreen texture, applies ACES tone
@@ -1926,7 +2073,10 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         }],
     });
     // Combined shadow bgl used by the main pipeline: shadow
-    // uniform + depth texture + comparison sampler.
+    // lookup uniform + 2D-array depth texture + comparison
+    // sampler. Phase 28 session 2: texture is now D2Array (one
+    // layer per cascade) so the fragment shader can pick a layer
+    // per pixel.
     let shadow_combined_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("twec-play3d shadow combined bgl"),
         entries: &[
@@ -1945,7 +2095,7 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Depth,
-                    view_dimension: wgpu::TextureViewDimension::D2,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
                     multisampled: false,
                 },
                 count: None,
@@ -2014,18 +2164,17 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
 
     let depth_view = create_depth_view(&device, config.width, config.height);
 
-    // Phase 25: build the shadow texture, shadow uniform buffer +
-    // bind groups, depth-only shadow pipeline. The shadow pass
-    // runs each frame before the main pass when shadows are
-    // enabled, writing depth from the sun's POV into a
-    // SHADOW_MAP_SIZE × SHADOW_MAP_SIZE texture; the main
-    // fragment shader then samples that texture for PCF shadow.
+    // Phase 28 session 2: cascaded shadow maps. The shadow texture
+    // is a 2D array with `CASCADE_COUNT` layers; each shadow pass
+    // renders one cascade into its own layer. The main fragment
+    // shader samples the array, picking a layer per pixel by
+    // view-space depth.
     let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("twec-play3d shadow map"),
         size: wgpu::Extent3d {
             width: SHADOW_MAP_SIZE,
             height: SHADOW_MAP_SIZE,
-            depth_or_array_layers: 1,
+            depth_or_array_layers: CASCADE_COUNT as u32,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -2034,9 +2183,28 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
-    let shadow_depth_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    // Per-cascade depth-attachment views — each targets a single
+    // array layer for the corresponding shadow pass.
+    let shadow_layer_views: [wgpu::TextureView; CASCADE_COUNT] = std::array::from_fn(|i| {
+        shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("twec-play3d shadow layer view"),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_array_layer: i as u32,
+            array_layer_count: Some(1),
+            ..Default::default()
+        })
+    });
+    // Full-array view sampled by the main fragment shader.
+    let shadow_array_view = shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("twec-play3d shadow array view"),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        base_array_layer: 0,
+        array_layer_count: Some(CASCADE_COUNT as u32),
+        ..Default::default()
+    });
+    // Lookup uniform: full ShadowUniform with 3 matrices + splits.
     let shadow_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("twec-play3d shadow uniform"),
+        label: Some("twec-play3d shadow lookup uniform"),
         size: std::mem::size_of::<ShadowUniform>() as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
@@ -2046,13 +2214,27 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         0,
         bytemuck::bytes_of(&ShadowUniform::disabled()),
     );
-    let shadow_uniform_bg_for_pass = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("twec-play3d shadow uniform bg"),
-        layout: &shadow_uniform_bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: shadow_buffer.as_entire_binding(),
-        }],
+    // Per-cascade pass uniforms — small, just one mat4 each.
+    let shadow_pass_buffers: [wgpu::Buffer; CASCADE_COUNT] = std::array::from_fn(|i| {
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("twec-play3d shadow pass uniform"),
+            size: std::mem::size_of::<ShadowPassUniform>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let _ = i;
+        queue.write_buffer(&buf, 0, bytemuck::bytes_of(&ShadowPassUniform::identity()));
+        buf
+    });
+    let shadow_pass_bgs: [wgpu::BindGroup; CASCADE_COUNT] = std::array::from_fn(|i| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("twec-play3d shadow pass bg"),
+            layout: &shadow_uniform_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: shadow_pass_buffers[i].as_entire_binding(),
+            }],
+        })
     });
     // Comparison sampler — PCF expects this. Linear filter does
     // hardware 2x2 PCF on top of our manual 3x3 = a 5x5-ish kernel.
@@ -2077,7 +2259,7 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(&shadow_depth_view),
+                resource: wgpu::BindingResource::TextureView(&shadow_array_view),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
@@ -2179,16 +2361,20 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         mipmap_filter: wgpu::FilterMode::Nearest,
         ..Default::default()
     });
+    // Phase 28 sessions 3+4: tonemap params is now two vec4s (32 B):
+    //   flags.x = ACES on/off, .y = bloom intensity,
+    //   flags.z = bloom threshold, .w = vignette strength
+    //   vignette_color.xyz = vignette tint (defaults to black)
     let tonemap_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("twec-play3d tonemap params"),
-        size: 16,
+        size: 32,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     queue.write_buffer(
         &tonemap_params_buffer,
         0,
-        bytemuck::cast_slice(&[0.0_f32; 4]),
+        bytemuck::cast_slice(&[0.0_f32; 8]),
     );
     let tonemap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("twec-play3d tonemap shader"),
@@ -2251,10 +2437,11 @@ fn init_wgpu(window: Arc<Window>) -> Result<RenderState, String> {
         identity_joints_bind_group,
         shadow_pipeline,
         shadow_buffer,
-        shadow_uniform_bg_for_pass,
+        shadow_pass_buffers,
+        shadow_pass_bgs,
         shadow_combined_bg,
         shadow_texture,
-        shadow_depth_view,
+        shadow_layer_views,
         depth_view,
         tonemap_pipeline,
         tonemap_bgl,
@@ -2958,6 +3145,24 @@ fn compute_skinned_joint_matrices(skin: &MeshSkin, anim: &AnimSnapshot) -> Joint
 /// pass short-circuits the lookup. The light-space matrix is an
 /// orthographic projection from the sun looking at `target`, sized
 /// by the script-controlled extent (default 30m radius).
+/// Phase 28 session 2: compute the cascaded shadow uniform.
+///
+/// Each cascade is a target-centered orthographic projection, with
+/// extents scaled so cascade 0 is tight (highest texel density),
+/// cascade 1 medium, cascade 2 wide. Split distances are camera-
+/// space forward depths where the fragment shader switches between
+/// cascades. A "tunic-scale" outdoor view of ~100m fits the
+/// chosen splits — the user-supplied `shadow_extent` controls
+/// cascade 1's size; cascade 0 shrinks by 4×, cascade 2 grows
+/// by 4×.
+///
+/// Trade-off vs. fully-fitted CSM: the per-cascade ortho is
+/// centered on `target` rather than tightly bounded to that
+/// cascade's view-frustum slice. For third-person cameras
+/// (target ≈ player position) this is fine; for free cameras far
+/// from the focal target, expect lower-than-ideal cascade-0
+/// resolution. A view-frustum-corner CSM upgrade is a follow-on
+/// if someone pressures the gap.
 fn compute_shadow_uniform(
     lights: &LightsUniform,
     _eye: [f32; 3],
@@ -2969,24 +3174,45 @@ fn compute_shadow_uniform(
     }
     let extent = crate::stdlib::shadow_extent();
     let sun_dir = normalize([lights.sun_dir[0], lights.sun_dir[1], lights.sun_dir[2]]);
-    // Pull back from the target along the sun direction so the
-    // ortho frustum encloses the visible scene around `target`.
-    let pull = extent * 1.5;
-    let light_eye = [
-        target[0] + sun_dir[0] * pull,
-        target[1] + sun_dir[1] * pull,
-        target[2] + sun_dir[2] * pull,
-    ];
     let up_guess = if sun_dir[1].abs() > 0.99 {
         [0.0, 0.0, 1.0]
     } else {
         [0.0, 1.0, 0.0]
     };
-    let view = look_at(light_eye, target, up_guess);
-    let proj = ortho(-extent, extent, -extent, extent, 0.1, pull * 2.0 + extent);
-    let light_space_matrix = mul(proj, view);
+    // Cascade scale factors. Cascade 1 uses the user's `extent`;
+    // cascade 0 is 1/4 (~6× higher texel density), cascade 2 is
+    // 4× the extent for distant scenery.
+    const CASCADE_SCALES: [f32; CASCADE_COUNT] = [0.25, 1.0, 4.0];
+    // View-space forward distances at which to switch cascades.
+    // Tuned for the standard 0.1..100 perspective frustum: surfaces
+    // closer than ~12.5m use cascade 0, mid-range cascade 1, the
+    // rest cascade 2.
+    let split_distances = [
+        extent * 0.25,
+        extent,
+        extent * 4.0,
+        0.0, // padding
+    ];
+    let mut light_space_matrices = [[[0.0; 4]; 4]; CASCADE_COUNT];
+    for i in 0..CASCADE_COUNT {
+        let e = extent * CASCADE_SCALES[i];
+        // Pull the light's eye back along the sun direction far
+        // enough that the cascade's ortho frustum encloses
+        // occluders behind the target. 1.5× e is the same factor
+        // the single-cascade path used.
+        let pull = e * 1.5;
+        let light_eye = [
+            target[0] + sun_dir[0] * pull,
+            target[1] + sun_dir[1] * pull,
+            target[2] + sun_dir[2] * pull,
+        ];
+        let view = look_at(light_eye, target, up_guess);
+        let proj = ortho(-e, e, -e, e, 0.1, pull * 2.0 + e);
+        light_space_matrices[i] = mul(proj, view);
+    }
     ShadowUniform {
-        light_space_matrix,
+        light_space_matrices,
+        split_distances,
         flags: [0.0, 0.0, 0.0, 1.0],
     }
 }
@@ -3723,70 +3949,88 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("twec-play3d encoder"),
         });
-    // Phase 25: shadow pass — depth-only render from sun POV
-    // into the shadow map. Runs every frame even when shadows
-    // are disabled (the disabled-flag uniform short-circuits the
-    // sample); the cost is one render of all opaque geometry
-    // into a 2K depth buffer. We render every visible draw call
-    // (cube/sphere/mesh groups) so anything in the scene casts a
-    // shadow.
+    // Phase 28 session 2: cascaded shadow passes — depth-only
+    // renders from the sun's POV, one per cascade, each into a
+    // separate layer of the shadow array texture. Each pass binds
+    // a different per-cascade uniform (`shadow_pass_bgs[i]`) so
+    // `vs_shadow` projects geometry into the right cascade's
+    // light space. Runs `CASCADE_COUNT` times (3) per frame; cost
+    // scales with the visible draw call count, not the geometry
+    // count, since each call uses the same vertex buffers.
     if shadow_uniform.flags[3] > 0.5 && !instances.is_empty() {
-        let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("twec-play3d shadow pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &state.shadow_depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        spass.set_pipeline(&state.shadow_pipeline);
-        spass.set_bind_group(0, &state.shadow_uniform_bg_for_pass, &[]);
-        spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
-        spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-        // Cubes
-        for (_tex, range) in &cube_ranges {
-            if range.1 <= range.0 {
-                continue;
-            }
-            spass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-            spass.set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
-        }
-        // Spheres
-        for (_tex, range) in &sphere_ranges {
-            if range.1 <= range.0 {
-                continue;
-            }
-            spass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-            spass.set_index_buffer(
-                state.sphere_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint16,
-            );
-            spass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
-        }
-        // Meshes (with per-mesh joints if skinned)
-        for ((mesh_id, _tex), range) in &mesh_ranges {
-            if range.1 <= range.0 {
-                continue;
-            }
-            let gpu_mesh = match state.mesh_cache.get(mesh_id) {
-                Some(m) => m,
-                None => continue,
+        for cascade in 0..CASCADE_COUNT {
+            // Push the active cascade's matrix into the per-pass
+            // uniform. queue.write_buffer is recorded as a copy
+            // command; sequential write_buffer + render_pass pairs
+            // execute in order at submission time.
+            let pass_uniform = ShadowPassUniform {
+                light_space_matrix: shadow_uniform.light_space_matrices[cascade],
             };
-            if let Some(skin) = &gpu_mesh.skin {
-                spass.set_bind_group(1, &skin.joint_bind_group, &[]);
+            state.queue.write_buffer(
+                &state.shadow_pass_buffers[cascade],
+                0,
+                bytemuck::bytes_of(&pass_uniform),
+            );
+            let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("twec-play3d shadow pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &state.shadow_layer_views[cascade],
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            spass.set_pipeline(&state.shadow_pipeline);
+            spass.set_bind_group(0, &state.shadow_pass_bgs[cascade], &[]);
+            spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+            spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+            // Cubes
+            for (_tex, range) in &cube_ranges {
+                if range.1 <= range.0 {
+                    continue;
+                }
+                spass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
+                spass.set_index_buffer(
+                    state.cube_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
             }
-            spass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-            spass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
-            spass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
-            if gpu_mesh.skin.is_some() {
-                spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+            // Spheres
+            for (_tex, range) in &sphere_ranges {
+                if range.1 <= range.0 {
+                    continue;
+                }
+                spass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
+                spass.set_index_buffer(
+                    state.sphere_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                spass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
+            }
+            // Meshes (with per-mesh joints if skinned)
+            for ((mesh_id, _tex), range) in &mesh_ranges {
+                if range.1 <= range.0 {
+                    continue;
+                }
+                let gpu_mesh = match state.mesh_cache.get(mesh_id) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                if let Some(skin) = &gpu_mesh.skin {
+                    spass.set_bind_group(1, &skin.joint_bind_group, &[]);
+                }
+                spass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+                spass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
+                spass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+                if gpu_mesh.skin.is_some() {
+                    spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+                }
             }
         }
     }
@@ -3931,11 +4175,25 @@ fn render(state: &mut RenderState, env: &mut Env, dt: f32) -> Result<(), String>
     // step that gets that data into the user's sRGB display.
     let tonemap_aces = crate::stdlib::tonemap_enabled();
     let vignette = crate::stdlib::vignette_strength();
-    // params: x = ACES on/off, w = vignette strength.
+    let bloom_intensity = crate::stdlib::bloom_intensity();
+    let bloom_threshold = crate::stdlib::bloom_threshold();
+    let [vc_r, vc_g, vc_b] = crate::stdlib::vignette_color();
+    // params layout (8 floats / 32 bytes):
+    //   [0..3] flags: x=ACES, y=bloom_intensity, z=bloom_threshold, w=vignette
+    //   [4..7] vignette_color: r, g, b, padding
     state.queue.write_buffer(
         &state.tonemap_params_buffer,
         0,
-        bytemuck::cast_slice(&[if tonemap_aces { 1.0_f32 } else { 0.0 }, 0.0, 0.0, vignette]),
+        bytemuck::cast_slice(&[
+            if tonemap_aces { 1.0_f32 } else { 0.0 },
+            bloom_intensity,
+            bloom_threshold,
+            vignette,
+            vc_r,
+            vc_g,
+            vc_b,
+            0.0,
+        ]),
     );
     if let Some(bg) = &state.tonemap_bind_group {
         let mut tmpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

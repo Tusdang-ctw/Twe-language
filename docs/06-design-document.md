@@ -734,6 +734,19 @@ on Slime.death(s):
     spawn Spark at (s.pos.x, s.pos.y)
 ```
 
+### 7.7b 3D post-processing  *(`twec play3d` only)*
+
+```twe
+postfx.tonemap(true)              # ACES filmic curve (default on)
+postfx.vignette(0.4)              # radial darkening, 0 (off) to 1 (full)
+postfx.vignette_color(color.purple) # tint instead of darken (default black)
+postfx.bloom(0.6)                 # inline 12-tap bloom intensity, 0 (off)
+postfx.bloom_threshold(1.0)       # HDR luminance above which bloom kicks in
+postfx.frustum_cull(true)         # skip culled draw calls (default on)
+```
+
+The HDR pipeline always runs; `postfx.tonemap(false)` switches the final pass from ACES to a straight clamp. `bloom` is a single-pass inline kernel — small radius (~12 pixels), no multi-tier downsample chain. Cascaded shadow maps (3 cascades, 2K each layer, PCF) ship under the existing `sun.shadow(true)` switch.
+
 ### 7.8 Camera
 
 **2D** (`twec play`):
