@@ -1,0 +1,121 @@
+# Rhythm demo — exercises Phase 29's deterministic simulation clock.
+#
+# Run with:  twec play examples/rhythm_demo.twe
+#
+# A 4/4 metronome beats every 0.5s, driven entirely off `sound.now()`
+# (the simulation clock that advances by exactly time.physics_dt
+# per fixed-step substep, see docs/03-runtime.md "Determinism").
+# Hit SPACE on the beat to score; missing the window adds nothing.
+# R restarts.
+#
+# This is a minimal proof of "rhythm games are buildable on Twe"
+# rather than a polished gameplay loop. The fixed-step clock is
+# the load-bearing primitive — every downstream rhythm UI (timing
+# rings, score pop, song chart parser) is normal Twe code.
+#
+# Audio scheduling via `sound.schedule(handle, when, vol)` is the
+# same idea: pre-queue every kick on song start, the engine fires
+# them on the simulation tick that crosses each deadline. This
+# demo doesn't ship a kick WAV in the repo, so it runs visual-only.
+# To hear it: drop a kick.wav into examples/ and add
+#   `sound.schedule(sound.load("examples/kick.wav"), beat_t, 0.8)`
+# inside the for-loop in `state playing: on enter`.
+
+let view_w = 640.0
+let view_h = 480.0
+
+let beat_period = 0.5         # 120 BPM
+let beat_window = 0.10        # ±100ms hit window
+let total_beats = 16          # one verse
+
+scene Rhythm:
+    var beat_index = 0          # how many beats have already fired
+    var beats_hit = 0           # player score
+    var beats_missed = 0
+    var last_message = "Press SPACE on the beat"
+    var message_age = 0.0
+    var beat_pulse = 0.0        # decays each frame; 1.0 right at a beat
+    var t0 = 0.0                # simulation time when the song started
+
+    initial: ready
+
+    state ready:
+        on enter:
+            print("Rhythm demo — SPACE on the beat. R to restart.")
+
+        on key_press.space:
+            -> playing
+
+        on key_press.r:
+            -> playing
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: rgb(0.05, 0.05, 0.10))
+            text("RHYTHM", at: (260, 180), color: color.white)
+            text("press SPACE to start", at: (220, 230), color: color.gray)
+
+    state playing:
+        on enter:
+            beat_index = 0
+            beats_hit = 0
+            beats_missed = 0
+            beat_pulse = 0.0
+            last_message = "Listen for the beat..."
+            message_age = 0.0
+            t0 = sound.now() + 1.0     # 1s lead-in before beat 1
+
+        on update(dt):
+            # Decay the visual pulse.
+            if beat_pulse > 0.0:
+                beat_pulse = math.max(0.0, beat_pulse - dt * 4.0)
+            message_age += dt
+
+            # Fire visual beats on the deterministic clock.
+            let elapsed = sound.now() - t0
+            let next_beat_t = beat_period * beat_index
+            if elapsed >= next_beat_t and beat_index < total_beats:
+                beat_pulse = 1.0
+                beat_index += 1
+
+        on key_press.space:
+            let elapsed = sound.now() - t0
+            let nearest = math.floor(elapsed / beat_period + 0.5) * beat_period
+            let dist = math.abs(elapsed - nearest)
+            if dist <= beat_window and nearest >= 0.0 and nearest < beat_period * total_beats:
+                beats_hit += 1
+                last_message = "HIT"
+                message_age = 0.0
+            else:
+                beats_missed += 1
+                last_message = "miss"
+                message_age = 0.0
+
+        on key_press.r:
+            -> playing
+
+        on render():
+            # Background gets brighter on a beat.
+            let bg_brightness = 0.05 + beat_pulse * 0.25
+            rect(
+                at: (0, 0),
+                size: (view_w, view_h),
+                color: rgb(bg_brightness, bg_brightness, bg_brightness * 1.4),
+            )
+
+            text("BEATS  {beat_index}/{total_beats}", at: (20, 30), color: color.white)
+            text("HITS   {beats_hit}", at: (20, 60), color: color.green)
+            text("MISSES {beats_missed}", at: (20, 90), color: color.red)
+
+            # Sweep bar: fills left-to-right between beats, snapping
+            # at each boundary. SPACE while the bar is near the
+            # yellow marker scores.
+            let elapsed = sound.now() - t0
+            let in_song = elapsed >= 0.0 and elapsed < beat_period * total_beats
+            if in_song:
+                let phase = (elapsed / beat_period) - math.floor(elapsed / beat_period)
+                let bar_x = 80.0 + 480.0 * phase
+                rect(at: (80, 280), size: (480, 8), color: color.gray)
+                rect(at: (bar_x - 2, 270), size: (4, 28), color: color.white)
+                rect(at: (560 - 4, 270), size: (8, 28), color: color.yellow)
+
+            text(last_message, at: (240, 360), color: color.white)

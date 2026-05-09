@@ -57,7 +57,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | HDR pipeline + ACES filmic tone mapping + vignette | post-v1.0 |
 | Frustum culling, dynamic instance buffer | post-v1.0 |
 
-**745 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.**
+**755 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.**
 
 ## Install
 

@@ -623,6 +623,8 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ## Phase 29 — Post-v1.0 — Determinism layer
 
+**Status:** codebase-closed 2026-05-09 — see `docs/changes/2026-05-09-phase-29-closeout.md`. Six sessions: fixed-timestep accumulator + `time.physics_dt` (1), incremental GC sweep + `gc.budget_ms` / `gc.last_collect_ms` / `gc.bytes_alive` (2), VM immediate-int dispatch tuning (3), `replay.record` / `replay.play` / `replay.stop` + `tests/replay.rs` end-to-end harness (4), tick-accurate audio scheduling — `sound.schedule` / `sound.now` (5), `examples/rhythm_demo.twe` + closeout (6). The Phase 29 plan called for the bytecode-VM 3× speedup gap (`docs/changes/2026-05-01-phase-8.5-closeout.md`) to close on `sum_loop`; that's partial — `fib_recursive` hits 3× (function-call-heavy loops are the bytecode VM's strength), but `sum_loop` and `float_loop` remain bytecode-slower than the tree-walker. Closing the dispatch-loop gap requires computed-goto / direct-threading and is its own follow-on phase.
+
 **Theme:** the only path to fighting / rhythm games AND a hard prerequisite for Phase 31 (lockstep multiplayer). Also closes the unresolved 3× bytecode-VM speedup gap from `docs/changes/2026-05-01-phase-8.5-closeout.md`.
 
 **Components:**
