@@ -53,3 +53,47 @@ jobs:
       - name: Format check
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
+
+  # Phase 34 session 5: cross-compile validation. The release.yml
+  # matrix builds the artifacts on tag push, but a tag is too late to
+  # discover that someone just merged a PR that breaks aarch64-linux.
+  # This job runs on every PR and proves all four release targets at
+  # least cargo-check (no full link, to keep CI runtime bounded).
+  cross-check:
+    name: Cross-compile check (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - x86_64-pc-windows-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compile linker
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          fi
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-gnu" ]; then
+            sudo apt-get install -y mingw-w64
+          fi
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-cross-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cargo check
+        run: cargo check --release --target ${{ matrix.target }} --bin twec

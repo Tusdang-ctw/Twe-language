@@ -561,20 +561,36 @@ Session breakdown (twelve, mirroring Phase 10 / 11 cadence):
 
 ---
 
-## Post-v1.0 — Phases 27–32
+## Post-v1.0 — Phases 27–41
 
-After v1.0 cuts, the LTS phase begins (`v1.x` branch, 12-month security backports). Six follow-on phases extend the language to genres v1.0 doesn't cover, in user-priority order:
+After v1.0 cuts, the LTS phase begins (`v1.x` branch, 12-month security backports). Fifteen follow-on phases extend the language to genres v1.0 doesn't cover.
+
+**Round 1 (Phases 27–32)** — closed 2026-05-09 / 05-10. The original post-v1.0 plan as scoped in the README/`docs/05` Phase 27–32 section. Drove ten major surfaces from "out of scope" to shipped:
 
 | Phase | Theme | Size |
 |-------|-------|------|
-| 27 — 2D genre reference examples | Platformer / Tetris / cards prove out the existing stdlib | M |
-| 28 — 3D commercial polish | Bloom, DoF, cascaded shadows, mipmaps, async preload | L |
-| 29 — Determinism layer | Fixed timestep, bounded GC, replay/record, sample-accurate audio, close the 3× speedup gap | L |
-| 30 — WASM / web target | `twec build --target wasm32`; browser-playable 2D | L |
-| 31 — Multiplayer foundation | Netcode RFC + lockstep over UDP/WebSocket | XL (gated on RFC) |
-| 32 — Open-world 3D foundation | Streaming, LOD, terrain, spatial partitioning | XL (gated on lock revision) |
+| 27 — 2D genre reference examples | Platformer / Tetris / cards prove out the existing stdlib | M (closed 2026-05-09) |
+| 28 — 3D commercial polish | Bloom, DoF, cascaded shadows, mipmaps, async preload | L (closed 2026-05-09) |
+| 29 — Determinism layer | Fixed timestep, bounded GC, replay/record, sample-accurate audio, close the 3× speedup gap | L (closed 2026-05-09) |
+| 30 — WASM / web target | `twec build --target wasm32`; browser-playable 2D | L (closed 2026-05-09) |
+| 31 — Multiplayer foundation | Netcode RFC + lockstep over UDP/WebSocket | XL (closed 2026-05-10) |
+| 32 — Open-world 3D foundation | Streaming, LOD, terrain, spatial partitioning | XL (closed 2026-05-10) |
 
-Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Phase 32 requires extending CLAUDE.md "What is locked" to authorize an engine-internal worker pool (single-threaded VM stays single-threaded for Twe authors; engine internals get parallelism). Total scope is ~50–70 sessions, ~12–18 months at one session/week.
+**Round 2 (Phases 33–41)** — Phase 33 closed 2026-05-10; Phases 34–41 planned. Phase 33 (LLM differentiator) was added mid-stream from `LLMsPlan.md` and shipped before the gap-audit phases were planned, so it claimed the slot. The remaining round-2 phases (34–41) drive the "What is genuinely *not* ready" gap-audit rows: cross-platform polish, external validation, internet multiplayer, rollback netcode, browser 3D, mobile, console, MMO.
+
+| Phase | Theme | Size |
+|-------|-------|------|
+| 33 — LLM differentiator | `twec grammar` / `twec verify` v2 / `twec stdlib --json` / `twec llm-loop` / `twec mcp` / `twec corpus` / `twec eval` / `twec mutate` / typed holes | XL (closed 2026-05-10; 11 sessions; 912 tests; LLMsPlan.md acceptance criteria all met) |
+| 34 — Cross-platform polish | macOS `NSApplication.isActive` + Linux X11 `_NET_ACTIVE_WINDOW` focus paths + cargo-dist runtime cross-compile (aarch64-linux) + cross-compile CI gate | M |
+| 35 — External validation drive | itch.io paid release + Steam AppID + community game pipeline + cross-machine multiplayer playtest + 4km open-world playtest + 6-month API stability close | XL (calendar-bound) |
+| 36 — Online multiplayer | Steam P2P / NAT traversal / lobbies / reconnect; extends Phase 31 LAN-only | XL (gated on RFC + Steam AppID) |
+| 37 — Rollback netcode | Second netcode model alongside lockstep; pressures Principle 2; for fighting + FPS | XL (gated on Principle 2 carve-out RFC) |
+| 38 — Browser 3D | wgpu-on-web; extends Phase 30 WASM 2D to 3D | L (calendar-gated on browser wgpu maturity) |
+| 39 — Mobile (iOS / Android) | macroquad supports both platforms; work is `twec build` matrix + signing + store submission | XL |
+| 40 — Console targets | Switch / PS5 / Xbox; NDA-gated; cannot be shipped open-source | XL (sketched only) |
+| 41 — MMO / Roblox-scale | Sharded servers, area-of-interest networking, persistent world DB, sandboxing | XL² (multi-year; sketched only) |
+
+Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 required extending CLAUDE.md "What is locked" to authorize an engine-internal worker pool (single-threaded VM stays single-threaded for Twe authors; engine internals get parallelism). Round 2 inherits the same disciplines: each phase has explicit exit criteria and a closeout note when it lands. Total scope across both rounds: ~100–150 sessions, multi-year at one session/week.
 
 ---
 
@@ -715,20 +731,281 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ---
 
-## What's intentionally *not* in the v1.0 plan
+## Phase 33 — Post-v1.0 — LLM differentiator
 
-These are deferred to post-v1.0 (the v1.x or v2.0 era), with cause. Items now scheduled into Phases 27–32 are noted inline:
+**Status:** **codebase-closed 2026-05-10** per `docs/changes/2026-05-10-phase-33-closeout.md`. Eleven sessions (0–10) shipped across four commits. **912 tests pass; clippy + build clean.** The first phase that ships **language-level support for LLM authoring** end-to-end. Every Twe tool that exists is now exposed to an LLM through a structured contract.
 
-- **3D rendering polish** — textures, animation, physics, multi-primitive `.glb`, mouse-driven 3D, `mat4` / `quat`. Bulk of this shipped in Phases 17–26 already; remaining polish (bloom, DoF, cascaded shadows, mipmaps, async preload) is **Phase 28**. Roblox-class 3D is multi-year and remains out of scope.
+**Theme:** drive `LLMsPlan.md` from "design doc" to "shipped." Twe's pitch as an "AI-legible by design" language (Principle 4) becomes concrete: LLMs and tools targeting Twe consume structured contracts, not free-text prose.
+
+**Sessions shipped:**
+
+| # | Surface |
+|---|---------|
+| 0 | `LLMsPlan.md` strategy doc at repo root |
+| 1 | `twec grammar` — GBNF / JSON-Schema / EBNF export of the canonical grammar |
+| 2 | `twec verify` v2 — structured `fix: { rationale, edits[{line, col, len, replace}] }` on high-confidence diagnostics |
+| 3 | `twec stdlib --json` — manifest of all 235 builtins by category, derived by introspecting `Env` |
+| 4 | `twec llm-loop` — provider-trait harness with `FixtureProvider` + `CommandProvider`; per-round JSONL traces seed fine-tune corpus |
+| 5 | `twec mcp` — stdio JSON-RPC 2.0 server exposing 7 tools (parse / verify / format / grammar / stdlib_list / stdlib_lookup / apply_patch) |
+| 6 | `twec corpus --json` + `@task / @inputs / @expected / @category / @difficulty` headers on all 40 examples |
+| 7 | `twec eval` — replay-based benchmark on `eval::run_with_frames` |
+| 8 | `twec mutate` — auto-mutates `tests/programs/*.twe` to produce `(broken, verify_json, fix)` triples for fine-tune training |
+| 9 | Typed holes (`???`) — lexer + parser + AST + eval + infer + verify + printer integration |
+| 10 | Closeout note + README updates |
+
+**Exit criteria:** all Tier 1+2+3 acceptance criteria from `LLMsPlan.md` met. See closeout for the per-tier audit.
+
+---
+
+## Phase 34 — Post-v1.0 — Cross-platform polish
+
+**Status:** open. Inherits the four scratch items from the v1.x roadmap that already had concrete blockers identified:
+
+- macOS auto-pause-on-blur via `NSApplication.isActive`.
+- Linux X11 auto-pause-on-blur via `_NET_ACTIVE_WINDOW` property polling + `_NET_WM_PID` lookup.
+- Linux Wayland auto-pause-on-blur — documented stub. Wayland focus is per-input-device and only delivered as events to the focused client; no portable way to query "am I focused" from outside the windowing system client (miniquad). The honest stub returns `true` until miniquad surfaces focus events upstream.
+- Cargo-dist generalization for cross-compiled per-target `twec` runtimes — fills the Mach-O / ELF binaries that Phase 12's `.app` and `.AppDir` directory layouts need but couldn't ship.
+
+**Why first in round 2 outside Phase 33:** every gap is concrete and small. None require RFC. Cargo-dist work is already-active Phase 7 scratch. Shipping this closes the "macOS / Linux fully polished" row from the gap audit and is the only way Phase 12's cross-platform builds become functionally cross-platform rather than scaffold-only.
+
+**Components:**
+
+| # | Deliverable |
+|---|---|
+| 1 | macOS focus path — `[[NSApplication sharedApplication] isActive]` via `objc2`; cfg-gated to `target_os = "macos"` |
+| 2 | Linux X11 focus path — `_NET_ACTIVE_WINDOW` poll on root window via `x11rb`, then `_NET_WM_PID` lookup, compare to `std::process::id()` |
+| 3 | Linux Wayland focus path — documented stub (returns `true`); document that miniquad-upstream focus event surface is the real fix |
+| 4 | cargo-dist matrix expansion — `aarch64-unknown-linux-gnu` row in `.github/workflows/release.yml` (cross-compiled on x86_64 Linux runner via `gcc-aarch64-linux-gnu`) |
+| 5 | Cross-compile CI gate in `.github/workflows/ci.yml` — `cargo check` against `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu` on every PR; catches breakage before tag time |
+| 6 | Closeout |
+
+**Exit criteria:**
+
+- Auto-pause-on-blur works on macOS + X11 (parity with Windows from Phase 11). Wayland stays an honest stub.
+- `twec build` produces functional binaries for all five targets (Windows-x86_64, Linux-x86_64, Linux-aarch64, macOS-x86_64, macOS-aarch64) from any host (release.yml matrix).
+- A community contributor on macOS or Linux ARM can `twec play examples/survive_beta/main.twe` from the GitHub Release archive without a from-source build.
+
+**Size:** M (one focused month).
+
+---
+
+## Phase 35 — Post-v1.0 — External validation drive
+
+**Status:** open. Non-code phase. Tracks the external-action items still gating Phases 14, 15, and 16 from full closure.
+
+**Why now:** runs in parallel with everything else in this round. The blocker is "no public users have shipped a paid game on Twe yet"; the only way to clear it is to actually ship one or court someone to.
+
+**Components:**
+
+| # | Deliverable |
+|---|---|
+| 1 | First-party itch.io paid release of `examples/survive_beta` — package, store page, pricing, screenshots, trailer |
+| 2 | Steam AppID + end-to-end Steam SDK test (achievements + Cloud saves + Workshop placeholder) on the Phase 15 surface |
+| 3 | Cross-machine LAN multiplayer playtest of `examples/pong_net.twe` (Phase 31 verification step) |
+| 4 | 4km × 4km open-world playtest extending `examples/crystal_hunter.twe` (Phase 32 verification step + render-pipeline integration follow-on) |
+| 5 | Community game pipeline — solicit 2–3 external authors, provide direct support, add their games to the README "Shipped on Twe" gallery |
+| 6 | Six-month API stability snapshot review — log every public-surface change since the v0.7 freeze; cut a v1.x branch if drift is real |
+| 7 | Closeout note + v1.x LTS branch policy |
+
+**Exit criteria:**
+
+- ≥ 1 first-party game on itch.io with paid sales + ≥ 4-star reviews.
+- ≥ 1 community-authored game shipped on a v1.x release.
+- Cross-machine LAN multiplayer demonstrated bit-deterministic.
+- Six-month API stability window closes cleanly — Phase 16's last open criterion.
+
+**Size:** XL (calendar-bound; can't be sprinted).
+
+---
+
+## Phase 36 — Post-v1.0 — Online multiplayer (matchmaking + NAT + reconnect)
+
+**Status:** open. Extends Phase 31's direct-IP-only lockstep foundation to internet play.
+
+**Why this slot:** Phase 31 explicitly scoped out matchmaking / lobbies / dedicated servers / NAT / reconnect. The transport (UDP) and the netcode model (lockstep) ship — Phase 36 fills in the discovery + routing layer that turns LAN-only into internet-ready.
+
+**Components:**
+
+| # | Deliverable |
+|---|---|
+| 1 | Matchmaking RFC — addendum to `docs/changes/2026-05-10-multiplayer-rfc.md`. Pick: Steam P2P (recommended for Steam-first games), custom STUN/TURN, or peer-discovery-via-DHT |
+| 2 | `--features steam-net` — Steam P2P transport behind the same `net.*` API surface |
+| 3 | NAT traversal — STUN handshake for direct UDP, TURN relay fallback if both peers are double-NATed |
+| 4 | Lobby primitives — `net.create_lobby(name, max_peers)`, `net.find_lobbies(query)`, `net.join_lobby(id)` |
+| 5 | Reconnect handling — peer-disconnect detection, snapshot-checkpoint resync, host-migration option |
+| 6 | Optional: dedicated-server mode — `twec build --target linux-server` produces a headless binary for Steam Game Server |
+| 7 | `examples/pong_net_internet.twe` — peer-to-peer pong over the public internet via Steam P2P |
+| 8 | Closeout |
+
+**Out of scope:** authoritative client-server (separate from P2P with auth-tier; that's Phase 37 territory if it lands at all). Anti-cheat. Voice chat.
+
+**Exit criteria:**
+
+- Two players on different home networks join via lobby and play `pong_net_internet.twe`.
+- Mid-game disconnect and reconnect within 10 seconds doesn't desync.
+- Steam P2P path passes the Phase 15 Steam SDK test on a live AppID.
+
+**Size:** XL (gated on RFC + Steam AppID).
+
+---
+
+## Phase 37 — Post-v1.0 — Rollback netcode
+
+**Status:** open. **Pressures Principle 2.** A second netcode model alongside Phase 31's lockstep — for fighting games, fast-paced action, anything where a 4-frame lockstep input delay is a player-feel deal-breaker.
+
+**Why this is risky:** Principle 2 ("one obvious way per concept") forbids shipping two netcode models without justification. The justification is: rollback solves a problem lockstep cannot (sub-frame input feel), and the genre divide is sharp — rhythm + RTS + co-op want lockstep determinism, fighting + first-person shooters want rollback. The RFC must establish that the language exposes one obvious way *per genre*, with a clear `net.mode = "lockstep"` / `net.mode = "rollback"` switch. If the RFC can't justify both shapes cleanly, this phase doesn't ship.
+
+**Components:**
+
+| # | Deliverable |
+|---|---|
+| 1 | Rollback RFC — addendum to multiplayer RFC. Justify Principle 2 carve-out. Choose GGPO-style or Lockstep-with-Rollback variant |
+| 2 | `state` snapshotting — every fixed tick, snapshot rollback-tagged entities to a ring buffer (extends Phase 32's instance buckets pattern) |
+| 3 | Rewind + replay — given peer input N frames late, rewind to tick N, re-execute with corrected input |
+| 4 | Predicted input — fill peer input gaps with last-input-repeat or velocity-extrapolation |
+| 5 | `entity Fighter: rollback = true` — opt-in marker for which entities are snapshot/rewound (others stay lockstep-deterministic) |
+| 6 | Visual smoothing — rendered position lerps across the rewind so the local player doesn't see snap-back |
+| 7 | `examples/fighter_demo.twe` — 2-player fighting-game proof |
+| 8 | Closeout |
+
+**Exit criteria:**
+
+- `examples/fighter_demo.twe` plays at 60fps with sub-2-frame input feel against an opponent on a 60ms-RTT connection.
+- Lockstep-mode examples (rhythm, RTS, co-op) continue to work unchanged.
+- RFC honestly justifies the dual-mode carve-out from Principle 2.
+
+**Size:** XL (gated on RFC; second netcode model requires careful Principle 2 justification).
+
+---
+
+## Phase 38 — Post-v1.0 — Browser 3D (wgpu-on-web)
+
+**Status:** open. Gated on browser wgpu maturity. As of 2026-05, browser wgpu (WebGPU) support is uneven — Chrome ships, Safari ships in Tech Preview, Firefox lags. Wait for Firefox-stable + Safari-stable before opening this phase.
+
+**Why this slot:** Phase 30 shipped 2D WASM via macroquad's GL backend; 3D needs the wgpu pipeline ported to `target_arch = "wasm32"`, which means swapping out winit + the windows-sys focus path + native font loaders for browser-native equivalents. Most of that is mechanical once browser wgpu is stable.
+
+**Components:**
+
+| # | Deliverable |
+|---|---|
+| 1 | `BuildTarget::Wasm32_3D` — third row in the Phase 30 WASM matrix, dispatches to wgpu-on-web instead of macroquad-GL |
+| 2 | Browser wgpu pipeline — port `src/play3d.rs` so all `#[cfg(not(target_arch = "wasm32"))]` gates that exist purely because of winit / native crates relax to wasm-friendly equivalents |
+| 3 | Asset streaming via `fetch` — `.glb` and texture loads work without filesystem access |
+| 4 | Audio via WebAudio — Phase 30's AudioContext unlock extends to 3D audio |
+| 5 | Browser-friendly `physics.body` — rapier3d already compiles to wasm; verify the determinism story holds |
+| 6 | `examples/crystal_hunter_web.twe` — 3D demo published to the same Pages CI as Phase 30 |
+| 7 | Closeout |
+
+**Out of scope:** WebXR / VR rendering. Browser-native multiplayer (Phase 36's WebSocket transport covers it).
+
+**Exit criteria:**
+
+- `examples/crystal_hunter.twe` runs in Chrome + Firefox + Safari at 30fps minimum, 60fps target.
+- Asset bundle ≤ 20MB for the demo (perf budget for cold-start over residential internet).
+- No regression on the 2D WASM Phase 30 demo.
+
+**Size:** L (calendar-gated on browser wgpu maturity; technical work is moderate).
+
+---
+
+## Phase 39 — Post-v1.0 — Mobile (iOS / Android)
+
+**Status:** open. macroquad already supports both platforms; the work is mostly `twec build` target descriptors, signing pipelines, and store-submission tooling.
+
+**Why this slot:** mobile is a distribution unlock for 2D Twe games (Survivors-class touches well to mobile via virtual joysticks). The technical work is bounded. The store-submission gauntlet is the real cost.
+
+**Components:**
+
+| # | Deliverable |
+|---|---|
+| 1 | `BuildTarget::Aarch64Ios` + `BuildTarget::Aarch64AndroidApk` — fifth and sixth rows in Phase 12's matrix |
+| 2 | Touch input — `touch.x` / `touch.y` / `touch.is_active` / `touch.tap_count` builtins; multi-touch via `touch.pointer(i)` |
+| 3 | Virtual joystick widget — `joystick(at:, size:, deadzone:)` returning a normalized 2D vector; reuse for `examples/survive_beta` mobile port |
+| 4 | iOS code signing — provisioning profile + entitlements; CI integration via `cargo-dist` mobile target descriptors |
+| 5 | Android signing + AAB — Play Store submission package |
+| 6 | Aspect-ratio handling — extends Phase 30's CSS letterbox to mobile letterbox/pillarbox + safe-area inset awareness |
+| 7 | `examples/survive_beta_mobile/` — touch-controlled port of survive_beta with virtual joystick + auto-fire |
+| 8 | App Store + Play Store submission tooling docs |
+| 9 | Closeout |
+
+**Exit criteria:**
+
+- `examples/survive_beta_mobile` ships on TestFlight (iOS) + internal-track Play Store (Android) at 60fps on 4-year-old phones.
+- `twec build --target ios-aarch64 my_game/` produces an `.ipa` from Linux / macOS host.
+- Touch input parity with the Phase 30 web demo.
+
+**Size:** XL (technical work is L, store-submission gauntlet adds the rest).
+
+---
+
+## Phase 40 — Post-v1.0 — Console targets (Switch / PS5 / Xbox)
+
+**Status:** **gated on platform-holder partnerships.** Cannot be shipped open-source. Sketched here for completeness; the actual work happens behind NDA with licensed dev kits, in a private fork or partner-maintained branch.
+
+**Why this slot:** consoles are where commercial 2D indie games make most of their money. Twe ignoring them caps the upside of every other phase. But the SDK code, signing keys, and store APIs are NDA-bound by Nintendo / Sony / Microsoft — open-source distribution is incompatible with the platform agreements.
+
+**Components (sketched):**
+
+- Switch — Nintendo SDK port. ARM64. Likely needs custom `wgpu` backend or use of Nintendo's first-party graphics API. Requires Nintendo developer agreement + dev kit.
+- PS5 — Sony PlayStation SDK port. AMD64. Custom GNM/GNMX backend. Requires Sony developer agreement + dev kit.
+- Xbox Series X|S — Microsoft GDK port. AMD64. DirectX 12 backend (already partial via wgpu's D3D12 backend). Requires Microsoft developer agreement + dev kit.
+- Per-platform store integration — achievements, cloud saves, friend lists, controller glyphs.
+
+**How this could realistically ship:** a partner studio licensed for one of the three platforms maintains a private fork during a port, contributes back the platform-agnostic abstractions (e.g., a generalized "console controller" input layer that's useful on PC too), and the platform-specific code stays in the private fork. The open-source `twec` ships only the abstractions.
+
+**Exit criteria:**
+
+- One first-party game on one console store. The path is partner-driven, not implementer-driven.
+
+**Size:** XL — multi-year + NDA-bound. Listed for completeness.
+
+---
+
+## Phase 41 — Post-v1.0 — MMO / Roblox-scale 3D foundation
+
+**Status:** **multi-year, post-v2.0 territory.** The ceiling. Extends Phase 32's Tunic-scale open world to persistent-world / massively-shared-world.
+
+**Why last:** every prior phase is bounded by "ship a single-player or small-multiplayer game." MMO scale needs sharded server architecture, area-of-interest networking, persistent world database, massively-replicated entity systems — none of which are hobby-project deliverables. This phase exists because the gap audit named it; whether Twe ever opens it is a future-implementer decision.
+
+**Components (sketched):**
+
+| # | Deliverable |
+|---|---|
+| 1 | MMO architecture RFC — sharded servers vs. seamless world vs. instanced zones; pick one |
+| 2 | Server-authoritative entity replication — separate from Phase 31 lockstep + Phase 37 rollback (those are peer-to-peer; this is C-S) |
+| 3 | Area-of-interest networking — server only sends updates for entities near the player, not all entities |
+| 4 | Persistent world DB — `world.persist(entity)` saves to a server-side database (SQLite / PostgreSQL / Redis depending on scale tier) |
+| 5 | Massively-replicated entity buckets — extension to Phase 32's instance buckets but with cross-server replication |
+| 6 | Sandboxing for user-generated content — Roblox-class servers run player-authored Twe code; needs CPU/memory limits, capability-restricted stdlib, and gas metering |
+| 7 | Workshop / mod APIs — first-class user-generated-content publishing |
+| 8 | `examples/mmo_demo/` — small persistent-world demo with 100 simultaneous players in a single shard |
+| 9 | Closeout |
+
+**Open questions (would need to resolve before the phase even opens):**
+
+- Does Twe extend to a server-hosted multi-tenant runtime, or stay author-side / engine-side only?
+- How does the language's no-macros / no-metaprogramming locked decision survive MMO needs (replication attributes, network-tier annotations)?
+- Sandboxing — can the existing `unsafe_code = "deny"` discipline scale to running adversarial player code?
+
+**Exit criteria:**
+
+- `examples/mmo_demo` supports 100 concurrent players on a single $20/month VPS.
+- Player-authored Twe code can be published, sandboxed, and run on the server without compromising other tenants.
+
+**Size:** XL² (multi-year; gated on architecture RFC; gated on a custom-engine commitment that doesn't yet exist).
+
+---
+
+## What's intentionally *not* in any plan
+
+These are deferred indefinitely (the v3.0+ era or never), with cause:
+
 - **Native code generation** (Luau-style). Post-v1.0; the bytecode VM with NaN tagging + GC is the v1.0 perf story. The 3× speedup gap closure is **Phase 29**, not native codegen.
-- **Multiplayer / determinism**. Determinism layer is **Phase 29**; multiplayer foundation is **Phase 31** (gated on netcode RFC). Rollback and authoritative C-S remain post-v1.x.
-- **Open-world / streaming / LOD**. Tunic-scale is **Phase 32** (gated on the lock revision authorizing engine-internal worker pools). Roblox-scale is post-v1.x.
-- **WASM / web target**. **Phase 30**.
-- **2D genre coverage** (platformer / Tetris / cards). **Phase 27**.
-- **User-defined generics**. Conflicts with Principle 2. Remains post-v1.x.
-- **Macros / metaprogramming**. Off the table per `CLAUDE.md` "What is locked". Remains post-v1.x.
-- **Sandboxing for user-generated content**. Post-v1.x.
-- **Workshop / mod APIs**. Post-v1.x.
+- **User-defined generics**. Conflicts with Principle 2. Post-v2.x if at all.
+- **Macros / metaprogramming**. Off the table per `CLAUDE.md` "What is locked". No-go.
+- **Sandboxing for user-generated content**. Tracked as a Phase 41 sub-component; standalone, never.
+- **Workshop / mod APIs**. Tracked as a Phase 41 sub-component; standalone, never.
+- **Asynchronous gameplay code visible to the user**. Locked: no `async`/`await` per `CLAUDE.md`. Cooperative fibers cover the use cases.
 
 ---
 
@@ -761,10 +1038,19 @@ The original `Phase 0–7 weeks` table was based on the 2025-design-phase guess 
 | 28 — 3D commercial polish | post-v1.0 | L (closed 2026-05-09; 6 sessions; 4 postfx builtins; DoF deferred) |
 | 29 — Determinism layer | post-v1.0 | L (planned; closes 3× speedup gap) |
 | 30 — WASM / web target | post-v1.0 | L (closed 2026-05-09; 6 sessions; localStorage saves; CSS letterbox; Pages CI) |
-| 31 — Multiplayer foundation | post-v1.0 | XL (gated on netcode RFC) |
-| 32 — Open-world 3D foundation | post-v1.0 | XL (gated on lock revision) |
+| 31 — Multiplayer foundation | post-v1.0 | XL (closed 2026-05-10; lockstep over UDP, 7 sessions, `examples/pong_net.twe`) |
+| 32 — Open-world 3D foundation | post-v1.0 | XL (closed 2026-05-10; spatial / streaming / LOD / terrain / cull / instance, 9 sessions, render-pipeline integration deferred) |
+| 33 — LLM differentiator | post-v1.0 round 2 | XL (closed 2026-05-10; 11 sessions; 912 tests; LLMsPlan.md acceptance met — grammar export + verify v2 + stdlib manifest + llm-loop + mcp + corpus + eval + mutate + typed holes) |
+| 34 — Cross-platform polish | post-v1.0 round 2 | M (planned; macOS / X11 focus paths shipped + cargo-dist runtime cross-compile + cross-check CI) |
+| 35 — External validation drive | post-v1.0 round 2 | XL (planned; non-code; itch.io ship + Steam + cross-machine multiplayer + 4km open-world playtest + community pipeline + 6-month API stability close) |
+| 36 — Online multiplayer (matchmaking + NAT + reconnect) | post-v1.0 round 2 | XL (planned; gated on RFC; extends Phase 31 LAN-only) |
+| 37 — Rollback netcode | post-v1.0 round 2 | XL (planned; gated on Principle 2 carve-out RFC; second netcode model alongside lockstep) |
+| 38 — Browser 3D (wgpu-on-web) | post-v1.0 round 2 | L (planned; calendar-gated on browser wgpu maturity) |
+| 39 — Mobile (iOS / Android) | post-v1.0 round 2 | XL (planned; technical work is L, store-submission gauntlet adds the rest) |
+| 40 — Console targets (Switch / PS5 / Xbox) | post-v2.0 | XL (gated on platform-holder partnerships; cannot be shipped open-source; sketched only) |
+| 41 — MMO / Roblox-scale 3D | post-v2.0 / v3.0+ | XL² (multi-year; gated on architecture RFC + custom-engine commitment; sketched only) |
 
-The realistic v1.0 ETA is *whenever the beta and RC games ship*, not a wall-clock date. Don't promise dates.
+The realistic v1.0 ETA is *whenever the beta and RC games ship*, not a wall-clock date. Don't promise dates. Phases 33–41 are post-v1.0; v1.0 doesn't gate on any of them.
 
 ---
 
@@ -778,18 +1064,31 @@ The LTS commitment begins at v1.0: security and critical fixes backport to the `
 
 | Item | Driver | Status |
 |------|--------|--------|
-| macOS / Linux auto-pause-on-blur | `NSApplication.isActive` / `_NET_ACTIVE_WINDOW` paths; Windows ships | Sub-day session each, opportunistic |
+| macOS / Linux auto-pause-on-blur | `NSApplication.isActive` / `_NET_ACTIVE_WINDOW` paths; Windows ships | **Now Phase 34** |
 | Bytecode VM kwarg-builtin support | All widget-using examples fall back to tree-walker; closes a known limitation | Tracked, not yet phased |
-| 3× bytecode-VM speedup gap from Phase 8.5 | Criterion bench harness ships; perf tuning driven by profiling | **Now Phase 29** |
+| 3× bytecode-VM speedup gap from Phase 8.5 | Criterion bench harness ships; perf tuning driven by profiling | **Phase 29 partial; computed-goto / direct-threading is the remaining work** |
 | `save SaveSlot:` block syntax | v0.3+ follow-on from Phase 8; key/value layer ships | Tracked, not yet phased |
 | `tilemap Dungeon:` block syntax | v0.3+ follow-on from Phase 8 | Tracked, not yet phased |
 | Per-state pause opt-out (`pause: false`) | Open syntax question | Open |
-| 3D rendering polish (bloom / DoF / cascades / mipmaps / async preload) | Per `docs/changes/2026-05-07-phase-24-26-closeout.md` polish-tier deferrals | **Now Phase 28** |
-| 2D genre coverage (platformer / Tetris / cards) | Stdlib pressure-test; plug a marketing gap | **Now Phase 27** |
-| WASM / web target | Distribution unlock for 2D | **Now Phase 30** |
-| Multiplayer | Per-genre game pressure; needs netcode RFC | **Phase 31 — codebase-closed 2026-05-10 (lockstep over UDP, 7 sessions, `examples/pong_net.twe`)** |
-| Open-world 3D streaming + LOD | Tunic-scale games; needs lock revision | **Phase 32 — codebase-closed 2026-05-10 (9 sessions; spatial + streaming + LOD + terrain + cull + instance + ergonomic API)** |
-| Community game support | Link + track third-party games in the README gallery | Ongoing |
+| 3D rendering polish (bloom / DoF / cascades / mipmaps / async preload) | Per `docs/changes/2026-05-07-phase-24-26-closeout.md` polish-tier deferrals | **Phase 28 closed; DoF + view-frustum-fitted CSM remain** |
+| 2D genre coverage (platformer / Tetris / cards) | Stdlib pressure-test; plug a marketing gap | **Phase 27 — closed 2026-05-09** |
+| WASM / web target (2D) | Distribution unlock for 2D | **Phase 30 — closed 2026-05-09** |
+| WASM / web target (3D) | wgpu-on-web | **Now Phase 38** |
+| LLM authoring tooling | LLMsPlan.md tier 1+2+3 | **Phase 33 — closed 2026-05-10** |
+| Multiplayer (LAN, lockstep) | Per-genre game pressure; needs netcode RFC | **Phase 31 — closed 2026-05-10 (lockstep over UDP, 7 sessions, `examples/pong_net.twe`)** |
+| Multiplayer (internet, matchmaking, NAT, reconnect) | Steam P2P / NAT traversal | **Now Phase 36** |
+| Multiplayer (rollback for fighting games) | Fighting-game player feel | **Now Phase 37** |
+| Open-world 3D streaming + LOD | Tunic-scale games; needs lock revision | **Phase 32 — closed 2026-05-10 (9 sessions; spatial + streaming + LOD + terrain + cull + instance + ergonomic API)** |
+| Open-world 3D render-pipeline integration | Phase 32 wgpu consumption of buckets + indirect draw | Tracked as Phase 32 follow-on dev cycle |
+| Mobile (iOS / Android) | Distribution unlock for 2D + touch input | **Now Phase 39** |
+| Console (Switch / PS5 / Xbox) | Indie commercial revenue ceiling | **Now Phase 40 (NDA-gated; cannot ship open-source)** |
+| MMO / Roblox-scale 3D | Persistent shared worlds | **Now Phase 41 (multi-year; gated on architecture RFC + custom-engine commitment)** |
+| First-party itch.io paid release | Phase 14 / 16 external exit criterion | **Now Phase 35** |
+| Steam AppID + end-to-end Steam SDK test | Phase 15 external exit criterion | **Now Phase 35** |
+| Cross-machine LAN multiplayer playtest | Phase 31 verification step | **Now Phase 35** |
+| 4km × 4km open-world playtest | Phase 32 verification step | **Now Phase 35** |
+| Community game pipeline / "Shipped on Twe" gallery | Link + track third-party games | **Now Phase 35** |
+| Six-month API stability window | Phase 16 external exit criterion (opens 2026-05-06) | **Now Phase 35** |
 
 ---
 

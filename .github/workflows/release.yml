@@ -10,8 +10,14 @@ name: release
 # Archive layout:
 #   twec-v0.1.0-x86_64-pc-windows-msvc.zip   (twec.exe)
 #   twec-v0.1.0-x86_64-unknown-linux-gnu.tar.gz   (twec)
+#   twec-v0.1.0-aarch64-unknown-linux-gnu.tar.gz  (twec)   ← Phase 34
 #   twec-v0.1.0-x86_64-apple-darwin.tar.gz   (twec)
 #   twec-v0.1.0-aarch64-apple-darwin.tar.gz  (twec)
+#
+# Phase 34 added the aarch64-linux row for ARM Linux distros (Raspberry
+# Pi 4/5, Asahi Linux on Apple Silicon under Linux, AWS Graviton).
+# Cross-compiled on the x86_64 Linux runner via the linker package
+# `gcc-aarch64-linux-gnu`.
 #
 # This is a hand-rolled equivalent of `cargo dist init`; once
 # cargo-dist is installed locally we can re-generate and replace
@@ -42,6 +48,12 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             bin: twec
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            bin: twec
+            linker_apt_pkg: gcc-aarch64-linux-gnu
+            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           - target: x86_64-apple-darwin
             os: macos-13
             archive: tar.gz
@@ -59,6 +71,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Phase 34 session 4: cross-compilers for non-host Linux targets.
+      # The aarch64 row needs the gcc-aarch64-linux-gnu linker because
+      # cargo doesn't ship one for foreign Linux ABIs by default.
+      - name: Install cross-compile linker
+        if: matrix.linker_apt_pkg != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.linker_apt_pkg }}
+
       - name: Cache cargo registry + target
         uses: actions/cache@v4
         with:
@@ -69,7 +90,12 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build twec
-        run: cargo build --release --target ${{ matrix.target }} --bin twec
+        run: |
+          if [ -n "${{ matrix.linker_env }}" ]; then
+            export ${{ matrix.linker_env }}
+          fi
+          cargo build --release --target ${{ matrix.target }} --bin twec
+        shell: bash
 
       - name: Stage release artifact (Unix)
         if: matrix.archive == 'tar.gz'

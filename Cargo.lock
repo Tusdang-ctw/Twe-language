@@ -3076,6 +3076,7 @@ dependencies = [
  "insta",
  "macroquad",
  "naga",
+ "objc2 0.5.2",
  "pollster",
  "quad-url",
  "rapier3d",
@@ -3084,6 +3085,7 @@ dependencies = [
  "wgpu",
  "windows-sys 0.59.0",
  "winit",
+ "x11rb",
  "zstd",
 ]
 

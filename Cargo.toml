@@ -12,10 +12,11 @@ publish = false
 # (`Rc::into_raw` / `Rc::from_raw`) that Rust's safety model
 # can't express in safe code. Phase 11 follow-on extends the
 # exception to `src/window_focus.rs` for `GetForegroundWindow`
-# / `GetWindowThreadProcessId` (auto-pause-on-window-blur).
-# The exception is intentionally narrow: only those two files
-# may use unsafe; every other module stays under the
-# project-wide deny.
+# / `GetWindowThreadProcessId` (auto-pause-on-window-blur);
+# Phase 34 keeps the same allow as it adds macOS Objective-C
+# `msg_send!` calls into the same file. The exception is
+# intentionally narrow: only those two files may use unsafe;
+# every other module stays under the project-wide deny.
 unsafe_code = "deny"
 
 [lints.clippy]
@@ -86,6 +87,25 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # Phase 11 follow-on: Win32 bindings for GetForegroundWindow polling.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
+
+# Phase 34 session 1: macOS focus detection. We send two Objective-C
+# messages — `[NSApplication sharedApplication]` then `[app isActive]`
+# — once per frame. `objc2` is the modern Rust binding and is the
+# minimum surface needed; we do not pull `objc2-app-kit` (the full
+# AppKit binding crate is large and we only need one selector).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+
+# Phase 34 session 2: X11 focus detection. We open a parallel X11
+# connection (separate from miniquad's), poll the root window's
+# `_NET_ACTIVE_WINDOW` property each frame, then read the active
+# window's `_NET_WM_PID` and compare to our process. `x11rb` is pure
+# Rust, already pulled transitively via `arboard`. Wayland focus
+# detection is not solvable from outside the windowing client (see
+# `src/window_focus.rs` Wayland branch comment) — we ship the X11
+# path here and stub Wayland.
+[target.'cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))'.dependencies]
+x11rb = { version = "0.13", default-features = false }
 
 # ── WASM-only dependencies ──
 #
