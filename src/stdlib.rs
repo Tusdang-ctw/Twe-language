@@ -728,6 +728,8 @@ pub fn install(env: &mut Env) {
     install_replay(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_net(env);
+    #[cfg(not(target_arch = "wasm32"))]
+    install_world(env);
     // Phase 10 session 8: explicit pause primitive. `pause(flag)`
     // toggles the runtime pause flag; `is_paused()` queries it.
     // While paused, the play loop skips `tick_frame` (no fibers
@@ -2520,6 +2522,321 @@ fn net_snapshot_json(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         help: None,
     })?;
     Ok(Value::from_string(s))
+}
+
+/// Phase 32: `world.*` namespace — spatial partitioning + chunked
+/// streaming for open-world 3D. Sessions 2 and 3 ship the spatial
+/// query API + the streaming state machine; later sessions plumb
+/// these into the 3D renderer for LOD + occlusion + frustum culling.
+///
+/// The spatial structures live in `crate::spatial::WORLD` (a global
+/// Mutex<Option<WorldSpatial>>) so engine-internal worker pool
+/// integrations (Phase 32 session 1 lock revision) have somewhere
+/// to share state. Scripts always go through these builtins; the
+/// raw structures aren't exposed.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_world(env: &mut Env) {
+    let mut w = HashMap::new();
+    w.insert(
+        "spatial_clear".to_string(),
+        Value::from_builtin("world.spatial_clear", &[], world_spatial_clear),
+    );
+    w.insert(
+        "spatial_insert_dynamic".to_string(),
+        Value::from_builtin(
+            "world.spatial_insert_dynamic",
+            &["id", "x", "y", "z", "radius"],
+            world_spatial_insert_dynamic,
+        ),
+    );
+    w.insert(
+        "spatial_remove_dynamic".to_string(),
+        Value::from_builtin(
+            "world.spatial_remove_dynamic",
+            &["id"],
+            world_spatial_remove_dynamic,
+        ),
+    );
+    w.insert(
+        "spatial_add_static".to_string(),
+        Value::from_builtin(
+            "world.spatial_add_static",
+            &["id", "x", "y", "z", "radius"],
+            world_spatial_add_static,
+        ),
+    );
+    w.insert(
+        "spatial_build_static".to_string(),
+        Value::from_builtin("world.spatial_build_static", &[], world_spatial_build_static),
+    );
+    w.insert(
+        "spatial_query_radius".to_string(),
+        Value::from_builtin(
+            "world.spatial_query_radius",
+            &["x", "y", "z", "radius"],
+            world_spatial_query_radius,
+        ),
+    );
+    w.insert(
+        "spatial_query_box".to_string(),
+        Value::from_builtin(
+            "world.spatial_query_box",
+            &["x0", "y0", "z0", "x1", "y1", "z1"],
+            world_spatial_query_box,
+        ),
+    );
+    // ---- Phase 32 session 3: chunked streaming ----
+    w.insert(
+        "set_chunk_size".to_string(),
+        Value::from_builtin(
+            "world.set_chunk_size",
+            &["meters"],
+            world_set_chunk_size,
+        ),
+    );
+    w.insert(
+        "set_stream_radius".to_string(),
+        Value::from_builtin(
+            "world.set_stream_radius",
+            &["chunks"],
+            world_set_stream_radius,
+        ),
+    );
+    w.insert(
+        "set_stream_budget".to_string(),
+        Value::from_builtin(
+            "world.set_stream_budget",
+            &["loads_per_frame", "unloads_per_frame"],
+            world_set_stream_budget,
+        ),
+    );
+    w.insert(
+        "stream_step".to_string(),
+        Value::from_builtin(
+            "world.stream_step",
+            &["camera_x", "camera_z"],
+            world_stream_step,
+        ),
+    );
+    w.insert(
+        "mark_chunk_loaded".to_string(),
+        Value::from_builtin(
+            "world.mark_chunk_loaded",
+            &["chunk_id"],
+            world_mark_chunk_loaded,
+        ),
+    );
+    w.insert(
+        "mark_chunk_unloaded".to_string(),
+        Value::from_builtin(
+            "world.mark_chunk_unloaded",
+            &["chunk_id"],
+            world_mark_chunk_unloaded,
+        ),
+    );
+    w.insert(
+        "loaded_chunk_count".to_string(),
+        Value::from_builtin("world.loaded_chunk_count", &[], world_loaded_chunk_count),
+    );
+    w.insert(
+        "stream_clear".to_string(),
+        Value::from_builtin("world.stream_clear", &[], world_stream_clear),
+    );
+    env.set(
+        "world".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: w,
+            kind: "module",
+        }))),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_clear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.spatial_clear")?;
+    crate::spatial::with_world(|w| w.clear());
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_insert_dynamic(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "world.spatial_insert_dynamic")?;
+    let id = as_i64(&args[0], "world.spatial_insert_dynamic")? as u64;
+    let x = as_f64(&args[1], "world.spatial_insert_dynamic")? as f32;
+    let y = as_f64(&args[2], "world.spatial_insert_dynamic")? as f32;
+    let z = as_f64(&args[3], "world.spatial_insert_dynamic")? as f32;
+    let r = as_f64(&args[4], "world.spatial_insert_dynamic")? as f32;
+    crate::spatial::with_world(|w| {
+        w.insert_dynamic(id, crate::spatial::Aabb::from_center_radius(x, y, z, r));
+    });
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_remove_dynamic(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.spatial_remove_dynamic")?;
+    let id = as_i64(&args[0], "world.spatial_remove_dynamic")? as u64;
+    let removed = crate::spatial::with_world(|w| w.remove_dynamic(id));
+    Ok(Value::from_bool(removed))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_add_static(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "world.spatial_add_static")?;
+    let id = as_i64(&args[0], "world.spatial_add_static")? as u64;
+    let x = as_f64(&args[1], "world.spatial_add_static")? as f32;
+    let y = as_f64(&args[2], "world.spatial_add_static")? as f32;
+    let z = as_f64(&args[3], "world.spatial_add_static")? as f32;
+    let r = as_f64(&args[4], "world.spatial_add_static")? as f32;
+    crate::spatial::with_world(|w| {
+        w.add_static(id, crate::spatial::Aabb::from_center_radius(x, y, z, r));
+    });
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_build_static(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.spatial_build_static")?;
+    crate::spatial::with_world(|w| w.build_static());
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_query_radius(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "world.spatial_query_radius")?;
+    let x = as_f64(&args[0], "world.spatial_query_radius")? as f32;
+    let y = as_f64(&args[1], "world.spatial_query_radius")? as f32;
+    let z = as_f64(&args[2], "world.spatial_query_radius")? as f32;
+    let r = as_f64(&args[3], "world.spatial_query_radius")? as f32;
+    let hits: Vec<Value> = crate::spatial::with_world(|w| w.query_radius(x, y, z, r))
+        .into_iter()
+        .map(|id| Value::from_int(id as i64))
+        .collect();
+    Ok(Value::from_list(Rc::new(RefCell::new(hits))))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_query_box(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 6, "world.spatial_query_box")?;
+    let x0 = as_f64(&args[0], "world.spatial_query_box")? as f32;
+    let y0 = as_f64(&args[1], "world.spatial_query_box")? as f32;
+    let z0 = as_f64(&args[2], "world.spatial_query_box")? as f32;
+    let x1 = as_f64(&args[3], "world.spatial_query_box")? as f32;
+    let y1 = as_f64(&args[4], "world.spatial_query_box")? as f32;
+    let z1 = as_f64(&args[5], "world.spatial_query_box")? as f32;
+    let q = crate::spatial::Aabb {
+        min: [x0.min(x1), y0.min(y1), z0.min(z1)],
+        max: [x0.max(x1), y0.max(y1), z0.max(z1)],
+    };
+    let hits: Vec<Value> = crate::spatial::with_world(|w| w.query_box(&q))
+        .into_iter()
+        .map(|id| Value::from_int(id as i64))
+        .collect();
+    Ok(Value::from_list(Rc::new(RefCell::new(hits))))
+}
+
+// ---- Phase 32 session 3: chunked streaming builtins ----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_set_chunk_size(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.set_chunk_size")?;
+    let meters = as_f64(&args[0], "world.set_chunk_size")? as f32;
+    if meters <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("world.set_chunk_size: meters must be positive (got {meters})"),
+            help: None,
+        });
+    }
+    crate::streaming::with_streaming(|s| s.chunk_size = meters);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_set_stream_radius(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.set_stream_radius")?;
+    let chunks = as_i64(&args[0], "world.set_stream_radius")?;
+    if !(1..=64).contains(&chunks) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("world.set_stream_radius: chunks must be 1..=64 (got {chunks})"),
+            help: None,
+        });
+    }
+    crate::streaming::with_streaming(|s| s.stream_radius_chunks = chunks as i32);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_set_stream_budget(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "world.set_stream_budget")?;
+    let loads = as_i64(&args[0], "world.set_stream_budget")?.max(0) as u32;
+    let unloads = as_i64(&args[1], "world.set_stream_budget")?.max(0) as u32;
+    crate::streaming::with_streaming(|s| {
+        s.loads_per_frame = loads;
+        s.unloads_per_frame = unloads;
+    });
+    Ok(Value::NIL)
+}
+
+/// Compute one frame's streaming work given the camera position.
+/// Returns a tuple `(to_load, to_unload)`, where each side is a list
+/// of opaque chunk-id integers. The script forwards loaded chunks
+/// to its asset loader (mesh / texture / NPC spawn), and confirms
+/// completion via `world.mark_chunk_loaded` / `world.mark_chunk_unloaded`.
+/// The actual asset I/O is the script's responsibility — this
+/// function is pure bookkeeping.
+#[cfg(not(target_arch = "wasm32"))]
+fn world_stream_step(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "world.stream_step")?;
+    let cx = as_f64(&args[0], "world.stream_step")? as f32;
+    let cz = as_f64(&args[1], "world.stream_step")? as f32;
+    let step = crate::streaming::with_streaming(|s| s.step(cx, cz));
+    let to_load: Vec<Value> = step
+        .to_load
+        .iter()
+        .map(|c| Value::from_int(c.0 as i64))
+        .collect();
+    let to_unload: Vec<Value> = step
+        .to_unload
+        .iter()
+        .map(|c| Value::from_int(c.0 as i64))
+        .collect();
+    let load_list = Value::from_list(Rc::new(RefCell::new(to_load)));
+    let unload_list = Value::from_list(Rc::new(RefCell::new(to_unload)));
+    Ok(Value::from_tuple(Rc::new(vec![load_list, unload_list])))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_mark_chunk_loaded(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.mark_chunk_loaded")?;
+    let id = as_i64(&args[0], "world.mark_chunk_loaded")? as u64;
+    crate::streaming::with_streaming(|s| s.mark_loaded(crate::streaming::ChunkId(id)));
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_mark_chunk_unloaded(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.mark_chunk_unloaded")?;
+    let id = as_i64(&args[0], "world.mark_chunk_unloaded")? as u64;
+    crate::streaming::with_streaming(|s| s.mark_unloaded(crate::streaming::ChunkId(id)));
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_loaded_chunk_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.loaded_chunk_count")?;
+    let n = crate::streaming::with_streaming(|s| s.loaded_count()) as i64;
+    Ok(Value::from_int(n))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_stream_clear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.stream_clear")?;
+    crate::streaming::with_streaming(|s| s.clear());
+    Ok(Value::NIL)
 }
 
 fn install_math(env: &mut Env) {

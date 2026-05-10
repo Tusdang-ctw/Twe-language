@@ -36,6 +36,15 @@ pub mod bundle;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 
+// Phase 32: open-world 3D foundation. Spatial partitioning + chunked
+// streaming + (later sessions) LOD + occlusion culling. Native-only —
+// the structures themselves would compile on WASM but they share fate
+// with the 3D rendering path which is desktop-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod spatial;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod streaming;
+
 // Phase 30 session 1: modules that depend on native-only crates
 // (wgpu, winit, rapier3d, gltf, gilrs, arboard, zstd, image) are
 // excluded from wasm32 builds. The 2D macroquad backend (play.rs)
