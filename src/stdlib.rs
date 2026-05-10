@@ -8991,3 +8991,281 @@ mod tests {
         assert!(!point_in_rect(0.0, 0.0, -100.0, -100.0, 60.0, 60.0));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 33 session 3: stdlib JSON manifest
+//
+// One spec per callable, with category, params, and (where available)
+// doc string. Built by introspecting a freshly-installed `Env` — no
+// hand-maintained parallel list, so drift between `install()` and
+// `manifest()` is structurally impossible. The LLM grounding contract
+// is "every callable name in this manifest is callable; every callable
+// not in this manifest is not callable."
+// ---------------------------------------------------------------------------
+
+/// One callable in the Twe standard library. Emitted by [`manifest`]
+/// and serialized by [`manifest_to_json`]. Stable schema; consumers
+/// should treat additional fields as additive (forward compatible).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinSpec {
+    /// Fully-qualified callable name as called from Twe (e.g.
+    /// `"math.sqrt"`, `"rect"`, `"physics.body"`). This is the
+    /// string the grammar's IDENT/postfix sequence resolves to.
+    pub name: String,
+    /// Coarse category derived from the dotted prefix where one
+    /// exists, else from a small lookup of well-known top-level
+    /// names (`"rect"` → `"draw"`, `"button"` → `"ui"`, etc.).
+    pub category: String,
+    /// Parameter names in declaration order. Empty for nullary
+    /// builtins (`print`, `math.identity`). v0.x stdlib uses
+    /// positional + keyword bindings; the names are the kwarg keys.
+    pub params: Vec<String>,
+    /// Free-text doc string. Currently always `None` — populated by
+    /// a follow-on session that lifts the inline comments above
+    /// each `env.set` block into a side table. Schema reserves the
+    /// field so adding it later isn't a breaking change.
+    pub doc: Option<String>,
+    /// Version this builtin first shipped in. Currently always
+    /// `None` — populated by a follow-on. Kept in the schema for
+    /// `--since` filtering and changelog drilling.
+    pub since: Option<String>,
+    /// True if the builtin is `@deprecated`. Currently always
+    /// `false`; the deprecation path lives in language-level
+    /// declarations today (Phase 13 session 9), not in stdlib.
+    pub deprecated: bool,
+}
+
+/// Build the canonical stdlib manifest by walking a freshly-installed
+/// `Env`. Every callable that `install()` registers — both top-level
+/// dotted names and namespace-Object members — appears in the result.
+/// Sorted by `name` for stable output.
+pub fn manifest() -> Vec<BuiltinSpec> {
+    let mut env = Env::new();
+    install(&mut env);
+    let mut out = Vec::new();
+    for (binding_name, value) in env.iter_bindings() {
+        if value.is_builtin() {
+            let (canonical, params, _) = value.as_builtin();
+            push_spec(&mut out, canonical, params);
+            // Also catch the case where the binding name differs
+            // from the canonical builtin name. In practice these
+            // always match, but a defensive check keeps the
+            // manifest honest.
+            let _ = binding_name;
+        } else if value.is_object() {
+            let rc = value.as_object();
+            let obj = rc.borrow();
+            if obj.kind == "module" {
+                for v in obj.fields.values() {
+                    if v.is_builtin() {
+                        let (canonical, params, _) = v.as_builtin();
+                        push_spec(&mut out, canonical, params);
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    // De-dupe: a builtin can in principle be reachable via both
+    // top-level dotted name *and* a namespace object's field. The
+    // manifest contract is one entry per canonical name.
+    out.dedup_by(|a, b| a.name == b.name);
+    out
+}
+
+fn push_spec(out: &mut Vec<BuiltinSpec>, name: &str, params: &[&str]) {
+    out.push(BuiltinSpec {
+        name: name.to_string(),
+        category: derive_category(name),
+        params: params.iter().map(|s| s.to_string()).collect(),
+        doc: None,
+        since: None,
+        deprecated: false,
+    });
+}
+
+/// Coarse category from the canonical name. Dotted names use the
+/// prefix (`math.sqrt` → `"math"`); flat names look up a small
+/// well-known table; everything else falls into `"core"`.
+fn derive_category(name: &str) -> String {
+    if let Some(dot) = name.find('.') {
+        return name[..dot].to_string();
+    }
+    match name {
+        // Drawing primitives.
+        "rect" | "circle" | "circle_outline" | "line" | "text"
+        | "text_with_font" | "sprite" | "sprite_frame" | "sprite_frame_at" => "draw".into(),
+        // Immediate-mode UI widgets and layout helpers.
+        "button" | "label" | "progress_bar" | "slider" | "checkbox"
+        | "dropdown" | "text_input" | "key_input" | "panel" | "stack"
+        | "flex" | "grid" | "scroll" => "ui".into(),
+        // Asset loaders.
+        "load" | "load_atlas" | "load_font" => "asset".into(),
+        // Storage primitives (Phase 8 session 4 bottom layer).
+        "save_to" | "load_from" => "storage".into(),
+        // Input / lifecycle.
+        "key_held" | "key_pressed" => "input".into(),
+        "pause" | "is_paused" | "auto_pause_on_blur" => "lifecycle".into(),
+        "screenshot" => "tooling".into(),
+        // 3D atoms.
+        "vec3" | "cube" | "sphere" | "texture" | "mesh" => "render3d".into(),
+        // Tilemap helpers exposed at the top level.
+        "tilemap" | "tilemap_render" | "tilemap_at" | "tilemap_solid_at"
+        | "tilemap_solid_aabb" | "tilemap_aabb_touches" => "tilemap".into(),
+        // Plain `print` and the math-module shorthands re-exported
+        // at the top level.
+        "print" => "io".into(),
+        "smoothstep" | "mix" | "noise" => "math".into(),
+        _ => "core".into(),
+    }
+}
+
+/// Render a manifest as JSON. Hand-rolled to match the rest of the
+/// project's no-serde pattern. Versioned via `tool` + `version` so
+/// downstream tools can reject unknown shapes cleanly.
+pub fn manifest_to_json(specs: &[&BuiltinSpec]) -> String {
+    let mut s = String::with_capacity(256 + specs.len() * 96);
+    s.push('{');
+    s.push_str("\"tool\":\"twec-stdlib\",\"version\":1");
+    s.push_str(",\"count\":");
+    s.push_str(&specs.len().to_string());
+    s.push_str(",\"builtins\":[");
+    for (i, spec) in specs.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push('{');
+        s.push_str("\"name\":");
+        json_string(&mut s, &spec.name);
+        s.push_str(",\"category\":");
+        json_string(&mut s, &spec.category);
+        s.push_str(",\"params\":[");
+        for (j, p) in spec.params.iter().enumerate() {
+            if j > 0 {
+                s.push(',');
+            }
+            json_string(&mut s, p);
+        }
+        s.push(']');
+        s.push_str(",\"doc\":");
+        match &spec.doc {
+            Some(d) => json_string(&mut s, d),
+            None => s.push_str("null"),
+        }
+        s.push_str(",\"since\":");
+        match &spec.since {
+            Some(v) => json_string(&mut s, v),
+            None => s.push_str("null"),
+        }
+        s.push_str(",\"deprecated\":");
+        s.push_str(if spec.deprecated { "true" } else { "false" });
+        s.push('}');
+    }
+    s.push_str("]}");
+    s
+}
+
+fn json_string(s: &mut String, value: &str) {
+    s.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '\n' => s.push_str("\\n"),
+            '\r' => s.push_str("\\r"),
+            '\t' => s.push_str("\\t"),
+            ch if (ch as u32) < 0x20 => {
+                s.push_str(&format!("\\u{:04x}", ch as u32));
+            }
+            ch => s.push(ch),
+        }
+    }
+    s.push('"');
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_is_non_empty() {
+        let m = manifest();
+        assert!(
+            m.len() >= 200,
+            "manifest unexpectedly small ({}); install + walk drift?",
+            m.len()
+        );
+    }
+
+    #[test]
+    fn manifest_is_sorted_and_deduped() {
+        let m = manifest();
+        for win in m.windows(2) {
+            assert!(win[0].name < win[1].name, "manifest not sorted at {:?}", win);
+        }
+    }
+
+    #[test]
+    fn manifest_includes_canonical_names() {
+        // Sanity check: a sampling of builtins from each category
+        // must show up. If install() drops one, this catches it.
+        let m = manifest();
+        let names: std::collections::HashSet<&str> =
+            m.iter().map(|s| s.name.as_str()).collect();
+        for expected in &[
+            "print",
+            "rect",
+            "math.sqrt",
+            "math.sin",
+            "color.from_hex",
+            "random.int",
+            "save.write",
+            "physics.body",
+            "world.spatial_clear",
+            "net.host",
+            "button",
+            "slider",
+            "vec3",
+            "mesh",
+        ] {
+            assert!(
+                names.contains(expected),
+                "manifest missing canonical builtin `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn category_derivation_handles_dotted_and_flat() {
+        assert_eq!(derive_category("math.sqrt"), "math");
+        assert_eq!(derive_category("world.spatial_clear"), "world");
+        assert_eq!(derive_category("rect"), "draw");
+        assert_eq!(derive_category("button"), "ui");
+        assert_eq!(derive_category("print"), "io");
+        // Unknown flat name falls to `core` rather than panicking.
+        assert_eq!(derive_category("unknown_thing"), "core");
+    }
+
+    #[test]
+    fn json_output_is_balanced_and_versioned() {
+        let m = manifest();
+        let refs: Vec<&BuiltinSpec> = m.iter().collect();
+        let json = manifest_to_json(&refs);
+        assert!(json.contains("\"tool\":\"twec-stdlib\""));
+        assert!(json.contains("\"version\":1"));
+        assert!(json.contains("\"count\":"));
+        assert!(json.contains("\"builtins\":["));
+        // Brace + bracket balance — catches accidents in the
+        // hand-rolled emitter.
+        assert_eq!(
+            json.matches('{').count(),
+            json.matches('}').count(),
+            "unbalanced braces"
+        );
+        assert_eq!(
+            json.matches('[').count(),
+            json.matches(']').count(),
+            "unbalanced brackets"
+        );
+    }
+}

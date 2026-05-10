@@ -121,29 +121,59 @@ Why a separate tier? Because LLM authoring has different needs than human author
 
 Verified mode is a contract: *"if this file passes `twec verify`, an LLM can be confident the code is internally consistent."*
 
-Example diagnostic output:
+**v0.x implementation status (Phase 33 session 2, schema v2).** The
+`twec verify` command emits the canonical document below. Activated by
+`# verified` in the first ten lines of the source, or by passing the
+file directly to the CLI. Versioned via `tool` + `version` so external
+tools can negotiate cleanly.
 
 ```json
 {
+  "tool": "twec-verify",
+  "version": 2,
   "file": "boss.twe",
+  "strict": true,
+  "verified": true,
+  "summary": { "errors": 1, "warnings": 0 },
   "diagnostics": [
     {
-      "kind": "type_error",
+      "kind": "name-error.unknown",
       "severity": "error",
-      "span": { "line": 42, "col": 18, "len": 4 },
-      "expected": "int",
-      "actual": "string",
-      "context": "argument 2 of `damage(target: Entity, amount: int) -> bool`",
-      "suggested_fix": {
-        "edit": { "line": 42, "col": 18, "len": 4, "replace": "10" },
-        "rationale": "literal `\"lots\"` cannot be used where `int` is expected"
+      "line": 42,
+      "col": 18,
+      "message": "unknown name `aple`",
+      "help": "did you mean `apple`?",
+      "fix": {
+        "rationale": "rename `aple` to `apple` (suggested by did_you_mean)",
+        "edits": [
+          { "line": 42, "col": 18, "len": 4, "replace": "apple" }
+        ]
       }
     }
   ]
 }
 ```
 
-This is how an LLM can sit in a self-correction loop with the Twe compiler without any human in the middle.
+The `fix` field carries a structured patch the LLM can apply without
+re-parsing free-text help. Each edit is anchored by 1-based line+col,
+a byte length to replace, and the replacement text (may be empty for
+deletions or contain newlines). Multiple edits inside one fix apply
+non-overlappingly to the same source.
+
+**v2 vs v1 compatibility.** All v1 fields are preserved; v2 only
+*adds* the `fix` field on each diagnostic. v1 consumers reading v2
+output continue to work — they just don't see the structured fix.
+Schema-aware consumers should read `version` and pick up the v2
+field when present.
+
+**Coverage.** v2 ships fixes for the high-confidence
+`name-error.unknown` (did_you_mean rename) kind. Other kinds —
+literal-replaceable type mismatches, missing `return`, missing
+annotation insertion — ride follow-on sessions because each requires
+a dedicated synthesizer that can recover the original source span.
+Diagnostics without a structured fix continue to carry `help` text.
+
+This is how an LLM sits in a self-correction loop with the Twe compiler without any human in the middle.
 
 ---
 

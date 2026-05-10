@@ -11,6 +11,8 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      bundle [-o PATH] <project_dir> | \
      info <bundle-or-exe> | \
      verify [--warn-deprecated] <file> | \
+     grammar [--format gbnf|json-schema|ebnf] [-o PATH] | \
+     stdlib [--json] [--category NAME] [-o PATH] | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -69,6 +71,14 @@ pub fn run() {
         "bundle" => process::exit(handle_bundle(&args[2..])),
         "info" => process::exit(handle_info(&args[2..])),
         "verify" => process::exit(handle_verify(&args[2..])),
+        // Phase 33 session 1: portable grammar export — the LLM
+        // contract surface. `twec grammar --format gbnf` produces a
+        // GBNF file consumable by llama.cpp constrained decoding.
+        "grammar" => process::exit(handle_grammar(&args[2..])),
+        // Phase 33 session 3: stdlib JSON manifest — every callable
+        // enumerable with signature + category. The LLM is grounded
+        // on this so API hallucination becomes mechanically impossible.
+        "stdlib" => process::exit(handle_stdlib(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -418,6 +428,7 @@ fn handle_verify(args: &[String]) -> i32 {
                     col: 1,
                     message: format!("cannot read '{path}': {e}"),
                     help: None,
+                    fix: None,
                 }],
             };
             println!("{}", report.to_json());
@@ -431,6 +442,123 @@ fn handle_verify(args: &[String]) -> i32 {
         0
     } else {
         1
+    }
+}
+
+/// Phase 33 session 1: `twec grammar [--format gbnf|json-schema|ebnf] [-o PATH]`.
+/// Emits the canonical Twe grammar in the requested format. Default
+/// format is GBNF (the highest-leverage target — llama.cpp constrained
+/// decoding makes syntactic hallucination mechanically impossible).
+/// Writes to stdout unless `-o` is given.
+fn handle_grammar(args: &[String]) -> i32 {
+    let mut format = crate::grammar::Format::Gbnf;
+    let mut out_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--format" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --format takes an argument (gbnf|json-schema|ebnf)");
+                    return 2;
+                }
+                let raw = args[i + 1].as_str();
+                match crate::grammar::Format::parse(raw) {
+                    Some(f) => format = f,
+                    None => {
+                        eprintln!("error: unknown grammar format `{raw}` (expected gbnf|json-schema|ebnf)");
+                        return 2;
+                    }
+                }
+                i += 2;
+            }
+            "-o" | "--out" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: -o takes a path argument");
+                    return 2;
+                }
+                out_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown argument for `grammar`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let body = crate::grammar::export(format);
+    match out_path {
+        Some(p) => match fs::write(&p, &body) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: cannot write `{p}`: {e}");
+                1
+            }
+        },
+        None => {
+            print!("{body}");
+            0
+        }
+    }
+}
+
+/// Phase 33 session 3: `twec stdlib [--json] [--category NAME] [-o PATH]`.
+/// Emits the stdlib manifest. Default format is JSON (the only format
+/// for now — a textual table form may follow). The manifest is the LLM's
+/// grounding surface: every callable is listed with its category, params,
+/// and (where available) doc string.
+fn handle_stdlib(args: &[String]) -> i32 {
+    let mut category: Option<String> = None;
+    let mut out_path: Option<String> = None;
+    // `--json` is currently the only supported format; accepted as a
+    // no-op so future text-table support won't be a breaking change.
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                i += 1;
+            }
+            "--category" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --category takes a name argument");
+                    return 2;
+                }
+                category = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "-o" | "--out" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: -o takes a path argument");
+                    return 2;
+                }
+                out_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown argument for `stdlib`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let manifest = crate::stdlib::manifest();
+    let filtered: Vec<&crate::stdlib::BuiltinSpec> = match &category {
+        Some(c) => manifest.iter().filter(|s| s.category == *c).collect(),
+        None => manifest.iter().collect(),
+    };
+    let body = crate::stdlib::manifest_to_json(&filtered);
+    match out_path {
+        Some(p) => match fs::write(&p, &body) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: cannot write `{p}`: {e}");
+                1
+            }
+        },
+        None => {
+            println!("{body}");
+            0
+        }
     }
 }
 

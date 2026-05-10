@@ -3,6 +3,9 @@ pub mod ast_json;
 pub mod bytecode;
 pub mod compiler;
 pub mod eval;
+// Phase 33 session 1: portable grammar export. Pure Rust, no
+// platform deps — compiles on every target.
+pub mod grammar;
 pub mod heap;
 pub mod infer;
 pub mod json;

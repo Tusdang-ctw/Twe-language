@@ -52,6 +52,36 @@ pub struct VerifyDiagnostic {
     pub col: u32,
     pub message: String,
     pub help: Option<String>,
+    /// Phase 33 session 2: structured machine-applicable fix.
+    /// When populated (high-confidence diagnostics like `did_you_mean`
+    /// rename or annotation insertion), an LLM consuming the JSON v2
+    /// output can apply the edits without re-parsing free-text help.
+    /// `None` for diagnostics where no obvious single fix exists.
+    pub fix: Option<Fix>,
+}
+
+/// Phase 33 session 2: a machine-applicable fix attached to a
+/// diagnostic. One fix may apply multiple non-overlapping edits to
+/// the same source file. `rationale` is a short human-readable
+/// explanation — useful when the consumer wants to surface the fix
+/// to a developer before applying it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    pub edits: Vec<Edit>,
+    pub rationale: String,
+}
+
+/// Phase 33 session 2: one byte-anchored replacement on a source
+/// file. Coordinates are 1-based line + column (matching the rest
+/// of the diagnostic surface). `len` is the byte length of the
+/// span the edit replaces; an insertion uses `len: 0`. `replace` is
+/// the new text — may contain newlines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub line: u32,
+    pub col: u32,
+    pub len: u32,
+    pub replace: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,12 +132,18 @@ impl VerifyReport {
     /// Emit the canonical JSON document. Format is hand-rolled (no
     /// serde dep): keys are stable, strings are JSON-escaped, the
     /// shape is documented in `docs/02-type-system.md` §"Tier 3".
-    /// Versioned via `tool` + `version` so a future v2 shape can
-    /// coexist; downstream tools should reject unknown versions.
+    /// Versioned via `tool` + `version` so consumers can negotiate
+    /// cleanly.
+    ///
+    /// **Schema v2 (Phase 33 session 2)** adds the `fix` field on
+    /// each diagnostic. v1 consumers continue to work because every
+    /// v1 field is preserved; v2-aware consumers pick up the new
+    /// machine-applicable patches. Bump to v3 only when removing or
+    /// reshaping an existing field.
     pub fn to_json(&self) -> String {
-        let mut s = String::with_capacity(256 + self.diagnostics.len() * 128);
+        let mut s = String::with_capacity(256 + self.diagnostics.len() * 192);
         s.push('{');
-        s.push_str("\"tool\":\"twec-verify\",\"version\":1");
+        s.push_str("\"tool\":\"twec-verify\",\"version\":2");
         s.push_str(",\"file\":");
         match &self.file {
             Some(f) => write_str_value(&mut s, f),
@@ -142,11 +178,42 @@ impl VerifyReport {
                 Some(h) => write_str_value(&mut s, h),
                 None => s.push_str("null"),
             }
+            s.push_str(",\"fix\":");
+            match &d.fix {
+                Some(f) => write_fix(&mut s, f),
+                None => s.push_str("null"),
+            }
             s.push('}');
         }
         s.push_str("]}");
         s
     }
+}
+
+/// Phase 33 session 2: serialize a `Fix` as JSON. Stable key order
+/// (`rationale`, `edits`) so byte-for-byte snapshot tests don't
+/// drift on hash-map iteration.
+fn write_fix(s: &mut String, fix: &Fix) {
+    s.push('{');
+    s.push_str("\"rationale\":");
+    write_str_value(s, &fix.rationale);
+    s.push_str(",\"edits\":[");
+    for (i, e) in fix.edits.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push('{');
+        s.push_str("\"line\":");
+        s.push_str(&e.line.to_string());
+        s.push_str(",\"col\":");
+        s.push_str(&e.col.to_string());
+        s.push_str(",\"len\":");
+        s.push_str(&e.len.to_string());
+        s.push_str(",\"replace\":");
+        write_str_value(s, &e.replace);
+        s.push('}');
+    }
+    s.push_str("]}");
 }
 
 /// Phase 13 session 10: caller-tunable verify options. `warn_deprecated`
@@ -190,6 +257,7 @@ pub fn verify_program_with_options(
                     col: e.col,
                     message: e.message,
                     help: e.help,
+                    fix: None,
                 }],
             };
         }
@@ -208,6 +276,7 @@ pub fn verify_program_with_options(
                     col: e.col,
                     message: e.message,
                     help: e.help,
+                    fix: None,
                 }],
             };
         }
@@ -215,13 +284,28 @@ pub fn verify_program_with_options(
     let (_bindings, errors) = infer::infer_program_strict(&program, strict);
     let mut diagnostics: Vec<VerifyDiagnostic> = errors
         .into_iter()
-        .map(|e| VerifyDiagnostic {
-            kind: classify_kind(&e.message),
-            severity: Severity::Error,
-            line: e.line,
-            col: e.col,
-            message: e.message,
-            help: e.help,
+        .map(|e| {
+            let kind = classify_kind(&e.message);
+            // Phase 33 session 2: synthesize a structured fix for
+            // high-confidence diagnostic kinds. Currently:
+            // - `did-you-mean` rename (replace bad ident with the
+            //   suggested name at the diagnostic's line/col).
+            //
+            // Conservative by default: only emit a fix when the
+            // suggestion is parseable from `help` and the bad
+            // identifier is recoverable from `message` so we know
+            // the byte-length to replace. Other kinds get `fix: None`
+            // and rely on `help` until a follow-on session adds them.
+            let fix = synthesize_fix(&kind, &e.message, e.help.as_deref(), e.line, e.col);
+            VerifyDiagnostic {
+                kind,
+                severity: Severity::Error,
+                line: e.line,
+                col: e.col,
+                message: e.message,
+                help: e.help,
+                fix,
+            }
         })
         .collect();
     if options.warn_deprecated {
@@ -350,6 +434,7 @@ fn walk_expr(
                         "deprecated symbols still work in v0.7 but are scheduled for removal in v1.0; consult CHANGELOG for the replacement"
                             .to_string(),
                     ),
+                    fix: None,
                 });
             }
         }
@@ -456,6 +541,69 @@ fn classify_kind(message: &str) -> String {
     }
 }
 
+/// Phase 33 session 2: derive a structured `Fix` from a high-confidence
+/// diagnostic, when one is available. Returns `None` for diagnostics
+/// where no obvious single edit applies.
+///
+/// The strategy is conservative — only emit a fix when both the
+/// original text and the replacement text are recoverable from the
+/// `(message, help)` pair *without parsing source*. The only kind
+/// satisfying that today is `name-error.unknown` with a `did_you_mean`
+/// suggestion: the `message` carries the bad name in backticks
+/// (`unknown name \`{name}\``), and the `help` carries the suggestion
+/// in the same form (`did you mean \`{suggestion}\`?`).
+///
+/// Future kinds (literal-replaceable type mismatches, missing
+/// `return`, missing annotation insertion) ride follow-on sessions
+/// — each requires a dedicated synthesizer because the original
+/// span and the replacement aren't recoverable from text alone.
+fn synthesize_fix(
+    kind: &str,
+    message: &str,
+    help: Option<&str>,
+    line: u32,
+    col: u32,
+) -> Option<Fix> {
+    if kind != "name-error.unknown" {
+        return None;
+    }
+    let bad = extract_backticked(message)?;
+    let suggestion = extract_did_you_mean(help?)?;
+    if bad == suggestion {
+        return None;
+    }
+    let len = bad.len() as u32;
+    Some(Fix {
+        rationale: format!("rename `{bad}` to `{suggestion}` (suggested by did_you_mean)"),
+        edits: vec![Edit {
+            line,
+            col,
+            len,
+            replace: suggestion,
+        }],
+    })
+}
+
+/// Pull the first backticked token out of a string. Used to recover
+/// the bad identifier from messages like ``unknown name `foo` ``.
+fn extract_backticked(s: &str) -> Option<String> {
+    let start = s.find('`')? + 1;
+    let rest = &s[start..];
+    let end = rest.find('`')?;
+    Some(rest[..end].to_string())
+}
+
+/// Pull the suggestion out of help text in the canonical
+/// ``did you mean `bar`?`` shape. Returns `None` if `help` doesn't
+/// match — defensive against future help re-wordings.
+fn extract_did_you_mean(help: &str) -> Option<String> {
+    let prefix = "did you mean `";
+    let start = help.find(prefix)? + prefix.len();
+    let rest = &help[start..];
+    let end = rest.find('`')?;
+    Some(rest[..end].to_string())
+}
+
 /// JSON-escape a string the way `to_json` needs. Hand-rolled to
 /// avoid pulling serde just for this — verify is a hot enough
 /// path that a small fixed encoder is the right call.
@@ -541,7 +689,9 @@ mod tests {
         let report = verify_program("# verified\nlet x: int = 42\n");
         let json = report.to_json();
         assert!(json.contains("\"tool\":\"twec-verify\""));
-        assert!(json.contains("\"version\":1"));
+        // Phase 33 session 2: schema bumped to v2 (adds machine-applicable
+        // `fix` field on each diagnostic; v1 fields preserved).
+        assert!(json.contains("\"version\":2"));
         assert!(json.contains("\"verified\":true"));
         assert!(json.contains("\"strict\":true"));
         assert!(json.contains("\"summary\":{\"errors\":0,\"warnings\":0}"));
