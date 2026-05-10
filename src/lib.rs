@@ -50,6 +50,8 @@ pub mod lod;
 pub mod terrain;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cull;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod instance;
 
 // Phase 30 session 1: modules that depend on native-only crates
 // (wgpu, winit, rapier3d, gltf, gilrs, arboard, zstd, image) are

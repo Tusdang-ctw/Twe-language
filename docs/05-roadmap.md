@@ -692,6 +692,8 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ## Phase 32 — Post-v1.0 — Open-world 3D foundation
 
+**Status note (2026-05-10):** **Codebase-closed** at `docs/changes/2026-05-10-phase-32-closeout.md`. All nine sessions shipped: lock revision (1), `src/spatial.rs` LooseGrid + BVH + WorldSpatial (2), `src/streaming.rs` chunked load/unload state machine (3), `src/lod.rs` per-class LodChain (4), `src/terrain.rs` chunked heightfield (5), `src/cull.rs` Gribb-Hartmann frustum + spatial integration (6), `src/instance.rs` per-asset instance buckets (7), `world.*` ergonomic helpers (8), closeout note (9). 35 new builtins under `world.*` (28) + `terrain.*` (7). **810 tests pass.** Honest deferrals: wgpu render-pipeline integration (data structures ship; render-side consumption is the immediate Phase-32 follow-on dev cycle), occlusion culling beyond frustum, `entity Tree: lod = [...]` parser sugar (v2), SAH-optimal BVH, 3D loose-grid, LOD smooth transitions, integrated 50k-prop bench harness.
+
 **Theme:** Tunic-scale open world. Not Roblox-scale — that's a multi-year follow-on. Open only after Phase 28 + the lock revision land.
 
 **Lock conflict to settle first:** the **single-threaded VM** lock in `CLAUDE.md` "What is locked" must be extended to authorize an engine-internal worker pool for asset I/O / physics step / frustum culling. User-facing Twe code stays single-threaded (Principle 2 intact); engine internals get parallelism (Principle 5 extended). Action: add a one-line addendum to `CLAUDE.md` before Phase 32 session 1.
@@ -786,7 +788,7 @@ The LTS commitment begins at v1.0: security and critical fixes backport to the `
 | 2D genre coverage (platformer / Tetris / cards) | Stdlib pressure-test; plug a marketing gap | **Now Phase 27** |
 | WASM / web target | Distribution unlock for 2D | **Now Phase 30** |
 | Multiplayer | Per-genre game pressure; needs netcode RFC | **Phase 31 — codebase-closed 2026-05-10 (lockstep over UDP, 7 sessions, `examples/pong_net.twe`)** |
-| Open-world 3D streaming + LOD | Tunic-scale games; needs lock revision | **Now Phase 32** |
+| Open-world 3D streaming + LOD | Tunic-scale games; needs lock revision | **Phase 32 — codebase-closed 2026-05-10 (9 sessions; spatial + streaming + LOD + terrain + cull + instance + ergonomic API)** |
 | Community game support | Link + track third-party games in the README gallery | Ongoing |
 
 ---

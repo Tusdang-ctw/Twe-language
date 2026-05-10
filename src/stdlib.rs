@@ -2690,6 +2690,80 @@ fn install_world(env: &mut Env) {
             world_frustum_contains_sphere,
         ),
     );
+    // ---- Phase 32 session 7: per-asset instance buckets ----
+    w.insert(
+        "instance_clear".to_string(),
+        Value::from_builtin("world.instance_clear", &[], world_instance_clear),
+    );
+    w.insert(
+        "instance_reset".to_string(),
+        Value::from_builtin("world.instance_reset", &[], world_instance_reset),
+    );
+    w.insert(
+        "instance_add".to_string(),
+        Value::from_builtin(
+            "world.instance_add",
+            &["asset", "transform"],
+            world_instance_add,
+        ),
+    );
+    w.insert(
+        "instance_count".to_string(),
+        Value::from_builtin(
+            "world.instance_count",
+            &["asset"],
+            world_instance_count,
+        ),
+    );
+    w.insert(
+        "instance_total".to_string(),
+        Value::from_builtin("world.instance_total", &[], world_instance_total),
+    );
+    w.insert(
+        "instance_bucket_count".to_string(),
+        Value::from_builtin(
+            "world.instance_bucket_count",
+            &[],
+            world_instance_bucket_count,
+        ),
+    );
+    w.insert(
+        "instance_assets".to_string(),
+        Value::from_builtin("world.instance_assets", &[], world_instance_assets),
+    );
+    // ---- Phase 32 session 8: ergonomic helpers ----
+    w.insert(
+        "stream_radius_meters".to_string(),
+        Value::from_builtin(
+            "world.stream_radius_meters",
+            &["meters"],
+            world_stream_radius_meters,
+        ),
+    );
+    w.insert(
+        "entity_lod".to_string(),
+        Value::from_builtin(
+            "world.entity_lod",
+            &["class", "lod_pairs"],
+            world_entity_lod,
+        ),
+    );
+    w.insert(
+        "world_to_lod".to_string(),
+        Value::from_builtin(
+            "world.world_to_lod",
+            &["class", "ex", "ey", "ez", "cx", "cy", "cz"],
+            world_world_to_lod,
+        ),
+    );
+    w.insert(
+        "distance_xyz".to_string(),
+        Value::from_builtin(
+            "world.distance_xyz",
+            &["ax", "ay", "az", "bx", "by", "bz"],
+            world_distance_xyz,
+        ),
+    );
     env.set(
         "world".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -3049,6 +3123,227 @@ fn world_frustum_contains_sphere(_env: &mut Env, args: &[Value]) -> Result<Value
     let r = as_f64(&args[4], "world.frustum_contains_sphere")? as f32;
     let frustum = crate::cull::Frustum::from_view_proj_row_major(m);
     Ok(Value::from_bool(frustum.may_contain_sphere(x, y, z, r)))
+}
+
+// ---- Phase 32 session 7: instance-bucket builtins ----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_instance_clear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.instance_clear")?;
+    crate::instance::with_buckets(|b| b.clear());
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_instance_reset(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.instance_reset")?;
+    crate::instance::with_buckets(|b| b.reset());
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_instance_add(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "world.instance_add")?;
+    let asset = string_arg(&args[0], "world.instance_add", "asset")?;
+    let m = read_matrix4x4(&args[1], "world.instance_add")?;
+    // Flatten row-major 4x4 to [f32; 16].
+    let mut t = [0.0f32; 16];
+    for i in 0..4 {
+        for j in 0..4 {
+            t[i * 4 + j] = m[i][j];
+        }
+    }
+    crate::instance::with_buckets(|b| b.add(&asset, t));
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_instance_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.instance_count")?;
+    let asset = string_arg(&args[0], "world.instance_count", "asset")?;
+    let n = crate::instance::with_buckets(|b| b.count(&asset)) as i64;
+    Ok(Value::from_int(n))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_instance_total(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.instance_total")?;
+    let n = crate::instance::with_buckets(|b| b.total_instances()) as i64;
+    Ok(Value::from_int(n))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_instance_bucket_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.instance_bucket_count")?;
+    let n = crate::instance::with_buckets(|b| b.bucket_count()) as i64;
+    Ok(Value::from_int(n))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_instance_assets(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.instance_assets")?;
+    let assets: Vec<Value> = crate::instance::with_buckets(|b| b.assets())
+        .into_iter()
+        .map(Value::from_string)
+        .collect();
+    Ok(Value::from_list(Rc::new(RefCell::new(assets))))
+}
+
+// ---- Phase 32 session 8: ergonomic helpers ----
+
+/// Set the stream radius via meters rather than chunk count. Reads
+/// the current `chunk_size` and rounds up so the script doesn't have
+/// to remember the chunk grid size. Convenience wrapper over
+/// [`world.set_stream_radius`].
+#[cfg(not(target_arch = "wasm32"))]
+fn world_stream_radius_meters(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.stream_radius_meters")?;
+    let m = as_f64(&args[0], "world.stream_radius_meters")? as f32;
+    if m <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("world.stream_radius_meters: meters must be positive (got {m})"),
+            help: None,
+        });
+    }
+    let chunks = crate::streaming::with_streaming(|s| (m / s.chunk_size).ceil() as i32);
+    let chunks = chunks.clamp(1, 64);
+    crate::streaming::with_streaming(|s| s.stream_radius_chunks = chunks);
+    Ok(Value::from_int(chunks as i64))
+}
+
+/// Declare a LOD chain via (asset, max_distance) pairs — a more
+/// ergonomic shape than the parallel-arrays form of
+/// `world.set_lod_chain`. The last pair's `max_distance` is ignored
+/// (its asset covers everything beyond the previous switch); pass
+/// any sentinel value (typically a large number).
+///
+/// Example: `world.entity_lod("Tree", [("near.glb", 25.0),
+/// ("med.glb", 100.0), ("far.glb", 1e9)])` registers the same chain
+/// as `world.set_lod_chain("Tree", ["near.glb", "med.glb",
+/// "far.glb"], [25.0, 100.0])`.
+#[cfg(not(target_arch = "wasm32"))]
+fn world_entity_lod(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "world.entity_lod")?;
+    let class = string_arg(&args[0], "world.entity_lod", "class")?;
+    if !args[1].is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "world.entity_lod: lod_pairs must be a list of (asset, max_distance) tuples"
+                .to_string(),
+            help: None,
+        });
+    }
+    let rc = args[1].as_list();
+    let pairs = rc.borrow();
+    if pairs.is_empty() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "world.entity_lod: lod_pairs must have at least one entry".to_string(),
+            help: None,
+        });
+    }
+    let mut assets: Vec<String> = Vec::with_capacity(pairs.len());
+    let mut switches: Vec<f32> = Vec::with_capacity(pairs.len().saturating_sub(1));
+    for (i, p) in pairs.iter().enumerate() {
+        if !p.is_tuple() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("world.entity_lod: pair {i} must be a tuple (asset, distance)"),
+                help: None,
+            });
+        }
+        let elems = p.as_tuple();
+        if elems.len() != 2 {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "world.entity_lod: pair {i} must be a 2-tuple (asset, distance), got {} elements",
+                    elems.len()
+                ),
+                help: None,
+            });
+        }
+        if !elems[0].is_str() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("world.entity_lod: pair {i} asset must be a string"),
+                help: None,
+            });
+        }
+        assets.push(elems[0].as_string().clone());
+        // Skip the last pair's distance — it's implicit +∞.
+        if i + 1 < pairs.len() {
+            switches.push(as_f64(&elems[1], "world.entity_lod")? as f32);
+        }
+    }
+    let chain = crate::lod::LodChain::new(assets, switches).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("world.entity_lod: {m}"),
+        help: None,
+    })?;
+    crate::lod::with_table(|t| {
+        t.insert(class, chain);
+    });
+    Ok(Value::NIL)
+}
+
+/// Compute distance from camera to entity, then return the LOD
+/// asset for that class at that distance. Combines the two most
+/// common per-frame queries into one builtin so scripts don't pay
+/// the lookup overhead twice.
+#[cfg(not(target_arch = "wasm32"))]
+fn world_world_to_lod(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 7, "world.world_to_lod")?;
+    let class = string_arg(&args[0], "world.world_to_lod", "class")?;
+    let ex = as_f64(&args[1], "world.world_to_lod")? as f32;
+    let ey = as_f64(&args[2], "world.world_to_lod")? as f32;
+    let ez = as_f64(&args[3], "world.world_to_lod")? as f32;
+    let cx = as_f64(&args[4], "world.world_to_lod")? as f32;
+    let cy = as_f64(&args[5], "world.world_to_lod")? as f32;
+    let cz = as_f64(&args[6], "world.world_to_lod")? as f32;
+    let dx = ex - cx;
+    let dy = ey - cy;
+    let dz = ez - cz;
+    let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+    let asset = crate::lod::with_table(|t| {
+        t.get(&class)
+            .map(|chain| chain.asset_for_distance(distance).to_string())
+    });
+    match asset {
+        Some(s) => Ok(Value::from_string(s)),
+        None => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("world.world_to_lod: no LOD chain registered for class '{class}'"),
+            help: Some("call world.entity_lod or world.set_lod_chain first".to_string()),
+        }),
+    }
+}
+
+/// Euclidean distance between two 3D points. Bog-standard but pulled
+/// out as a builtin so the per-frame visibility-pass loop doesn't
+/// have to allocate a tuple/list to compute it.
+#[cfg(not(target_arch = "wasm32"))]
+fn world_distance_xyz(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 6, "world.distance_xyz")?;
+    let ax = as_f64(&args[0], "world.distance_xyz")?;
+    let ay = as_f64(&args[1], "world.distance_xyz")?;
+    let az = as_f64(&args[2], "world.distance_xyz")?;
+    let bx = as_f64(&args[3], "world.distance_xyz")?;
+    let by = as_f64(&args[4], "world.distance_xyz")?;
+    let bz = as_f64(&args[5], "world.distance_xyz")?;
+    let dx = ax - bx;
+    let dy = ay - by;
+    let dz = az - bz;
+    Ok(Value::from_float((dx * dx + dy * dy + dz * dz).sqrt()))
 }
 
 // ---- Phase 32 session 5: terrain.* namespace ----
