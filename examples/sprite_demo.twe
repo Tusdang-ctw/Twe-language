@@ -1,3 +1,9 @@
+# @task: Sprite loading and rendering
+# @inputs: none
+# @expected: PNG asset rendered at given position
+# @category: 2d
+# @difficulty: trivial
+#
 # `twec play examples/sprite_demo.twe`
 #
 # Phase-2 demo of the sprite binding: load() returns a sprite handle,

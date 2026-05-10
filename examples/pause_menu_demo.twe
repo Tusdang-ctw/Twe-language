@@ -1,3 +1,9 @@
+# @task: Pause menu stack with settings save
+# @inputs: mouse / keyboard
+# @expected: esc opens menu; resume / save / quit options work
+# @category: ui
+# @difficulty: small
+#
 # Phase 10 session 11 — exit-gate pause menu.
 #
 # Run with `twec play examples/pause_menu_demo.twe`. Wires together

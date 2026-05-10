@@ -1,3 +1,9 @@
+# @task: First-person physics + kinematic character controller + raycast
+# @inputs: mouse / WASD
+# @expected: walk + jump on physics ground, raycast highlights what's in front
+# @category: 3d
+# @difficulty: medium
+#
 # Phase 18 finish — full FPS prototype.
 #
 # Run with:  twec play3d examples/fps_demo.twe

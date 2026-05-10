@@ -1,3 +1,9 @@
+# @task: Sample-accurate audio scheduling with fixed timestep
+# @inputs: space
+# @expected: beats hit on time with sound.schedule sample accuracy
+# @category: audio
+# @difficulty: medium
+#
 # Rhythm demo — exercises Phase 29's deterministic simulation clock.
 #
 # Run with:  twec play examples/rhythm_demo.twe

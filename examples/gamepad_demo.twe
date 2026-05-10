@@ -1,3 +1,9 @@
+# @task: Gamepad input demo
+# @inputs: gamepad
+# @expected: sticks move a character, buttons print their labels
+# @category: input
+# @difficulty: small
+#
 # Phase 9 session 5 — gamepad polling demo.
 # Run with `twec play examples/gamepad_demo.twe` and a connected
 # Xbox/PlayStation/generic gamepad. If gilrs can't initialise (rare),

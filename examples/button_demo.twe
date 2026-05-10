@@ -1,3 +1,9 @@
+# @task: Click-counting button widget
+# @inputs: mouse
+# @expected: counter increments by one per button click
+# @category: ui
+# @difficulty: trivial
+#
 # Phase 10 session 1 — immediate-mode `button` widget.
 #
 # Run with `twec play examples/button_demo.twe`. Click the buttons

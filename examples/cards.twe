@@ -1,3 +1,9 @@
+# @task: Solitaire-Lite drag-and-drop card stacks
+# @inputs: mouse
+# @expected: stacks rebuild in suit order; snap-back on invalid drop
+# @category: 2d
+# @difficulty: large
+#
 # Solitaire-Lite — drag-and-drop, layered z-order, snap-back on
 # illegal drop, modal "you win" overlay.
 #

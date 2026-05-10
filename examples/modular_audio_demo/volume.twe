@@ -1,3 +1,9 @@
+# @task: Volume helper module exporting fade function
+# @inputs: none
+# @expected: provides fade() helper consumed by the main module
+# @category: audio
+# @difficulty: trivial
+#
 # Phase 13 session 11 — volume helper module.
 #
 # Small utility surface: clamp a [0..1] volume, step it by a delta

@@ -1,3 +1,9 @@
+# @task: Save / load primitive demo
+# @inputs: keyboard
+# @expected: press s to save state, l to load; persists across launches
+# @category: save
+# @difficulty: trivial
+#
 # v0.2 session 4 — minimal save / load demo.
 #
 # Saves a tuple of game state to disk, then reads it back. This

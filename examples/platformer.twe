@@ -1,3 +1,9 @@
+# @task: Platformer with coyote time, jump buffer, AABB tile collision
+# @inputs: arrow keys
+# @expected: character jumps onto platforms, one-way platforms work
+# @category: 2d
+# @difficulty: medium
+#
 # Platformer — coyote time, jump buffer, variable jump height,
 # AABB tile collision, one-way platforms.
 #

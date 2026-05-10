@@ -1,3 +1,9 @@
+# @task: Multi-file project importing an audio module
+# @inputs: none
+# @expected: sound plays via imported module function
+# @category: audio
+# @difficulty: small
+#
 # Phase 13 EXIT GATE — modular audio demo.
 #
 # Single-file `examples/audio_demo.twe` mixed volume clamping with

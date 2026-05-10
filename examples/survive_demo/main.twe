@@ -1,3 +1,9 @@
+# @task: Build-pipeline demo project
+# @inputs: arrow keys
+# @expected: builds to self-extracting Windows .exe via twec build
+# @category: 2d
+# @difficulty: small
+#
 # Phase 12 session 11 — EXIT GATE.
 #
 # `twec build examples/survive_demo/` produces a single Steam-class

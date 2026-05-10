@@ -1,3 +1,9 @@
+# @task: UI layout primitives (panel, stack, flex, grid, scroll)
+# @inputs: mouse
+# @expected: widgets arranged via layout helpers; scroll preserves y
+# @category: ui
+# @difficulty: small
+#
 # Phase 10 sessions 6 + 7 — layout primitives.
 #
 # Run with `twec play examples/layout_demo.twe`. Demonstrates how

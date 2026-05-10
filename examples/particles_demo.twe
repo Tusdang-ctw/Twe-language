@@ -1,3 +1,9 @@
+# @task: Particles block with custom emitter
+# @inputs: none
+# @expected: particles spawn and fade via on_update + on_spawn
+# @category: 2d
+# @difficulty: small
+#
 # `twec play examples/particles_demo.twe`
 #
 # Phase-2 demo of the `particles` declarative block. Press space to

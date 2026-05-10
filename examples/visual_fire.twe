@@ -1,3 +1,9 @@
+# @task: Procedural fire shader via visual block
+# @inputs: none
+# @expected: animated fire rendered fullscreen via compiled WGSL
+# @category: visual
+# @difficulty: small
+#
 # Phase 9 exit demo — Example 5 from docs/01-examples.md, run end-to-end.
 # `twec play_visual examples/visual_fire.twe` opens a window and renders
 # the procedural fire shader fullscreen, driven by a time uniform from

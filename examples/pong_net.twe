@@ -1,3 +1,9 @@
+# @task: LAN lockstep multiplayer Pong over UDP
+# @inputs: W / S keys
+# @expected: two peers exchange inputs deterministically over UDP
+# @category: net
+# @difficulty: medium
+#
 # Pong Net — 2-player LAN pong over lockstep multiplayer.
 #
 # Phase 31 session 6 — the canonical multiplayer example. Two peers

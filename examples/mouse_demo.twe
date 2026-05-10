@@ -1,3 +1,9 @@
+# @task: Mouse input + click + position display
+# @inputs: mouse
+# @expected: cursor position shown each frame; clicks logged
+# @category: input
+# @difficulty: trivial
+#
 # v0.2 session 3 — mouse input demo.
 #
 # Draws a circle at the cursor that grows on hold and changes

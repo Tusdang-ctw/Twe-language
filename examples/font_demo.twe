@@ -1,3 +1,9 @@
+# @task: Custom TTF font rendering
+# @inputs: none
+# @expected: text rendered with loaded font instead of macroquad default
+# @category: 2d
+# @difficulty: trivial
+#
 # Phase 9 session 4 — TTF font loading demo.
 # Run with `twec play examples/font_demo.twe`.
 #

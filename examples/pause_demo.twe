@@ -1,3 +1,9 @@
+# @task: Pause / resume gameplay via the pause builtin
+# @inputs: space
+# @expected: pressing space toggles pause; world freezes; resumes cleanly
+# @category: lifecycle
+# @difficulty: trivial
+#
 # Phase 10 session 8 — pause primitives.
 #
 # Run with `twec play examples/pause_demo.twe`. The `tick` counter

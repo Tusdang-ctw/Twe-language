@@ -1,3 +1,9 @@
+# @task: Sound effect playback on key press
+# @inputs: keyboard
+# @expected: each key press triggers a different cached sound
+# @category: audio
+# @difficulty: trivial
+#
 # v0.2 session 5 — audio v2 demo.
 #
 # Press R to play a one-shot at the current volume; press M to

@@ -1,3 +1,9 @@
+# @task: glTF mesh import demo
+# @inputs: none
+# @expected: load + render a .glb file in the 3D scene
+# @category: 3d
+# @difficulty: trivial
+#
 # v0.2 session 1 — `.glb` mesh import.
 #
 # Loads `examples/assets/triangle.glb` (a minimal three-vertex

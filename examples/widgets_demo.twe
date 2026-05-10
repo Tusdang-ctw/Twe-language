@@ -1,3 +1,9 @@
+# @task: Full UI widget gallery
+# @inputs: mouse / keyboard
+# @expected: every widget type (button, slider, dropdown, ...) rendered with state
+# @category: ui
+# @difficulty: medium
+#
 # Phase 10 sessions 2 / 3 / 4 / 5 — widgets demo.
 #
 # Run with `twec play examples/widgets_demo.twe`. Exercises the

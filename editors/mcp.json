@@ -1,0 +1,29 @@
+{
+  "_comment": "Phase 33 session 5: Twe MCP server config. Paste the relevant snippet into your client's config (Claude Desktop: claude_desktop_config.json; Cursor: .cursor/mcp.json; etc.). The `command` should resolve to the twec binary on your PATH; on Windows use the `.exe` name explicitly if your shell needs it.",
+
+  "mcpServers": {
+    "twe": {
+      "command": "twec",
+      "args": ["mcp"],
+      "_description": "Twe language tools — parse, verify, format, grammar export, stdlib manifest, structured-patch application. The `verify` tool returns JSON v2 with machine-applicable `fix` payloads that `apply_patch` consumes round-trip."
+    }
+  },
+
+  "_alternative_windows": {
+    "mcpServers": {
+      "twe": {
+        "command": "twec.exe",
+        "args": ["mcp"]
+      }
+    }
+  },
+
+  "_alternative_explicit_path": {
+    "mcpServers": {
+      "twe": {
+        "command": "C:/path/to/twec.exe",
+        "args": ["mcp"]
+      }
+    }
+  }
+}

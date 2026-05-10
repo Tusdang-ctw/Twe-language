@@ -1,3 +1,9 @@
+# @task: Spritesheet animation playback
+# @inputs: none
+# @expected: animated character cycles through frames at fixed FPS
+# @category: 2d
+# @difficulty: small
+#
 # Phase 9 session 3 — sprite atlas + frame stepping demo.
 # Run with `twec play examples/atlas_demo.twe`.
 #

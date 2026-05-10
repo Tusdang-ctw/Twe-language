@@ -1,3 +1,9 @@
+# @task: Walk-cycle spritesheet animation
+# @inputs: arrow keys
+# @expected: character walks through 4-frame cycle while moving
+# @category: 2d
+# @difficulty: small
+#
 # Phase 11 session 8 — spritesheet walk-cycle animation.
 #
 # Run with `twec play examples/walk_demo.twe`. Closes the Phase 9

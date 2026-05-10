@@ -1,3 +1,9 @@
+# @task: Live key rebinding UI
+# @inputs: mouse / keyboard
+# @expected: click bind button, press a key, binding updates and persists
+# @category: ui
+# @difficulty: small
+#
 # Phase 10 session 11 — keybind UI for `examples/survive.twe`.
 #
 # Run with `twec play examples/keybind_demo.twe`. Click any binding

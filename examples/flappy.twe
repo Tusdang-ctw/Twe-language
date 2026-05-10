@@ -1,3 +1,9 @@
+# @task: Flappy Bird with gravity, recycled obstacles, state machine
+# @inputs: space
+# @expected: tap to flap; pipes scroll in; game-over on collision
+# @category: 2d
+# @difficulty: small
+#
 # Flappy — the smallest example that's still a real game.
 #
 # Run with:  twec play examples/flappy.twe

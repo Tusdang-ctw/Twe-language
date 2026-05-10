@@ -1,3 +1,9 @@
+# @task: Tilemap rendering and AABB collision
+# @inputs: arrow keys
+# @expected: character moves on grid, blocked by solid tiles
+# @category: tilemap
+# @difficulty: small
+#
 # v0.2 session 6 — tilemap demo.
 #
 # A small dungeon room rendered tile-by-tile, plus a hero blob

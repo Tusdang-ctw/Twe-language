@@ -1,3 +1,9 @@
+# @task: Branching dialogue with multiple actors and choices
+# @inputs: keyboard
+# @expected: walk through merchant dialog, choose buy / leave / talk
+# @category: dialogue
+# @difficulty: small
+#
 # Dialogue demo — the Phase 5 `dialogue:` block.
 #
 # Run with:  twec run examples/dialogue_demo.twe

@@ -13,6 +13,9 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      verify [--warn-deprecated] <file> | \
      grammar [--format gbnf|json-schema|ebnf] [-o PATH] | \
      stdlib [--json] [--category NAME] [-o PATH] | \
+     llm-loop --command CMD [--arg ARG]* [--prompt PATH] [--max-rounds N] [--out PATH] [--trace-dir DIR] | \
+     mcp | \
+     corpus [--json] [-o PATH] | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -79,6 +82,17 @@ pub fn run() {
         // enumerable with signature + category. The LLM is grounded
         // on this so API hallucination becomes mechanically impossible.
         "stdlib" => process::exit(handle_stdlib(&args[2..])),
+        // Phase 33 session 4: end-to-end LLM authoring loop. Drives a
+        // user-configured command provider through verify-feedback
+        // rounds and logs JSONL traces (training-corpus seed).
+        "llm-loop" | "llm_loop" => process::exit(handle_llm_loop(&args[2..])),
+        // Phase 33 session 5: stdio JSON-RPC MCP server. Every Twe
+        // tool becomes available to any MCP client (Claude Desktop,
+        // Cursor, the future Twe Studio) with no bespoke wiring.
+        "mcp" => process::exit(handle_mcp(&args[2..])),
+        // Phase 33 session 6: enumerate the labeled examples corpus
+        // built from `@task / @inputs / @expected / @category` headers.
+        "corpus" => process::exit(handle_corpus(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -547,6 +561,210 @@ fn handle_stdlib(args: &[String]) -> i32 {
         None => manifest.iter().collect(),
     };
     let body = crate::stdlib::manifest_to_json(&filtered);
+    match out_path {
+        Some(p) => match fs::write(&p, &body) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: cannot write `{p}`: {e}");
+                1
+            }
+        },
+        None => {
+            println!("{body}");
+            0
+        }
+    }
+}
+
+/// Phase 33 session 4: `twec llm-loop --command CMD [--arg ARG]*
+/// [--prompt PATH] [--max-rounds N] [--out PATH] [--trace-dir DIR]`.
+///
+/// Drives an LLM authoring loop using a user-configured command
+/// provider. The command receives the prompt on stdin and returns
+/// the model's reply on stdout — point it at `claude code`, a
+/// Python wrapper, a local `llama-cli`, or anything that fits the
+/// pipe. Each round's prompt + reply + verify JSON is logged to the
+/// trace directory for fine-tune corpus harvesting.
+fn handle_llm_loop(args: &[String]) -> i32 {
+    let mut command: Option<String> = None;
+    let mut cmd_args: Vec<String> = Vec::new();
+    let mut prompt_path: Option<String> = None;
+    let mut max_rounds: u32 = 5;
+    let mut out_path: Option<String> = None;
+    let mut trace_dir: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--command" | "--cmd" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --command takes an argument");
+                    return 2;
+                }
+                command = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--arg" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --arg takes an argument");
+                    return 2;
+                }
+                cmd_args.push(args[i + 1].clone());
+                i += 2;
+            }
+            "--prompt" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --prompt takes a file path");
+                    return 2;
+                }
+                prompt_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--max-rounds" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --max-rounds takes an integer");
+                    return 2;
+                }
+                match args[i + 1].parse::<u32>() {
+                    Ok(n) if n >= 1 => max_rounds = n,
+                    _ => {
+                        eprintln!("error: --max-rounds must be a positive integer");
+                        return 2;
+                    }
+                }
+                i += 2;
+            }
+            "--out" | "-o" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --out takes a path argument");
+                    return 2;
+                }
+                out_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--trace-dir" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --trace-dir takes a path argument");
+                    return 2;
+                }
+                trace_dir = Some(args[i + 1].clone());
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown argument for `llm-loop`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let Some(command) = command else {
+        eprintln!("error: `llm-loop` requires --command CMD");
+        eprintln!("       e.g. --command python --arg llm_wrapper.py");
+        return 2;
+    };
+    let prompt = match prompt_path.as_ref() {
+        Some(p) => match fs::read_to_string(p) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read prompt `{p}`: {e}");
+                return 1;
+            }
+        },
+        None => {
+            // Read prompt from stdin so the command form composes
+            // well: `cat task.md | twec llm-loop --command claude`.
+            use std::io::Read;
+            let mut s = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut s) {
+                eprintln!("error: reading prompt from stdin failed: {e}");
+                return 1;
+            }
+            s
+        }
+    };
+
+    let mut provider = crate::llm_loop::CommandProvider::new(command, cmd_args);
+    let options = crate::llm_loop::LoopOptions {
+        max_rounds,
+        trace_dir: trace_dir.map(std::path::PathBuf::from),
+        source_path: out_path.clone(),
+        log_prompts: true,
+    };
+    let outcome = match crate::llm_loop::run_loop(&mut provider, &prompt, &options) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: llm-loop failed: {e}");
+            return 1;
+        }
+    };
+    if let Some(p) = out_path.as_ref() {
+        if let Err(e) = fs::write(p, &outcome.final_source) {
+            eprintln!("error: cannot write `{p}`: {e}");
+            return 1;
+        }
+    } else {
+        print!("{}", outcome.final_source);
+    }
+    eprintln!(
+        "[twec llm-loop] {} after {} round(s){}",
+        if outcome.passed { "PASSED" } else { "FAILED" },
+        outcome.rounds.len(),
+        match outcome.trace_path.as_ref() {
+            Some(p) => format!(" (trace: {})", p.display()),
+            None => String::new(),
+        }
+    );
+    if outcome.passed {
+        0
+    } else {
+        1
+    }
+}
+
+/// Phase 33 session 5: stub. The real handler is added when the
+/// `mcp` module lands (next in this same commit).
+fn handle_mcp(args: &[String]) -> i32 {
+    if !args.is_empty() {
+        eprintln!("error: `twec mcp` takes no arguments");
+        return 2;
+    }
+    crate::mcp::serve_stdio()
+}
+
+/// Phase 33 session 6: emit the labeled examples corpus as JSON.
+fn handle_corpus(args: &[String]) -> i32 {
+    let mut out_path: Option<String> = None;
+    let mut root: String = "examples".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                i += 1;
+            }
+            "--root" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --root takes a directory");
+                    return 2;
+                }
+                root = args[i + 1].clone();
+                i += 2;
+            }
+            "-o" | "--out" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: -o takes a path argument");
+                    return 2;
+                }
+                out_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown argument for `corpus`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let entries = crate::corpus::scan_corpus(std::path::Path::new(&root));
+    let body = crate::corpus::to_json(&entries);
     match out_path {
         Some(p) => match fs::write(&p, &body) {
             Ok(()) => 0,

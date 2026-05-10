@@ -1,3 +1,9 @@
+# @task: 3D primitives with orbit camera
+# @inputs: WASD
+# @expected: mix of cubes + spheres rendered, hot reload works
+# @category: 3d
+# @difficulty: trivial
+#
 # Phase 5–6 demo. Drives the wgpu loop entirely from Twe.
 #
 # - `on update(dt):` reads `key.*` to drive the camera.

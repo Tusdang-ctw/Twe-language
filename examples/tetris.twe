@@ -1,3 +1,9 @@
+# @task: Tetris with 7-bag SRS, line clears, ghost piece
+# @inputs: arrow keys
+# @expected: rows clear when filled; ghost shows landing position
+# @category: 2d
+# @difficulty: large
+#
 # Tetris — 7-bag randomizer, simplified SRS rotation, line clears,
 # DAS/ARR (Delayed Auto-Shift / Auto-Repeat Rate), ghost piece,
 # next-piece preview, level-up cadence.

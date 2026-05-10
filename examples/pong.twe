@@ -1,3 +1,9 @@
+# @task: Two-paddle Pong with AI opponent
+# @inputs: W / S keys
+# @expected: first to 5 wins; ball bounces off walls + paddles
+# @category: 2d
+# @difficulty: small
+#
 # Pong — the canonical first game.
 #
 # Run with:  twec play examples/pong.twe

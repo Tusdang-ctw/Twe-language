@@ -1,3 +1,9 @@
+# @task: First-person crystal-collection 3D demo with shadows + ACES
+# @inputs: mouse / WASD
+# @expected: collect 5 crystals while dodging sentinels; HUD shows count
+# @category: 3d
+# @difficulty: large
+#
 # Twe Crystal Hunter — full 3D-stack showcase game.
 #
 # Run with:  twec play3d examples/crystal_hunter.twe

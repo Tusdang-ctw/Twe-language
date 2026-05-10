@@ -1,3 +1,9 @@
+# @task: Dialogue-driven mini-RPG with rooms and pickups
+# @inputs: arrow keys
+# @expected: walk between rooms, collect items, talk to NPCs
+# @category: dialogue
+# @difficulty: medium
+#
 # RPG demo — the second first-party Twe game.
 #
 # Run with:  twec play examples/rpg_demo/main.twe

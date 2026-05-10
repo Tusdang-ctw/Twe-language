@@ -1,3 +1,9 @@
+# @task: Classic Snake game with grid + state machine
+# @inputs: arrow keys
+# @expected: snake grows on food; game-over on wall / self collide; r restarts
+# @category: 2d
+# @difficulty: small
+#
 # `twec play examples/snake.twe`
 #
 # Phase-2 milestone: the Snake game from docs/example-11-snake.md,

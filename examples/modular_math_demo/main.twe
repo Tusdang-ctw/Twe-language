@@ -1,3 +1,9 @@
+# @task: Multi-file project importing a math module
+# @inputs: none
+# @expected: demonstrates module loading + cross-file name resolution
+# @category: core
+# @difficulty: small
+#
 # Phase 13 EXIT GATE — modular math demo.
 #
 # Imports a `math/vec2.twe` helper module from a sub-directory and

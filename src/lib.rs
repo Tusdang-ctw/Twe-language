@@ -10,6 +10,15 @@ pub mod heap;
 pub mod infer;
 pub mod json;
 pub mod lexer;
+// Phase 33 session 4: end-to-end LLM authoring loop. Pure Rust, no
+// network deps in the binary — providers shell out to user-configured
+// commands or live in third-party crates that depend on `twec`.
+pub mod llm_loop;
+// Phase 33 session 5: stdio MCP server. Pure Rust, reuses existing
+// json + parser + verify entry points. No new deps.
+pub mod mcp;
+// Phase 33 session 6: examples-as-corpus header parser. Pure file IO.
+pub mod corpus;
 pub mod lsp;
 pub mod module;
 pub mod parser;

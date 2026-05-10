@@ -1,3 +1,9 @@
+# @task: Vertical-slice Vampire-Survivors prototype
+# @inputs: arrow keys
+# @expected: enemies chase, projectiles auto-fire, kill count tracked
+# @category: 2d
+# @difficulty: medium
+#
 # `twec play examples/survive.twe`
 #
 # Phase-2 vertical slice. Move with arrow keys (or WASD). Monsters

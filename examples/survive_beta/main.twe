@@ -1,3 +1,9 @@
+# @task: Full Vampire-Survivors clone with waves, XP, level-up, weapons, boss
+# @inputs: arrow keys / WASD / gamepad
+# @expected: 1300-line beta game running at 60fps; pause + settings + save
+# @category: 2d
+# @difficulty: large
+#
 # Phase 14 — Survive Beta (Vampire-Survivors clone).
 #
 # Run with:  twec play examples/survive_beta/main.twe

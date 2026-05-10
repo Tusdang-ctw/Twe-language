@@ -1,3 +1,9 @@
+# @task: rapier3d physics scene with dynamic + static bodies
+# @inputs: none
+# @expected: falling boxes settle on ground; gravity + collisions applied
+# @category: 3d
+# @difficulty: small
+#
 # Phase 18 demo — falling cubes with physics.
 #
 # Run with:  twec play3d examples/physics_demo.twe

@@ -1,3 +1,9 @@
+# @task: Top-down hero movement with collision
+# @inputs: arrow keys
+# @expected: hero moves around walls without overlap
+# @category: 2d
+# @difficulty: small
+#
 # `twec play examples/hero.twe`
 #
 # A red square you steer with the arrow keys. The smallest live

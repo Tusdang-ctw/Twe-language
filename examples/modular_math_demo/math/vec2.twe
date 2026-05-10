@@ -1,3 +1,9 @@
+# @task: vec2 helper module
+# @inputs: none
+# @expected: provides add / sub / length functions over (x, y) tuples
+# @category: core
+# @difficulty: trivial
+#
 # Phase 13 session 11 — vec2 helper module.
 #
 # Exports tuple-shaped vec2 values plus a small operator surface.
