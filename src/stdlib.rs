@@ -726,6 +726,8 @@ pub fn install(env: &mut Env) {
     install_lang(env);
     install_gc(env);
     install_replay(env);
+    #[cfg(not(target_arch = "wasm32"))]
+    install_net(env);
     // Phase 10 session 8: explicit pause primitive. `pause(flag)`
     // toggles the runtime pause flag; `is_paused()` queries it.
     // While paused, the play loop skips `tick_frame` (no fibers
@@ -2260,6 +2262,220 @@ fn replay_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn replay_is_playing(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "replay.is_playing")?;
     Ok(Value::from_bool(crate::replay::is_playing()))
+}
+
+/// Phase 31: `net.*` namespace. Lockstep multiplayer over UDP.
+/// See `docs/changes/2026-05-10-multiplayer-rfc.md` for the full
+/// design. The script-facing surface is intentionally small:
+/// `net.host` / `net.connect` open a session; `net.send_input` and
+/// `net.tick_ready` drive the lockstep exchange; `net.close` ends.
+/// `net.local_peer_id` / `net.peer_count` / `net.is_connected` /
+/// `net.state_hash` are introspection helpers.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_net(env: &mut Env) {
+    let mut n = HashMap::new();
+    n.insert(
+        "host".to_string(),
+        Value::from_builtin("net.host", &["port", "expected_peers"], net_host),
+    );
+    n.insert(
+        "connect".to_string(),
+        Value::from_builtin("net.connect", &["addr"], net_connect),
+    );
+    n.insert(
+        "close".to_string(),
+        Value::from_builtin("net.close", &[], net_close),
+    );
+    n.insert(
+        "is_connected".to_string(),
+        Value::from_builtin("net.is_connected", &[], net_is_connected),
+    );
+    n.insert(
+        "local_peer_id".to_string(),
+        Value::from_builtin("net.local_peer_id", &[], net_local_peer_id),
+    );
+    n.insert(
+        "peer_count".to_string(),
+        Value::from_builtin("net.peer_count", &[], net_peer_count),
+    );
+    n.insert(
+        "send_input".to_string(),
+        Value::from_builtin("net.send_input", &["tick"], net_send_input),
+    );
+    n.insert(
+        "tick_ready".to_string(),
+        Value::from_builtin("net.tick_ready", &["tick"], net_tick_ready),
+    );
+    n.insert(
+        "advance_tick".to_string(),
+        Value::from_builtin("net.advance_tick", &["tick"], net_advance_tick),
+    );
+    n.insert(
+        "state_hash".to_string(),
+        Value::from_builtin("net.state_hash", &[], net_state_hash),
+    );
+    n.insert(
+        "send_state_hash".to_string(),
+        Value::from_builtin(
+            "net.send_state_hash",
+            &["tick", "hash"],
+            net_send_state_hash,
+        ),
+    );
+    n.insert(
+        "input_delay".to_string(),
+        Value::from_builtin("net.input_delay", &[], net_input_delay),
+    );
+    n.insert(
+        "session_ready".to_string(),
+        Value::from_builtin("net.session_ready", &[], net_session_ready),
+    );
+    env.set(
+        "net".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: n,
+            kind: "module",
+        }))),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_host(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "net.host")?;
+    let port = as_i64(&args[0], "net.host")? as u16;
+    let n = as_i64(&args[1], "net.host")?;
+    if !(2..=4).contains(&n) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("net.host: expected_peers must be 2..=4 (got {n})"),
+            help: None,
+        });
+    }
+    crate::net::host(port, n as u8).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_connect(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.connect")?;
+    let addr = string_arg(&args[0], "net.connect", "addr")?;
+    crate::net::connect(&addr).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_close(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.close")?;
+    crate::net::close();
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_is_connected(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.is_connected")?;
+    Ok(Value::from_bool(crate::net::is_connected()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_local_peer_id(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.local_peer_id")?;
+    Ok(Value::from_int(crate::net::local_peer_id() as i64))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_peer_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.peer_count")?;
+    Ok(Value::from_int(crate::net::peer_count() as i64))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_send_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.send_input")?;
+    let tick = as_i64(&args[0], "net.send_input")? as u32;
+    let frame = crate::net::snapshot_local(env);
+    crate::net::send_input(tick, frame);
+    crate::net::poll();
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_tick_ready(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.tick_ready")?;
+    let tick = as_i64(&args[0], "net.tick_ready")? as u32;
+    crate::net::poll();
+    Ok(Value::from_bool(crate::net::tick_ready(tick)))
+}
+
+/// Pull the per-peer Frames for the requested tick and overwrite the
+/// input ambients with the merged view (plus the per-peer `peer`
+/// list). Scripts call this immediately before reading inputs in a
+/// state's `on update(dt)`. Returns true when the tick was advanced;
+/// false when not all peers had input yet (in which case the caller
+/// should skip simulation this frame and try again next).
+#[cfg(not(target_arch = "wasm32"))]
+fn net_advance_tick(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.advance_tick")?;
+    let tick = as_i64(&args[0], "net.advance_tick")? as u32;
+    crate::net::poll();
+    if let Some(frames) = crate::net::take_inputs(tick) {
+        crate::net::apply_merged(env, &frames);
+        Ok(Value::from_bool(true))
+    } else {
+        Ok(Value::from_bool(false))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_state_hash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.state_hash")?;
+    Ok(Value::from_int(crate::net::local_state_hash() as i64))
+}
+
+/// Broadcast a state hash for `tick`. The lockstep runner uses this
+/// to detect divergence — if two peers report different hashes for
+/// the same tick, the simulation has desynced and the game is now
+/// unplayable. The script computes its own hash (typically a fold
+/// over relevant entity positions); this builtin does the wire send
+/// + cross-peer compare.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_send_state_hash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "net.send_state_hash")?;
+    let tick = as_i64(&args[0], "net.send_state_hash")? as u32;
+    let hash = as_i64(&args[1], "net.send_state_hash")? as u64;
+    crate::net::send_state_hash(tick, hash);
+    Ok(Value::NIL)
+}
+
+/// Input-delay configuration in ticks. Scripts that need a tighter
+/// input-feel knob can read this constant and tune their UI text
+/// (e.g. "Network: 4-tick delay"). The current value is fixed at
+/// `DEFAULT_INPUT_DELAY` (4 ticks at 60Hz = 66ms); a runtime setter
+/// is a follow-on session.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_input_delay(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.input_delay")?;
+    Ok(Value::from_int(crate::net::DEFAULT_INPUT_DELAY as i64))
+}
+
+/// True once every expected peer has joined the session. Scripts
+/// poll this on the host before advancing past tick 0 — otherwise
+/// late-joining clients would be locked out of the lockstep window.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_session_ready(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.session_ready")?;
+    crate::net::poll();
+    Ok(Value::from_bool(crate::net::session_ready()))
 }
 
 fn install_math(env: &mut Env) {

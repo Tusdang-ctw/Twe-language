@@ -30,6 +30,12 @@ pub mod window_focus;
 // gated internally with #[cfg(not(target_arch = "wasm32"))].
 pub mod bundle;
 
+// Phase 31: lockstep multiplayer over UDP. Native-only — wasm32 has
+// no UDP socket access, browser multiplayer would route via
+// WebRTC/WebSocket in a separate follow-on.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod net;
+
 // Phase 30 session 1: modules that depend on native-only crates
 // (wgpu, winit, rapier3d, gltf, gilrs, arboard, zstd, image) are
 // excluded from wasm32 builds. The 2D macroquad backend (play.rs)

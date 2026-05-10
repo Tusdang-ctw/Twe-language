@@ -666,6 +666,8 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ## Phase 31 — Post-v1.0 — Multiplayer foundation
 
+**Status note (2026-05-10):** Sessions 1–4 shipped. RFC merged at `docs/changes/2026-05-10-multiplayer-rfc.md` (lockstep over UDP, max 4 peers, direct-IP + Steam P2P only). `src/net.rs` ships UDP transport with tagged 16-byte headers, peer table, write-once per-tick local-input ring, redundant-history retransmit, MSG_HELLO/INPUT/HASH/BYE framing, and an end-to-end `tests/net.rs` two-thread 30-tick lockstep round (rolling-hash determinism check). Stdlib namespace: `net.host` / `net.connect` / `net.close` / `net.is_connected` / `net.local_peer_id` / `net.peer_count` / `net.session_ready` / `net.send_input` / `net.tick_ready` / `net.advance_tick` / `net.send_state_hash` / `net.state_hash` / `net.input_delay`. Sessions 5–7 (snapshot serialization for state-hash payload, `examples/pong_net.twe`, full closeout) deferred to follow-on commits.
+
 **Theme:** the biggest scope of the post-v1.0 set. Gated on `docs/changes/<date>-multiplayer-rfc.md` choosing one netcode model. Adding lockstep + rollback + authoritative C-S all at once would violate Principle 2; pick one.
 
 **Recommendation in the RFC:** lockstep over UDP. Smallest surface, leverages the Phase 29 determinism work directly, fits Principle 2's "one obvious way."
