@@ -1,0 +1,5 @@
+# Smallest possible suite — just exercises the top-level statement
+# evaluation path. Substring match is intentional: tolerates a
+# trailing newline difference or extra debug print.
+frames = 1
+match_mode = "substring"

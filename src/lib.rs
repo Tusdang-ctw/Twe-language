@@ -19,6 +19,14 @@ pub mod llm_loop;
 pub mod mcp;
 // Phase 33 session 6: examples-as-corpus header parser. Pure file IO.
 pub mod corpus;
+// Phase 33 session 7: replay-based LLM evaluation harness. Reuses
+// `eval::run_with_frames` for deterministic execution; one suite =
+// (prompt.md, expected.txt, config.toml) on disk.
+pub mod llm_eval;
+// Phase 33 session 8: error → fix corpus generator. Auto-mutates
+// `tests/programs/*.twe` and captures the resulting (broken,
+// verify_json, fix) triples for fine-tune training data.
+pub mod mutator;
 pub mod lsp;
 pub mod module;
 pub mod parser;

@@ -733,6 +733,12 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        // Phase 33 session 9: typed hole.
+        Expr::Hole { line, col } => {
+            s.push_str("{\"kind\":\"Hole\"");
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
     }
 }
 

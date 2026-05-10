@@ -1198,6 +1198,19 @@ impl Compiler {
                     *col,
                 ));
             }
+            // Phase 33 session 9: typed hole. The bytecode VM mirror
+            // is honest deferral — running a hole-bearing program
+            // through the VM raises a compile-time error that names
+            // the tree-walker as the supported runner. Verify-time
+            // reporting works against the AST directly so that path
+            // is independent of the VM mirror.
+            Expr::Hole { line, col } => {
+                return Err(self.unsupported(
+                    "typed hole `???` is only runnable through `--vm tree` in Phase 33; bytecode VM mirror lands in a follow-on",
+                    *line,
+                    *col,
+                ));
+            }
         }
         Ok(())
     }

@@ -2176,6 +2176,19 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
         Expr::Int { value, .. } => Ok(Value::from_int(*value)),
         Expr::Float { value, .. } => Ok(Value::from_float(*value)),
         Expr::Bool { value, .. } => Ok(Value::from_bool(*value)),
+        // Phase 33 session 9: typed hole. Verify reports holes as
+        // Warnings; *running* a program with an unfilled hole is a
+        // runtime error so the model knows the program isn't ready
+        // to ship.
+        Expr::Hole { line, col } => Err(RuntimeError {
+            line: *line,
+            col: *col,
+            message: "encountered unfilled hole `???`".to_string(),
+            help: Some(
+                "fill in this expression. `twec verify` reports the inferred expected type at each hole — use it to ground the next edit"
+                    .to_string(),
+            ),
+        }),
         Expr::IfExpr {
             cond,
             then_expr,

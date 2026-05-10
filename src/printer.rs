@@ -813,6 +813,8 @@ fn print_expr(out: &mut String, expr: &Expr, parent_prec: Prec) {
         Expr::Int { value, .. } => out.push_str(&value.to_string()),
         Expr::Float { value, .. } => print_float(out, *value),
         Expr::Bool { value, .. } => out.push_str(if *value { "true" } else { "false" }),
+        // Phase 33 session 9: round-trip the typed-hole sigil verbatim.
+        Expr::Hole { .. } => out.push_str("???"),
         Expr::Percent { value, .. } => {
             // Lexer stores the human-facing value verbatim — `5%`
             // becomes Percent(5.0), not Percent(0.05). Round-trip

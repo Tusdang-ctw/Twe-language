@@ -16,6 +16,8 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      llm-loop --command CMD [--arg ARG]* [--prompt PATH] [--max-rounds N] [--out PATH] [--trace-dir DIR] | \
      mcp | \
      corpus [--json] [-o PATH] | \
+     eval [SUITE] [--source FILE] [--source-dir DIR] [--root DIR] [--json] [-o PATH] | \
+     mutate [--root DIR] [--out DIR] [--rules RULESET] | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -93,6 +95,12 @@ pub fn run() {
         // Phase 33 session 6: enumerate the labeled examples corpus
         // built from `@task / @inputs / @expected / @category` headers.
         "corpus" => process::exit(handle_corpus(&args[2..])),
+        // Phase 33 session 7: grade an LLM-generated source against
+        // a replay-based suite. Returns a JSON scorecard.
+        "eval" => process::exit(handle_eval(&args[2..])),
+        // Phase 33 session 8: auto-mutate tests/programs/ to produce
+        // the fine-tune-ready (broken, verify_json, fix) corpus.
+        "mutate" => process::exit(handle_mutate(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -777,6 +785,250 @@ fn handle_corpus(args: &[String]) -> i32 {
             println!("{body}");
             0
         }
+    }
+}
+
+/// Phase 33 session 7: `twec eval [SUITE] [--source FILE] [--source-dir DIR]
+/// [--root DIR] [--json] [-o PATH]`. Grade one or all suites against
+/// a generated `.twe` source. Without `--source`/`--source-dir` lists
+/// available suites and exits 0 (the no-LLM dry-run mode).
+fn handle_eval(args: &[String]) -> i32 {
+    let mut suite_name: Option<String> = None;
+    let mut source_file: Option<String> = None;
+    let mut source_dir: Option<String> = None;
+    let mut root: String = "eval".to_string();
+    let mut out_path: Option<String> = None;
+    // `--json` is the default and only output today; accept the flag
+    // as a no-op so future text output is not a breaking change.
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--source" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --source takes a path argument");
+                    return 2;
+                }
+                source_file = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--source-dir" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --source-dir takes a directory");
+                    return 2;
+                }
+                source_dir = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--root" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --root takes a directory");
+                    return 2;
+                }
+                root = args[i + 1].clone();
+                i += 2;
+            }
+            "-o" | "--out" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: -o takes a path argument");
+                    return 2;
+                }
+                out_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--json" => {
+                i += 1;
+            }
+            other if other.starts_with('-') => {
+                eprintln!("error: unknown flag for `eval`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+            other => {
+                if suite_name.is_some() {
+                    eprintln!("error: `eval` takes at most one positional suite name");
+                    return 2;
+                }
+                suite_name = Some(other.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    // Discover suites.
+    let root_path = std::path::PathBuf::from(&root);
+    let suites = match discover_suites(&root_path, suite_name.as_deref()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    if suites.is_empty() {
+        eprintln!("no suites found under `{root}`");
+        return 1;
+    }
+
+    // Score each suite. For a single source file with multiple suites,
+    // grade the same source against each (useful for "did the model
+    // hit at least one target"). For `--source-dir`, look for one
+    // file named `<suite>.twe` inside the dir per suite.
+    let mut scores: Vec<crate::llm_eval::Score> = Vec::new();
+    for suite in &suites {
+        let source_text = if let Some(p) = source_file.as_ref() {
+            match fs::read_to_string(p) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: cannot read --source `{p}`: {e}");
+                    return 1;
+                }
+            }
+        } else if let Some(dir) = source_dir.as_ref() {
+            let candidate = std::path::Path::new(dir).join(format!("{}.twe", suite.name));
+            match fs::read_to_string(&candidate) {
+                Ok(s) => s,
+                Err(_) => {
+                    // Missing file = not generated yet = skipped, not error.
+                    continue;
+                }
+            }
+        } else {
+            // Dry run: no source. Just list the suite.
+            continue;
+        };
+        scores.push(crate::llm_eval::grade_source(suite, &source_text));
+    }
+
+    if scores.is_empty() {
+        // List discovered suites so the user knows what's available.
+        let mut listing = String::from("{\"tool\":\"twec-eval\",\"version\":1,\"suites\":[");
+        for (i, s) in suites.iter().enumerate() {
+            if i > 0 {
+                listing.push(',');
+            }
+            listing.push('"');
+            listing.push_str(&s.name);
+            listing.push('"');
+        }
+        listing.push_str("]}");
+        match out_path {
+            Some(p) => {
+                if let Err(e) = fs::write(&p, listing) {
+                    eprintln!("error: cannot write `{p}`: {e}");
+                    return 1;
+                }
+            }
+            None => println!("{listing}"),
+        }
+        return 0;
+    }
+
+    let body = crate::llm_eval::scorecard_json(&scores);
+    let any_failed = scores.iter().any(|s| !s.passed);
+    match out_path {
+        Some(p) => {
+            if let Err(e) = fs::write(&p, &body) {
+                eprintln!("error: cannot write `{p}`: {e}");
+                return 1;
+            }
+        }
+        None => println!("{body}"),
+    }
+    if any_failed {
+        1
+    } else {
+        0
+    }
+}
+
+fn discover_suites(
+    root: &std::path::Path,
+    only: Option<&str>,
+) -> Result<Vec<crate::llm_eval::Suite>, String> {
+    if !root.is_dir() {
+        return Err(format!("eval root `{}` is not a directory", root.display()));
+    }
+    let entries = fs::read_dir(root).map_err(|e| format!("read_dir `{}`: {e}", root.display()))?;
+    let mut suites = Vec::new();
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        if let Some(name_filter) = only {
+            if p.file_name().and_then(|s| s.to_str()) != Some(name_filter) {
+                continue;
+            }
+        }
+        // Skip directories that don't actually carry a suite (no
+        // expected.txt). Lets `eval/` host docs / scratch dirs.
+        if !p.join("expected.txt").exists() {
+            continue;
+        }
+        match crate::llm_eval::load_suite(&p) {
+            Ok(s) => suites.push(s),
+            Err(e) => return Err(e),
+        }
+    }
+    suites.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(suites)
+}
+
+/// Phase 33 session 8: `twec mutate [--root DIR] [--out DIR] [--rules RULESET]`.
+/// Walk every `.twe` file under `--root` (default `tests/programs`),
+/// apply each enabled mutation rule, capture (broken, verify_json,
+/// fix_json) triples, and write them as JSONL into `--out` (default
+/// `corpus/error_fix/`). The output is the fine-tune training set.
+fn handle_mutate(args: &[String]) -> i32 {
+    let mut root: String = "tests/programs".to_string();
+    let mut out: String = "corpus/error_fix".to_string();
+    let mut rules: String = "all".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--root" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --root takes a directory");
+                    return 2;
+                }
+                root = args[i + 1].clone();
+                i += 2;
+            }
+            "--out" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --out takes a directory");
+                    return 2;
+                }
+                out = args[i + 1].clone();
+                i += 2;
+            }
+            "--rules" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --rules takes a name");
+                    return 2;
+                }
+                rules = args[i + 1].clone();
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown argument for `mutate`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let root_p = std::path::PathBuf::from(&root);
+    let out_p = std::path::PathBuf::from(&out);
+    if let Err(e) = fs::create_dir_all(&out_p) {
+        eprintln!("error: cannot create `{}`: {e}", out_p.display());
+        return 1;
+    }
+    let report =
+        crate::mutator::run(&root_p, &out_p, crate::mutator::RuleSet::parse(&rules));
+    println!("{}", report.summary());
+    if report.triples_emitted == 0 {
+        1
+    } else {
+        0
     }
 }
 

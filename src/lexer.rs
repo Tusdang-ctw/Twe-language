@@ -109,6 +109,14 @@ pub enum TokenKind {
     /// annotations (`@inline`, `@nodiscard`) in future phases
     /// without burning more reserved characters.
     At,
+    /// `???` — typed hole (Phase 33 session 9). Authoring affordance:
+    /// the model writes `???` anywhere an expression is expected,
+    /// `twec verify` reports the inferred expected type and warns,
+    /// running the program errors at runtime when the hole is
+    /// evaluated. Three question marks chosen because `?` alone is
+    /// the optional-type sigil and `??` is reserved for the
+    /// null-coalesce operator if it ever ships.
+    Hole,
     Newline,
     Indent,
     Dedent,
@@ -363,6 +371,34 @@ impl<'a> Lexer<'a> {
                         col,
                     });
                     content_since_newline = true;
+                }
+                b'?' => {
+                    // Phase 33 session 9: `???` is a typed hole.
+                    // We require exactly three `?`s; one or two are
+                    // a lex error so a future `?` (optional-type)
+                    // or `??` (null-coalesce) can land cleanly.
+                    self.bump();
+                    if self.peek() == Some(b'?') {
+                        self.bump();
+                        if self.peek() == Some(b'?') {
+                            self.bump();
+                            out.push(Token {
+                                kind: TokenKind::Hole,
+                                line,
+                                col,
+                            });
+                            content_since_newline = true;
+                            continue;
+                        }
+                    }
+                    return Err(LexError {
+                        line,
+                        col,
+                        message: "stray `?` — Twe uses `???` for typed holes; `?` and `??` are reserved".to_string(),
+                        help: Some(
+                            "use `???` to mark a hole verify can report on; one or two `?`s are reserved for future operators".to_string(),
+                        ),
+                    });
                 }
                 b'=' => {
                     self.bump();

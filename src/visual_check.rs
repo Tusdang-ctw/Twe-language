@@ -415,6 +415,18 @@ fn check_expr(expr: &Expr, errors: &mut Vec<VisualError>) {
             line: *line,
             col: *col,
         }),
+        // Phase 33 session 9: typed holes are an authoring affordance
+        // for top-level Twe code; they don't lower to WGSL because
+        // there's no shader-side runtime panic. Reject early with a
+        // clear message.
+        Expr::Hole { line, col } => errors.push(VisualError {
+            message: "typed holes `???` aren't allowed inside a `visual` body".to_string(),
+            help: Some(
+                "fill in the expression before compiling the shader; visual blocks lower to WGSL and must be complete".to_string(),
+            ),
+            line: *line,
+            col: *col,
+        }),
     }
 }
 

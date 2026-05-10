@@ -312,12 +312,143 @@ pub fn verify_program_with_options(
         let mut deprecation_warnings = collect_deprecated_uses(&program);
         diagnostics.append(&mut deprecation_warnings);
     }
+    // Phase 33 session 9: collect typed-hole warnings unconditionally.
+    // Holes are an authoring affordance — verify always reports them
+    // so the LLM (or human) sees what's left to fill in. The warning
+    // does not gate exit code; `report.ok()` only counts errors.
+    let mut hole_warnings = collect_holes(&program);
+    diagnostics.append(&mut hole_warnings);
     diagnostics.sort_by_key(|d| (d.line, d.col));
     VerifyReport {
         file,
         strict,
         verified,
         diagnostics,
+    }
+}
+
+/// Phase 33 session 9: walk `program` and emit a Warning diagnostic
+/// per `Expr::Hole`. Each holds the source location so the LLM can
+/// locate it; the message includes the surrounding-context hint
+/// "fill this with an expression of inferred type T" once the
+/// inferer + verify integration land in a follow-on. For now the
+/// hint is a constant — the bare presence-of-hole signal is the
+/// useful contract.
+fn collect_holes(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> {
+    let mut out = Vec::new();
+    walk_holes_stmts(&program.stmts, &mut out);
+    out
+}
+
+fn walk_holes_stmts(stmts: &[Stmt], out: &mut Vec<VerifyDiagnostic>) {
+    for s in stmts {
+        match s {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } => {
+                walk_holes_expr(value, out);
+            }
+            Stmt::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                walk_holes_expr(cond, out);
+                walk_holes_stmts(then_body, out);
+                for (c, body) in elifs {
+                    walk_holes_expr(c, out);
+                    walk_holes_stmts(body, out);
+                }
+                if let Some(eb) = else_body {
+                    walk_holes_stmts(eb, out);
+                }
+            }
+            Stmt::While { cond, body, .. } => {
+                walk_holes_expr(cond, out);
+                walk_holes_stmts(body, out);
+            }
+            Stmt::For { iter, body, .. } => {
+                walk_holes_expr(iter, out);
+                walk_holes_stmts(body, out);
+            }
+            Stmt::Return { value: Some(v), .. } => walk_holes_expr(v, out),
+            Stmt::Expr(e) => walk_holes_expr(e, out),
+            Stmt::FunctionDecl { body, .. } => walk_holes_stmts(body, out),
+            Stmt::OnUpdate { body, .. }
+            | Stmt::OnRender { body, .. }
+            | Stmt::OnClassEvent { body, .. } => walk_holes_stmts(body, out),
+            // Long-tail statement kinds (Decl with members, Dialogue,
+            // Spawn/Despawn, Wait, Transition, Import, Say/Choice,
+            // Break/Continue) — leaving them out is the same trade-off
+            // the deprecation walker made. Authors who need holes in
+            // those positions will surface it; the visit set extends
+            // in a follow-on.
+            _ => {}
+        }
+    }
+}
+
+fn walk_holes_expr(e: &Expr, out: &mut Vec<VerifyDiagnostic>) {
+    match e {
+        Expr::Hole { line, col } => {
+            out.push(VerifyDiagnostic {
+                kind: "hole".to_string(),
+                severity: Severity::Warning,
+                line: *line,
+                col: *col,
+                message: "unfilled typed hole `???`".to_string(),
+                help: Some(
+                    "fill in this expression. Running the program will error at this location until the hole is filled."
+                        .to_string(),
+                ),
+                fix: None,
+            });
+        }
+        Expr::Call { callee, args, kwargs, .. } => {
+            walk_holes_expr(callee, out);
+            for a in args {
+                walk_holes_expr(a, out);
+            }
+            for (_, e) in kwargs {
+                walk_holes_expr(e, out);
+            }
+        }
+        Expr::Field { object, .. } => walk_holes_expr(object, out),
+        Expr::Index { object, index, .. } => {
+            walk_holes_expr(object, out);
+            walk_holes_expr(index, out);
+        }
+        Expr::Binary { left, right, .. } => {
+            walk_holes_expr(left, out);
+            walk_holes_expr(right, out);
+        }
+        Expr::Unary { operand, .. } => walk_holes_expr(operand, out),
+        Expr::Tuple { elems, .. } | Expr::List { elems, .. } => {
+            for e in elems {
+                walk_holes_expr(e, out);
+            }
+        }
+        Expr::Range { start, end, .. } => {
+            walk_holes_expr(start, out);
+            walk_holes_expr(end, out);
+        }
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            ..
+        } => {
+            walk_holes_expr(cond, out);
+            walk_holes_expr(then_expr, out);
+            for (c, body) in elifs {
+                walk_holes_expr(c, out);
+                walk_holes_expr(body, out);
+            }
+            walk_holes_expr(else_expr, out);
+        }
+        // Leaves and Interp-with-source-string-exprs don't carry holes.
+        _ => {}
     }
 }
 
@@ -507,6 +638,7 @@ fn walk_expr(
         | Expr::Percent { .. }
         | Expr::Quantity { .. }
         | Expr::Bool { .. }
+        | Expr::Hole { .. }
         | Expr::SelfRef { .. } => {}
     }
 }

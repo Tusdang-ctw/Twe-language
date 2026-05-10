@@ -719,6 +719,13 @@ impl Inferer {
             Expr::Str { .. } | Expr::Interp { .. } => Type::Str,
             Expr::Percent { .. } => Type::Percent,
             Expr::Quantity { unit, .. } => Type::Quantity(Rc::new(unit.clone())),
+            // Phase 33 session 9: typed hole. The inferer treats it
+            // as a fresh type variable so it unifies with whatever
+            // the surrounding context requires — that's how verify
+            // can later report "expected type at this hole." Strict
+            // mode does NOT push an error here; the hole is reported
+            // separately by `verify::collect_holes` as a Warning.
+            Expr::Hole { .. } => self.fresh_var(),
             Expr::Ident { name, line, col } => {
                 match self.lookup(name) {
                     Some(t) => t,

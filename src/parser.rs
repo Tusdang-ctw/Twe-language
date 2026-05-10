@@ -1638,6 +1638,14 @@ impl<'a> Parser<'a> {
                 line: tok.line,
                 col: tok.col,
             }),
+            // Phase 33 session 9: typed hole. The parser accepts
+            // `???` anywhere a primary expression is expected.
+            // Verify reports it as a Warning; eval errors at runtime
+            // when the expression is actually evaluated.
+            TokenKind::Hole => Ok(Expr::Hole {
+                line: tok.line,
+                col: tok.col,
+            }),
             TokenKind::UnitLit { value, unit } => Ok(Expr::Quantity {
                 value,
                 unit,
@@ -1958,6 +1966,7 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             line,
             col,
         },
+        Expr::Hole { .. } => Expr::Hole { line, col },
     }
 }
 

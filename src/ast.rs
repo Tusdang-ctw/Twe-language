@@ -486,6 +486,17 @@ pub enum Expr {
         line: u32,
         col: u32,
     },
+    /// Phase 33 session 9: typed hole `???`. Authoring affordance —
+    /// an LLM (or human) can ship a structural skeleton with `???`
+    /// placeholders, ask `twec verify` for the expected type at each
+    /// hole, then fill them iteratively. Verify emits a Warning;
+    /// running the program errors at runtime when a hole is
+    /// evaluated. Purely additive: no existing program changes
+    /// behaviour, and `???` is unambiguous in the grammar.
+    Hole {
+        line: u32,
+        col: u32,
+    },
     /// Single-line `if cond: a elif d: e else: b` ternary form. The
     /// statement-level `if cond: <block>` lives on `Stmt::If`; this
     /// variant is the expression-position counterpart and demands a
@@ -544,6 +555,7 @@ impl Expr {
             | Expr::Call { line, .. }
             | Expr::Unary { line, .. }
             | Expr::Binary { line, .. }
+            | Expr::Hole { line, .. }
             | Expr::IfExpr { line, .. } => *line,
         }
     }
@@ -567,6 +579,7 @@ impl Expr {
             | Expr::Call { col, .. }
             | Expr::Unary { col, .. }
             | Expr::Binary { col, .. }
+            | Expr::Hole { col, .. }
             | Expr::IfExpr { col, .. } => *col,
         }
     }
