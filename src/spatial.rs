@@ -134,7 +134,7 @@ pub struct LooseGrid {
     cells: HashMap<(i32, i32), Vec<u64>>,
     /// id -> AABB, so removal can revisit only the cells the entity
     /// occupies.
-    occupants: HashMap<u64, Aabb>,
+    pub(crate) occupants: HashMap<u64, Aabb>,
 }
 
 impl LooseGrid {
@@ -337,6 +337,19 @@ impl Bvh {
         hits
     }
 
+    /// All leaf IDs whose AABB passes the frustum test. Internal
+    /// nodes whose bounds are fully outside the frustum are pruned;
+    /// this gives `O(log N + V)` where V is the visible-leaf count.
+    pub fn query_frustum(&self, frustum: &crate::cull::Frustum) -> Vec<u64> {
+        let mut hits = Vec::new();
+        if !self.leaves.is_empty() {
+            self.traverse_frustum(self.root, frustum, &mut hits);
+        }
+        hits.sort_unstable();
+        hits.dedup();
+        hits
+    }
+
     fn traverse_box(&self, node: usize, query: &Aabb, out: &mut Vec<u64>) {
         match &self.nodes[node] {
             BvhNode::Leaf { bounds, leaf_index } => {
@@ -354,6 +367,32 @@ impl Bvh {
                 }
                 self.traverse_box(*left, query, out);
                 self.traverse_box(*right, query, out);
+            }
+        }
+    }
+
+    fn traverse_frustum(
+        &self,
+        node: usize,
+        frustum: &crate::cull::Frustum,
+        out: &mut Vec<u64>,
+    ) {
+        match &self.nodes[node] {
+            BvhNode::Leaf { bounds, leaf_index } => {
+                if frustum.may_contain(bounds) {
+                    out.push(self.leaves[*leaf_index].0);
+                }
+            }
+            BvhNode::Internal {
+                bounds,
+                left,
+                right,
+            } => {
+                if frustum.fully_outside(bounds) {
+                    return;
+                }
+                self.traverse_frustum(*left, frustum, out);
+                self.traverse_frustum(*right, frustum, out);
             }
         }
     }
@@ -516,6 +555,41 @@ impl WorldSpatial {
         }
         if let Some(bvh) = &self.static_built {
             for id in bvh.query_box(query) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// All IDs (dynamic + static) whose AABB might be visible
+    /// through `frustum`. Dynamic objects are linear-scanned (the
+    /// loose grid doesn't accelerate frustum tests well — every
+    /// dynamic object is in some cell, and the cell traversal saves
+    /// nothing over per-object plane tests). Static objects use the
+    /// BVH: prune internal nodes whose bounds are fully outside
+    /// before recursing.
+    pub fn query_frustum(&mut self, frustum: &crate::cull::Frustum) -> Vec<u64> {
+        let mut out: Vec<u64> = self
+            .dynamic
+            .occupants
+            .iter()
+            .filter_map(|(id, aabb)| {
+                if frustum.may_contain(aabb) {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !self.static_pending.is_empty() {
+            self.build_static();
+        }
+        if let Some(bvh) = &self.static_built {
+            for id in bvh.query_frustum(frustum) {
                 if !out.contains(&id) {
                     out.push(id);
                 }

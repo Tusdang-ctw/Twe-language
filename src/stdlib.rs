@@ -730,6 +730,8 @@ pub fn install(env: &mut Env) {
     install_net(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_world(env);
+    #[cfg(not(target_arch = "wasm32"))]
+    install_terrain(env);
     // Phase 10 session 8: explicit pause primitive. `pause(flag)`
     // toggles the runtime pause flag; `is_paused()` queries it.
     // While paused, the play loop skips `tick_frame` (no fibers
@@ -2642,6 +2644,52 @@ fn install_world(env: &mut Env) {
         "stream_clear".to_string(),
         Value::from_builtin("world.stream_clear", &[], world_stream_clear),
     );
+    // ---- Phase 32 session 4: LOD chains ----
+    w.insert(
+        "set_lod_chain".to_string(),
+        Value::from_builtin(
+            "world.set_lod_chain",
+            &["class", "assets", "switch_distances"],
+            world_set_lod_chain,
+        ),
+    );
+    w.insert(
+        "lod_for_distance".to_string(),
+        Value::from_builtin(
+            "world.lod_for_distance",
+            &["class", "distance"],
+            world_lod_for_distance,
+        ),
+    );
+    w.insert(
+        "lod_index_for_distance".to_string(),
+        Value::from_builtin(
+            "world.lod_index_for_distance",
+            &["class", "distance"],
+            world_lod_index_for_distance,
+        ),
+    );
+    w.insert(
+        "clear_lod".to_string(),
+        Value::from_builtin("world.clear_lod", &[], world_clear_lod),
+    );
+    // ---- Phase 32 session 6: frustum culling ----
+    w.insert(
+        "spatial_query_frustum".to_string(),
+        Value::from_builtin(
+            "world.spatial_query_frustum",
+            &["matrix"],
+            world_spatial_query_frustum,
+        ),
+    );
+    w.insert(
+        "frustum_contains_sphere".to_string(),
+        Value::from_builtin(
+            "world.frustum_contains_sphere",
+            &["matrix", "x", "y", "z", "radius"],
+            world_frustum_contains_sphere,
+        ),
+    );
     env.set(
         "world".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -2837,6 +2885,365 @@ fn world_stream_clear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     arity(args, 0, "world.stream_clear")?;
     crate::streaming::with_streaming(|s| s.clear());
     Ok(Value::NIL)
+}
+
+// ---- Phase 32 session 4: LOD-chain builtins ----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_set_lod_chain(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "world.set_lod_chain")?;
+    let class = string_arg(&args[0], "world.set_lod_chain", "class")?;
+    let assets = list_of_strings(&args[1], "world.set_lod_chain", "assets")?;
+    let switches = list_of_floats(&args[2], "world.set_lod_chain", "switch_distances")?;
+    let chain = crate::lod::LodChain::new(assets, switches.iter().map(|f| *f as f32).collect())
+        .map_err(|m| RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("world.set_lod_chain: {m}"),
+            help: None,
+        })?;
+    crate::lod::with_table(|t| {
+        t.insert(class, chain);
+    });
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_lod_for_distance(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "world.lod_for_distance")?;
+    let class = string_arg(&args[0], "world.lod_for_distance", "class")?;
+    let distance = as_f64(&args[1], "world.lod_for_distance")? as f32;
+    let asset = crate::lod::with_table(|t| {
+        t.get(&class)
+            .map(|chain| chain.asset_for_distance(distance).to_string())
+    });
+    match asset {
+        Some(s) => Ok(Value::from_string(s)),
+        None => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("world.lod_for_distance: no LOD chain registered for class '{class}'"),
+            help: Some("call world.set_lod_chain(class, assets, switches) first".to_string()),
+        }),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_lod_index_for_distance(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "world.lod_index_for_distance")?;
+    let class = string_arg(&args[0], "world.lod_index_for_distance", "class")?;
+    let distance = as_f64(&args[1], "world.lod_index_for_distance")? as f32;
+    let idx = crate::lod::with_table(|t| t.get(&class).map(|chain| chain.select(distance) as i64));
+    match idx {
+        Some(i) => Ok(Value::from_int(i)),
+        None => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "world.lod_index_for_distance: no LOD chain registered for class '{class}'"
+            ),
+            help: None,
+        }),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_clear_lod(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "world.clear_lod")?;
+    crate::lod::with_table(|t| t.clear());
+    Ok(Value::NIL)
+}
+
+// ---- Phase 32 session 6: frustum-culling builtins ----
+
+/// Read a 4x4 matrix from a Twe value: a list of 4 tuples of 4 floats
+/// each (row-major), or a flat list of 16 floats. Either form is
+/// accepted because scripts naturally produce both — `[(1.0, 0.0,
+/// 0.0, 0.0), (0.0, 1.0, ...)]` mirrors GLSL row-format, while a
+/// flat 16-element list is what comes back from a future
+/// `camera.view_proj()` builtin.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_matrix4x4(v: &Value, op: &str) -> Result<[[f32; 4]; 4], RuntimeError> {
+    if !v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{op}: matrix must be a list (got {})", v.type_name()),
+            help: None,
+        });
+    }
+    let rc = v.as_list();
+    let outer = rc.borrow();
+    if outer.len() == 16 {
+        // Flat row-major form.
+        let mut m = [[0.0; 4]; 4];
+        for (i, val) in outer.iter().enumerate() {
+            m[i / 4][i % 4] = as_f64(val, op)? as f32;
+        }
+        return Ok(m);
+    }
+    if outer.len() != 4 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{op}: matrix must have 4 rows or 16 flat entries (got {})",
+                outer.len()
+            ),
+            help: None,
+        });
+    }
+    let mut m = [[0.0; 4]; 4];
+    for (i, row_v) in outer.iter().enumerate() {
+        let elems: Vec<Value> = if row_v.is_tuple() {
+            row_v.as_tuple().iter().cloned().collect()
+        } else if row_v.is_list() {
+            let r = row_v.as_list();
+            let cloned = r.borrow().iter().cloned().collect();
+            cloned
+        } else {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{op}: matrix row {i} must be a tuple or list"),
+                help: None,
+            });
+        };
+        if elems.len() != 4 {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "{op}: matrix row {i} must have 4 elements (got {})",
+                    elems.len()
+                ),
+                help: None,
+            });
+        }
+        for (j, val) in elems.iter().enumerate() {
+            m[i][j] = as_f64(val, op)? as f32;
+        }
+    }
+    Ok(m)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_spatial_query_frustum(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "world.spatial_query_frustum")?;
+    let m = read_matrix4x4(&args[0], "world.spatial_query_frustum")?;
+    let frustum = crate::cull::Frustum::from_view_proj_row_major(m);
+    let hits: Vec<Value> = crate::spatial::with_world(|w| w.query_frustum(&frustum))
+        .into_iter()
+        .map(|id| Value::from_int(id as i64))
+        .collect();
+    Ok(Value::from_list(Rc::new(RefCell::new(hits))))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn world_frustum_contains_sphere(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "world.frustum_contains_sphere")?;
+    let m = read_matrix4x4(&args[0], "world.frustum_contains_sphere")?;
+    let x = as_f64(&args[1], "world.frustum_contains_sphere")? as f32;
+    let y = as_f64(&args[2], "world.frustum_contains_sphere")? as f32;
+    let z = as_f64(&args[3], "world.frustum_contains_sphere")? as f32;
+    let r = as_f64(&args[4], "world.frustum_contains_sphere")? as f32;
+    let frustum = crate::cull::Frustum::from_view_proj_row_major(m);
+    Ok(Value::from_bool(frustum.may_contain_sphere(x, y, z, r)))
+}
+
+// ---- Phase 32 session 5: terrain.* namespace ----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn install_terrain(env: &mut Env) {
+    let mut t = HashMap::new();
+    t.insert(
+        "set_chunk_size".to_string(),
+        Value::from_builtin(
+            "terrain.set_chunk_size",
+            &["meters"],
+            terrain_set_chunk_size,
+        ),
+    );
+    t.insert(
+        "set_chunk_resolution".to_string(),
+        Value::from_builtin(
+            "terrain.set_chunk_resolution",
+            &["samples"],
+            terrain_set_chunk_resolution,
+        ),
+    );
+    t.insert(
+        "set_chunk".to_string(),
+        Value::from_builtin(
+            "terrain.set_chunk",
+            &["cx", "cz", "heights"],
+            terrain_set_chunk,
+        ),
+    );
+    t.insert(
+        "has_chunk".to_string(),
+        Value::from_builtin("terrain.has_chunk", &["cx", "cz"], terrain_has_chunk),
+    );
+    t.insert(
+        "height_at".to_string(),
+        Value::from_builtin("terrain.height_at", &["x", "z"], terrain_height_at),
+    );
+    t.insert(
+        "normal_at".to_string(),
+        Value::from_builtin("terrain.normal_at", &["x", "z"], terrain_normal_at),
+    );
+    t.insert(
+        "clear".to_string(),
+        Value::from_builtin("terrain.clear", &[], terrain_clear),
+    );
+    env.set(
+        "terrain".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: t,
+            kind: "module",
+        }))),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn terrain_set_chunk_size(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "terrain.set_chunk_size")?;
+    let m = as_f64(&args[0], "terrain.set_chunk_size")? as f32;
+    if m <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("terrain.set_chunk_size: meters must be positive (got {m})"),
+            help: None,
+        });
+    }
+    crate::terrain::with_terrain(|t| t.chunk_size = m);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn terrain_set_chunk_resolution(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "terrain.set_chunk_resolution")?;
+    let n = as_i64(&args[0], "terrain.set_chunk_resolution")?;
+    if !(2..=1024).contains(&n) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("terrain.set_chunk_resolution: must be 2..=1024 (got {n})"),
+            help: None,
+        });
+    }
+    crate::terrain::with_terrain(|t| t.chunk_resolution = n as u32);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn terrain_set_chunk(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "terrain.set_chunk")?;
+    let cx = as_i64(&args[0], "terrain.set_chunk")? as i32;
+    let cz = as_i64(&args[1], "terrain.set_chunk")? as i32;
+    let heights = list_of_floats(&args[2], "terrain.set_chunk", "heights")?;
+    let heights_f32: Vec<f32> = heights.iter().map(|f| *f as f32).collect();
+    crate::terrain::with_terrain(|t| t.set_chunk(cx, cz, heights_f32)).map_err(|m| {
+        RuntimeError {
+            line: 0,
+            col: 0,
+            message: m,
+            help: None,
+        }
+    })?;
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn terrain_has_chunk(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "terrain.has_chunk")?;
+    let cx = as_i64(&args[0], "terrain.has_chunk")? as i32;
+    let cz = as_i64(&args[1], "terrain.has_chunk")? as i32;
+    Ok(Value::from_bool(crate::terrain::with_terrain(|t| {
+        t.has_chunk(cx, cz)
+    })))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn terrain_height_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "terrain.height_at")?;
+    let x = as_f64(&args[0], "terrain.height_at")? as f32;
+    let z = as_f64(&args[1], "terrain.height_at")? as f32;
+    match crate::terrain::with_terrain(|t| t.height_at(x, z)) {
+        Some(h) => Ok(Value::from_float(h as f64)),
+        None => Ok(Value::NIL),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn terrain_normal_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "terrain.normal_at")?;
+    let x = as_f64(&args[0], "terrain.normal_at")? as f32;
+    let z = as_f64(&args[1], "terrain.normal_at")? as f32;
+    match crate::terrain::with_terrain(|t| t.normal_at(x, z)) {
+        Some(n) => Ok(Value::from_tuple(Rc::new(vec![
+            Value::from_float(n[0] as f64),
+            Value::from_float(n[1] as f64),
+            Value::from_float(n[2] as f64),
+        ]))),
+        None => Ok(Value::NIL),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn terrain_clear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "terrain.clear")?;
+    crate::terrain::with_terrain(|t| t.clear());
+    Ok(Value::NIL)
+}
+
+// ---- Helpers shared by Phase 32 session 4 / 5 / 6 ----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn list_of_strings(v: &Value, op: &str, label: &str) -> Result<Vec<String>, RuntimeError> {
+    if !v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{op} expects a list of strings for {label}"),
+            help: None,
+        });
+    }
+    let rc = v.as_list();
+    let elems = rc.borrow();
+    let mut out = Vec::with_capacity(elems.len());
+    for e in elems.iter() {
+        if !e.is_str() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{op}: {label} entry must be a string"),
+                help: None,
+            });
+        }
+        out.push(e.as_string().clone());
+    }
+    Ok(out)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn list_of_floats(v: &Value, op: &str, label: &str) -> Result<Vec<f64>, RuntimeError> {
+    if !v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{op} expects a list of numbers for {label}"),
+            help: None,
+        });
+    }
+    let rc = v.as_list();
+    let elems = rc.borrow();
+    let mut out = Vec::with_capacity(elems.len());
+    for e in elems.iter() {
+        out.push(as_f64(e, op)?);
+    }
+    Ok(out)
 }
 
 fn install_math(env: &mut Env) {
