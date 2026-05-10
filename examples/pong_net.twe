@@ -1,0 +1,322 @@
+# Pong Net — 2-player LAN pong over lockstep multiplayer.
+#
+# Phase 31 session 6 — the canonical multiplayer example. Two peers
+# exchange inputs every tick over UDP; both run an identical
+# deterministic simulation, so the ball + paddles are bit-exact on
+# both screens. No central server. No NAT traversal. Direct IP only.
+#
+# Run as host:
+#   twec play examples/pong_net.twe
+#   (then press 1 to host on UDP port 7777)
+#
+# Run as client (different machine on the same LAN):
+#   twec play examples/pong_net.twe
+#   (then press 2 — connects to 127.0.0.1:7777 by default; edit
+#    `default_host` below to point at the host's IP.)
+#
+# Controls (both peers): W / S to move your paddle. The host is the
+# left paddle (peer 0); the client is the right paddle (peer 1).
+#
+# Determinism contract:
+#   - Both peers must produce a bit-exact simulation. The constants
+#     below are `let`-bindings → constant-folded.
+#   - Ball physics, paddle clamps, and serve direction are pure
+#     functions of input + tick, no random state.
+#   - Every 60 ticks (~1s) the host computes a state hash and
+#     broadcasts it via `net.send_state_hash`. If the client's hash
+#     diverges, the runtime prints `[twec net] DESYNC at tick N`
+#     to stderr.
+
+let view_w = 640.0
+let view_h = 480.0
+let paddle_w = 12.0
+let paddle_h = 80.0
+let paddle_speed = 360.0
+let ball_size = 10.0
+let ball_speed = 320.0
+let win_score = 5
+
+# Default host address for the client. Override by editing this
+# string before launching the second peer (e.g. "192.168.1.42:7777"
+# on a LAN). Phase 31 ships direct-IP only — NAT traversal +
+# matchmaking are explicit deferrals per the multiplayer RFC.
+let default_host = "127.0.0.1:7777"
+
+scene PongNet:
+    var left_y = 200.0
+    var right_y = 200.0
+    var ball_x = 320.0
+    var ball_y = 240.0
+    var ball_vx = 320.0
+    var ball_vy = 192.0
+    var left_score = 0
+    var right_score = 0
+    var serve_timer = 0.0
+    # Lockstep tick counter. Advances once per simulated frame, NOT
+    # once per render frame — when net inputs aren't ready yet, the
+    # simulation pauses without incrementing.
+    var tick = 0
+    # Cached local peer id for cheap reads inside on render().
+    var my_id = 0
+
+    initial: lobby
+
+    state lobby:
+        # Pre-connection menu. Press 1 to become the host (peer 0,
+        # left paddle). Press 2 to connect to `default_host` (peer 1,
+        # right paddle). Both peers reach `playing` once the session
+        # is fully populated.
+        on update(dt):
+            if not net.is_connected():
+                # H = host, J = join. Letter keys avoid the
+                # `key_press.1` parse ambiguity (digit fields parse
+                # as integer literals after `.`).
+                if key_press.h:
+                    net.host(7777, 2)
+                if key_press.j:
+                    net.connect(default_host)
+            else:
+                # Wait for the second peer to fully join before
+                # advancing — `session_ready()` flips true once the
+                # host has accepted the hello (or the client has its
+                # hello-ack). Without this gate, the host would tick
+                # alone past frame 0 and lock the client out of the
+                # lockstep window.
+                if net.session_ready():
+                    my_id = net.local_peer_id()
+                    -> playing
+
+        on render():
+            text(
+                "PONG NET",
+                at: (view_w * 0.5 - 90, 100),
+                size: 48,
+                color: color.white,
+            )
+            if net.is_connected():
+                text(
+                    "Waiting for peer to join...",
+                    at: (view_w * 0.5 - 140, 240),
+                    size: 24,
+                    color: color.yellow,
+                )
+            else:
+                text(
+                    "Press H to host (port 7777)",
+                    at: (view_w * 0.5 - 160, 220),
+                    size: 22,
+                    color: color.white,
+                )
+                text(
+                    "Press J to join {default_host}",
+                    at: (view_w * 0.5 - 160, 260),
+                    size: 22,
+                    color: color.white,
+                )
+
+    state playing:
+        on update(dt):
+            # Lockstep step. Snapshot + send local input for the
+            # current tick; check if every peer has delivered theirs;
+            # if so, merge their inputs into the `peer` ambient and
+            # advance the simulation. Otherwise hold the frame —
+            # rendering still runs, the player sees the previous
+            # frame for one extra display tick.
+            net.send_input(tick)
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+
+            # ---- Left paddle (peer 0). Controlled by peer[0].key. ----
+            if peer[0].key.w:
+                left_y -= paddle_speed * dt
+            if peer[0].key.s:
+                left_y += paddle_speed * dt
+            if left_y < 0.0:
+                left_y = 0.0
+            if left_y > view_h - paddle_h:
+                left_y = view_h - paddle_h
+
+            # ---- Right paddle (peer 1). Controlled by peer[1].key. ----
+            if peer[1].key.w:
+                right_y -= paddle_speed * dt
+            if peer[1].key.s:
+                right_y += paddle_speed * dt
+            if right_y < 0.0:
+                right_y = 0.0
+            if right_y > view_h - paddle_h:
+                right_y = view_h - paddle_h
+
+            # ---- Ball physics — identical on both peers. ----
+            ball_x += ball_vx * dt
+            ball_y += ball_vy * dt
+
+            if ball_y < 0.0:
+                ball_y = 0.0
+                ball_vy = -ball_vy
+            if ball_y > view_h - ball_size:
+                ball_y = view_h - ball_size
+                ball_vy = -ball_vy
+
+            if ball_x < paddle_w and ball_vx < 0.0:
+                if ball_y + ball_size > left_y and ball_y < left_y + paddle_h:
+                    ball_x = paddle_w
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (left_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+
+            if ball_x > view_w - paddle_w - ball_size and ball_vx > 0.0:
+                if ball_y + ball_size > right_y and ball_y < right_y + paddle_h:
+                    ball_x = view_w - paddle_w - ball_size
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (right_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+
+            if ball_x < -ball_size:
+                right_score += 1
+                -> scored
+            if ball_x > view_w:
+                left_score += 1
+                -> scored
+
+            # Periodic state-hash broadcast. Hashing every tick would
+            # spam the network; once a second is enough to catch a
+            # desync inside two seconds wall-clock. The hashed tuple
+            # captures the full simulation state — paddle positions,
+            # ball position + velocity, scores. If two peers compute
+            # different hashes for the same tick, the runtime prints
+            # `[twec net] DESYNC at tick N` and the run is now
+            # divergent.
+            if math.mod(tick, 60) == 0:
+                let snap = (
+                    left_y,
+                    right_y,
+                    ball_x,
+                    ball_y,
+                    ball_vx,
+                    ball_vy,
+                    left_score,
+                    right_score,
+                )
+                net.send_state_hash(tick, net.hash(snap))
+
+            tick += 1
+
+        on render():
+            var i = 0
+            while i < 10:
+                rect(
+                    at: (view_w * 0.5 - 1.0, i * 48.0 + 8.0),
+                    size: (2, 24),
+                    color: color.gray,
+                )
+                i += 1
+            rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
+            rect(
+                at: (view_w - paddle_w, right_y),
+                size: (paddle_w, paddle_h),
+                color: color.white,
+            )
+            rect(
+                at: (ball_x, ball_y),
+                size: (ball_size, ball_size),
+                color: color.white,
+            )
+            text("{left_score}", at: (view_w * 0.25, 60), size: 48, color: color.white)
+            text("{right_score}", at: (view_w * 0.75 - 24, 60), size: 48, color: color.white)
+            # Tiny status footer so each peer can confirm at a glance
+            # which paddle they own + what tick they're on.
+            text(
+                "you = peer {my_id}   tick {tick}",
+                at: (8, view_h - 18),
+                size: 14,
+                color: color.gray,
+            )
+
+    state scored:
+        on update(dt):
+            # Even during the serve pause, both peers must keep the
+            # tick exchange running — otherwise tick_ready(tick) on
+            # one peer would stall on the other peer's missing input.
+            net.send_input(tick)
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+            tick += 1
+
+            serve_timer -= dt
+            if serve_timer <= 0.0:
+                serve_timer = 0.8
+                ball_x = view_w * 0.5 - ball_size * 0.5
+                ball_y = view_h * 0.5 - ball_size * 0.5
+                if right_score > left_score:
+                    ball_vx = -ball_speed
+                else:
+                    ball_vx = ball_speed
+                ball_vy = ball_speed * 0.6
+                if left_score >= win_score or right_score >= win_score:
+                    -> game_over
+                else:
+                    -> playing
+
+        on render():
+            rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
+            rect(
+                at: (view_w - paddle_w, right_y),
+                size: (paddle_w, paddle_h),
+                color: color.white,
+            )
+            text("{left_score}", at: (view_w * 0.25, 60), size: 48, color: color.yellow)
+            text("{right_score}", at: (view_w * 0.75 - 24, 60), size: 48, color: color.yellow)
+            text("POINT", at: (view_w * 0.5 - 50, 220), size: 36, color: color.yellow)
+
+    state game_over:
+        on update(dt):
+            net.send_input(tick)
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+            tick += 1
+            # No restart over network in v1.0 — closing the session
+            # cleanly is the right behavior. Pressing R closes the
+            # net session and returns to the lobby; both peers must
+            # do this independently to start a new match.
+            if peer[0].key_press.r or peer[1].key_press.r:
+                net.close()
+                left_score = 0
+                right_score = 0
+                ball_x = view_w * 0.5
+                ball_y = view_h * 0.5
+                ball_vx = ball_speed
+                ball_vy = ball_speed * 0.6
+                tick = 0
+                -> lobby
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            if left_score >= win_score:
+                text(
+                    "Left wins!",
+                    at: (view_w * 0.5 - 100, 180),
+                    size: 48,
+                    color: color.green,
+                )
+            else:
+                text(
+                    "Right wins!",
+                    at: (view_w * 0.5 - 110, 180),
+                    size: 48,
+                    color: color.green,
+                )
+            text(
+                "Final  {left_score} - {right_score}",
+                at: (view_w * 0.5 - 90, 250),
+                size: 24,
+                color: color.white,
+            )
+            text(
+                "Press R to return to lobby",
+                at: (view_w * 0.5 - 130, 320),
+                size: 18,
+                color: color.gray,
+            )

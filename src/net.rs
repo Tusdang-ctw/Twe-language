@@ -665,6 +665,43 @@ fn pseudorandom_u32() -> u32 {
     nanos ^ 0xa5a5_5a5a
 }
 
+// ---------- snapshot serialization (Phase 31 session 5) ----------
+
+/// Encode any serializable Twe Value as canonical JSON. Uses
+/// `crate::save::encode` for the value→json mapping (so Tweisms like
+/// `Percent`, `Range`, `Quantity` round-trip via tagged objects) and
+/// `crate::json::to_string` for the emit (object fields are emitted
+/// in sorted BTreeMap order — required for cross-peer determinism).
+///
+/// Used by `net.snapshot_json(state)` (debug pretty-print of game
+/// state) and as the input to [`hash_value`] (deterministic state
+/// hash for desync detection).
+pub fn snapshot_json(value: &crate::value::Value) -> Result<String, String> {
+    let json = crate::save::encode(value)?;
+    Ok(crate::json::to_string(&json))
+}
+
+/// Hash a Twe value to a u64 by serializing it to canonical JSON and
+/// running FNV-1a over the bytes. Stable across machines + Rust
+/// versions (no allocator addresses, no HashMap iteration order).
+///
+/// Used by `net.hash(state)` so scripts can compute a state hash to
+/// pass to [`send_state_hash`] without having to fold every
+/// individual field by hand.
+pub fn hash_value(value: &crate::value::Value) -> Result<u64, String> {
+    let s = snapshot_json(value)?;
+    Ok(fnv1a(s.as_bytes()))
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 // ---------- input ambient bridge ----------
 //
 // The lockstep runner needs to (1) read the local input ambients
@@ -744,26 +781,45 @@ fn read_mouse_axis(env: &Env, axis: usize) -> f64 {
 /// shares one input track). Adversarial games disambiguate via the
 /// `peer` ambient — `peer[0].key.left`, `peer[1].key.right` — which
 /// the runner installs alongside the merged view.
+///
+/// Per-peer `key` / `key_press` objects are populated with the same
+/// field set as the existing global `key` ambient (every supported
+/// key name) so `peer[0].key.w` is readable whether or not "w" is
+/// currently held — values are just `false` when unheld. Without
+/// this, scripts reading missing fields would hit Principle-3
+/// "field not found" errors on the first frame.
 pub fn apply_merged(env: &mut Env, frames: &[(u8, Frame)]) {
+    // Read the current global `key` / `key_press` field templates so
+    // per-peer objects match shape. If they're missing (e.g. very
+    // first frame before stdlib install), fall back to whatever
+    // keys are held in any peer's frame.
+    let key_template = field_name_template(env, "key");
+    let key_press_template = field_name_template(env, "key_press");
+    let mb_template = field_name_template(env, "mouse_held");
+    let mb_press_template = field_name_template(env, "mouse_press");
+
     // Build per-peer objects.
     let mut peers_list: Vec<Value> = Vec::with_capacity(frames.len());
     for (id, f) in frames {
         let mut fields: HashMap<String, Value> = HashMap::new();
         fields.insert("id".to_string(), Value::from_int(*id as i64));
-        fields.insert("key".to_string(), bool_field_object(&f.keys_held));
+        fields.insert(
+            "key".to_string(),
+            bool_field_object(&key_template, &f.keys_held),
+        );
         fields.insert(
             "key_press".to_string(),
-            bool_field_object(&f.keys_pressed),
+            bool_field_object(&key_press_template, &f.keys_pressed),
         );
         fields.insert("mouse_x".to_string(), Value::from_float(f.mouse_x));
         fields.insert("mouse_y".to_string(), Value::from_float(f.mouse_y));
         fields.insert(
             "mouse_held".to_string(),
-            bool_field_object(&f.mb_held),
+            bool_field_object(&mb_template, &f.mb_held),
         );
         fields.insert(
             "mouse_press".to_string(),
-            bool_field_object(&f.mb_press),
+            bool_field_object(&mb_press_template, &f.mb_press),
         );
         peers_list.push(Value::from_object(Rc::new(RefCell::new(Object {
             fields,
@@ -804,8 +860,11 @@ where
     set.into_iter().collect()
 }
 
-fn bool_field_object(true_keys: &[String]) -> Value {
+fn bool_field_object(template: &[String], true_keys: &[String]) -> Value {
     let mut fields: HashMap<String, Value> = HashMap::new();
+    for k in template {
+        fields.insert(k.clone(), Value::from_bool(false));
+    }
     for k in true_keys {
         fields.insert(k.clone(), Value::from_bool(true));
     }
@@ -813,6 +872,24 @@ fn bool_field_object(true_keys: &[String]) -> Value {
         fields,
         kind: "input",
     })))
+}
+
+/// Read the field-name list from the named ambient so per-peer
+/// objects match shape. If the ambient doesn't exist yet (very
+/// early in startup), returns an empty template — the per-peer
+/// object will only contain held keys, which is the same shape
+/// `apply_merged` had in Phase 31 sessions 2–4.
+fn field_name_template(env: &Env, ambient: &str) -> Vec<String> {
+    let opt = env.get(ambient);
+    let Some(v) = opt.as_ref() else {
+        return Vec::new();
+    };
+    if !v.is_object() {
+        return Vec::new();
+    }
+    let rc = v.as_object();
+    let o = rc.borrow();
+    o.fields.keys().cloned().collect()
 }
 
 fn set_bool_ambient(env: &mut Env, name: &str, true_keys: &[String]) {
@@ -871,6 +948,46 @@ fn write_mouse_pos(env: &mut Env, x: f64, y: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_value_is_deterministic_for_equivalent_objects() {
+        // Two objects with the same fields inserted in different
+        // orders must hash identically — that's the guarantee that
+        // makes net.hash safe to use across peers without worrying
+        // about HashMap iteration order.
+        use crate::value::{Object, Value};
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::rc::Rc;
+
+        let mut a = HashMap::new();
+        a.insert("score".to_string(), Value::from_int(7));
+        a.insert("ball_x".to_string(), Value::from_float(123.5));
+        a.insert("ball_y".to_string(), Value::from_float(45.0));
+
+        let mut b = HashMap::new();
+        b.insert("ball_y".to_string(), Value::from_float(45.0));
+        b.insert("score".to_string(), Value::from_int(7));
+        b.insert("ball_x".to_string(), Value::from_float(123.5));
+
+        let va = Value::from_object(Rc::new(RefCell::new(Object {
+            fields: a,
+            kind: "snap",
+        })));
+        let vb = Value::from_object(Rc::new(RefCell::new(Object {
+            fields: b,
+            kind: "snap",
+        })));
+        assert_eq!(hash_value(&va).unwrap(), hash_value(&vb).unwrap());
+    }
+
+    #[test]
+    fn hash_value_differs_for_different_state() {
+        use crate::value::Value;
+        let a = Value::from_int(5);
+        let b = Value::from_int(6);
+        assert_ne!(hash_value(&a).unwrap(), hash_value(&b).unwrap());
+    }
 
     #[test]
     fn frame_line_round_trips() {

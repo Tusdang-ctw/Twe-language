@@ -666,7 +666,7 @@ Phases 27 and 28 are pure code work. Phases 29 + 30 are prerequisites for 31. Ph
 
 ## Phase 31 — Post-v1.0 — Multiplayer foundation
 
-**Status note (2026-05-10):** Sessions 1–4 shipped. RFC merged at `docs/changes/2026-05-10-multiplayer-rfc.md` (lockstep over UDP, max 4 peers, direct-IP + Steam P2P only). `src/net.rs` ships UDP transport with tagged 16-byte headers, peer table, write-once per-tick local-input ring, redundant-history retransmit, MSG_HELLO/INPUT/HASH/BYE framing, and an end-to-end `tests/net.rs` two-thread 30-tick lockstep round (rolling-hash determinism check). Stdlib namespace: `net.host` / `net.connect` / `net.close` / `net.is_connected` / `net.local_peer_id` / `net.peer_count` / `net.session_ready` / `net.send_input` / `net.tick_ready` / `net.advance_tick` / `net.send_state_hash` / `net.state_hash` / `net.input_delay`. Sessions 5–7 (snapshot serialization for state-hash payload, `examples/pong_net.twe`, full closeout) deferred to follow-on commits.
+**Status note (2026-05-10):** **Codebase-closed** at `docs/changes/2026-05-10-phase-31-closeout.md`. All seven sessions shipped: netcode RFC, UDP transport, 15 `net.*` builtins, lockstep runner with two-thread end-to-end test, canonical-JSON snapshot serialization (`net.hash` + `net.snapshot_json`), `examples/pong_net.twe`, closeout note. **765 tests pass.** Cross-machine LAN playtest is the remaining manual verification step. Honest deferrals: rollback netcode, authoritative C-S, Steam P2P transport (`--features steam-net`), WebSocket browser multiplayer, NAT traversal, disconnect/reconnect handling, >4-peer sessions, VM-mirror of `net.*` builtins.
 
 **Theme:** the biggest scope of the post-v1.0 set. Gated on `docs/changes/<date>-multiplayer-rfc.md` choosing one netcode model. Adding lockstep + rollback + authoritative C-S all at once would violate Principle 2; pick one.
 
@@ -785,7 +785,7 @@ The LTS commitment begins at v1.0: security and critical fixes backport to the `
 | 3D rendering polish (bloom / DoF / cascades / mipmaps / async preload) | Per `docs/changes/2026-05-07-phase-24-26-closeout.md` polish-tier deferrals | **Now Phase 28** |
 | 2D genre coverage (platformer / Tetris / cards) | Stdlib pressure-test; plug a marketing gap | **Now Phase 27** |
 | WASM / web target | Distribution unlock for 2D | **Now Phase 30** |
-| Multiplayer | Per-genre game pressure; needs netcode RFC | **Now Phase 31** |
+| Multiplayer | Per-genre game pressure; needs netcode RFC | **Phase 31 — codebase-closed 2026-05-10 (lockstep over UDP, 7 sessions, `examples/pong_net.twe`)** |
 | Open-world 3D streaming + LOD | Tunic-scale games; needs lock revision | **Now Phase 32** |
 | Community game support | Link + track third-party games in the README gallery | Ongoing |
 

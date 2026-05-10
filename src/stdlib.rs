@@ -2330,6 +2330,14 @@ fn install_net(env: &mut Env) {
         "session_ready".to_string(),
         Value::from_builtin("net.session_ready", &[], net_session_ready),
     );
+    n.insert(
+        "hash".to_string(),
+        Value::from_builtin("net.hash", &["value"], net_hash),
+    );
+    n.insert(
+        "snapshot_json".to_string(),
+        Value::from_builtin("net.snapshot_json", &["value"], net_snapshot_json),
+    );
     env.set(
         "net".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -2476,6 +2484,42 @@ fn net_session_ready(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     arity(args, 0, "net.session_ready")?;
     crate::net::poll();
     Ok(Value::from_bool(crate::net::session_ready()))
+}
+
+/// Hash a Twe value to a u64 via canonical JSON + FNV-1a. Scripts
+/// pass relevant game state (typically a list/tuple of positions,
+/// scores, and RNG state) and use the result as the argument to
+/// `net.send_state_hash(tick, hash)`. Cross-peer hash divergence
+/// triggers a desync warning (see `[twec net] DESYNC` in stderr).
+/// Errors if `value` contains anything outside the serializable
+/// subset (functions, classes, builtins). The script-side workaround
+/// is to fold the relevant scalars into a tuple before hashing.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_hash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.hash")?;
+    let h = crate::net::hash_value(&args[0]).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("net.hash: {m}"),
+        help: None,
+    })?;
+    Ok(Value::from_int(h as i64))
+}
+
+/// Serialize a Twe value to canonical JSON (BTreeMap-sorted, no
+/// whitespace). The debug counterpart to `net.hash` — scripts use
+/// this to log full state when a desync is reported, so the bug
+/// report carries a per-peer JSON snapshot the dev can diff.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_snapshot_json(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.snapshot_json")?;
+    let s = crate::net::snapshot_json(&args[0]).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("net.snapshot_json: {m}"),
+        help: None,
+    })?;
+    Ok(Value::from_string(s))
 }
 
 fn install_math(env: &mut Env) {
