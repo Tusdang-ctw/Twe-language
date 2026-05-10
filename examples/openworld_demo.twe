@@ -1,0 +1,178 @@
+# @task: 4km open-world data-side stub — exercise spatial query, LOD select, and instance bucketing
+# @inputs: WASD to pan camera through 4km × 4km world; Esc to quit
+# @expected: 1000 static props + 50 dynamic NPCs queried via world.spatial_query_radius each frame; visible count + frame-time HUD
+# @category: 3d
+# @difficulty: medium
+#
+# `twec play examples/openworld_demo.twe`
+#
+# Phase 35 sub-deliverable: 4km open-world playtest stub.
+#
+# Phase 32 shipped the data side of open-world rendering — spatial
+# partitioning, chunked streaming, LOD chains, terrain heightfield,
+# frustum culling, instance bucketing — but the wgpu render-pipeline
+# integration is the next dev cycle, so a 50k-prop / 60fps target
+# can't be visually validated yet.
+#
+# This stub validates the *data path* at a tractable scale: 1000
+# procedurally-placed static props + 50 dynamic NPCs across a 4km ×
+# 4km world, with `world.spatial_query_radius` running every frame
+# against the camera. Top-down 2D rendering shows the queryable
+# region as dots; the HUD shows visible vs. total counts.
+#
+# What this proves:
+#   - 1000 statics + 50 dynamics insert + query at frame budget.
+#   - `world.spatial_query_radius` returns the right subset as the
+#     camera moves around the 4km world.
+#   - LOD chain + `world.lod_for_distance` resolves to the right
+#     mesh handle as distance shifts.
+#   - Frame time stays < 16ms on the tree-walker for this scale.
+#
+# What this does NOT prove (still deferred to wgpu integration):
+#   - 50k props at 60fps with < 512MB VRAM.
+#   - Visible LOD switching (we render dots, not meshes).
+#   - Terrain heightfield rendering (we operate in world XZ).
+#   - Streaming / chunk load+unload over a real disk-backed manifest.
+
+scene OpenWorldDemo:
+    var camera_x = 0.0
+    var camera_z = 0.0
+    var view_radius = 200.0
+    var prop_count = 0
+    var npc_count = 0
+    var visible_count = 0
+    var frame_ms = 0.0
+    var last_query_ms = 0.0
+
+    initial: setup
+
+    state setup:
+        on enter:
+            # 4km × 4km. Chunk size 64m gives 62 × 62 = 3844 chunks total;
+            # we won't actually load tiles in this stub, but the
+            # streaming-radius dial still applies.
+            world.set_chunk_size(64.0)
+            world.stream_radius_meters(300.0)
+
+            # LOD chain for "tree" — three meshes at increasing distances.
+            # In a real game these would be `.glb` paths; here they're
+            # opaque names because we don't render meshes in this stub.
+            world.set_lod_chain("tree", ["near.glb", "mid.glb", "far.glb"], [50.0, 200.0])
+
+            # 1000 procedural props using a deterministic 2D hash so
+            # the demo is reproducible across runs.
+            for i in 0..1000:
+                let angle = i * 0.6283185
+                let radius = 100.0 + math.mod(i * 1.7, 1900.0)
+                let px = math.cos(angle) * radius
+                let pz = math.sin(angle) * radius
+                world.spatial_add_static(i, px, 0.0, pz, 1.5)
+                prop_count = prop_count + 1
+            world.spatial_build_static()
+
+            # 50 dynamic NPCs spread evenly inside the 1km starting ring.
+            for j in 0..50:
+                let angle = j * 0.1256637
+                let nx = math.cos(angle) * 80.0
+                let nz = math.sin(angle) * 80.0
+                world.spatial_insert_dynamic(10000 + j, nx, 0.0, nz, 0.5)
+                npc_count = npc_count + 1
+
+            -> running
+
+    state running:
+        on update(dt):
+            # WASD pans the camera through world space.
+            let speed = 80.0
+            if key_held("w"): camera_z = camera_z - speed * dt
+            if key_held("s"): camera_z = camera_z + speed * dt
+            if key_held("a"): camera_x = camera_x - speed * dt
+            if key_held("d"): camera_x = camera_x + speed * dt
+
+            # Drift the NPCs so the dynamic side of the partition is
+            # actually exercised every frame.
+            for j in 0..50:
+                let angle = j * 0.1256637 + time.now() * 0.5
+                let nx = math.cos(angle) * 80.0
+                let nz = math.sin(angle) * 80.0
+                world.spatial_insert_dynamic(10000 + j, nx, 0.0, nz, 0.5)
+
+            # The query that the renderer would feed into LOD-select +
+            # instance bucketing in a real scene. Returns a list of
+            # entity IDs visible within the radius.
+            let visible = world.spatial_query_radius(camera_x, 0.0, camera_z, view_radius)
+            visible_count = list.length(visible)
+
+            # Rebuild instance buckets as a renderer would: assign each
+            # visible static to a tree LOD bucket based on its distance.
+            world.instance_clear()
+            for k in 0..visible_count:
+                let id = visible[k]
+                if id < 1000:
+                    # Static prop. Re-derive its position from the same
+                    # procedural rule the setup state used.
+                    let angle = id * 0.6283185
+                    let radius = 100.0 + math.mod(id * 1.7, 1900.0)
+                    let px = math.cos(angle) * radius
+                    let pz = math.sin(angle) * radius
+                    let dx = px - camera_x
+                    let dz = pz - camera_z
+                    let d = math.sqrt(dx * dx + dz * dz)
+                    let mesh = world.lod_for_distance("tree", d)
+                    # `world.instance_add` takes a flat 16-element transform.
+                    # We use a translation-only matrix (identity rotation /
+                    # scale) for this stub.
+                    let xform = [
+                        1.0, 0.0, 0.0, px,
+                        0.0, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 1.0, pz,
+                        0.0, 0.0, 0.0, 1.0,
+                    ]
+                    world.instance_add(mesh, xform)
+
+            frame_ms = time.dt() * 1000.0
+
+        on render():
+            # Top-down rendering: world XZ → screen XY, camera centered.
+            # 1px = 1m at this zoom. The visible disc has radius 200px.
+            rect(at: (0, 0), size: (640, 480), color: color.black)
+
+            # Draw the visibility ring as a hint to the player.
+            circle_outline(at: (320, 240), radius: 200, color: color.gray)
+
+            # Static props in the visible set (queried this frame).
+            let visible = world.spatial_query_radius(camera_x, 0.0, camera_z, view_radius)
+            let n = list.length(visible)
+            for k in 0..n:
+                let id = visible[k]
+                if id < 1000:
+                    let angle = id * 0.6283185
+                    let radius = 100.0 + math.mod(id * 1.7, 1900.0)
+                    let px = math.cos(angle) * radius
+                    let pz = math.sin(angle) * radius
+                    # World → screen. Y flipped (z-out is screen-down).
+                    let sx = 320 + (px - camera_x)
+                    let sy = 240 + (pz - camera_z)
+                    rect(at: (sx - 1, sy - 1), size: (3, 3), color: color.green)
+                else:
+                    # Dynamic NPC.
+                    let j = id - 10000
+                    let angle = j * 0.1256637 + time.now() * 0.5
+                    let nx = math.cos(angle) * 80.0
+                    let nz = math.sin(angle) * 80.0
+                    let sx = 320 + (nx - camera_x)
+                    let sy = 240 + (nz - camera_z)
+                    rect(at: (sx - 2, sy - 2), size: (4, 4), color: color.red)
+
+            # Player marker (camera position).
+            circle(at: (320, 240), radius: 4, color: color.yellow)
+
+            # HUD.
+            text(at: (10, 10), value: "Open-world data-side stub", color: color.white)
+            text(at: (10, 30), value: "Props: " + tostr(prop_count), color: color.white)
+            text(at: (10, 46), value: "NPCs: " + tostr(npc_count), color: color.white)
+            text(at: (10, 62), value: "Visible: " + tostr(visible_count), color: color.white)
+            text(at: (10, 78), value: "Frame: " + tostr(frame_ms) + "ms", color: color.white)
+            text(at: (10, 94), value: "Buckets: " + tostr(world.instance_bucket_count()), color: color.white)
+            text(at: (10, 110), value: "Inst total: " + tostr(world.instance_total()), color: color.white)
+            text(at: (10, 460), value: "WASD to pan camera. Esc to quit.", color: color.gray)

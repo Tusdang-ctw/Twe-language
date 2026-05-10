@@ -1,3 +1,8 @@
+// Phase 35 session 1: API stability snapshot tooling. Builds a
+// canonical, hashable JSON document of every public-API surface
+// (stdlib manifest + keywords + tool versions) and supports
+// diffing two snapshots. Pure Rust, no platform deps.
+pub mod api_snapshot;
 pub mod ast;
 pub mod ast_json;
 pub mod bytecode;

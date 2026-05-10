@@ -101,6 +101,15 @@ pub fn run() {
         // Phase 33 session 8: auto-mutate tests/programs/ to produce
         // the fine-tune-ready (broken, verify_json, fix) corpus.
         "mutate" => process::exit(handle_mutate(&args[2..])),
+        // Phase 35 session 1: snapshot the public API surface for
+        // the 6-month stability audit. `twec api-snapshot -o PATH`
+        // writes a canonical, hashable JSON document; `twec api-diff
+        // <old> <new>` compares two snapshots and exits non-zero if
+        // any surface has changed.
+        "api-snapshot" | "api_snapshot" => {
+            process::exit(handle_api_snapshot(&args[2..]))
+        }
+        "api-diff" | "api_diff" => process::exit(handle_api_diff(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
@@ -1030,6 +1039,119 @@ fn handle_mutate(args: &[String]) -> i32 {
     } else {
         0
     }
+}
+
+/// Phase 35 session 1: `twec api-snapshot [-o PATH]`. Writes a
+/// canonical, hashable JSON document of every public-API surface
+/// (stdlib manifest + keywords + tool versions) to PATH or stdout.
+/// Suggested checkin location for routine snapshots:
+/// `docs/api-snapshots/<YYYY-MM-DD>.json`.
+fn handle_api_snapshot(args: &[String]) -> i32 {
+    let mut out_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--out" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: -o takes a path argument");
+                    return 2;
+                }
+                out_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown argument for `api-snapshot`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let body = crate::api_snapshot::snapshot_json();
+    match out_path {
+        Some(p) => match fs::write(&p, &body) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: cannot write `{p}`: {e}");
+                1
+            }
+        },
+        None => {
+            print!("{body}");
+            0
+        }
+    }
+}
+
+/// Phase 35 session 1: `twec api-diff <old> <new>`. Reads two
+/// snapshot files and reports any drift (builtins added/removed,
+/// builtins with changed signatures, keyword changes, tool-version
+/// bumps). Exits 0 if identical, 3 if drift was detected — suitable
+/// for `cargo make api-stability-gate` style CI use.
+fn handle_api_diff(args: &[String]) -> i32 {
+    if args.len() != 2 {
+        eprintln!("error: `twec api-diff` takes two snapshot paths");
+        eprintln!("usage: twec api-diff <old.json> <new.json>");
+        return 2;
+    }
+    let old = match fs::read_to_string(&args[0]) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read `{}`: {e}", args[0]);
+            return 1;
+        }
+    };
+    let new = match fs::read_to_string(&args[1]) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read `{}`: {e}", args[1]);
+            return 1;
+        }
+    };
+    let d = crate::api_snapshot::diff(&old, &new);
+    if d.is_clean() {
+        println!("api-diff: clean (every public surface matched)");
+        return 0;
+    }
+    if !d.builtins_added.is_empty() {
+        println!("builtins added ({}):", d.builtins_added.len());
+        for n in &d.builtins_added {
+            println!("  + {n}");
+        }
+    }
+    if !d.builtins_removed.is_empty() {
+        println!("builtins removed ({}):", d.builtins_removed.len());
+        for n in &d.builtins_removed {
+            println!("  - {n}");
+        }
+    }
+    if !d.builtins_changed.is_empty() {
+        println!(
+            "builtins with changed signatures ({}):",
+            d.builtins_changed.len()
+        );
+        for n in &d.builtins_changed {
+            println!("  ~ {n}");
+        }
+    }
+    if !d.keywords_added.is_empty() {
+        println!("keywords added ({}):", d.keywords_added.len());
+        for k in &d.keywords_added {
+            println!("  + {k}");
+        }
+    }
+    if !d.keywords_removed.is_empty() {
+        println!("keywords removed ({}):", d.keywords_removed.len());
+        for k in &d.keywords_removed {
+            println!("  - {k}");
+        }
+    }
+    if !d.tool_version_changes.is_empty() {
+        println!("tool version changes ({}):", d.tool_version_changes.len());
+        for (name, old_v, new_v) in &d.tool_version_changes {
+            println!("  ~ {name}: v{old_v} -> v{new_v}");
+        }
+    }
+    3
 }
 
 /// `twec play_visual <file>` — Phase 9 session 11: render the
