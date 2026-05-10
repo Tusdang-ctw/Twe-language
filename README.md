@@ -56,8 +56,17 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | Real-time directional shadows (2K depth + 3×3 PCF) | post-v1.0 |
 | HDR pipeline + ACES filmic tone mapping + vignette | post-v1.0 |
 | Frustum culling, dynamic instance buffer | post-v1.0 |
+| `twec grammar` — GBNF / JSON-Schema / EBNF export for constrained LLM decoding | post-v1.0 |
+| `twec verify` — JSON v2 with structured machine-applicable `fix` patches | post-v1.0 |
+| `twec stdlib --json` — manifest of all 235 builtins (LLM grounding surface) | post-v1.0 |
+| `twec llm-loop` — provider-agnostic prompt → generate → verify self-correction loop | post-v1.0 |
+| `twec mcp` — stdio JSON-RPC MCP server (Claude Desktop, Cursor, future Studio) | post-v1.0 |
+| `twec corpus` — labelled `@task` / `@expected` / `@category` examples manifest | post-v1.0 |
+| `twec eval` — replay-based suite scorer for LLM-generated programs | post-v1.0 |
+| `twec mutate` — auto-generated (broken, verify_json, fix) corpus for fine-tuning | post-v1.0 |
+| Typed holes (`???`) — verify-time warning + runtime error for unfilled expressions | post-v1.0 |
 
-**755 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.**
+**912 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** Phases 1–33 codebase-closed (post-v1.0 roadmap fully landed): 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, **and the LLM-differentiator surface** (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy.
 
 ## Install
 

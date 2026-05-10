@@ -1,0 +1,27 @@
+# Phase 33 closeout: force LF endings on Twe source files and other
+# text formats that the layout-sensitive lexer or downstream tooling
+# is sensitive to. Without this, `core.autocrlf=true` on Windows
+# checkouts will convert source line endings to CRLF, which the
+# blank-line path in `src/lexer.rs::handle_line_start` mis-emits as
+# spurious Indent tokens — every example with a blank line inside a
+# `scene` / `state` / `entity` body fails to parse.
+#
+# Lexer-side CRLF robustness lands as a follow-on; this attributes
+# file is the surgical fix that unblocks every existing Windows
+# checkout today.
+
+# Twe source — always LF.
+*.twe text eol=lf
+
+# Other text formats that ride alongside Twe sources in tests / eval
+# / corpus suites. Same blank-line / framing concerns, same fix.
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+
+# Replay logs are line-oriented and grep-greppable; keep them LF.
+*.replay text eol=lf
+
+# Default for everything else: let git auto-detect.
+* text=auto
