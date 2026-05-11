@@ -940,7 +940,7 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ## Phase 40 — Post-v1.0 — Console targets (Switch / PS5 / Xbox)
 
-**Status:** **gated on platform-holder partnerships.** Cannot be shipped open-source. Sketched here for completeness; the actual work happens behind NDA with licensed dev kits, in a private fork or partner-maintained branch.
+**Status:** codebase-scaffolding-closed 2026-05-11 per `docs/changes/2026-05-11-phase-40-closeout.md`. **Gated on platform-holder partnerships.** Cannot be shipped open-source — the SDK code itself stays in partner private forks. Seven sessions shipped (RFC + `console.*` + glyphs + service traits + `PARTNER.md` + `examples/console_demo.twe` + closeout). The actual SDK ports are by-design partner-driven; see [`PARTNER.md`](../PARTNER.md).
 
 **Why this slot:** consoles are where commercial 2D indie games make most of their money. Twe ignoring them caps the upside of every other phase. But the SDK code, signing keys, and store APIs are NDA-bound by Nintendo / Sony / Microsoft — open-source distribution is incompatible with the platform agreements.
 
@@ -963,7 +963,7 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ## Phase 41 — Post-v1.0 — MMO / Roblox-scale 3D foundation
 
-**Status:** **multi-year, post-v2.0 territory.** The ceiling. Extends Phase 32's Tunic-scale open world to persistent-world / massively-shared-world.
+**Status:** codebase-scaffolding-closed 2026-05-11 per `docs/changes/2026-05-11-phase-41-closeout.md`. **Multi-year, post-v2.0 territory.** The ceiling. Nine sessions shipped (architecture RFC + `mmo.*` API stubs + `workshop.*` traits + sandboxing pre-reqs + `examples/mmo_demo/` + closeout). The server runtime itself is honest-deferred to a future-implementer-with-bandwidth opening the phase properly; the scripts-side API contract ships today.
 
 **Why last:** every prior phase is bounded by "ship a single-player or small-multiplayer game." MMO scale needs sharded server architecture, area-of-interest networking, persistent world database, massively-replicated entity systems — none of which are hobby-project deliverables. This phase exists because the gap audit named it; whether Twe ever opens it is a future-implementer decision.
 

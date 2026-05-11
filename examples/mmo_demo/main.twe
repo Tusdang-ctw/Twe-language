@@ -1,0 +1,191 @@
+# @task: MMO API surface single-player demo
+# @inputs: WASD to move; SPACE to broadcast; B to transfer shard
+# @expected: player moves; persist/load round-trips; events queued + drained
+# @category: net
+# @difficulty: medium
+#
+# MMO Demo — single-player demonstration of the Phase 41 mmo.* API.
+#
+# Phase 41 session 8. Per the MMO architecture RFC
+# (`docs/changes/2026-05-11-mmo-rfc.md`), the runtime is honest-
+# deferred to a future-implementer-with-bandwidth. The mmo.* API
+# ships today as single-player no-ops; this demo exercises the API
+# call sites so scripts written against the contract have a working
+# reference.
+#
+# When (if) a server runtime appears, the same source file gains
+# multi-player behaviour — players broadcasting "chat" events would
+# reach other players in the same shard; persisted state would
+# round-trip through a SQL backend; entities_near would return AOI-
+# filtered IDs.
+#
+# Today everything happens locally. Use this demo to:
+#   - Confirm `mmo.persist` + `mmo.load` round-trip values correctly.
+#   - Watch the event queue fill + drain (`mmo.broadcast` ->
+#     `mmo.next_event`).
+#   - Verify `mmo.shard_id()` reads + `mmo.transfer_to()` writes the
+#     active shard.
+#   - Inspect the workshop.* + achievements.* + cloud_save.* trait
+#     stubs (all no-ops).
+#
+# Run with:
+#   twec play examples/mmo_demo/
+
+let view_w = 640.0
+let view_h = 480.0
+let player_speed = 200.0
+let chat_capacity = 6
+
+scene MmoDemo:
+    var player_x = 320.0
+    var player_y = 240.0
+    var chat_log = ""
+    var last_save_value = 0.0
+    var last_load_value = 0.0
+    var save_count = 0
+    var current_shard = "default"
+    var broadcast_count = 0
+    var event_count = 0
+
+    initial: probe
+
+    state probe:
+        on enter:
+            current_shard = mmo.shard_id()
+            # Initial persisted-state load.
+            let prev = mmo.load("player.x")
+            if prev != nil:
+                last_load_value = prev
+                player_x = prev
+            -> running
+
+    state running:
+        on update(dt):
+            if key.w:
+                player_y -= player_speed * dt
+            if key.s:
+                player_y += player_speed * dt
+            if key.a:
+                player_x -= player_speed * dt
+            if key.d:
+                player_x += player_speed * dt
+
+            # Clamp.
+            if player_x < 16.0:
+                player_x = 16.0
+            if player_x > view_w - 16.0:
+                player_x = view_w - 16.0
+            if player_y < 16.0:
+                player_y = 16.0
+            if player_y > view_h - 16.0:
+                player_y = view_h - 16.0
+
+            # Replicate position every frame. Today no-op (local
+            # value already accurate); future runtime broadcasts to
+            # peers in the same shard's AOI.
+            mmo.replicate("player.x", player_x)
+            mmo.replicate("player.y", player_y)
+
+            # Spacebar broadcasts a chat event. Locally the script
+            # also observes its own broadcasts (next_event picks
+            # them up).
+            if key_press.space:
+                broadcast_count += 1
+                mmo.broadcast("chat", "hello {broadcast_count}")
+
+            # 'P' persists position to the (today local, future SQL)
+            # world DB.
+            if key_press.p:
+                mmo.persist("player.x", player_x)
+                mmo.persist("player.y", player_y)
+                last_save_value = player_x
+                save_count += 1
+
+            # 'L' loads the persisted position back.
+            if key_press.l:
+                let v = mmo.load("player.x")
+                if v != nil:
+                    last_load_value = v
+                    player_x = v
+
+            # 'B' requests a transfer to a new shard. Today this
+            # just sets the local shard id; future runtime
+            # orchestrates the cross-shard handoff.
+            if key_press.b:
+                if current_shard == "default":
+                    mmo.transfer_to("zone-2")
+                else:
+                    mmo.transfer_to("default")
+                current_shard = mmo.shard_id()
+
+            # Drain the event queue.
+            var evt = mmo.next_event()
+            while evt != nil:
+                event_count += 1
+                # Keep last chat_capacity messages in the log.
+                chat_log = "{evt.channel}: {evt.payload}\n{chat_log}"
+                evt = mmo.next_event()
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+
+            # Player.
+            rect(
+                at: (player_x - 12.0, player_y - 12.0),
+                size: (24, 24),
+                color: color.green,
+            )
+
+            # HUD.
+            text(
+                "MMO DEMO (single-player surface)",
+                at: (16, 16),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "shard: {current_shard}",
+                at: (16, 48),
+                size: 14,
+                color: color.yellow,
+            )
+            text(
+                "broadcasts: {broadcast_count}   events drained: {event_count}",
+                at: (16, 70),
+                size: 12,
+                color: color.gray,
+            )
+            text(
+                "saves: {save_count}   last save x: {last_save_value}   last load x: {last_load_value}",
+                at: (16, 90),
+                size: 12,
+                color: color.gray,
+            )
+
+            # Chat log (newest first).
+            text(
+                "Chat log:",
+                at: (16, 130),
+                size: 14,
+                color: color.white,
+            )
+            text(
+                "{chat_log}",
+                at: (16, 150),
+                size: 12,
+                color: color.yellow,
+            )
+
+            # Controls.
+            text(
+                "WASD move   SPACE broadcast   P persist   L load   B switch shard",
+                at: (16, view_h - 40),
+                size: 12,
+                color: color.gray,
+            )
+            text(
+                "Today: single-player. Future: server runtime fills in replication / AOI / persistence.",
+                at: (16, view_h - 18),
+                size: 10,
+                color: color.gray,
+            )

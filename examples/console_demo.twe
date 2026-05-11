@@ -1,0 +1,177 @@
+# @task: Cross-platform console controller demo with glyphs
+# @inputs: gamepad (Xbox / PS / Switch / generic) or keyboard fallback
+# @expected: player moves via left stick; UI shows platform-aware glyphs
+# @category: input
+# @difficulty: medium
+#
+# Console Demo — platform-agnostic controller + glyph rendering.
+#
+# Phase 40 session 6. Demonstrates the Phase 40 abstractions in one
+# scene: `console.controller(0)` reads the connected gamepad through
+# the canonical Xbox naming (a / b / x / y); `console.glyph(button,
+# style)` formats per-platform glyphs for the HUD.
+#
+# Per the Phase 40 RFC + PARTNER.md, this example uses ONLY the
+# platform-agnostic abstractions. A partner fork's SDK code is
+# invisible from here — the same `.twe` source compiles + runs on
+# every target the partner ports to.
+#
+# Run with:
+#   twec play examples/console_demo.twe
+
+let view_w = 640.0
+let view_h = 480.0
+let player_speed = 220.0
+let glyph_style = "xbox"
+
+scene ConsoleDemo:
+    var player_x = 320.0
+    var player_y = 240.0
+    var connected = false
+    var pressed_log = ""
+    var detected_style = "xbox"
+    # Pre-computed glyph strings — string interpolation does not
+    # tolerate embedded quotes inside `{...}`, so we compute the
+    # per-style glyphs as variables once on enter.
+    var a_xbox = ""
+    var a_ps = ""
+    var a_sw = ""
+    var shoulder_xbox = ""
+    var shoulder_ps = ""
+    var shoulder_sw = ""
+    var start_xbox = ""
+    var start_ps = ""
+    var start_sw = ""
+    var a_active = ""
+
+    initial: probe
+
+    state probe:
+        on enter:
+            detected_style = console.detect_style()
+            a_xbox = console.glyph("a", "xbox")
+            a_ps = console.glyph("a", "playstation")
+            a_sw = console.glyph("a", "switch")
+            shoulder_xbox = console.glyph("left_shoulder", "xbox")
+            shoulder_ps = console.glyph("left_shoulder", "playstation")
+            shoulder_sw = console.glyph("left_shoulder", "switch")
+            start_xbox = console.glyph("start", "xbox")
+            start_ps = console.glyph("start", "playstation")
+            start_sw = console.glyph("start", "switch")
+            a_active = console.glyph("a", glyph_style)
+            -> playing
+
+    state playing:
+        on update(dt):
+            let pad = console.controller(0)
+            connected = pad.connected
+
+            if pad.connected:
+                player_x += pad.left_stick.x * player_speed * dt
+                player_y -= pad.left_stick.y * player_speed * dt
+            else:
+                if key.w:
+                    player_y -= player_speed * dt
+                if key.s:
+                    player_y += player_speed * dt
+                if key.a:
+                    player_x -= player_speed * dt
+                if key.d:
+                    player_x += player_speed * dt
+
+            if player_x < 16.0:
+                player_x = 16.0
+            if player_x > view_w - 16.0:
+                player_x = view_w - 16.0
+            if player_y < 16.0:
+                player_y = 16.0
+            if player_y > view_h - 16.0:
+                player_y = view_h - 16.0
+
+            # Log most recent face-button press.
+            if pad.a:
+                pressed_log = "A"
+            if pad.b:
+                pressed_log = "B"
+            if pad.x:
+                pressed_log = "X"
+            if pad.y:
+                pressed_log = "Y"
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+
+            # Player.
+            rect(
+                at: (player_x - 12.0, player_y - 12.0),
+                size: (24, 24),
+                color: color.green,
+            )
+
+            # HUD.
+            text(
+                "CONSOLE DEMO",
+                at: (view_w * 0.5 - 100, 40),
+                size: 24,
+                color: color.white,
+            )
+            text(
+                "platform: {assets.platform()}",
+                at: (16, 80),
+                size: 14,
+                color: color.gray,
+            )
+            text(
+                "detected glyph style: {detected_style}",
+                at: (16, 100),
+                size: 14,
+                color: color.gray,
+            )
+            text(
+                "controller connected: {connected}",
+                at: (16, 120),
+                size: 14,
+                color: color.gray,
+            )
+
+            # Glyph examples — render the same button across three
+            # styles so the operator can sanity-check the per-style
+            # glyph table.
+            text(
+                "A button:  xbox={a_xbox}   ps={a_ps}   sw={a_sw}",
+                at: (16, 160),
+                size: 12,
+                color: color.yellow,
+            )
+            text(
+                "Shoulder:  xbox={shoulder_xbox}   ps={shoulder_ps}   sw={shoulder_sw}",
+                at: (16, 180),
+                size: 12,
+                color: color.yellow,
+            )
+            text(
+                "Start:     xbox={start_xbox}   ps={start_ps}   sw={start_sw}",
+                at: (16, 200),
+                size: 12,
+                color: color.yellow,
+            )
+
+            text(
+                "Last face button: {pressed_log}",
+                at: (16, 240),
+                size: 14,
+                color: color.white,
+            )
+
+            text(
+                "Press {a_active} to interact",
+                at: (16, view_h - 32),
+                size: 16,
+                color: color.white,
+            )
+            text(
+                "Per Phase 40 RFC: partner forks supply SDK glyph assets.",
+                at: (16, view_h - 12),
+                size: 10,
+                color: color.gray,
+            )

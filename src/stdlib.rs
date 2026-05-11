@@ -734,6 +734,10 @@ pub fn install(env: &mut Env) {
     install_touch(env);
     install_joystick_widget(env);
     install_safe_area(env);
+    install_console(env);
+    install_platform_services(env);
+    install_mmo(env);
+    install_workshop(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_world(env);
     #[cfg(not(target_arch = "wasm32"))]
@@ -2975,6 +2979,780 @@ fn touch_primary() -> Option<(f32, f32)> {
 #[cfg(target_arch = "wasm32")]
 fn touch_primary() -> Option<(f32, f32)> {
     None
+}
+
+// ---------------------------------------------------------------
+// Phase 40 sessions 2 + 3: console.* abstract controller + glyphs.
+//
+// Per `docs/changes/2026-05-11-console-targets-rfc.md` the public
+// surface ships platform-agnostic abstractions; SDK-specific
+// implementations live in partner private forks. `console.controller(i)`
+// wraps the gamepad ambient (Phase 9 / gilrs on PC + Steam Deck);
+// partner forks replace the wiring per platform.
+//
+// Button names use the **Xbox layout as canonical** (a / b / x / y).
+// `console.glyph(button, style)` returns the per-style glyph string
+// for UI rendering.
+// ---------------------------------------------------------------
+
+fn install_console(env: &mut Env) {
+    let mut c = HashMap::new();
+    c.insert(
+        "controller".to_string(),
+        Value::from_builtin("console.controller", &["i"], console_controller),
+    );
+    c.insert(
+        "controller_count".to_string(),
+        Value::from_builtin("console.controller_count", &[], console_controller_count),
+    );
+    c.insert(
+        "glyph".to_string(),
+        Value::from_builtin("console.glyph", &["button", "style"], console_glyph),
+    );
+    c.insert(
+        "glyph_asset".to_string(),
+        Value::from_builtin(
+            "console.glyph_asset",
+            &["button", "style"],
+            console_glyph_asset,
+        ),
+    );
+    c.insert(
+        "detect_style".to_string(),
+        Value::from_builtin("console.detect_style", &[], console_detect_style),
+    );
+    env.set(
+        "console".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: c,
+            kind: "module",
+        }))),
+    );
+}
+
+/// Returns a controller record for the i-th connected gamepad.
+/// `i = 0` reads from the existing `gamepad` / `gamepad_axis`
+/// ambients (Phase 9 wires gilrs to controller 0). Higher indices
+/// return `connected = false` today; multi-controller support is a
+/// partner-fork extension per the Phase 40 RFC.
+fn console_controller(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "console.controller")?;
+    let i = as_i64(&args[0], "console.controller")?;
+    if i < 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("console.controller: i must be >= 0 (got {i})"),
+            help: None,
+        });
+    }
+    let mut fields: HashMap<String, Value> = HashMap::new();
+    if i == 0 {
+        // Read from Phase 9's gamepad ambient.
+        let (a, b, x, y, lb, rb, lt_button, rt_button, start, select, dup, ddown, dleft, dright,
+             connected) = read_gamepad_buttons(env);
+        let (lx, ly, rx, ry, lt_axis, rt_axis) = read_gamepad_axes(env);
+        fields.insert("connected".to_string(), Value::from_bool(connected));
+        fields.insert("a".to_string(), Value::from_bool(a));
+        fields.insert("b".to_string(), Value::from_bool(b));
+        fields.insert("x".to_string(), Value::from_bool(x));
+        fields.insert("y".to_string(), Value::from_bool(y));
+        fields.insert("left_shoulder".to_string(), Value::from_bool(lb));
+        fields.insert("right_shoulder".to_string(), Value::from_bool(rb));
+        fields.insert("left_trigger".to_string(), Value::from_float(lt_axis));
+        fields.insert("right_trigger".to_string(), Value::from_float(rt_axis));
+        // Boolean trigger forms thresholded at 0.5 — convenience for
+        // scripts that just want "is the trigger pulled".
+        fields.insert(
+            "left_trigger_pressed".to_string(),
+            Value::from_bool(lt_button || lt_axis > 0.5),
+        );
+        fields.insert(
+            "right_trigger_pressed".to_string(),
+            Value::from_bool(rt_button || rt_axis > 0.5),
+        );
+        fields.insert("dpad_up".to_string(), Value::from_bool(dup));
+        fields.insert("dpad_down".to_string(), Value::from_bool(ddown));
+        fields.insert("dpad_left".to_string(), Value::from_bool(dleft));
+        fields.insert("dpad_right".to_string(), Value::from_bool(dright));
+        fields.insert("start".to_string(), Value::from_bool(start));
+        fields.insert("select".to_string(), Value::from_bool(select));
+        // Sticks as nested records — scripts read `pad.left_stick.x`.
+        let mut ls: HashMap<String, Value> = HashMap::new();
+        ls.insert("x".to_string(), Value::from_float(lx));
+        ls.insert("y".to_string(), Value::from_float(ly));
+        fields.insert(
+            "left_stick".to_string(),
+            Value::from_object(Rc::new(RefCell::new(Object {
+                fields: ls,
+                kind: "stick",
+            }))),
+        );
+        let mut rs: HashMap<String, Value> = HashMap::new();
+        rs.insert("x".to_string(), Value::from_float(rx));
+        rs.insert("y".to_string(), Value::from_float(ry));
+        fields.insert(
+            "right_stick".to_string(),
+            Value::from_object(Rc::new(RefCell::new(Object {
+                fields: rs,
+                kind: "stick",
+            }))),
+        );
+        // L3 / R3 / Home are honest-deferred until the partner fork
+        // (or a follow-on gilrs upgrade) wires them. Today report
+        // false so scripts reading them get a definite answer.
+        fields.insert("left_stick_button".to_string(), Value::from_bool(false));
+        fields.insert("right_stick_button".to_string(), Value::from_bool(false));
+        fields.insert("home".to_string(), Value::from_bool(false));
+    } else {
+        // Higher indices: scaffolding only — partner forks wire
+        // multi-pad gilrs (or platform-native input) here.
+        fill_disconnected_controller(&mut fields);
+    }
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "controller",
+    }))))
+}
+
+fn fill_disconnected_controller(fields: &mut HashMap<String, Value>) {
+    fields.insert("connected".to_string(), Value::from_bool(false));
+    for name in [
+        "a",
+        "b",
+        "x",
+        "y",
+        "left_shoulder",
+        "right_shoulder",
+        "left_trigger_pressed",
+        "right_trigger_pressed",
+        "dpad_up",
+        "dpad_down",
+        "dpad_left",
+        "dpad_right",
+        "start",
+        "select",
+        "left_stick_button",
+        "right_stick_button",
+        "home",
+    ] {
+        fields.insert(name.to_string(), Value::from_bool(false));
+    }
+    fields.insert("left_trigger".to_string(), Value::from_float(0.0));
+    fields.insert("right_trigger".to_string(), Value::from_float(0.0));
+    for stick_name in ["left_stick", "right_stick"] {
+        let mut s: HashMap<String, Value> = HashMap::new();
+        s.insert("x".to_string(), Value::from_float(0.0));
+        s.insert("y".to_string(), Value::from_float(0.0));
+        fields.insert(
+            stick_name.to_string(),
+            Value::from_object(Rc::new(RefCell::new(Object {
+                fields: s,
+                kind: "stick",
+            }))),
+        );
+    }
+}
+
+/// Tuple of 14 button bools + connected flag, returned from
+/// `read_gamepad_buttons`. Keyed positionally so the caller binds
+/// fields by name; the type alias keeps clippy's complex-type lint
+/// happy.
+type GamepadButtonState = (
+    bool, // a
+    bool, // b
+    bool, // x
+    bool, // y
+    bool, // lb
+    bool, // rb
+    bool, // lt (boolean threshold)
+    bool, // rt (boolean threshold)
+    bool, // start
+    bool, // select
+    bool, // dpad up
+    bool, // dpad down
+    bool, // dpad left
+    bool, // dpad right
+    bool, // connected
+);
+
+fn read_gamepad_buttons(env: &Env) -> GamepadButtonState {
+    let opt = env.get("gamepad");
+    let v = match opt.as_ref() {
+        Some(v) if v.is_object() => *v,
+        _ => {
+            return (
+                false, false, false, false, false, false, false, false, false, false, false,
+                false, false, false, false,
+            )
+        }
+    };
+    let rc = v.as_object();
+    let o = rc.borrow();
+    let g = |k: &str| {
+        o.fields
+            .get(k)
+            .filter(|v| v.is_bool())
+            .map(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    (
+        g("a"),
+        g("b"),
+        g("x"),
+        g("y"),
+        g("lb"),
+        g("rb"),
+        g("lt"),
+        g("rt"),
+        g("start"),
+        g("select"),
+        g("dup"),
+        g("ddown"),
+        g("dleft"),
+        g("dright"),
+        g("connected"),
+    )
+}
+
+fn read_gamepad_axes(env: &Env) -> (f64, f64, f64, f64, f64, f64) {
+    let opt = env.get("gamepad_axis");
+    let v = match opt.as_ref() {
+        Some(v) if v.is_object() => *v,
+        _ => return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    };
+    let rc = v.as_object();
+    let o = rc.borrow();
+    let g = |k: &str| {
+        o.fields
+            .get(k)
+            .and_then(|v| {
+                if v.is_float() {
+                    Some(v.as_float())
+                } else if v.is_int_or_boxed_int() {
+                    Some(v.as_int() as f64)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.0)
+    };
+    (g("lx"), g("ly"), g("rx"), g("ry"), g("lt"), g("rt"))
+}
+
+fn console_controller_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "console.controller_count")?;
+    // Today: 1 if controller 0 reports connected, 0 otherwise.
+    // Partner forks override with real multi-pad enumeration.
+    let opt = env.get("gamepad");
+    let connected = match opt.as_ref() {
+        Some(v) if v.is_object() => {
+            let rc = v.as_object();
+            let o = rc.borrow();
+            o.fields
+                .get("connected")
+                .filter(|f| f.is_bool())
+                .map(|f| f.as_bool())
+                .unwrap_or(false)
+        }
+        _ => false,
+    };
+    Ok(Value::from_int(if connected { 1 } else { 0 }))
+}
+
+/// Per-style glyph string for a canonical (Xbox-named) button.
+/// Empty string for unknown buttons.
+fn console_glyph(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "console.glyph")?;
+    let button = string_arg(&args[0], "console.glyph", "button")?;
+    let style = string_arg(&args[1], "console.glyph", "style")?;
+    let resolved_style = if style == "auto" {
+        // Auto-detect from connected controller — today always falls
+        // back to xbox since the gilrs path doesn't surface the
+        // controller's vendor. Partner forks override this.
+        "xbox".to_string()
+    } else {
+        style
+    };
+    Ok(Value::from_string(
+        glyph_lookup(&button, &resolved_style).to_string(),
+    ))
+}
+
+fn glyph_lookup(button: &str, style: &str) -> &'static str {
+    match (style, button) {
+        ("xbox", "a") => "(A)",
+        ("xbox", "b") => "(B)",
+        ("xbox", "x") => "(X)",
+        ("xbox", "y") => "(Y)",
+        ("xbox", "left_shoulder") => "[LB]",
+        ("xbox", "right_shoulder") => "[RB]",
+        ("xbox", "left_trigger") => "[LT]",
+        ("xbox", "right_trigger") => "[RT]",
+        ("xbox", "left_stick_button") => "[L3]",
+        ("xbox", "right_stick_button") => "[R3]",
+        ("xbox", "start") => "[Menu]",
+        ("xbox", "select") => "[View]",
+        ("playstation", "a") => "✕",
+        ("playstation", "b") => "◯",
+        ("playstation", "x") => "□",
+        ("playstation", "y") => "△",
+        ("playstation", "left_shoulder") => "[L1]",
+        ("playstation", "right_shoulder") => "[R1]",
+        ("playstation", "left_trigger") => "[L2]",
+        ("playstation", "right_trigger") => "[R2]",
+        ("playstation", "left_stick_button") => "[L3]",
+        ("playstation", "right_stick_button") => "[R3]",
+        ("playstation", "start") => "[Options]",
+        ("playstation", "select") => "[Share]",
+        ("switch", "a") => "(A)",
+        ("switch", "b") => "(B)",
+        ("switch", "x") => "(X)",
+        ("switch", "y") => "(Y)",
+        ("switch", "left_shoulder") => "[L]",
+        ("switch", "right_shoulder") => "[R]",
+        ("switch", "left_trigger") => "[ZL]",
+        ("switch", "right_trigger") => "[ZR]",
+        ("switch", "left_stick_button") => "[LS]",
+        ("switch", "right_stick_button") => "[RS]",
+        ("switch", "start") => "[+]",
+        ("switch", "select") => "[-]",
+        _ => "",
+    }
+}
+
+/// Asset key for a glyph sprite. Returns a key like
+/// `"glyph/xbox/a.png"` that scripts pass to `image()`. The asset
+/// itself ships with partner forks (signed glyphs from the platform
+/// SDK); the open-source repo does not bundle the platform-owned
+/// glyphs. Returns empty string when no asset is available.
+fn console_glyph_asset(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "console.glyph_asset")?;
+    let button = string_arg(&args[0], "console.glyph_asset", "button")?;
+    let style = string_arg(&args[1], "console.glyph_asset", "style")?;
+    if button.is_empty() || style.is_empty() {
+        return Ok(Value::from_string(String::new()));
+    }
+    Ok(Value::from_string(format!("glyph/{style}/{button}.png")))
+}
+
+/// Returns the detected glyph style for the connected controller.
+/// Today always returns `"xbox"` (matches the gilrs PC path); partner
+/// forks override per-platform.
+fn console_detect_style(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "console.detect_style")?;
+    Ok(Value::from_string("xbox".to_string()))
+}
+
+// ---------------------------------------------------------------
+// Phase 40 session 4: platform-service traits.
+//
+// `achievements.unlock` / `cloud_save.save` / `friends.list` — trait
+// stubs that route through `crate::steam::*` on Steam builds, no-op
+// on every other build. Partner forks provide platform-specific
+// implementations behind feature flags (analogous to `--features
+// steam` / `--features steam-net`).
+// ---------------------------------------------------------------
+
+fn install_platform_services(env: &mut Env) {
+    let mut a = HashMap::new();
+    a.insert(
+        "unlock".to_string(),
+        Value::from_builtin("achievements.unlock", &["id"], achievements_unlock),
+    );
+    a.insert(
+        "is_unlocked".to_string(),
+        Value::from_builtin(
+            "achievements.is_unlocked",
+            &["id"],
+            achievements_is_unlocked,
+        ),
+    );
+    env.set(
+        "achievements".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: a,
+            kind: "module",
+        }))),
+    );
+
+    let mut c = HashMap::new();
+    c.insert(
+        "save".to_string(),
+        Value::from_builtin("cloud_save.save", &["slot", "value"], cloud_save_save),
+    );
+    c.insert(
+        "load".to_string(),
+        Value::from_builtin("cloud_save.load", &["slot"], cloud_save_load),
+    );
+    env.set(
+        "cloud_save".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: c,
+            kind: "module",
+        }))),
+    );
+
+    let mut f = HashMap::new();
+    f.insert(
+        "list".to_string(),
+        Value::from_builtin("friends.list", &[], friends_list),
+    );
+    f.insert(
+        "is_friend".to_string(),
+        Value::from_builtin("friends.is_friend", &["id"], friends_is_friend),
+    );
+    env.set(
+        "friends".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: f,
+            kind: "module",
+        }))),
+    );
+}
+
+fn achievements_unlock(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "achievements.unlock")?;
+    // Route through the Phase 15 Steam achievement path. On non-Steam
+    // builds this is a no-op (the Steam stub returns nil). Partner
+    // forks add platform-specific routes alongside.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = crate::steam::achievement_unlock(env, args);
+    }
+    let _ = env;
+    Ok(Value::NIL)
+}
+
+fn achievements_is_unlocked(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "achievements.is_unlocked")?;
+    // No-op for the open-source repo. Partner forks query the
+    // platform-specific achievement state.
+    Ok(Value::from_bool(false))
+}
+
+fn cloud_save_save(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "cloud_save.save")?;
+    let slot = string_arg(&args[0], "cloud_save.save", "slot")?;
+    let payload = args[1].display();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = crate::steam::cloud_save(
+            env,
+            &[
+                Value::from_string(slot),
+                Value::from_string(payload),
+            ],
+        );
+    }
+    let _ = env;
+    Ok(Value::NIL)
+}
+
+fn cloud_save_load(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "cloud_save.load")?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::steam::cloud_load(env, args)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = env;
+        let _ = args;
+        Ok(Value::NIL)
+    }
+}
+
+fn friends_list(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "friends.list")?;
+    // Empty list on the open-source repo. Partner forks return the
+    // platform-specific friend list (Steam Friends, PSN, etc).
+    Ok(Value::from_list(Rc::new(RefCell::new(Vec::new()))))
+}
+
+fn friends_is_friend(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "friends.is_friend")?;
+    Ok(Value::from_bool(false))
+}
+
+// ---------------------------------------------------------------
+// Phase 41: mmo.* + workshop.* — MMO architecture stubs.
+//
+// Per `docs/changes/2026-05-11-mmo-rfc.md` the runtime is honest-
+// deferred to a future-implementer-with-bandwidth opening the phase
+// properly. This module ships the *author-facing API* that compiles
+// + runs today as single-player no-ops, so scripts written against
+// the contract keep working when (if) a server runtime appears.
+//
+// Naming convention:
+//   - `mmo.replicate(name, value)` — declare replicated state.
+//     Today no-op locally; future runtime broadcasts to peers.
+//   - `mmo.persist(key, value)` / `mmo.load(key)` — server-side DB
+//     stub. Today saves to a thread-local Map; future runtime
+//     routes to SQL / Redis.
+//   - `mmo.broadcast(channel, payload)` + `mmo.next_event()` —
+//     event queue. Today scripts observe their own broadcasts;
+//     future runtime routes to peers in the same shard.
+//   - `mmo.entities_near(x, y, z, r)` — AOI query. Composes with
+//     `world.spatial_query_radius` directly; the server-side
+//     version filters by what the player can see.
+//   - `mmo.shard_id()` / `mmo.transfer_to(shard)` — sharding
+//     lifecycle. Today returns "default"; future runtime returns
+//     the active zone name and handles cross-shard handoff.
+// ---------------------------------------------------------------
+
+thread_local! {
+    /// Persistent-world database stub. Future runtime replaces this
+    /// with a SQL / Redis route. (Non-const init because
+    /// `HashMap::new()` with the default RandomState hasher isn't
+    /// const-callable.)
+    #[allow(clippy::missing_const_for_thread_local)]
+    static MMO_DB: RefCell<HashMap<String, crate::json::Value>> =
+        RefCell::new(HashMap::new());
+    /// Event queue stub. `mmo.broadcast` pushes onto this; the local
+    /// script's `mmo.next_event` drains it. Future runtime routes
+    /// to peers in the same shard.
+    static MMO_EVENTS: RefCell<std::collections::VecDeque<(String, String, String)>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
+    /// Active shard id. Future runtime sets this on handoff. Stored
+    /// behind a `RefCell<Option<String>>` so the init is const; `None`
+    /// is the default-shard sentinel, surfaced as `"default"`.
+    static MMO_SHARD_ID: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn install_mmo(env: &mut Env) {
+    let mut m = HashMap::new();
+    m.insert(
+        "replicate".to_string(),
+        Value::from_builtin("mmo.replicate", &["name", "value"], mmo_replicate),
+    );
+    m.insert(
+        "persist".to_string(),
+        Value::from_builtin("mmo.persist", &["key", "value"], mmo_persist),
+    );
+    m.insert(
+        "load".to_string(),
+        Value::from_builtin("mmo.load", &["key"], mmo_load),
+    );
+    m.insert(
+        "broadcast".to_string(),
+        Value::from_builtin(
+            "mmo.broadcast",
+            &["channel", "payload"],
+            mmo_broadcast,
+        ),
+    );
+    m.insert(
+        "next_event".to_string(),
+        Value::from_builtin("mmo.next_event", &[], mmo_next_event),
+    );
+    m.insert(
+        "entities_near".to_string(),
+        Value::from_builtin(
+            "mmo.entities_near",
+            &["x", "y", "z", "radius"],
+            mmo_entities_near,
+        ),
+    );
+    m.insert(
+        "shard_id".to_string(),
+        Value::from_builtin("mmo.shard_id", &[], mmo_shard_id),
+    );
+    m.insert(
+        "transfer_to".to_string(),
+        Value::from_builtin("mmo.transfer_to", &["shard"], mmo_transfer_to),
+    );
+    env.set(
+        "mmo".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: m,
+            kind: "module",
+        }))),
+    );
+}
+
+/// Declare a replicated state slot. Today no-op — the value is
+/// already local. Future runtime broadcasts the change to peers in
+/// the same shard within the player's AOI.
+fn mmo_replicate(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "mmo.replicate")?;
+    let _name = string_arg(&args[0], "mmo.replicate", "name")?;
+    // _value = args[1] — passed through unchanged today.
+    Ok(Value::NIL)
+}
+
+/// Persist a value to the server-side DB. Today saves to a thread-
+/// local map. Future runtime flushes through a snapshot ring buffer
+/// to SQL / Redis.
+fn mmo_persist(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "mmo.persist")?;
+    let key = string_arg(&args[0], "mmo.persist", "key")?;
+    let json = crate::save::encode(&args[1]).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("mmo.persist: {m}"),
+        help: None,
+    })?;
+    MMO_DB.with(|db| {
+        db.borrow_mut().insert(key, json);
+    });
+    Ok(Value::NIL)
+}
+
+/// Read a previously-persisted value, or nil if absent.
+fn mmo_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mmo.load")?;
+    let key = string_arg(&args[0], "mmo.load", "key")?;
+    let v = MMO_DB.with(|db| db.borrow().get(&key).cloned());
+    Ok(v.map(|j| crate::save::decode(&j)).unwrap_or(Value::NIL))
+}
+
+/// Broadcast a one-shot event to peers in the same shard. Today the
+/// event lands on the local event queue (so the local script can
+/// observe its own broadcasts). Future runtime delivers to other
+/// peers in the same AOI.
+fn mmo_broadcast(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "mmo.broadcast")?;
+    let channel = string_arg(&args[0], "mmo.broadcast", "channel")?;
+    let payload = args[1].display();
+    // Sender id is "local" today; future runtime fills in the real
+    // SteamID / SessionID of the sending peer.
+    MMO_EVENTS.with(|q| {
+        q.borrow_mut().push_back(("local".to_string(), channel, payload));
+    });
+    Ok(Value::NIL)
+}
+
+/// Drain one event from the queue. Returns `{sender_id, channel,
+/// payload}` or nil if empty.
+fn mmo_next_event(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "mmo.next_event")?;
+    let evt = MMO_EVENTS.with(|q| q.borrow_mut().pop_front());
+    match evt {
+        Some((sender, channel, payload)) => {
+            let mut fields: HashMap<String, Value> = HashMap::new();
+            fields.insert("sender_id".to_string(), Value::from_string(sender));
+            fields.insert("channel".to_string(), Value::from_string(channel));
+            fields.insert("payload".to_string(), Value::from_string(payload));
+            Ok(Value::from_object(Rc::new(RefCell::new(Object {
+                fields,
+                kind: "mmo_event",
+            }))))
+        }
+        None => Ok(Value::NIL),
+    }
+}
+
+/// Area-of-interest query: which entities are near `(x, y, z)`
+/// within `radius`? Composes with Phase 32's
+/// `world.spatial_query_radius`. Today returns the same result as
+/// the underlying spatial query; future runtime additionally
+/// filters by what the player is allowed to see (visibility, friend
+/// list, party membership).
+fn mmo_entities_near(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "mmo.entities_near")?;
+    let x = as_f64(&args[0], "mmo.entities_near")?;
+    let y = as_f64(&args[1], "mmo.entities_near")?;
+    let z = as_f64(&args[2], "mmo.entities_near")?;
+    let r = as_f64(&args[3], "mmo.entities_near")?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let ids = crate::spatial::with_world(|w| {
+            w.query_radius(x as f32, y as f32, z as f32, r as f32)
+        });
+        let items: Vec<Value> = ids
+            .into_iter()
+            .map(|id| Value::from_int(id as i64))
+            .collect();
+        Ok(Value::from_list(Rc::new(RefCell::new(items))))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (x, y, z, r);
+        Ok(Value::from_list(Rc::new(RefCell::new(Vec::new()))))
+    }
+}
+
+/// Active shard id. Today always `"default"`; future runtime sets
+/// this on shard handoff.
+fn mmo_shard_id(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "mmo.shard_id")?;
+    let id = MMO_SHARD_ID.with(|s| {
+        s.borrow()
+            .clone()
+            .unwrap_or_else(|| "default".to_string())
+    });
+    Ok(Value::from_string(id))
+}
+
+/// Request a transfer to `shard`. Today sets the local shard id
+/// without any network coordination — useful for prototyping multi-
+/// zone games as a single-player simulation. Future runtime
+/// orchestrates the cross-shard handoff (serialise player state on
+/// source, deserialise on destination, loading-screen UX).
+fn mmo_transfer_to(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "mmo.transfer_to")?;
+    let shard = string_arg(&args[0], "mmo.transfer_to", "shard")?;
+    MMO_SHARD_ID.with(|s| *s.borrow_mut() = Some(shard));
+    Ok(Value::NIL)
+}
+
+// ---------------------------------------------------------------
+// Phase 41 session 7: workshop.* — user-generated-content traits.
+//
+// Trait stubs for a Steam Workshop-style publishing pipeline. The
+// Steam path could route through `steamworks::UGC` on
+// `--features steam-workshop` (a follow-on feature flag); the open-
+// source repo ships the contract + no-op fallbacks.
+// ---------------------------------------------------------------
+
+fn install_workshop(env: &mut Env) {
+    let mut w = HashMap::new();
+    w.insert(
+        "publish".to_string(),
+        Value::from_builtin(
+            "workshop.publish",
+            &["title", "content_path"],
+            workshop_publish,
+        ),
+    );
+    w.insert(
+        "list_subscribed".to_string(),
+        Value::from_builtin(
+            "workshop.list_subscribed",
+            &[],
+            workshop_list_subscribed,
+        ),
+    );
+    w.insert(
+        "install".to_string(),
+        Value::from_builtin("workshop.install", &["id"], workshop_install),
+    );
+    env.set(
+        "workshop".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: w,
+            kind: "module",
+        }))),
+    );
+}
+
+fn workshop_publish(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "workshop.publish")?;
+    // No-op on the open-source repo. Steam-feature route + future
+    // server runtime fill in the real publish call.
+    Ok(Value::NIL)
+}
+
+fn workshop_list_subscribed(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "workshop.list_subscribed")?;
+    Ok(Value::from_list(Rc::new(RefCell::new(Vec::new()))))
+}
+
+fn workshop_install(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "workshop.install")?;
+    // Returns false today — no actual workshop integration.
+    Ok(Value::from_bool(false))
 }
 
 // ---------------------------------------------------------------
