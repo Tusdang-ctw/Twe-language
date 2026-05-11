@@ -729,6 +729,8 @@ pub fn install(env: &mut Env) {
     #[cfg(not(target_arch = "wasm32"))]
     install_net(env);
     #[cfg(not(target_arch = "wasm32"))]
+    install_rollback(env);
+    #[cfg(not(target_arch = "wasm32"))]
     install_world(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_terrain(env);
@@ -2443,6 +2445,15 @@ fn install_net(env: &mut Env) {
             net_disconnect_timeout,
         ),
     );
+    // Phase 37: rollback netcode mode switch.
+    n.insert(
+        "set_mode".to_string(),
+        Value::from_builtin("net.set_mode", &["mode"], net_set_mode),
+    );
+    n.insert(
+        "mode".to_string(),
+        Value::from_builtin("net.mode", &[], net_mode),
+    );
     env.set(
         "net".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -2814,6 +2825,275 @@ fn net_punch(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         help: None,
     })?;
     Ok(Value::NIL)
+}
+
+// ---------------------------------------------------------------
+// Phase 37: rollback netcode builtins.
+// ---------------------------------------------------------------
+
+/// Install the `rollback.*` namespace. Per the Phase 37 RFC,
+/// rollback is opt-in via `net.set_mode("rollback")`; this namespace
+/// holds the rollback-specific knobs (input prediction, smoothing,
+/// max rewind frames) plus the snapshot primitives the rewind
+/// engine uses internally.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_rollback(env: &mut Env) {
+    let mut r = HashMap::new();
+    r.insert(
+        "snapshot".to_string(),
+        Value::from_builtin(
+            "rollback.snapshot",
+            &["name", "value"],
+            rollback_snapshot,
+        ),
+    );
+    r.insert(
+        "restore".to_string(),
+        Value::from_builtin("rollback.restore", &["name"], rollback_restore),
+    );
+    r.insert(
+        "advance_tick".to_string(),
+        Value::from_builtin(
+            "rollback.advance_tick",
+            &["tick"],
+            rollback_advance_tick,
+        ),
+    );
+    r.insert(
+        "current_tick".to_string(),
+        Value::from_builtin("rollback.current_tick", &[], rollback_current_tick),
+    );
+    r.insert(
+        "discard_after".to_string(),
+        Value::from_builtin(
+            "rollback.discard_after",
+            &["tick"],
+            rollback_discard_after,
+        ),
+    );
+    r.insert(
+        "set_input_prediction".to_string(),
+        Value::from_builtin(
+            "rollback.set_input_prediction",
+            &["policy"],
+            rollback_set_input_prediction,
+        ),
+    );
+    r.insert(
+        "input_prediction".to_string(),
+        Value::from_builtin(
+            "rollback.input_prediction",
+            &[],
+            rollback_input_prediction,
+        ),
+    );
+    r.insert(
+        "set_smoothing".to_string(),
+        Value::from_builtin(
+            "rollback.set_smoothing",
+            &["on"],
+            rollback_set_smoothing,
+        ),
+    );
+    r.insert(
+        "smoothing".to_string(),
+        Value::from_builtin("rollback.smoothing", &[], rollback_smoothing),
+    );
+    r.insert(
+        "max_rewind_frames".to_string(),
+        Value::from_builtin(
+            "rollback.max_rewind_frames",
+            &["n"],
+            rollback_set_max_rewind_frames,
+        ),
+    );
+    r.insert(
+        "is_replaying".to_string(),
+        Value::from_builtin("rollback.is_replaying", &[], rollback_is_replaying),
+    );
+    r.insert(
+        "stats".to_string(),
+        Value::from_builtin("rollback.stats", &[], rollback_stats),
+    );
+    env.set(
+        "rollback".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: r,
+            kind: "module",
+        }))),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_set_mode(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.set_mode")?;
+    let s = string_arg(&args[0], "net.set_mode", "mode")?;
+    let mode = crate::rollback::Mode::parse(&s).ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!(
+            "net.set_mode: unknown mode {s:?} — expected \"lockstep\" or \"rollback\""
+        ),
+        help: Some(
+            "lockstep is the default (Phase 31); rollback is the second mode shipped in Phase 37."
+                .to_string(),
+        ),
+    })?;
+    crate::rollback::set_mode(mode);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn net_mode(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.mode")?;
+    Ok(Value::from_string(crate::rollback::mode().as_str().to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_snapshot(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "rollback.snapshot")?;
+    let name = string_arg(&args[0], "rollback.snapshot", "name")?;
+    crate::rollback::snapshot(&name, &args[1]).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("rollback.snapshot: {m}"),
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_restore(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "rollback.restore")?;
+    let name = string_arg(&args[0], "rollback.restore", "name")?;
+    Ok(crate::rollback::restore(&name).unwrap_or(Value::NIL))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_advance_tick(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "rollback.advance_tick")?;
+    let tick = as_i64(&args[0], "rollback.advance_tick")?;
+    if !(0..=i64::from(u32::MAX)).contains(&tick) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("rollback.advance_tick: tick out of range (got {tick})"),
+            help: None,
+        });
+    }
+    crate::rollback::advance_tick(tick as u32);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_current_tick(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "rollback.current_tick")?;
+    Ok(Value::from_int(crate::rollback::current_tick() as i64))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_discard_after(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "rollback.discard_after")?;
+    let tick = as_i64(&args[0], "rollback.discard_after")?;
+    if !(0..=i64::from(u32::MAX)).contains(&tick) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("rollback.discard_after: tick out of range (got {tick})"),
+            help: None,
+        });
+    }
+    crate::rollback::discard_after(tick as u32);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_set_input_prediction(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "rollback.set_input_prediction")?;
+    let s = string_arg(&args[0], "rollback.set_input_prediction", "policy")?;
+    let p = crate::rollback::InputPrediction::parse(&s).ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!(
+            "rollback.set_input_prediction: unknown policy {s:?} — expected \
+             \"last-input-repeat\" or \"velocity-extrapolate\""
+        ),
+        help: None,
+    })?;
+    crate::rollback::set_input_prediction(p);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_input_prediction(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "rollback.input_prediction")?;
+    Ok(Value::from_string(
+        crate::rollback::input_prediction().as_str().to_string(),
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_set_smoothing(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "rollback.set_smoothing")?;
+    if !args[0].is_bool() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "rollback.set_smoothing: expected bool for `on`".to_string(),
+            help: None,
+        });
+    }
+    crate::rollback::set_smoothing(args[0].as_bool());
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_smoothing(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "rollback.smoothing")?;
+    Ok(Value::from_bool(crate::rollback::smoothing()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_set_max_rewind_frames(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "rollback.max_rewind_frames")?;
+    let n = as_i64(&args[0], "rollback.max_rewind_frames")?;
+    if !(1..=60).contains(&n) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("rollback.max_rewind_frames: must be 1..=60 (got {n})"),
+            help: None,
+        });
+    }
+    crate::rollback::set_max_rewind_frames(n as u32);
+    Ok(Value::NIL)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_is_replaying(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "rollback.is_replaying")?;
+    Ok(Value::from_bool(crate::rollback::is_replaying()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn rollback_stats(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "rollback.stats")?;
+    let s = crate::rollback::stats();
+    let mut fields: HashMap<String, Value> = HashMap::new();
+    fields.insert("predicted".to_string(), Value::from_int(s.predicted as i64));
+    fields.insert("corrected".to_string(), Value::from_int(s.corrected as i64));
+    fields.insert(
+        "last_correction_frames".to_string(),
+        Value::from_int(s.last_correction_frames as i64),
+    );
+    fields.insert(
+        "ring_len".to_string(),
+        Value::from_int(s.ring_len as i64),
+    );
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "rollback_stats",
+    }))))
 }
 
 // ---------------------------------------------------------------

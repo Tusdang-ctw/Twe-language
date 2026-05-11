@@ -851,7 +851,7 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ## Phase 37 — Post-v1.0 — Rollback netcode
 
-**Status:** open. **Pressures Principle 2.** A second netcode model alongside Phase 31's lockstep — for fighting games, fast-paced action, anything where a 4-frame lockstep input delay is a player-feel deal-breaker.
+**Status:** codebase-closed 2026-05-11 per `docs/changes/2026-05-11-phase-37-closeout.md`. **Pressures Principle 2.** A second netcode model alongside Phase 31's lockstep — for fighting games, fast-paced action, anything where a 4-frame lockstep input delay is a player-feel deal-breaker. Eight sessions shipped (RFC + 7 deliverables). Six honest deferrals to a runner-integration follow-on: eval-side rewind engine, `entity Fighter: rollback = true` parser sugar, render-side visual smoothing math, `MSG_HELLO` mode-mismatch handshake check, `velocity-extrapolate` policy runner consumption, and the two-machine real-network input-feel measurement. See [`docs/changes/2026-05-11-rollback-rfc.md`](changes/2026-05-11-rollback-rfc.md) for the Principle 2 carve-out justification.
 
 **Why this is risky:** Principle 2 ("one obvious way per concept") forbids shipping two netcode models without justification. The justification is: rollback solves a problem lockstep cannot (sub-frame input feel), and the genre divide is sharp — rhythm + RTS + co-op want lockstep determinism, fighting + first-person shooters want rollback. The RFC must establish that the language exposes one obvious way *per genre*, with a clear `net.mode = "lockstep"` / `net.mode = "rollback"` switch. If the RFC can't justify both shapes cleanly, this phase doesn't ship.
 

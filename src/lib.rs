@@ -76,6 +76,13 @@ pub mod net_steam;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net_stun;
 
+// Phase 37: rollback netcode. Second netcode mode alongside Phase 31
+// lockstep, opt-in via `net.set_mode("rollback")`. Owns the snapshot
+// ring buffer, mode flag, input-prediction policy, smoothing flag,
+// and is_replaying runtime flag. Wire format unchanged from lockstep.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rollback;
+
 // Phase 32: open-world 3D foundation. Spatial partitioning + chunked
 // streaming + (later sessions) LOD + occlusion culling. Native-only —
 // the structures themselves would compile on WASM but they share fate

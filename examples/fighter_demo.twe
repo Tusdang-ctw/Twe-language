@@ -1,0 +1,284 @@
+# @task: Rollback netcode fighting game demo
+# @inputs: WASD + spacebar (player 1) / arrow keys + right-shift (player 2)
+# @expected: 2-player fighting at sub-2-frame input feel over rollback netcode
+# @category: net
+# @difficulty: hard
+#
+# Fighter Demo — 2-player fighting game over rollback multiplayer.
+#
+# Phase 37 session 7. Demonstrates the rollback mode in action: each
+# peer simulates immediately on its own input, predicts the peer's
+# input (default: last-input-repeat), and rewinds + re-simulates
+# when the real input catches up.
+#
+# How to run:
+#
+#   Both peers:
+#     twec play examples/fighter_demo.twe
+#     Press H to host on UDP port 7780, or J to join 127.0.0.1:7780.
+#
+# Per the Phase 37 RFC, the script opts into rollback by calling
+# `net.set_mode("rollback")` BEFORE `net.host` / `net.connect`.
+# Rollback-tracked state is declared via `rollback.snapshot(name, value)`
+# at the end of every simulated tick.
+#
+# What you'll see: the predicted/corrected counters in the HUD tick
+# up. On a low-latency connection (loopback) corrections are rare;
+# on a real internet connection they happen every few frames.
+#
+# Honestly deferred (Phase 37 closeout):
+#   - `entity Fighter: rollback = true` parser sugar — scripts must
+#     call `rollback.snapshot` manually.
+#   - Visual smoothing math — the render-side position lerp is
+#     scaffolded (`rollback.set_smoothing(true)`) but the runner-side
+#     interpolation lands in a follow-on session. Today, rewinds
+#     show as a single-frame position adjustment.
+
+let view_w = 640.0
+let view_h = 480.0
+let ground_y = 380.0
+let fighter_w = 48.0
+let fighter_h = 96.0
+let move_speed = 240.0
+let jump_speed = -480.0
+let gravity = 1200.0
+let punch_range = 64.0
+let punch_damage = 8
+let punch_cooldown = 0.25
+let win_health = 0
+
+scene FighterDemo:
+    var p1_x = 160.0
+    var p1_y = 380.0
+    var p1_vy = 0.0
+    var p1_hp = 100
+    var p1_punch_cd = 0.0
+
+    var p2_x = 480.0
+    var p2_y = 380.0
+    var p2_vy = 0.0
+    var p2_hp = 100
+    var p2_punch_cd = 0.0
+
+    var tick = 0
+    var my_id = 0
+    var prediction_text = "last-input-repeat"
+    var stats_text = ""
+
+    initial: lobby
+
+    state lobby:
+        on update(dt):
+            if not net.is_connected():
+                # Per the RFC: set mode BEFORE host/connect. The
+                # mode-mismatch check in MSG_HELLO rejects peers
+                # running in the other mode.
+                net.set_mode("rollback")
+                rollback.set_input_prediction("last-input-repeat")
+                rollback.set_smoothing(true)
+                rollback.max_rewind_frames(8)
+                if key_press.h:
+                    net.host(7780, 2)
+                if key_press.j:
+                    net.connect("127.0.0.1:7780")
+            else:
+                if net.session_ready():
+                    my_id = net.local_peer_id()
+                    -> playing
+
+        on render():
+            text(
+                "FIGHTER DEMO — ROLLBACK NETCODE",
+                at: (view_w * 0.5 - 220, 80),
+                size: 24,
+                color: color.white,
+            )
+            text(
+                "H — Host (port 7780)",
+                at: (view_w * 0.5 - 100, 180),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "J — Join (127.0.0.1:7780)",
+                at: (view_w * 0.5 - 100, 210),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "Mode: {net.mode()}   Prediction: {rollback.input_prediction()}",
+                at: (16, view_h - 32),
+                size: 14,
+                color: color.gray,
+            )
+
+    state playing:
+        on update(dt):
+            net.send_input(tick)
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+            rollback.advance_tick(tick)
+
+            # ---- Player 1 (peer 0). WASD + spacebar. ----
+            if peer[0].key.a:
+                p1_x -= move_speed * dt
+            if peer[0].key.d:
+                p1_x += move_speed * dt
+            if peer[0].key_press.w and p1_y >= ground_y:
+                p1_vy = jump_speed
+            p1_vy += gravity * dt
+            p1_y += p1_vy * dt
+            if p1_y > ground_y:
+                p1_y = ground_y
+                p1_vy = 0.0
+            if p1_x < 0.0:
+                p1_x = 0.0
+            if p1_x > view_w - fighter_w:
+                p1_x = view_w - fighter_w
+
+            p1_punch_cd -= dt
+            if peer[0].key_press.space and p1_punch_cd <= 0.0:
+                p1_punch_cd = punch_cooldown
+                # Punch lands if p2 is within range.
+                let dx = p2_x - p1_x
+                if dx > 0.0 and dx < punch_range:
+                    if p2_y >= p1_y - fighter_h * 0.5:
+                        p2_hp -= punch_damage
+
+            # ---- Player 2 (peer 1). Arrow keys + right shift. ----
+            if peer[1].key.left:
+                p2_x -= move_speed * dt
+            if peer[1].key.right:
+                p2_x += move_speed * dt
+            if peer[1].key_press.up and p2_y >= ground_y:
+                p2_vy = jump_speed
+            p2_vy += gravity * dt
+            p2_y += p2_vy * dt
+            if p2_y > ground_y:
+                p2_y = ground_y
+                p2_vy = 0.0
+            if p2_x < 0.0:
+                p2_x = 0.0
+            if p2_x > view_w - fighter_w:
+                p2_x = view_w - fighter_w
+
+            p2_punch_cd -= dt
+            if peer[1].key_press.right_shift and p2_punch_cd <= 0.0:
+                p2_punch_cd = punch_cooldown
+                let dx = p1_x - p2_x
+                if dx > -punch_range and dx < 0.0:
+                    if p1_y >= p2_y - fighter_h * 0.5:
+                        p1_hp -= punch_damage
+
+            # Phase 37: declare rollback-tracked state. The rewind
+            # engine reads these snapshots when a peer's real input
+            # arrives N frames late and the runner needs to re-run
+            # tick (current - N) with the corrected input. Scripts
+            # that don't snapshot a field will see that field stay
+            # at its predicted-frame value during the rewind, which
+            # is the right answer for purely-derived state (UI,
+            # particles, audio) but the wrong answer for game state
+            # that should match across peers.
+            rollback.snapshot("p1_x", p1_x)
+            rollback.snapshot("p1_y", p1_y)
+            rollback.snapshot("p1_vy", p1_vy)
+            rollback.snapshot("p1_hp", p1_hp)
+            rollback.snapshot("p1_punch_cd", p1_punch_cd)
+            rollback.snapshot("p2_x", p2_x)
+            rollback.snapshot("p2_y", p2_y)
+            rollback.snapshot("p2_vy", p2_vy)
+            rollback.snapshot("p2_hp", p2_hp)
+            rollback.snapshot("p2_punch_cd", p2_punch_cd)
+
+            # State-hash heartbeat once a second, same as lockstep.
+            if math.mod(tick, 60) == 0:
+                let snap = (
+                    p1_x, p1_y, p1_vy, p1_hp,
+                    p2_x, p2_y, p2_vy, p2_hp,
+                )
+                net.send_state_hash(tick, net.hash(snap))
+
+            tick += 1
+
+            if p1_hp <= win_health or p2_hp <= win_health:
+                -> game_over
+
+        on render():
+            # Ground line.
+            rect(
+                at: (0.0, ground_y + fighter_h),
+                size: (view_w, 4),
+                color: color.gray,
+            )
+            # Player 1 (blue).
+            rect(
+                at: (p1_x, p1_y),
+                size: (fighter_w, fighter_h),
+                color: color.blue,
+            )
+            # Player 2 (red).
+            rect(
+                at: (p2_x, p2_y),
+                size: (fighter_w, fighter_h),
+                color: color.red,
+            )
+            # Health bars.
+            rect(at: (16, 16), size: (200, 16), color: color.gray)
+            rect(at: (16, 16), size: (p1_hp * 2.0, 16), color: color.blue)
+            rect(at: (view_w - 216, 16), size: (200, 16), color: color.gray)
+            rect(at: (view_w - 216, 16), size: (p2_hp * 2.0, 16), color: color.red)
+
+            # HUD: rollback stats.
+            let s = rollback.stats()
+            text(
+                "predicted: {s.predicted}   corrected: {s.corrected}   last-rewind: {s.last_correction_frames}f",
+                at: (16, view_h - 36),
+                size: 14,
+                color: color.yellow,
+            )
+            text(
+                "tick {tick}   you = peer {my_id}",
+                at: (16, view_h - 18),
+                size: 14,
+                color: color.gray,
+            )
+
+    state game_over:
+        on update(dt):
+            net.send_input(tick)
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+            tick += 1
+            if peer[0].key_press.r or peer[1].key_press.r:
+                net.close()
+                p1_hp = 100
+                p2_hp = 100
+                p1_x = 160.0
+                p2_x = 480.0
+                tick = 0
+                -> lobby
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            if p1_hp <= win_health:
+                text(
+                    "Red wins!",
+                    at: (view_w * 0.5 - 100, 200),
+                    size: 48,
+                    color: color.red,
+                )
+            else:
+                text(
+                    "Blue wins!",
+                    at: (view_w * 0.5 - 110, 200),
+                    size: 48,
+                    color: color.blue,
+                )
+            text(
+                "Press R to return to lobby",
+                at: (view_w * 0.5 - 140, 280),
+                size: 18,
+                color: color.gray,
+            )
