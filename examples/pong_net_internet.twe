@@ -1,0 +1,291 @@
+# @task: Internet lockstep multiplayer Pong (Steam P2P or STUN+rendezvous)
+# @inputs: W / S keys; menu keys to pick transport
+# @expected: two peers on different networks play deterministic pong
+# @category: net
+# @difficulty: hard
+#
+# Pong Net Internet — 2-player pong over the public internet.
+#
+# Phase 36 session 7. Extends `examples/pong_net.twe` (Phase 31) with
+# the Phase 36 matchmaking layer: a Steam Lobby on builds with
+# `--features steam-net`, falling back to STUN+rendezvous when Steam
+# isn't available. The play loop is identical to the LAN demo — same
+# determinism contract, same `peer[0].key.*` / `peer[1].key.*`
+# ambient names.
+#
+# How to run:
+#
+#   Steam build (--features steam-net):
+#     Host:    twec play examples/pong_net_internet.twe
+#              Press H to create a public Steam Lobby named "pong-net".
+#              Your SteamID appears in the lobby HUD; share it with the
+#              other player.
+#     Client:  twec play examples/pong_net_internet.twe
+#              Press J to list public lobbies; press 1..9 to join one.
+#
+#   Non-Steam build:
+#     Both:    twec play examples/pong_net_internet.twe
+#              Press U for the STUN fallback. Each peer prints its
+#              public address; the rendezvous server pairs the first
+#              two peers to register with the lobby name "pong-net".
+#              The peer with the lower public address becomes host.
+#
+# Defaults — edit before launch if needed:
+#   - rendezvous_addr: "rdv.twe.example:7000" (set this to your own
+#     rendezvous server; the public Twe community runs one at the
+#     address above as a courtesy — uptime not guaranteed).
+#   - stun_server: empty string → uses stun.l.google.com:19302.
+#   - lobby_name: "pong-net".
+#
+# Phase 36 honestly-deferred items:
+#   - Symmetric-NAT topology: STUN fallback always fails here. Use
+#     the Steam build.
+#   - Lobby search beyond name substring (Steam Lobbies support
+#     keyed metadata search; this demo uses the substring filter).
+#   - More than 2 peers (lockstep cap stays at 4 per the Phase 31 RFC).
+
+let view_w = 640.0
+let view_h = 480.0
+let paddle_w = 12.0
+let paddle_h = 80.0
+let paddle_speed = 360.0
+let ball_size = 10.0
+let ball_speed = 320.0
+let win_score = 5
+
+let lobby_name = "pong-net"
+let rendezvous_addr = "rdv.twe.example:7000"
+let stun_server = ""
+let rendezvous_timeout_ms = 30000
+
+scene PongNetInternet:
+    var left_y = 200.0
+    var right_y = 200.0
+    var ball_x = 320.0
+    var ball_y = 240.0
+    var ball_vx = 320.0
+    var ball_vy = 192.0
+    var left_score = 0
+    var right_score = 0
+    var serve_timer = 0.0
+    var tick = 0
+    var my_id = 0
+    var status_line = ""
+    var local_steam_id = 0
+    var found_lobbies = []
+    var disconnect_logged = false
+
+    initial: lobby
+
+    state lobby:
+        # Top-level menu. The Steam path (H/J) and STUN path (U) are
+        # mutually exclusive at the API level — once one opens a
+        # session, the other rejects.
+        on update(dt):
+            if not net.is_connected():
+                if key_press.h:
+                    if net.steam_p2p_available():
+                        local_steam_id = net.local_steam_id()
+                        let id = net.create_lobby(lobby_name, 2)
+                        status_line = "Steam lobby created. Your SteamID: {local_steam_id}"
+                    else:
+                        status_line = "Steam not available — rebuild with --features steam-net"
+                if key_press.j:
+                    if net.steam_p2p_available():
+                        found_lobbies = net.find_lobbies(lobby_name)
+                        status_line = "Found {list.length(found_lobbies)} lobbies. Press 1..9 to join."
+                    else:
+                        status_line = "Steam not available — use U for STUN fallback"
+                # Number keys join a found Steam lobby.
+                if list.length(found_lobbies) > 0:
+                    if key_press.one:
+                        let ok = net.join_lobby(found_lobbies[0].id)
+                        if not ok:
+                            status_line = "Lobby full or no longer exists."
+                if key_press.u:
+                    # STUN+rendezvous flow:
+                    # 1. Open a host slot on an OS-assigned UDP port.
+                    # 2. STUN-discover our public address.
+                    # 3. Exchange addresses with the peer via rendezvous.
+                    # 4. Punch + assume host role if our addr sorts lower.
+                    net.host(0, 2)
+                    let my_addr = net.discover_public_address(stun_server)
+                    status_line = "STUN public address: {my_addr}"
+                    let peer_addr = net.rendezvous_exchange(
+                        rendezvous_addr,
+                        lobby_name,
+                        my_addr,
+                        rendezvous_timeout_ms,
+                    )
+                    net.punch(peer_addr)
+                    # Lower address becomes the host; the other re-roles
+                    # to client. We're already host (`net.host` made us
+                    # peer 0); if the peer should be host, we re-init.
+                    if peer_addr < my_addr:
+                        net.close()
+                        net.connect(peer_addr)
+                    status_line = "STUN punched. Waiting for peer..."
+            else:
+                if net.session_ready():
+                    my_id = net.local_peer_id()
+                    -> playing
+
+        on render():
+            text(
+                "PONG NET INTERNET",
+                at: (view_w * 0.5 - 180, 60),
+                size: 36,
+                color: color.white,
+            )
+            text(
+                "H — Host (Steam Lobby)",
+                at: (view_w * 0.5 - 160, 160),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "J — Join (Steam Lobby list)",
+                at: (view_w * 0.5 - 160, 190),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "U — STUN+Rendezvous (non-Steam)",
+                at: (view_w * 0.5 - 160, 220),
+                size: 18,
+                color: color.white,
+            )
+            # Status line — set by H/J/U handlers above.
+            text(
+                "{status_line}",
+                at: (16, view_h - 40),
+                size: 14,
+                color: color.yellow,
+            )
+
+    state playing:
+        on update(dt):
+            net.send_input(tick)
+            # Phase 36 session 5: drain disconnects before checking
+            # tick_ready — a dropped peer would otherwise stall the
+            # lockstep clock forever.
+            if net.peer_disconnected():
+                let lost = net.last_disconnected_peer()
+                status_line = "Peer {lost} dropped. Attempting reconnect..."
+                disconnect_logged = true
+                let ok = net.try_reconnect(lost, 10000)
+                if not ok:
+                    status_line = "Reconnect failed. Migrating host..."
+                    net.host_migrate_if_host_lost()
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+
+            # Left paddle (peer 0).
+            if peer[0].key.w:
+                left_y -= paddle_speed * dt
+            if peer[0].key.s:
+                left_y += paddle_speed * dt
+            if left_y < 0.0:
+                left_y = 0.0
+            if left_y > view_h - paddle_h:
+                left_y = view_h - paddle_h
+
+            # Right paddle (peer 1).
+            if peer[1].key.w:
+                right_y -= paddle_speed * dt
+            if peer[1].key.s:
+                right_y += paddle_speed * dt
+            if right_y < 0.0:
+                right_y = 0.0
+            if right_y > view_h - paddle_h:
+                right_y = view_h - paddle_h
+
+            # Ball physics (identical on both peers).
+            ball_x += ball_vx * dt
+            ball_y += ball_vy * dt
+            if ball_y < 0.0:
+                ball_y = 0.0
+                ball_vy = -ball_vy
+            if ball_y > view_h - ball_size:
+                ball_y = view_h - ball_size
+                ball_vy = -ball_vy
+            if ball_x < paddle_w and ball_vx < 0.0:
+                if ball_y + ball_size > left_y and ball_y < left_y + paddle_h:
+                    ball_x = paddle_w
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (left_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+            if ball_x > view_w - paddle_w - ball_size and ball_vx > 0.0:
+                if ball_y + ball_size > right_y and ball_y < right_y + paddle_h:
+                    ball_x = view_w - paddle_w - ball_size
+                    ball_vx = -ball_vx
+                    let offset = (ball_y + ball_size * 0.5) - (right_y + paddle_h * 0.5)
+                    ball_vy = offset * 6.0
+            if ball_x < -ball_size:
+                right_score += 1
+                serve_timer = 0.8
+                ball_x = view_w * 0.5
+                ball_y = view_h * 0.5
+                ball_vx = ball_speed
+                ball_vy = ball_speed * 0.6
+            if ball_x > view_w:
+                left_score += 1
+                serve_timer = 0.8
+                ball_x = view_w * 0.5
+                ball_y = view_h * 0.5
+                ball_vx = -ball_speed
+                ball_vy = ball_speed * 0.6
+
+            # Periodic state-hash for desync detection.
+            if math.mod(tick, 60) == 0:
+                let snap = (
+                    left_y,
+                    right_y,
+                    ball_x,
+                    ball_y,
+                    ball_vx,
+                    ball_vy,
+                    left_score,
+                    right_score,
+                )
+                net.send_state_hash(tick, net.hash(snap))
+
+            tick += 1
+
+        on render():
+            # Center dashed line.
+            var i = 0
+            while i < 10:
+                rect(
+                    at: (view_w * 0.5 - 1.0, i * 48.0 + 8.0),
+                    size: (2, 24),
+                    color: color.gray,
+                )
+                i += 1
+            rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
+            rect(
+                at: (view_w - paddle_w, right_y),
+                size: (paddle_w, paddle_h),
+                color: color.white,
+            )
+            rect(
+                at: (ball_x, ball_y),
+                size: (ball_size, ball_size),
+                color: color.white,
+            )
+            text("{left_score}", at: (view_w * 0.25, 60), size: 48, color: color.white)
+            text("{right_score}", at: (view_w * 0.75 - 24, 60), size: 48, color: color.white)
+            text(
+                "you = peer {my_id}   tick {tick}",
+                at: (8, view_h - 36),
+                size: 14,
+                color: color.gray,
+            )
+            if disconnect_logged:
+                text(
+                    "{status_line}",
+                    at: (8, view_h - 18),
+                    size: 14,
+                    color: color.yellow,
+                )

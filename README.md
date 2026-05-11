@@ -66,7 +66,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | `twec mutate` — auto-generated (broken, verify_json, fix) corpus for fine-tuning | post-v1.0 |
 | Typed holes (`???`) — verify-time warning + runtime error for unfilled expressions | post-v1.0 |
 
-**912 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** Phases 1–33 codebase-closed (post-v1.0 roadmap fully landed): 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, **and the LLM-differentiator surface** (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy.
+**931 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** Phases 1–36 codebase-closed (post-v1.0 roadmap round 2 in flight): 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, the LLM-differentiator surface (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes), cross-platform polish, external-validation scaffolding, **and internet multiplayer** (Steam P2P primary + STUN fallback + lobbies + reconnect). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy.
 
 ## Install
 
@@ -139,6 +139,8 @@ twec build examples/survive_beta
 | `examples/atlas_demo.twe` | Spritesheet animation |
 | `examples/widgets_demo.twe` | Full widget gallery |
 | `examples/modular_math_demo/` | Multi-file modules |
+| `examples/pong_net.twe` | LAN lockstep multiplayer over UDP |
+| `examples/pong_net_internet.twe` | Internet multiplayer — Steam Lobbies or STUN+rendezvous fallback |
 | … and more | Audio, camera, gamepad, fonts, mouse, save, layout, physics |
 
 ## Language in 60 seconds

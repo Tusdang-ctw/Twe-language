@@ -820,7 +820,7 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ## Phase 36 — Post-v1.0 — Online multiplayer (matchmaking + NAT + reconnect)
 
-**Status:** open. Extends Phase 31's direct-IP-only lockstep foundation to internet play.
+**Status:** codebase-closed 2026-05-11 per `docs/changes/2026-05-11-phase-36-closeout.md`. Extends Phase 31's direct-IP-only lockstep foundation to internet play. Eight sessions shipped (RFC + 7 deliverables). External-action exit criteria (Steam AppID smoke run, two-home-network playtest) are explicit deferrals per the closeout note — same shape as Phase 35.
 
 **Why this slot:** Phase 31 explicitly scoped out matchmaking / lobbies / dedicated servers / NAT / reconnect. The transport (UDP) and the netcode model (lockstep) ship — Phase 36 fills in the discovery + routing layer that turns LAN-only into internet-ready.
 

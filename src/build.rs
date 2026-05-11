@@ -33,6 +33,17 @@ pub enum BuildTarget {
     /// and a flat copy of `assets/`. The WASM binary is a generic Twe
     /// player that fetches `main.twe` from the same origin at startup.
     Wasm32,
+    /// Phase 36 session 6: headless Linux server target for Steam
+    /// Game Server / authoritative-VIP topologies. Produces
+    /// `dist/<game>-linux-server/` containing the bundle, a server
+    /// launcher script, and a marker for the headless play loop.
+    /// **Honest scaffolding:** the directory layout + bundle ship
+    /// here; the headless play-loop runtime (no macroquad window,
+    /// no audio, no rendering) is a follow-on session — the current
+    /// runtime still opens a window even on the server build. Use
+    /// this target today to produce the bundle + server launcher for
+    /// a host that already runs a desktop session.
+    LinuxServer,
 }
 
 impl BuildTarget {
@@ -47,6 +58,7 @@ impl BuildTarget {
                 Some(BuildTarget::LinuxX86_64)
             }
             "wasm32" | "wasm32-unknown-unknown" => Some(BuildTarget::Wasm32),
+            "linux-server" | "x86_64-unknown-linux-server" => Some(BuildTarget::LinuxServer),
             _ => None,
         }
     }
@@ -90,7 +102,8 @@ impl BuildTarget {
             BuildTarget::WindowsX86_64 => ".exe",
             BuildTarget::MacOsAarch64
             | BuildTarget::MacOsX86_64
-            | BuildTarget::LinuxX86_64 => "",
+            | BuildTarget::LinuxX86_64
+            | BuildTarget::LinuxServer => "",
             // WASM output is a directory, not a file; extension unused.
             BuildTarget::Wasm32 => "",
         }
@@ -103,6 +116,7 @@ impl BuildTarget {
             BuildTarget::MacOsX86_64 => "macos-x86_64",
             BuildTarget::LinuxX86_64 => "linux-x86_64",
             BuildTarget::Wasm32 => "wasm32",
+            BuildTarget::LinuxServer => "linux-server",
         }
     }
 }
@@ -631,6 +645,7 @@ pub fn run(mut args: BuildArgs) -> i32 {
             build_macos_app(&project, &out_path, &args, &resolved)
         }
         BuildTarget::LinuxX86_64 => build_linux_appdir(&project, &out_path, &args, &resolved),
+        BuildTarget::LinuxServer => build_linux_server(&project, &out_path, &args, &resolved),
         #[allow(unreachable_patterns)]
         _ => {
             // Standalone bundle as the universal fallback. Today
@@ -1546,6 +1561,130 @@ fn build_linux_appdir(
         );
         0
     }
+}
+
+/// Phase 36 session 6: headless Linux server build. Layout:
+///
+/// ```text
+/// dist/<game>-linux-server/
+///   <game>.twebundle    — same encoded bundle as the desktop build
+///   run-server.sh        — launcher that exec's `twec-server` with
+///                          --bundle <game>.twebundle
+///   README.txt           — operator instructions
+/// ```
+///
+/// **What ships:** the bundle + the launcher script + the layout.
+/// **What's deferred:** a headless `twec-server` binary (no
+/// macroquad window, no audio, no rendering). The current desktop
+/// runtime opens a window on init; running it on a Linux box without
+/// a display would crash. The headless runtime is follow-on work
+/// gated on a non-window play loop (`play::run_loop_headless`)
+/// landing in a future phase. Until then, this layout is useful on
+/// hosts that *do* have a display (e.g. a "VIP host" peer in a
+/// Steam Game Server arrangement).
+fn build_linux_server(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    args: &BuildArgs,
+    resolved: &ResolvedConfig,
+) -> i32 {
+    let exec_name = project.name.clone();
+    let server_dir = if out_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.ends_with("-linux-server"))
+        .unwrap_or(false)
+    {
+        out_path.to_path_buf()
+    } else {
+        let mut p = out_path.to_path_buf();
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&exec_name)
+            .to_string();
+        p.set_file_name(format!("{stem}-linux-server"));
+        p
+    };
+    if let Err(e) = fs::create_dir_all(&server_dir) {
+        eprintln!(
+            "error: cannot create server output directory '{}': {e}",
+            server_dir.display()
+        );
+        return 1;
+    }
+    let bundle_bytes = match encode_bundle_to_vec(
+        project,
+        resolved.compress,
+        args.target,
+        args.config,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let bundle_path = server_dir.join(format!("{exec_name}.twebundle"));
+    if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
+        eprintln!("error: cannot write '{}': {e}", bundle_path.display());
+        return 1;
+    }
+    let launcher_path = server_dir.join("run-server.sh");
+    let launcher = format!(
+        "#!/bin/sh\n\
+         # Phase 36 session 6: headless server launcher.\n\
+         # Today this invokes `twec` directly, which opens a macroquad\n\
+         # window. On a true headless host this requires Xvfb or\n\
+         # equivalent until the headless play loop lands.\n\
+         HERE=$(dirname \"$(readlink -f \"$0\")\")\n\
+         exec twec play \"$HERE/{exec_name}.twebundle\" \"$@\"\n"
+    );
+    if let Err(e) = fs::write(&launcher_path, &launcher) {
+        eprintln!("error: cannot write launcher: {e}");
+        return 1;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(mut perms) = fs::metadata(&launcher_path).map(|m| m.permissions()) {
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&launcher_path, perms);
+        }
+    }
+    let readme_path = server_dir.join("README.txt");
+    let readme = format!(
+        "Twe Linux server build — {exec_name}\n\
+         \n\
+         This directory ships the game's content bundle plus a launcher\n\
+         script. The launcher invokes the installed `twec` binary to\n\
+         play the bundle; today that opens a macroquad window. On a\n\
+         true headless host (no X server) you must run under Xvfb or\n\
+         wait for the headless-play-loop runtime (Phase 36 session 6\n\
+         follow-on).\n\
+         \n\
+         Files:\n\
+           {exec_name}.twebundle    — game content + main.twe\n\
+           run-server.sh             — launcher script\n\
+           README.txt                — this file\n\
+         \n\
+         Use cases this build supports today:\n\
+         - Steam Game Server VIP-host peer with a desktop session.\n\
+         - Dedicated bot peer on a developer workstation.\n\
+         - LAN co-op session host that doubles as one of the players.\n"
+    );
+    let _ = fs::write(&readme_path, &readme);
+    eprintln!(
+        "[twec build] wrote {} ({} bundle bytes; headless launcher: {})",
+        server_dir.display(),
+        bundle_bytes.len(),
+        launcher_path.display(),
+    );
+    eprintln!(
+        "[twec build] note: headless play loop (no window, no audio) is a follow-on \
+         session; today the launcher invokes the full desktop `twec` binary."
+    );
+    0
 }
 
 /// XDG `.desktop` entry for the AppDir. Minimal — `Type`, `Name`,

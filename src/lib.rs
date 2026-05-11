@@ -61,6 +61,21 @@ pub mod bundle;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 
+// Phase 36 session 2: Steam P2P transport for multiplayer. Sits
+// alongside `net` (raw UDP); chosen at session-open. Real Steam SDK
+// calls live behind `--features steam-net`; default builds compile
+// the no-op stubs only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod net_steam;
+
+// Phase 36 session 3: STUN binding-request client + TCP rendezvous
+// client. Used by the non-Steam multiplayer path to discover each
+// peer's public address and exchange them through a tiny third-party
+// rendezvous server. Pure Rust, no extra deps — STUN is a 20-byte
+// header + a small attribute parser.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod net_stun;
+
 // Phase 32: open-world 3D foundation. Spatial partitioning + chunked
 // streaming + (later sessions) LOD + occlusion culling. Native-only —
 // the structures themselves would compile on WASM but they share fate

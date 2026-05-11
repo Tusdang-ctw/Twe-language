@@ -37,6 +37,12 @@ toml = "0.8"
 # default builds have zero Steam overhead.
 [features]
 steam = ["dep:steamworks"]
+# Phase 36 session 2: Steam P2P transport for net.* multiplayer.
+# Implies `steam` (we need the Steam client + AppID gate). When this
+# feature is on, `net.use_steam_p2p()` switches the lockstep runner
+# from raw-UDP to SteamNetworkingMessages. NAT traversal + relay are
+# Steam's responsibility on this path.
+steam-net = ["steam"]
 
 [dependencies.steamworks]
 version = "0.11"

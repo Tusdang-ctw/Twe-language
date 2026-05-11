@@ -44,9 +44,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 2] = [b'T', b'W'];
 const VERSION: u8 = 1;
@@ -68,6 +68,13 @@ pub const DEFAULT_INPUT_DELAY: u32 = 4;
 /// peer, so latency compounds; 4 is the sweet spot for cooperative
 /// games and the upper bound recommended by the RFC.
 pub const MAX_PEERS: usize = 4;
+
+/// Default peer-disconnect timeout. A peer that hasn't sent input
+/// for this long is considered dropped — pushed onto the
+/// disconnected queue and removed from the active peers list.
+/// Phase 36 session 5 default; tuneable per session via
+/// [`set_disconnect_timeout`].
+pub const DEFAULT_DISCONNECT_TIMEOUT_SECS: u64 = 5;
 
 /// One simulation-tick's worth of input from one peer.
 ///
@@ -186,6 +193,25 @@ struct Session {
     /// true, further desync messages are suppressed (one-line policy
     /// — Principle 3, no spam).
     desync_logged: bool,
+    /// Phase 36 session 5: per-session disconnect timeout. Peers
+    /// silent for longer than this are dropped from the active list
+    /// and pushed onto `disconnected_queue`.
+    disconnect_timeout: Duration,
+    /// FIFO queue of peers that have been detected as dropped since
+    /// the last call to `peer_disconnected` / `last_disconnected_peer`.
+    /// Each entry is (internal_id, last_known_addr, last_consumed_tick).
+    disconnected_queue: VecDeque<(u8, SocketAddr, u32)>,
+    /// Most recently popped disconnected peer — used by
+    /// `last_disconnected_peer` after `peer_disconnected` has set it.
+    /// -1 sentinel value means "none".
+    last_disconnected: i32,
+    /// Recently-disconnected peer addresses, keyed by internal id.
+    /// Used by `try_reconnect` to send a fresh hello to the saved
+    /// address. Cleared on a successful reconnect or on session close.
+    disconnected_addrs: HashMap<u8, SocketAddr>,
+    /// Set true after a successful host migration so the runner
+    /// doesn't migrate twice within one session.
+    host_migrated: bool,
 }
 
 thread_local! {
@@ -226,6 +252,11 @@ pub fn host(port: u16, expected_peers: u8) -> Result<(), String> {
             last_local_hash: 0,
             peer_hashes: HashMap::new(),
             desync_logged: false,
+            disconnect_timeout: Duration::from_secs(DEFAULT_DISCONNECT_TIMEOUT_SECS),
+            disconnected_queue: VecDeque::new(),
+            last_disconnected: -1,
+            disconnected_addrs: HashMap::new(),
+            host_migrated: false,
         });
     });
     Ok(())
@@ -304,6 +335,11 @@ pub fn connect(addr: &str) -> Result<(), String> {
             last_local_hash: 0,
             peer_hashes: HashMap::new(),
             desync_logged: false,
+            disconnect_timeout: Duration::from_secs(DEFAULT_DISCONNECT_TIMEOUT_SECS),
+            disconnected_queue: VecDeque::new(),
+            last_disconnected: -1,
+            disconnected_addrs: HashMap::new(),
+            host_migrated: false,
         });
     });
     Ok(())
@@ -411,6 +447,9 @@ pub fn poll() -> usize {
                 Err(_) => break,
             }
         }
+        // Phase 36 session 5: after draining packets, walk the peer
+        // list for timeouts and move dropped peers to the queue.
+        check_disconnects(sess);
     });
     n_processed
 }
@@ -428,11 +467,31 @@ fn handle_packet(sess: &mut Session, src: SocketAddr, buf: &[u8]) -> bool {
     match h.msg_type {
         MSG_HELLO if sess.local_peer_id == 0 => {
             // Host: assign peer id, reply with hello-ack.
-            let assigned = sess.peers.len() as u8 + 1;
-            if assigned >= sess.expected_peers {
-                // Already full — silently drop additional hellos.
-                return false;
-            }
+            //
+            // Phase 36 session 5: if the source address matches a
+            // previously-dropped peer, re-install at the same
+            // internal id (preserves lockstep peer-id stability
+            // across the reconnect window).
+            let reconnect_id = sess
+                .disconnected_addrs
+                .iter()
+                .find(|(_, addr)| **addr == src)
+                .map(|(id, _)| *id);
+            let assigned = if let Some(id) = reconnect_id {
+                sess.disconnected_addrs.remove(&id);
+                eprintln!("[twec net] peer {id} reconnected from {src}");
+                id
+            } else {
+                let next = sess.peers.len() as u8 + 1;
+                if next >= sess.expected_peers {
+                    // Already full — silently drop additional hellos.
+                    return false;
+                }
+                next
+            };
+            // Replace any existing entry with the same assigned id
+            // (covers the reconnect path).
+            sess.peers.retain(|p| p.id != assigned);
             sess.peers.push(Peer {
                 id: assigned,
                 addr: src,
@@ -603,6 +662,198 @@ fn check_desync(sess: &mut Session) {
 /// and the `net.state_hash()` builtin.
 pub fn local_state_hash() -> u64 {
     SESSION.with(|s| s.borrow().as_ref().map(|x| x.last_local_hash).unwrap_or(0))
+}
+
+// ---------- Phase 36 session 5: reconnect handling ----------
+
+/// Override the disconnect timeout. Default is
+/// [`DEFAULT_DISCONNECT_TIMEOUT_SECS`]. Smaller values surface drops
+/// faster but risk false positives on heavily-jittered networks;
+/// larger values give bigger jitter budget at the cost of slower
+/// drop detection.
+pub fn set_disconnect_timeout(seconds: u64) {
+    SESSION.with(|s| {
+        if let Some(sess) = s.borrow_mut().as_mut() {
+            sess.disconnect_timeout = Duration::from_secs(seconds);
+        }
+    });
+}
+
+/// Walk the peers list and move any that haven't sent a packet in
+/// `disconnect_timeout` to the disconnected queue. Called from
+/// `poll` once per drain.
+fn check_disconnects(sess: &mut Session) {
+    let now = Instant::now();
+    let timeout = sess.disconnect_timeout;
+    let mut dropped: Vec<usize> = Vec::new();
+    for (idx, peer) in sess.peers.iter().enumerate() {
+        if now.duration_since(peer.last_seen_at) > timeout {
+            dropped.push(idx);
+        }
+    }
+    // Remove from highest index to lowest so the smaller indices stay
+    // valid as we splice.
+    for idx in dropped.into_iter().rev() {
+        let peer = sess.peers.remove(idx);
+        sess.disconnected_queue
+            .push_back((peer.id, peer.addr, peer.last_seen_tick));
+        sess.disconnected_addrs.insert(peer.id, peer.addr);
+        eprintln!(
+            "[twec net] peer {} dropped (no packet for {}s)",
+            peer.id,
+            timeout.as_secs()
+        );
+    }
+}
+
+/// Returns true once per drop: pops a peer from the disconnected
+/// queue, stores it in [`last_disconnected`] (readable via
+/// `last_disconnected_peer`), and returns true. Subsequent calls
+/// return true again only if another peer has dropped since the
+/// last call.
+pub fn peer_disconnected() -> bool {
+    SESSION.with(|s| {
+        let mut slot = s.borrow_mut();
+        let Some(sess) = slot.as_mut() else {
+            return false;
+        };
+        if let Some((id, _addr, _tick)) = sess.disconnected_queue.pop_front() {
+            sess.last_disconnected = id as i32;
+            return true;
+        }
+        false
+    })
+}
+
+/// Returns the internal peer id of the most recently popped
+/// disconnect, or -1 if none. Set by `peer_disconnected`.
+pub fn last_disconnected_peer() -> i32 {
+    SESSION.with(|s| s.borrow().as_ref().map(|x| x.last_disconnected).unwrap_or(-1))
+}
+
+/// Best-effort re-handshake with a previously dropped peer. Sends a
+/// fresh MSG_HELLO to the saved address; on the host side this
+/// re-installs the peer at the same internal id. The lockstep
+/// runner fills any ticks the peer missed during the drop window
+/// with predicted-input (held-key repeat at last value) before the
+/// peer's real input arrives.
+///
+/// Returns Ok(true) if the peer is now installed, Ok(false) if the
+/// timeout elapsed without a response.
+pub fn try_reconnect(peer_id: u8, timeout_ms: u64) -> Result<bool, String> {
+    // Step 1: collect the data we need under a scoped borrow.
+    let (socket_clone, addr, session_id, local_peer_id) = SESSION.with(|s| {
+        let slot = s.borrow();
+        let Some(sess) = slot.as_ref() else {
+            return Err("net.try_reconnect: no active session".to_string());
+        };
+        let Some(addr) = sess.disconnected_addrs.get(&peer_id).copied() else {
+            return Err(format!(
+                "net.try_reconnect: peer {peer_id} not in disconnected list — call \
+                 after peer_disconnected() reports it"
+            ));
+        };
+        let sc = sess
+            .socket
+            .try_clone()
+            .map_err(|e| format!("net.try_reconnect: try_clone: {e}"))?;
+        Ok::<_, String>((sc, addr, sess.session_id, sess.local_peer_id))
+    })?;
+    // Step 2: send the hello outside any session borrow.
+    let mut hello = build_header(MSG_HELLO, session_id, local_peer_id, 0);
+    hello.extend_from_slice(&[0u8; 4]);
+    socket_clone
+        .send_to(&hello, addr)
+        .map_err(|e| format!("net.try_reconnect: send hello: {e}"))?;
+    // Step 3: poll-and-recheck loop until the peer returns or the
+    // timeout elapses. Each iteration takes a fresh, short borrow.
+    let started = Instant::now();
+    loop {
+        let _ = poll();
+        let now_present = SESSION.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|sess| sess.peers.iter().any(|p| p.id == peer_id))
+                .unwrap_or(false)
+        });
+        if now_present {
+            SESSION.with(|s| {
+                if let Some(sess) = s.borrow_mut().as_mut() {
+                    sess.disconnected_addrs.remove(&peer_id);
+                }
+            });
+            return Ok(true);
+        }
+        if started.elapsed() > Duration::from_millis(timeout_ms) {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// If peer 0 (the host) has dropped, promote the lowest-id surviving
+/// peer to host (internal id 0). The promotion is bookkeeping only —
+/// the session_id stays the same so non-promoted peers don't need to
+/// re-handshake. Returns true if migration ran, false otherwise.
+pub fn host_migrate_if_host_lost() -> bool {
+    SESSION.with(|s| {
+        let mut slot = s.borrow_mut();
+        let Some(sess) = slot.as_mut() else {
+            return false;
+        };
+        if sess.host_migrated {
+            return false;
+        }
+        // Host migration only fires for non-host peers. The host
+        // dropping is observable as peer 0 in disconnected_queue.
+        if sess.local_peer_id == 0 {
+            return false;
+        }
+        // Has peer 0 (host) been disconnected?
+        let host_lost = sess
+            .disconnected_queue
+            .iter()
+            .any(|(id, _, _)| *id == 0)
+            || sess.disconnected_addrs.contains_key(&0);
+        if !host_lost {
+            return false;
+        }
+        // Find the lowest-id surviving peer including ourselves. If
+        // that's us, become the new host (internal id 0).
+        let mut all_ids: Vec<u8> = sess.peers.iter().map(|p| p.id).collect();
+        all_ids.push(sess.local_peer_id);
+        all_ids.sort();
+        let new_host_id = all_ids.first().copied().unwrap_or(sess.local_peer_id);
+        if new_host_id == sess.local_peer_id {
+            sess.local_peer_id = 0;
+        }
+        sess.host_migrated = true;
+        eprintln!(
+            "[twec net] host migration: peer {} is now host (internal id 0)",
+            new_host_id
+        );
+        true
+    })
+}
+
+/// Phase 36 session 3: clone the active session's UDP socket so STUN
+/// + punch can run on the same NAT mapping the lockstep traffic will use. Returns Err if no session is open.
+///
+/// `try_clone` shares the underlying file descriptor, not a fresh
+/// socket — the kernel's NAT mapping is preserved.
+pub fn socket_clone() -> Result<UdpSocket, String> {
+    SESSION.with(|s| {
+        let slot = s.borrow();
+        let Some(sess) = slot.as_ref() else {
+            return Err(
+                "no active net session — call net.host(0, peers) first so the UDP socket exists"
+                    .to_string(),
+            );
+        };
+        sess.socket
+            .try_clone()
+            .map_err(|e| format!("net.socket_clone: try_clone: {e}"))
+    })
 }
 
 // ---------- header / framing ----------

@@ -2342,6 +2342,107 @@ fn install_net(env: &mut Env) {
         "snapshot_json".to_string(),
         Value::from_builtin("net.snapshot_json", &["value"], net_snapshot_json),
     );
+    // Phase 36 session 2: Steam P2P transport.
+    n.insert(
+        "steam_p2p_available".to_string(),
+        Value::from_builtin("net.steam_p2p_available", &[], net_steam_p2p_available),
+    );
+    n.insert(
+        "local_steam_id".to_string(),
+        Value::from_builtin("net.local_steam_id", &[], net_local_steam_id),
+    );
+    n.insert(
+        "host_p2p".to_string(),
+        Value::from_builtin("net.host_p2p", &["expected_peers"], net_host_p2p),
+    );
+    n.insert(
+        "connect_p2p".to_string(),
+        Value::from_builtin("net.connect_p2p", &["steam_id"], net_connect_p2p),
+    );
+    // Phase 36 session 3: STUN + rendezvous primitives. The lockstep
+    // runner integration (role assignment from rendezvous outcome)
+    // lands in Phase 36 session 4 alongside lobbies, where the
+    // host/client split is naturally driven by lobby join order.
+    n.insert(
+        "discover_public_address".to_string(),
+        Value::from_builtin(
+            "net.discover_public_address",
+            &["stun_server"],
+            net_discover_public_address,
+        ),
+    );
+    n.insert(
+        "rendezvous_exchange".to_string(),
+        Value::from_builtin(
+            "net.rendezvous_exchange",
+            &["rendezvous_addr", "lobby_name", "my_addr", "timeout_ms"],
+            net_rendezvous_exchange,
+        ),
+    );
+    n.insert(
+        "punch".to_string(),
+        Value::from_builtin("net.punch", &["peer_addr"], net_punch),
+    );
+    // Phase 36 session 4: lobby primitives. Steam-feature path uses
+    // Steam Matchmaking; no-feature path returns an informative
+    // "rebuild with --features steam-net" error.
+    n.insert(
+        "create_lobby".to_string(),
+        Value::from_builtin(
+            "net.create_lobby",
+            &["name", "max_peers"],
+            net_create_lobby,
+        ),
+    );
+    n.insert(
+        "find_lobbies".to_string(),
+        Value::from_builtin("net.find_lobbies", &["query"], net_find_lobbies),
+    );
+    n.insert(
+        "join_lobby".to_string(),
+        Value::from_builtin("net.join_lobby", &["lobby_id"], net_join_lobby),
+    );
+    n.insert(
+        "leave_lobby".to_string(),
+        Value::from_builtin("net.leave_lobby", &[], net_leave_lobby),
+    );
+    // Phase 36 session 5: reconnect handling.
+    n.insert(
+        "peer_disconnected".to_string(),
+        Value::from_builtin("net.peer_disconnected", &[], net_peer_disconnected),
+    );
+    n.insert(
+        "last_disconnected_peer".to_string(),
+        Value::from_builtin(
+            "net.last_disconnected_peer",
+            &[],
+            net_last_disconnected_peer,
+        ),
+    );
+    n.insert(
+        "try_reconnect".to_string(),
+        Value::from_builtin(
+            "net.try_reconnect",
+            &["peer_id", "timeout_ms"],
+            net_try_reconnect,
+        ),
+    );
+    n.insert(
+        "host_migrate_if_host_lost".to_string(),
+        Value::from_builtin(
+            "net.host_migrate_if_host_lost",
+            &[],
+            net_host_migrate_if_host_lost,
+        ),
+    );
+    n.insert(
+        "disconnect_timeout".to_string(),
+        Value::from_builtin(
+            "net.disconnect_timeout",
+            &["seconds"],
+            net_disconnect_timeout,
+        ),
+    );
     env.set(
         "net".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -2524,6 +2625,376 @@ fn net_snapshot_json(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         help: None,
     })?;
     Ok(Value::from_string(s))
+}
+
+// ---------------------------------------------------------------
+// Phase 36 session 2: Steam P2P transport builtins.
+// ---------------------------------------------------------------
+
+/// True when `--features steam-net` is compiled in AND the Steam
+/// client is available. Scripts call this before `net.host_p2p` /
+/// `net.connect_p2p` to decide whether to take the Steam path or
+/// fall back to direct-IP / STUN.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_steam_p2p_available(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.steam_p2p_available")?;
+    Ok(Value::from_bool(crate::net_steam::is_available()))
+}
+
+/// Returns the local user's SteamID64 as an int. 0 if Steam is not
+/// available. Used for the Steam-Friends-invite path: a host posts
+/// their SteamID, a client calls `net.connect_p2p(that_id)`.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_local_steam_id(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.local_steam_id")?;
+    let id = crate::net_steam::local_steam_id();
+    // SteamID64 fits in a u64 but Twe ints are i64. Steam IDs are in
+    // the 7656119xxxxxxxxxx range which sits well below 2^63, so the
+    // cast is safe.
+    Ok(Value::from_int(id as i64))
+}
+
+/// Become host of a Steam P2P session with `expected_peers` total
+/// peers (including self). Returns nil on success; raises on the
+/// "Steam not available" path with an operator-actionable message.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_host_p2p(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.host_p2p")?;
+    let n = as_i64(&args[0], "net.host_p2p")?;
+    if !(2..=4).contains(&n) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("net.host_p2p: expected_peers must be 2..=4 (got {n})"),
+            help: None,
+        });
+    }
+    crate::net_steam::host_p2p(n as u8).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+/// Connect to a Steam peer by SteamID64. The remote peer must be
+/// hosting (called `net.host_p2p` or `net.create_lobby`).
+#[cfg(not(target_arch = "wasm32"))]
+fn net_connect_p2p(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.connect_p2p")?;
+    let id = as_i64(&args[0], "net.connect_p2p")?;
+    if id <= 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("net.connect_p2p: SteamID must be positive (got {id})"),
+            help: None,
+        });
+    }
+    crate::net_steam::connect_p2p(id as u64).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+// ---------------------------------------------------------------
+// Phase 36 session 3: STUN + rendezvous builtins.
+// ---------------------------------------------------------------
+
+/// Discover the public-facing IP:port the local UDP play socket is
+/// mapped to via a STUN binding request. Returns "ip:port" as a
+/// string. The caller must already have called `net.host` so the
+/// underlying socket exists — STUN reuses that socket so the NAT
+/// mapping the response sees is the one the lockstep traffic will
+/// later use.
+///
+/// Empty `stun_server` → uses `DEFAULT_STUN_SERVER` (Google's public
+/// STUN at `stun.l.google.com:19302`).
+#[cfg(not(target_arch = "wasm32"))]
+fn net_discover_public_address(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.discover_public_address")?;
+    let stun_server = string_arg(&args[0], "net.discover_public_address", "stun_server")?;
+    let stun_server = if stun_server.is_empty() {
+        crate::net_stun::DEFAULT_STUN_SERVER.to_string()
+    } else {
+        stun_server
+    };
+    let socket = crate::net::socket_clone().map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    let addr = crate::net_stun::discover_public_address(&socket, &stun_server).map_err(|m| {
+        RuntimeError {
+            line: 0,
+            col: 0,
+            message: m,
+            help: None,
+        }
+    })?;
+    Ok(Value::from_string(addr.to_string()))
+}
+
+/// Exchange public addresses with a peer through a TCP rendezvous
+/// server. Send our address for `lobby_name`; block up to
+/// `timeout_ms` for the rendezvous to pair us with another peer that
+/// joined the same lobby. Returns the peer's "ip:port" as a string.
+///
+/// The lockstep runner integration (role assignment + lockstep
+/// MSG_HELLO over the punched path) lands in Phase 36 session 4
+/// alongside lobbies. This builtin is the non-Steam matchmaking
+/// primitive scripts can compose with `net.host` / `net.connect`.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_rendezvous_exchange(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "net.rendezvous_exchange")?;
+    let rendezvous_addr = string_arg(&args[0], "net.rendezvous_exchange", "rendezvous_addr")?;
+    let lobby_name = string_arg(&args[1], "net.rendezvous_exchange", "lobby_name")?;
+    let my_addr_str = string_arg(&args[2], "net.rendezvous_exchange", "my_addr")?;
+    let my_addr: std::net::SocketAddr = my_addr_str.parse().map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("net.rendezvous_exchange: parse my_addr {my_addr_str:?}: {e}"),
+        help: None,
+    })?;
+    let timeout_ms = as_i64(&args[3], "net.rendezvous_exchange")?;
+    if timeout_ms <= 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "net.rendezvous_exchange: timeout_ms must be > 0 (got {timeout_ms})"
+            ),
+            help: None,
+        });
+    }
+    let peer = crate::net_stun::rendezvous_exchange(
+        &rendezvous_addr,
+        &lobby_name,
+        my_addr,
+        timeout_ms as u64,
+    )
+    .map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    Ok(Value::from_string(peer.to_string()))
+}
+
+/// Send a few small UDP packets to `peer_addr` to install a NAT
+/// return-path mapping. Used after a rendezvous exchange, before the
+/// lockstep MSG_HELLO. The packets carry no game-relevant payload —
+/// they're just there to wake up the local NAT.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_punch(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.punch")?;
+    let peer_addr_str = string_arg(&args[0], "net.punch", "peer_addr")?;
+    let peer_addr: std::net::SocketAddr = peer_addr_str.parse().map_err(|e| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("net.punch: parse peer_addr {peer_addr_str:?}: {e}"),
+        help: None,
+    })?;
+    let socket = crate::net::socket_clone().map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    crate::net_stun::punch(&socket, peer_addr).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    Ok(Value::NIL)
+}
+
+// ---------------------------------------------------------------
+// Phase 36 session 5: reconnect builtins.
+// ---------------------------------------------------------------
+
+/// True once per drop. Pops a peer from the disconnected queue and
+/// stores it as the value `net.last_disconnected_peer` will read.
+/// Scripts call this in their play loop; the runner detects drops
+/// from `last_seen_at` timeouts inside `poll`.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_peer_disconnected(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.peer_disconnected")?;
+    Ok(Value::from_bool(crate::net::peer_disconnected()))
+}
+
+/// Internal id of the most recently popped disconnect, or -1 if none.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_last_disconnected_peer(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.last_disconnected_peer")?;
+    Ok(Value::from_int(crate::net::last_disconnected_peer() as i64))
+}
+
+/// Best-effort re-handshake with a dropped peer. Returns true if the
+/// peer is back in the session, false on timeout.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_try_reconnect(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "net.try_reconnect")?;
+    let peer_id = as_i64(&args[0], "net.try_reconnect")?;
+    let timeout_ms = as_i64(&args[1], "net.try_reconnect")?;
+    if !(0..=255).contains(&peer_id) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("net.try_reconnect: peer_id must be 0..=255 (got {peer_id})"),
+            help: None,
+        });
+    }
+    if timeout_ms < 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "net.try_reconnect: timeout_ms must be >= 0 (got {timeout_ms})"
+            ),
+            help: None,
+        });
+    }
+    let ok = crate::net::try_reconnect(peer_id as u8, timeout_ms as u64).map_err(|m| {
+        RuntimeError {
+            line: 0,
+            col: 0,
+            message: m,
+            help: None,
+        }
+    })?;
+    Ok(Value::from_bool(ok))
+}
+
+/// Promote the lowest-id surviving peer to host (internal id 0) if
+/// the previous host has dropped. Idempotent. Returns true if
+/// migration ran.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_host_migrate_if_host_lost(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.host_migrate_if_host_lost")?;
+    Ok(Value::from_bool(crate::net::host_migrate_if_host_lost()))
+}
+
+/// Override the per-session disconnect timeout. Default is 5 seconds.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_disconnect_timeout(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.disconnect_timeout")?;
+    let seconds = as_i64(&args[0], "net.disconnect_timeout")?;
+    if !(1..=600).contains(&seconds) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "net.disconnect_timeout: seconds must be 1..=600 (got {seconds})"
+            ),
+            help: None,
+        });
+    }
+    crate::net::set_disconnect_timeout(seconds as u64);
+    Ok(Value::NIL)
+}
+
+// ---------------------------------------------------------------
+// Phase 36 session 4: lobby builtins.
+// ---------------------------------------------------------------
+
+/// Create a public Steam Lobby. Returns the lobby's SteamID as an
+/// int. Local user becomes peer 0.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_create_lobby(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "net.create_lobby")?;
+    let name = string_arg(&args[0], "net.create_lobby", "name")?;
+    let max_peers = as_i64(&args[1], "net.create_lobby")?;
+    if !(2..=4).contains(&max_peers) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("net.create_lobby: max_peers must be 2..=4 (got {max_peers})"),
+            help: None,
+        });
+    }
+    let lobby_id = crate::net_steam::create_lobby(&name, max_peers as u32).map_err(|m| {
+        RuntimeError {
+            line: 0,
+            col: 0,
+            message: m,
+            help: None,
+        }
+    })?;
+    Ok(Value::from_int(lobby_id as i64))
+}
+
+/// Find public Steam Lobbies matching the substring `query`. Empty
+/// query → all lobbies. Returns a list of `{id, name, peer_count,
+/// max_peers}` records.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_find_lobbies(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.find_lobbies")?;
+    let query = string_arg(&args[0], "net.find_lobbies", "query")?;
+    let lobbies = crate::net_steam::find_lobbies(&query).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    let mut items: Vec<Value> = Vec::with_capacity(lobbies.len());
+    for info in lobbies {
+        let mut fields: HashMap<String, Value> = HashMap::new();
+        fields.insert("id".to_string(), Value::from_int(info.id as i64));
+        fields.insert("name".to_string(), Value::from_string(info.name));
+        fields.insert(
+            "peer_count".to_string(),
+            Value::from_int(info.peer_count as i64),
+        );
+        fields.insert(
+            "max_peers".to_string(),
+            Value::from_int(info.max_peers as i64),
+        );
+        items.push(Value::from_object(Rc::new(RefCell::new(Object {
+            fields,
+            kind: "lobby",
+        }))));
+    }
+    Ok(Value::from_list(Rc::new(RefCell::new(items))))
+}
+
+/// Join a Steam Lobby by id. Returns true on success, false when the
+/// lobby is full or no longer exists.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_join_lobby(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "net.join_lobby")?;
+    let lobby_id = as_i64(&args[0], "net.join_lobby")?;
+    if lobby_id <= 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("net.join_lobby: lobby_id must be positive (got {lobby_id})"),
+            help: None,
+        });
+    }
+    let ok = crate::net_steam::join_lobby(lobby_id as u64).map_err(|m| RuntimeError {
+        line: 0,
+        col: 0,
+        message: m,
+        help: None,
+    })?;
+    Ok(Value::from_bool(ok))
+}
+
+/// Leave the current Steam Lobby + close the Steam-side session.
+/// Idempotent.
+#[cfg(not(target_arch = "wasm32"))]
+fn net_leave_lobby(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "net.leave_lobby")?;
+    crate::net_steam::leave_lobby();
+    Ok(Value::NIL)
 }
 
 /// Phase 32: `world.*` namespace — spatial partitioning + chunked
