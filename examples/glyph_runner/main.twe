@@ -1,0 +1,260 @@
+# @task: Glyph-mage Survivors-class with auto-cast rune projectiles
+# @inputs: WASD to move; runes auto-cast at nearest enemy
+# @expected: player moves; slimes chase; runes auto-fire; score increases on kill
+# @category: 2d
+# @difficulty: medium
+#
+# GlyphRunner — Survivors-class roguelite.
+#
+# TweGame Track A sessions A1–A3 scaffold. The player is a glyph-mage
+# who auto-casts runes at the nearest enemy. Killing enemies drops
+# the score. Future sessions: XP gems + level-up modal (A4), rune
+# families with synergies (A5), boss (A6), audio + particles (A7).
+#
+# Reference: `examples/survive_beta/main.twe` is the upstream canonical
+# 1300-line version. GlyphRunner uses the same `entity` patterns —
+# `entity.update(dt)` + `entity.render()` + `spawn` + `despawn` —
+# at a tighter scope.
+#
+# Run with:
+#   twec play examples/glyph_runner/
+
+let view_w = 640.0
+let view_h = 480.0
+let player_speed = 200.0
+let spawn_interval_start = 0.9
+let max_concurrent_enemies = 20
+
+# ---------------------------------------------------------------
+# Slime — basic chase-the-player enemy. 1 HP, contact damage on
+# overlap with iframe cooldown.
+# ---------------------------------------------------------------
+entity Slime:
+    var pos = (0.0, 0.0)
+    var speed = 65.0
+
+    function update(dt):
+        let dx = player_x - pos.x
+        let dy = player_y - pos.y
+        let mag2 = dx * dx + dy * dy
+        if mag2 < 1.0:
+            return
+        let mag = math.sqrt(mag2)
+        pos = (pos.x + dx / mag * speed * dt, pos.y + dy / mag * speed * dt)
+        # Contact damage with i-frames.
+        if mag2 < 22.0 * 22.0:
+            if player_iframes <= 0.0:
+                player_hp -= 8
+                player_iframes = 0.6
+
+    function render():
+        rect(
+            at: (pos.x - 8, pos.y - 8),
+            size: (16, 16),
+            color: color.red,
+        )
+
+# ---------------------------------------------------------------
+# Rune — auto-cast projectile that flies toward the nearest Slime.
+# 1-shot kills the Slime + increments score.
+# ---------------------------------------------------------------
+entity Rune:
+    var pos = (0.0, 0.0)
+    var vx = 0.0
+    var vy = 0.0
+    var target_set = false
+    var lifetime = 1.6
+
+    function update(dt):
+        if not target_set:
+            target_set = true
+            var found = false
+            var best_dx = 0.0
+            var best_dy = 0.0
+            var best_d2 = 0.0
+            for slime in entities.of(Slime):
+                let dx = slime.pos.x - pos.x
+                let dy = slime.pos.y - pos.y
+                let d2 = dx * dx + dy * dy
+                if not found or d2 < best_d2:
+                    found = true
+                    best_d2 = d2
+                    best_dx = dx
+                    best_dy = dy
+            if found:
+                let mag = math.sqrt(best_d2)
+                if mag > 1.0:
+                    vx = best_dx / mag * 380.0
+                    vy = best_dy / mag * 380.0
+            else:
+                # No target — drift right and expire.
+                vx = 380.0
+
+        pos = (pos.x + vx * dt, pos.y + vy * dt)
+        lifetime -= dt
+        if lifetime <= 0.0:
+            despawn self
+            return
+
+        for slime in entities.of(Slime):
+            let dx = slime.pos.x - pos.x
+            let dy = slime.pos.y - pos.y
+            if dx * dx + dy * dy < 14.0 * 14.0:
+                despawn slime
+                despawn self
+                score += 1
+                return
+
+    function render():
+        rect(
+            at: (pos.x - 3, pos.y - 3),
+            size: (6, 6),
+            color: color.cyan,
+        )
+
+scene GlyphRunner:
+    var player_x = 320.0
+    var player_y = 240.0
+    var player_hp = 100
+    var player_iframes = 0.0
+    var score = 0
+    var rune_cd = 0.0
+    var spawn_cd = 0.6
+    var time_alive = 0.0
+    var enemies_count = 0
+
+    initial: playing
+
+    state playing:
+        on update(dt):
+            time_alive += dt
+
+            # ---- Player input ----
+            if key.w:
+                player_y -= player_speed * dt
+            if key.s:
+                player_y += player_speed * dt
+            if key.a:
+                player_x -= player_speed * dt
+            if key.d:
+                player_x += player_speed * dt
+            if player_x < 16.0:
+                player_x = 16.0
+            if player_x > view_w - 16.0:
+                player_x = view_w - 16.0
+            if player_y < 16.0:
+                player_y = 16.0
+            if player_y > view_h - 16.0:
+                player_y = view_h - 16.0
+
+            player_iframes -= dt
+
+            # ---- Enemy spawn ----
+            enemies_count = list.length(entities.of(Slime))
+            spawn_cd -= dt
+            if spawn_cd <= 0.0:
+                if enemies_count < max_concurrent_enemies:
+                    spawn_cd = spawn_interval_start
+                    let side = math.mod(math.floor(time_alive * 4.0), 4.0)
+                    var ex = 0.0
+                    var ey = 0.0
+                    if side < 1.0:
+                        ex = -20.0
+                        ey = math.mod(time_alive * 73.0, view_h)
+                    else:
+                        if side < 2.0:
+                            ex = view_w + 20.0
+                            ey = math.mod(time_alive * 91.0, view_h)
+                        else:
+                            if side < 3.0:
+                                ex = math.mod(time_alive * 53.0, view_w)
+                                ey = -20.0
+                            else:
+                                ex = math.mod(time_alive * 67.0, view_w)
+                                ey = view_h + 20.0
+                    spawn Slime at (ex, ey)
+                else:
+                    spawn_cd = 0.1
+
+            # ---- Rune auto-cast ----
+            rune_cd -= dt
+            if rune_cd <= 0.0 and enemies_count > 0:
+                rune_cd = 0.40
+                spawn Rune at (player_x, player_y)
+
+            if player_hp <= 0:
+                -> game_over
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+
+            # Player (green).
+            rect(
+                at: (player_x - 10, player_y - 10),
+                size: (20, 20),
+                color: color.green,
+            )
+
+            # HUD.
+            text(
+                "GLYPH RUNNER",
+                at: (16, 16),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "score: {score}    hp: {player_hp}    enemies: {enemies_count}",
+                at: (16, 40),
+                size: 14,
+                color: color.yellow,
+            )
+            text(
+                "time: {time_alive}s",
+                at: (16, 60),
+                size: 12,
+                color: color.gray,
+            )
+            text(
+                "WASD to move. Runes auto-cast.",
+                at: (16, view_h - 18),
+                size: 12,
+                color: color.gray,
+            )
+
+    state game_over:
+        on update(dt):
+            if key_press.r:
+                # Despawn all entities, reset state, return to playing.
+                for s in entities.of(Slime):
+                    despawn s
+                for r in entities.of(Rune):
+                    despawn r
+                player_hp = 100
+                score = 0
+                player_x = view_w * 0.5
+                player_y = view_h * 0.5
+                time_alive = 0.0
+                spawn_cd = 0.6
+                player_iframes = 0.0
+                -> playing
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            text(
+                "GAME OVER",
+                at: (view_w * 0.5 - 100, view_h * 0.5 - 40),
+                size: 36,
+                color: color.red,
+            )
+            text(
+                "final score: {score}",
+                at: (view_w * 0.5 - 80, view_h * 0.5 + 10),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "press R to restart",
+                at: (view_w * 0.5 - 90, view_h * 0.5 + 50),
+                size: 16,
+                color: color.gray,
+            )

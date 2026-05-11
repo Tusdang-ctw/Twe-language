@@ -1,0 +1,327 @@
+# @task: 2-player LAN versus grid combat over lockstep UDP
+# @inputs: WASD (peer 0) / arrows (peer 1) move tokens; race to capture flags
+# @expected: deterministic lockstep across two machines; first to 5 flags wins
+# @category: net
+# @difficulty: hard
+#
+# GridDuel — 2-player LAN versus.
+#
+# TweGame Track C sessions C1–C3 scaffold. Two players on the same LAN
+# move tokens on a shared 16×16 grid. Both players race to capture
+# neutral flags; bumping into the opposing token bounces them off.
+# First to 5 captured flags wins.
+#
+# Built on Phase 31's lockstep-over-UDP runner — the same wire format
+# and determinism contract `examples/pong_net.twe` ships. Source files
+# must be byte-identical on both machines; verify via
+# `shasum -a 256 examples/grid_duel.twe` before the playtest.
+#
+# How to play:
+#   Both machines: twec play examples/grid_duel.twe
+#   Player 1 (host):   press H to host on UDP port 7878
+#   Player 2 (joiner): press J to connect to 127.0.0.1:7878
+#                      edit `default_host` below to point at the host's
+#                      LAN IP for a real two-machine playtest.
+#
+# Controls: WASD (peer 0) / arrows (peer 1). One move per tick at a
+# fixed cadence (4 cells/sec).
+
+let view_w = 640.0
+let view_h = 480.0
+let grid_size = 16
+let cell_size = 24.0
+let grid_origin_x = 128.0
+let grid_origin_y = 48.0
+let win_flags = 5
+let move_interval = 0.25
+let default_host = "127.0.0.1:7878"
+
+scene GridDuel:
+    var p0_x = 2
+    var p0_y = 8
+    var p0_move_cd = 0.0
+    var p0_flags = 0
+    var p1_x = 13
+    var p1_y = 8
+    var p1_move_cd = 0.0
+    var p1_flags = 0
+    var flag_x = 7
+    var flag_y = 7
+    var flag_seed = 1
+    var tick = 0
+    var my_id = 0
+    var bump_flash = 0.0
+
+    initial: lobby
+
+    state lobby:
+        on update(dt):
+            if not net.is_connected():
+                if key_press.h:
+                    net.host(7878, 2)
+                if key_press.j:
+                    net.connect(default_host)
+            else:
+                if net.session_ready():
+                    my_id = net.local_peer_id()
+                    -> playing
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            text(
+                "GRID DUEL",
+                at: (view_w * 0.5 - 80, 80),
+                size: 32,
+                color: color.white,
+            )
+            if net.is_connected():
+                text(
+                    "Waiting for peer to join...",
+                    at: (view_w * 0.5 - 140, 220),
+                    size: 20,
+                    color: color.yellow,
+                )
+            else:
+                text(
+                    "Press H to host (UDP 7878)",
+                    at: (view_w * 0.5 - 150, 200),
+                    size: 18,
+                    color: color.white,
+                )
+                text(
+                    "Press J to join {default_host}",
+                    at: (view_w * 0.5 - 150, 230),
+                    size: 18,
+                    color: color.white,
+                )
+                text(
+                    "First to {win_flags} flags wins.",
+                    at: (view_w * 0.5 - 130, 290),
+                    size: 14,
+                    color: color.gray,
+                )
+
+    state playing:
+        on update(dt):
+            net.send_input(tick)
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+
+            bump_flash -= dt
+
+            # ---- Player 0 movement (WASD), one move per move_interval ----
+            p0_move_cd -= dt
+            if p0_move_cd <= 0.0:
+                var dx = 0
+                var dy = 0
+                if peer[0].key.w:
+                    dy = -1
+                if peer[0].key.s:
+                    dy = 1
+                if peer[0].key.a:
+                    dx = -1
+                if peer[0].key.d:
+                    dx = 1
+                if dx != 0 or dy != 0:
+                    let nx = p0_x + dx
+                    let ny = p0_y + dy
+                    if nx >= 0 and nx < grid_size and ny >= 0 and ny < grid_size:
+                        if nx == p1_x and ny == p1_y:
+                            bump_flash = 0.2
+                        else:
+                            p0_x = nx
+                            p0_y = ny
+                            p0_move_cd = move_interval
+
+            # ---- Player 1 movement (arrows) ----
+            p1_move_cd -= dt
+            if p1_move_cd <= 0.0:
+                var dx = 0
+                var dy = 0
+                if peer[1].key.up:
+                    dy = -1
+                if peer[1].key.down:
+                    dy = 1
+                if peer[1].key.left:
+                    dx = -1
+                if peer[1].key.right:
+                    dx = 1
+                if dx != 0 or dy != 0:
+                    let nx = p1_x + dx
+                    let ny = p1_y + dy
+                    if nx >= 0 and nx < grid_size and ny >= 0 and ny < grid_size:
+                        if nx == p0_x and ny == p0_y:
+                            bump_flash = 0.2
+                        else:
+                            p1_x = nx
+                            p1_y = ny
+                            p1_move_cd = move_interval
+
+            # ---- Flag capture ----
+            if p0_x == flag_x and p0_y == flag_y:
+                p0_flags += 1
+                respawn_flag()
+            if p1_x == flag_x and p1_y == flag_y:
+                p1_flags += 1
+                respawn_flag()
+
+            # ---- State-hash heartbeat for desync detection ----
+            if math.mod(tick, 60) == 0:
+                let snap = (
+                    p0_x, p0_y, p0_flags,
+                    p1_x, p1_y, p1_flags,
+                    flag_x, flag_y, flag_seed,
+                )
+                net.send_state_hash(tick, net.hash(snap))
+
+            tick += 1
+
+            if p0_flags >= win_flags or p1_flags >= win_flags:
+                -> game_over
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+
+            # Grid lines.
+            var gi = 0
+            while gi <= grid_size:
+                # Vertical lines.
+                rect(
+                    at: (grid_origin_x + gi * cell_size, grid_origin_y),
+                    size: (1, grid_size * cell_size),
+                    color: color.gray,
+                )
+                # Horizontal lines.
+                rect(
+                    at: (grid_origin_x, grid_origin_y + gi * cell_size),
+                    size: (grid_size * cell_size, 1),
+                    color: color.gray,
+                )
+                gi += 1
+
+            # Flag (yellow).
+            rect(
+                at: (
+                    grid_origin_x + flag_x * cell_size + 4,
+                    grid_origin_y + flag_y * cell_size + 4,
+                ),
+                size: (cell_size - 8, cell_size - 8),
+                color: color.yellow,
+            )
+
+            # Player 0 (blue).
+            rect(
+                at: (
+                    grid_origin_x + p0_x * cell_size + 2,
+                    grid_origin_y + p0_y * cell_size + 2,
+                ),
+                size: (cell_size - 4, cell_size - 4),
+                color: color.blue,
+            )
+            # Player 1 (red).
+            rect(
+                at: (
+                    grid_origin_x + p1_x * cell_size + 2,
+                    grid_origin_y + p1_y * cell_size + 2,
+                ),
+                size: (cell_size - 4, cell_size - 4),
+                color: color.red,
+            )
+
+            # Bump flash overlay.
+            if bump_flash > 0.0:
+                rect(at: (0, 0), size: (view_w, view_h), color: color.white)
+
+            # HUD.
+            text(
+                "GRID DUEL",
+                at: (16, 16),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "P1 (blue): {p0_flags}    P2 (red): {p1_flags}",
+                at: (16, 40),
+                size: 14,
+                color: color.yellow,
+            )
+            text(
+                "you = peer {my_id}    tick {tick}",
+                at: (16, view_h - 36),
+                size: 12,
+                color: color.gray,
+            )
+            text(
+                "WASD (P1) / arrows (P2). Race to {win_flags} flags.",
+                at: (16, view_h - 18),
+                size: 12,
+                color: color.gray,
+            )
+
+    state game_over:
+        on update(dt):
+            # Both peers must keep the tick exchange running.
+            net.send_input(tick)
+            if not net.tick_ready(tick):
+                return
+            net.advance_tick(tick)
+            tick += 1
+            if peer[0].key_press.r or peer[1].key_press.r:
+                net.close()
+                p0_x = 2
+                p0_y = 8
+                p1_x = 13
+                p1_y = 8
+                p0_flags = 0
+                p1_flags = 0
+                flag_x = 7
+                flag_y = 7
+                flag_seed = 1
+                tick = 0
+                -> lobby
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            if p0_flags >= win_flags:
+                text(
+                    "Blue wins!",
+                    at: (view_w * 0.5 - 100, 200),
+                    size: 36,
+                    color: color.blue,
+                )
+            else:
+                text(
+                    "Red wins!",
+                    at: (view_w * 0.5 - 100, 200),
+                    size: 36,
+                    color: color.red,
+                )
+            text(
+                "Final: blue {p0_flags} – {p1_flags} red",
+                at: (view_w * 0.5 - 120, 260),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "Press R to return to lobby",
+                at: (view_w * 0.5 - 130, 320),
+                size: 14,
+                color: color.gray,
+            )
+
+    function respawn_flag():
+        # Deterministic LCG so both peers compute the same new
+        # flag position from `flag_seed`. Picks a cell not occupied
+        # by either player.
+        var attempts = 0
+        while attempts < 20:
+            flag_seed = math.mod(flag_seed * 1103515245 + 12345, 2147483648)
+            let nx = math.mod(flag_seed, grid_size)
+            let ny = math.mod(math.floor(flag_seed / grid_size), grid_size)
+            if nx != p0_x or ny != p0_y:
+                if nx != p1_x or ny != p1_y:
+                    flag_x = nx
+                    flag_y = ny
+                    attempts = 99
+            attempts += 1

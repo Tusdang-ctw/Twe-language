@@ -1,0 +1,16 @@
+[project]
+name = "glyph_runner"
+
+[build]
+default_target = "windows-x86_64"
+default_config = "release"
+
+[build.dev]
+hot_reload = true
+bundle_assets = false
+
+[build.release]
+hot_reload = false
+bundle_assets = true
+strip_debug = true
+compress = true

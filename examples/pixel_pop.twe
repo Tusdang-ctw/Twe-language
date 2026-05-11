@@ -1,0 +1,245 @@
+# @task: Tap-to-pop bubble reflex arcade for web + mobile
+# @inputs: mouse click or touch tap on bubbles
+# @expected: bubbles drift in from edges; pop them before they reach the center
+# @category: 2d
+# @difficulty: small
+#
+# PixelPop — web-first single-screen arcade.
+#
+# TweGame Track B sessions B1–B4 scaffold. Bubbles drift from random
+# edges toward the center; the player taps to pop them before they
+# reach the danger zone. Combo multiplier increases per consecutive
+# pop; missing a bubble loses a life. Three lives, then game over.
+#
+# Designed for web: mouse + touch unified, safe-area-aware HUD,
+# minimal asset footprint (no PNGs, all primitive shapes). Future
+# sessions: sound on pop (B5), itch.io / Pages deploy (B6–B7).
+#
+# Run with:
+#   twec play examples/pixel_pop.twe
+# Build for web:
+#   twec build --target wasm32 examples/pixel_pop.twe
+
+let view_w = 640.0
+let view_h = 480.0
+let center_x = 320.0
+let center_y = 240.0
+let danger_radius = 40.0
+let bubble_radius = 18.0
+let spawn_interval = 0.9
+
+entity Bubble:
+    var pos = (0.0, 0.0)
+    var vx = 0.0
+    var vy = 0.0
+    var hue_id = 0
+
+    function update(dt):
+        pos = (pos.x + vx * dt, pos.y + vy * dt)
+        # Reached the danger zone?
+        let dx = pos.x - center_x
+        let dy = pos.y - center_y
+        if dx * dx + dy * dy < danger_radius * danger_radius:
+            lives -= 1
+            combo = 0
+            despawn self
+
+    function render():
+        var col = color.red
+        if hue_id == 1:
+            col = color.yellow
+        if hue_id == 2:
+            col = color.cyan
+        if hue_id == 3:
+            col = color.green
+        circle(at: (pos.x, pos.y), radius: bubble_radius, color: col)
+
+scene PixelPop:
+    var score = 0
+    var combo = 0
+    var best_combo = 0
+    var lives = 3
+    var spawn_cd = 0.6
+    var time_alive = 0.0
+    var hi_score = 0
+    var pointer_x = 0.0
+    var pointer_y = 0.0
+    var pointer_down = false
+    var pointer_edge = false
+
+    initial: probe
+
+    state probe:
+        on enter:
+            # Resume from last high score, if any.
+            let prev = save.try_load("hi_score")
+            if prev != nil:
+                hi_score = prev
+            -> playing
+
+    state playing:
+        on update(dt):
+            time_alive += dt
+
+            # ---- Unified pointer: mouse on desktop, touch on mobile ----
+            let was_down = pointer_down
+            if touch.is_active():
+                pointer_x = touch.x()
+                pointer_y = touch.y()
+                pointer_down = true
+            else:
+                pointer_x = mouse.x
+                pointer_y = mouse.y
+                pointer_down = mouse_held.left
+            pointer_edge = pointer_down and not was_down
+
+            # ---- Bubble spawn from a random edge ----
+            spawn_cd -= dt
+            if spawn_cd <= 0.0:
+                spawn_cd = spawn_interval
+                let side = math.mod(math.floor(time_alive * 5.0), 4.0)
+                var sx = 0.0
+                var sy = 0.0
+                if side < 1.0:
+                    sx = -bubble_radius
+                    sy = math.mod(time_alive * 73.0, view_h)
+                else:
+                    if side < 2.0:
+                        sx = view_w + bubble_radius
+                        sy = math.mod(time_alive * 91.0, view_h)
+                    else:
+                        if side < 3.0:
+                            sx = math.mod(time_alive * 53.0, view_w)
+                            sy = -bubble_radius
+                        else:
+                            sx = math.mod(time_alive * 67.0, view_w)
+                            sy = view_h + bubble_radius
+                spawn Bubble at (sx, sy)
+                # Patch the new bubble's velocity + hue.
+                for b in entities.of(Bubble):
+                    if b.pos.x == sx and b.pos.y == sy:
+                        let dx = center_x - sx
+                        let dy = center_y - sy
+                        let mag = math.sqrt(dx * dx + dy * dy)
+                        if mag > 1.0:
+                            let speed = 70.0 + math.mod(time_alive * 13.0, 50.0)
+                            b.vx = dx / mag * speed
+                            b.vy = dy / mag * speed
+                        b.hue_id = math.floor(math.mod(time_alive * 17.0, 4.0))
+
+            # ---- Pop on pointer-edge ----
+            if pointer_edge:
+                var hit = false
+                for b in entities.of(Bubble):
+                    let dx = pointer_x - b.pos.x
+                    let dy = pointer_y - b.pos.y
+                    if dx * dx + dy * dy < bubble_radius * bubble_radius:
+                        despawn b
+                        combo += 1
+                        score += combo
+                        if combo > best_combo:
+                            best_combo = combo
+                        hit = true
+                if not hit:
+                    combo = 0
+
+            # ---- Lives check ----
+            if lives <= 0:
+                if score > hi_score:
+                    hi_score = score
+                    save.save_to_path("hi_score", hi_score)
+                -> game_over
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+
+            # Danger zone — center disc the bubbles head toward.
+            circle_outline(
+                at: (center_x, center_y),
+                radius: danger_radius,
+                color: color.gray,
+            )
+            circle(
+                at: (center_x, center_y),
+                radius: 4,
+                color: color.white,
+            )
+
+            # HUD — safe-area-aware so iPhone notches don't clip the score.
+            let sa = safe_area.rect()
+            text(
+                "PIXELPOP",
+                at: (sa.left + 16, sa.top + 16),
+                size: 20,
+                color: color.white,
+            )
+            text(
+                "score: {score}    combo: x{combo}    lives: {lives}",
+                at: (sa.left + 16, sa.top + 44),
+                size: 14,
+                color: color.yellow,
+            )
+            text(
+                "best combo: {best_combo}    hi: {hi_score}",
+                at: (sa.left + 16, sa.top + 64),
+                size: 12,
+                color: color.gray,
+            )
+            text(
+                "tap or click bubbles before they reach the center",
+                at: (sa.left + 16, view_h - sa.bottom - 18),
+                size: 12,
+                color: color.gray,
+            )
+
+    state game_over:
+        on update(dt):
+            let was_down = pointer_down
+            if touch.is_active():
+                pointer_down = true
+            else:
+                pointer_down = mouse_held.left
+            if (pointer_down and not was_down) or key_press.r:
+                # Reset.
+                for b in entities.of(Bubble):
+                    despawn b
+                score = 0
+                combo = 0
+                best_combo = 0
+                lives = 3
+                time_alive = 0.0
+                spawn_cd = 0.6
+                -> playing
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+            text(
+                "GAME OVER",
+                at: (center_x - 100, center_y - 60),
+                size: 36,
+                color: color.red,
+            )
+            text(
+                "score: {score}",
+                at: (center_x - 60, center_y - 10),
+                size: 18,
+                color: color.white,
+            )
+            text(
+                "best combo: {best_combo}",
+                at: (center_x - 90, center_y + 18),
+                size: 14,
+                color: color.gray,
+            )
+            text(
+                "hi-score: {hi_score}",
+                at: (center_x - 70, center_y + 38),
+                size: 14,
+                color: color.yellow,
+            )
+            text(
+                "tap or press R to restart",
+                at: (center_x - 110, center_y + 80),
+                size: 14,
+                color: color.gray,
+            )
