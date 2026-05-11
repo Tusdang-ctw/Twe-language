@@ -1,0 +1,146 @@
+# @task: Mobile touch-controlled player movement + auto-fire demo
+# @inputs: virtual joystick (left thumb on mobile, WASD on desktop)
+# @expected: player moves via joystick; safe-area-aware HUD avoids notches
+# @category: mobile
+# @difficulty: medium
+#
+# Survive Beta Mobile — minimal touch-controls reference scene.
+#
+# Phase 39 session 7. Demonstrates the Phase 39 mobile-input
+# primitives in one canvas: virtual joystick for movement, safe-area
+# insets for HUD placement, `assets.platform()` for environment
+# branching, `touch.pointer(i)` for multi-touch visualisation.
+#
+# A full Vampire-Survivors port (with enemies + bullets + level-up)
+# is a multi-session content effort tracked separately; this file
+# is the canonical "how do the Phase 39 builtins compose" reference.
+#
+# Run with:
+#   Desktop (test layout — touch is empty, joystick reads inactive,
+#   WASD provides fallback movement):
+#     twec play examples/survive_beta_mobile/
+#   iOS / Android (once the mobile-runtime follow-on lands):
+#     twec build --target ios     examples/survive_beta_mobile/
+#     twec build --target android examples/survive_beta_mobile/
+
+let view_w = 640.0
+let view_h = 480.0
+let player_speed = 220.0
+
+scene SurviveBetaMobile:
+    var player_x = 320.0
+    var player_y = 240.0
+    var stick_active = false
+    var stick_mag = 0.0
+    var ptr_count = 0
+    var platform_name = ""
+
+    initial: probe
+
+    state probe:
+        on enter:
+            platform_name = assets.platform()
+            -> playing
+
+    state playing:
+        on update(dt):
+            # Left-thumb virtual joystick anchored at the bottom-
+            # left inside the safe area. The same script reads WASD
+            # as a fallback when no touch hardware is active — so the
+            # demo runs on desktop for layout testing.
+            let pad = 16.0
+            let sa = safe_area.rect()
+            let stick_cx = sa.left + pad + 64.0
+            let stick_cy = view_h - sa.bottom - pad - 64.0
+            let stick = joystick(at: (stick_cx, stick_cy), size: 64.0, deadzone: 12.0)
+
+            var dx = stick.x * stick.magnitude
+            var dy = stick.y * stick.magnitude
+            stick_active = stick.active
+            stick_mag = stick.magnitude
+
+            if not stick.active:
+                if key.w:
+                    dy = -1.0
+                if key.s:
+                    dy = 1.0
+                if key.a:
+                    dx = -1.0
+                if key.d:
+                    dx = 1.0
+
+            player_x += dx * player_speed * dt
+            player_y += dy * player_speed * dt
+            if player_x < 16.0:
+                player_x = 16.0
+            if player_x > view_w - 16.0:
+                player_x = view_w - 16.0
+            if player_y < 16.0:
+                player_y = 16.0
+            if player_y > view_h - 16.0:
+                player_y = view_h - 16.0
+
+            ptr_count = touch.count()
+
+        on render():
+            rect(at: (0, 0), size: (view_w, view_h), color: color.black)
+
+            # Player — a green square the joystick moves.
+            rect(
+                at: (player_x - 12.0, player_y - 12.0),
+                size: (24, 24),
+                color: color.green,
+            )
+
+            # Multi-touch visualisation — draw a yellow ring at
+            # every active touch position.
+            var i = 0
+            while i < ptr_count:
+                let p = touch.pointer(i)
+                if p != nil:
+                    circle_outline(at: (p.x, p.y), radius: 24, color: color.yellow)
+                i += 1
+
+            # Safe-area-aware HUD. On desktop every inset is 0; on
+            # iPhone the top inset clears the notch, the bottom
+            # clears the home-bar gesture area.
+            let sa = safe_area.rect()
+            text(
+                "platform: {platform_name}",
+                at: (sa.left + 12.0, sa.top + 12.0),
+                size: 14,
+                color: color.white,
+            )
+            text(
+                "stick: active={stick_active}  mag={stick_mag}",
+                at: (sa.left + 12.0, sa.top + 36.0),
+                size: 14,
+                color: color.gray,
+            )
+            text(
+                "touches: {ptr_count}",
+                at: (sa.left + 12.0, sa.top + 60.0),
+                size: 14,
+                color: color.gray,
+            )
+
+            # Virtual joystick — outer ring + inner thumb.
+            let pad = 16.0
+            let stick_cx = sa.left + pad + 64.0
+            let stick_cy = view_h - sa.bottom - pad - 64.0
+            circle_outline(at: (stick_cx, stick_cy), radius: 64, color: color.gray)
+            let stick = joystick(at: (stick_cx, stick_cy), size: 64.0, deadzone: 12.0)
+            if stick.active:
+                let thumb_x = stick_cx + stick.x * stick.magnitude * 48.0
+                let thumb_y = stick_cy + stick.y * stick.magnitude * 48.0
+                circle(at: (thumb_x, thumb_y), radius: 20, color: color.white)
+            else:
+                circle(at: (stick_cx, stick_cy), radius: 20, color: color.gray)
+
+            # Bottom-right hint.
+            text(
+                "WASD on desktop. Drag the stick on mobile.",
+                at: (view_w - sa.right - 320.0, view_h - sa.bottom - 24.0),
+                size: 12,
+                color: color.gray,
+            )

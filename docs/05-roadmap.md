@@ -880,7 +880,7 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ## Phase 38 — Post-v1.0 — Browser 3D (wgpu-on-web)
 
-**Status:** open. Gated on browser wgpu maturity. As of 2026-05, browser wgpu (WebGPU) support is uneven — Chrome ships, Safari ships in Tech Preview, Firefox lags. Wait for Firefox-stable + Safari-stable before opening this phase.
+**Status:** codebase-scaffolding-closed 2026-05-11 per `docs/changes/2026-05-11-phase-38-closeout.md`. Gated on browser wgpu maturity. As of 2026-05, browser wgpu (WebGPU) support is uneven — Chrome ships, Safari ships in Tech Preview, Firefox lags. Seven sessions shipped (build target + audit + assets.* introspection + WebAudio reuse + physics verification + crystal_hunter_web placeholder + closeout); the wgpu-on-web pipeline port itself is the deferred follow-on, gated on Firefox-stable + Safari-stable browser wgpu.
 
 **Why this slot:** Phase 30 shipped 2D WASM via macroquad's GL backend; 3D needs the wgpu pipeline ported to `target_arch = "wasm32"`, which means swapping out winit + the windows-sys focus path + native font loaders for browser-native equivalents. Most of that is mechanical once browser wgpu is stable.
 
@@ -910,7 +910,7 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ## Phase 39 — Post-v1.0 — Mobile (iOS / Android)
 
-**Status:** open. macroquad already supports both platforms; the work is mostly `twec build` target descriptors, signing pipelines, and store-submission tooling.
+**Status:** codebase-scaffolding-closed 2026-05-11 per `docs/changes/2026-05-11-phase-39-closeout.md`. macroquad already supports both platforms; the codebase work shipped (build-target layouts + touch + joystick + safe-area + survive_beta_mobile demo + signing docs). The store-submission gauntlet — TestFlight + internal-track Play Store playtest on real hardware, cross-compile pipeline automation, CI-side signing — is the deferred operator-action follow-on. See [`docs/mobile-signing.md`](mobile-signing.md) for the recipe.
 
 **Why this slot:** mobile is a distribution unlock for 2D Twe games (Survivors-class touches well to mobile via virtual joysticks). The technical work is bounded. The store-submission gauntlet is the real cost.
 

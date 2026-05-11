@@ -66,7 +66,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | `twec mutate` — auto-generated (broken, verify_json, fix) corpus for fine-tuning | post-v1.0 |
 | Typed holes (`???`) — verify-time warning + runtime error for unfilled expressions | post-v1.0 |
 
-**938 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** Phases 1–37 codebase-closed (post-v1.0 roadmap round 2 in flight): 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, the LLM-differentiator surface (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes), cross-platform polish, external-validation scaffolding, internet multiplayer (Steam P2P primary + STUN fallback + lobbies + reconnect), **and rollback netcode** (snapshot ring buffer + predicted-input policies + `examples/fighter_demo.twe`). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy.
+**938 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** Phases 1–39 codebase-closed (post-v1.0 roadmap round 2 in flight): 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, the LLM-differentiator surface (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes), cross-platform polish, external-validation scaffolding, internet multiplayer (Steam P2P primary + STUN fallback + lobbies + reconnect), rollback netcode (snapshot ring buffer + predicted-input policies), **browser-3D scaffolding** (`BuildTarget::Wasm32_3D` + audit), **and mobile (iOS + Android) scaffolding** (touch + virtual joystick + safe-area insets + signing recipe). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy and [`docs/mobile-signing.md`](docs/mobile-signing.md) for the iOS / Android shipping recipe.
 
 ## Install
 
@@ -142,6 +142,8 @@ twec build examples/survive_beta
 | `examples/pong_net.twe` | LAN lockstep multiplayer over UDP |
 | `examples/pong_net_internet.twe` | Internet multiplayer — Steam Lobbies or STUN+rendezvous fallback |
 | `examples/fighter_demo.twe` | Rollback netcode — 2-player fighting game with `rollback.snapshot` |
+| `examples/crystal_hunter_web.twe` | Browser-3D placeholder using `assets.platform()` branching |
+| `examples/survive_beta_mobile/` | Mobile touch controls — virtual joystick + safe-area-aware HUD |
 | … and more | Audio, camera, gamepad, fonts, mouse, save, layout, physics |
 
 ## Language in 60 seconds

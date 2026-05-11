@@ -730,6 +730,10 @@ pub fn install(env: &mut Env) {
     install_net(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_rollback(env);
+    install_assets(env);
+    install_touch(env);
+    install_joystick_widget(env);
+    install_safe_area(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_world(env);
     #[cfg(not(target_arch = "wasm32"))]
@@ -2825,6 +2829,460 @@ fn net_punch(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         help: None,
     })?;
     Ok(Value::NIL)
+}
+
+// ---------------------------------------------------------------
+// Phase 39 session 2 + 3: touch.* namespace — multi-touch input +
+// virtual joystick widget.
+//
+// macroquad exposes `touches() -> Vec<Touch>` on every backend; on
+// desktop the vec is empty (no touch hardware), on mobile + browser
+// it contains active TouchPhase entries with `id` + `position`.
+// The `touch.*` builtins wrap this — primary touch fields for the
+// common single-finger case, `touch.pointer(i)` for multi-touch.
+//
+// `joystick(at:, size:, deadzone:)` is a virtual-joystick widget:
+// scripts render a translucent stick somewhere on screen, the
+// builtin returns a normalized 2D vector reflecting the user's
+// touch position relative to the stick center (or {0, 0} if the
+// stick isn't currently touched).
+// ---------------------------------------------------------------
+
+fn install_touch(env: &mut Env) {
+    let mut t = HashMap::new();
+    t.insert(
+        "is_active".to_string(),
+        Value::from_builtin("touch.is_active", &[], touch_is_active),
+    );
+    t.insert(
+        "x".to_string(),
+        Value::from_builtin("touch.x", &[], touch_x),
+    );
+    t.insert(
+        "y".to_string(),
+        Value::from_builtin("touch.y", &[], touch_y),
+    );
+    t.insert(
+        "count".to_string(),
+        Value::from_builtin("touch.count", &[], touch_count),
+    );
+    t.insert(
+        "pointer".to_string(),
+        Value::from_builtin("touch.pointer", &["i"], touch_pointer),
+    );
+    t.insert(
+        "tap_count".to_string(),
+        Value::from_builtin("touch.tap_count", &[], touch_tap_count),
+    );
+    env.set(
+        "touch".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: t,
+            kind: "module",
+        }))),
+    );
+}
+
+/// True iff at least one touch is currently active. On desktop
+/// (no touch hardware) this always returns false.
+fn touch_is_active(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "touch.is_active")?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let n = macroquad::input::touches().len();
+        Ok(Value::from_bool(n > 0))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(Value::from_bool(false))
+    }
+}
+
+/// X-coordinate of the primary (first active) touch in screen
+/// pixels. Returns 0.0 if no touch is active.
+fn touch_x(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "touch.x")?;
+    Ok(Value::from_float(touch_primary().map(|(x, _)| x).unwrap_or(0.0) as f64))
+}
+
+/// Y-coordinate of the primary (first active) touch.
+fn touch_y(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "touch.y")?;
+    Ok(Value::from_float(touch_primary().map(|(_, y)| y).unwrap_or(0.0) as f64))
+}
+
+/// Number of currently-active touches (1 for a single tap, 2 for
+/// two-finger pinch, etc).
+fn touch_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "touch.count")?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Ok(Value::from_int(macroquad::input::touches().len() as i64))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(Value::from_int(0))
+    }
+}
+
+/// Returns `{x, y, id}` for the i-th active touch, or nil if i is
+/// out of range. Touches are stable across frames by `id` (until
+/// they're released).
+fn touch_pointer(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "touch.pointer")?;
+    let i = as_i64(&args[0], "touch.pointer")?;
+    if i < 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("touch.pointer: index must be >= 0 (got {i})"),
+            help: None,
+        });
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let tlist = macroquad::input::touches();
+        if let Some(t) = tlist.get(i as usize) {
+            let mut fields: HashMap<String, Value> = HashMap::new();
+            fields.insert("x".to_string(), Value::from_float(t.position.x as f64));
+            fields.insert("y".to_string(), Value::from_float(t.position.y as f64));
+            fields.insert("id".to_string(), Value::from_int(t.id as i64));
+            return Ok(Value::from_object(Rc::new(RefCell::new(Object {
+                fields,
+                kind: "touch",
+            }))));
+        }
+    }
+    Ok(Value::NIL)
+}
+
+/// Number of tap-release events in the last 500ms — a simple counter
+/// for "did the user tap recently" without scripts having to track
+/// touch state across frames. Today returns 0 always; the play loop
+/// hooks for tap detection land in the Phase 39 mobile-runtime
+/// follow-on session.
+fn touch_tap_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "touch.tap_count")?;
+    Ok(Value::from_int(0))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn touch_primary() -> Option<(f32, f32)> {
+    let tlist = macroquad::input::touches();
+    tlist.first().map(|t| (t.position.x, t.position.y))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn touch_primary() -> Option<(f32, f32)> {
+    None
+}
+
+// ---------------------------------------------------------------
+// Phase 39 session 3: virtual joystick widget.
+//
+// `joystick(at: (cx, cy), size: r, deadzone: d)` returns a record
+// `{x, y, active, magnitude}` where (x, y) is the normalized 2D
+// direction the user's touch makes relative to the stick center,
+// `active` is true when the stick is being touched, and `magnitude`
+// is the touch-distance / (size - deadzone) clamped to [0, 1].
+//
+// Scripts compose the widget with whatever rendering they want —
+// the builtin does no drawing of its own. Reference render shapes
+// are in `examples/survive_beta_mobile/main.twe`.
+// ---------------------------------------------------------------
+
+fn install_joystick_widget(env: &mut Env) {
+    env.set(
+        "joystick".to_string(),
+        Value::from_builtin(
+            "joystick",
+            &["at", "size", "deadzone"],
+            joystick_builtin,
+        ),
+    );
+}
+
+fn joystick_builtin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "joystick")?;
+    let (cx, cy) = tuple2_f64(&args[0], "joystick", "at")?;
+    let size = as_f64(&args[1], "joystick")?;
+    let deadzone = as_f64(&args[2], "joystick")?;
+    if size <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("joystick: size must be > 0 (got {size})"),
+            help: None,
+        });
+    }
+    if deadzone < 0.0 || deadzone >= size {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "joystick: deadzone must be 0 <= d < size (got d={deadzone}, size={size})"
+            ),
+            help: None,
+        });
+    }
+    // Find the touch closest to the stick center. Multi-touch
+    // games can have multiple sticks; each call to `joystick`
+    // picks the closest active touch within `size` of its center.
+    let mut nearest: Option<(f64, f64, f64)> = None; // (dist, dx, dy)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        for t in macroquad::input::touches() {
+            let dx = t.position.x as f64 - cx;
+            let dy = t.position.y as f64 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            if d <= size {
+                match nearest {
+                    None => nearest = Some((d, dx, dy)),
+                    Some((nd, _, _)) if d < nd => nearest = Some((d, dx, dy)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut fields: HashMap<String, Value> = HashMap::new();
+    if let Some((d, dx, dy)) = nearest {
+        if d <= deadzone {
+            // Inside the deadzone — report active but zero direction.
+            fields.insert("x".to_string(), Value::from_float(0.0));
+            fields.insert("y".to_string(), Value::from_float(0.0));
+            fields.insert("active".to_string(), Value::from_bool(true));
+            fields.insert("magnitude".to_string(), Value::from_float(0.0));
+        } else {
+            // Normalize direction; scale magnitude over the
+            // (deadzone, size] band.
+            let len = d.max(1e-6);
+            let nx = dx / len;
+            let ny = dy / len;
+            let mag = ((d - deadzone) / (size - deadzone)).clamp(0.0, 1.0);
+            fields.insert("x".to_string(), Value::from_float(nx));
+            fields.insert("y".to_string(), Value::from_float(ny));
+            fields.insert("active".to_string(), Value::from_bool(true));
+            fields.insert("magnitude".to_string(), Value::from_float(mag));
+        }
+    } else {
+        fields.insert("x".to_string(), Value::from_float(0.0));
+        fields.insert("y".to_string(), Value::from_float(0.0));
+        fields.insert("active".to_string(), Value::from_bool(false));
+        fields.insert("magnitude".to_string(), Value::from_float(0.0));
+    }
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "joystick",
+    }))))
+}
+
+// ---------------------------------------------------------------
+// Phase 39 session 6: safe-area inset builtins.
+//
+// Mobile devices have hardware that intrudes on the rectangular
+// screen — iPhone X-style camera notches, dynamic-island cutouts,
+// Android punch-holes, rounded display corners, the system gesture
+// bar at the bottom. Games that draw UI flush to the screen edge
+// look broken on these devices. The safe area is the rectangle
+// guaranteed to be clear of hardware overlap.
+//
+// On desktop the safe area equals the full window — every inset is
+// 0. On iOS / Android the runtime queries the platform safe-area
+// API (UIView's safeAreaInsets on iOS; WindowInsets.systemBars on
+// Android) and feeds the values into a thread-local; scripts read
+// them via `safe_area.top()` etc.
+//
+// **Honest scaffolding:** the per-platform setter is wired but the
+// platform-side query lives in the mobile-runtime follow-on session.
+// Today every getter returns 0.0; scripts written against these
+// builtins keep working unchanged once the mobile runtime lands.
+// ---------------------------------------------------------------
+
+fn install_safe_area(env: &mut Env) {
+    let mut sa = HashMap::new();
+    sa.insert(
+        "top".to_string(),
+        Value::from_builtin("safe_area.top", &[], safe_area_top),
+    );
+    sa.insert(
+        "bottom".to_string(),
+        Value::from_builtin("safe_area.bottom", &[], safe_area_bottom),
+    );
+    sa.insert(
+        "left".to_string(),
+        Value::from_builtin("safe_area.left", &[], safe_area_left),
+    );
+    sa.insert(
+        "right".to_string(),
+        Value::from_builtin("safe_area.right", &[], safe_area_right),
+    );
+    sa.insert(
+        "rect".to_string(),
+        Value::from_builtin("safe_area.rect", &[], safe_area_rect),
+    );
+    env.set(
+        "safe_area".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: sa,
+            kind: "module",
+        }))),
+    );
+}
+
+thread_local! {
+    /// (top, bottom, left, right) inset in pixels. Default zero on
+    /// every platform; the mobile runtime overrides via
+    /// `set_safe_area_insets`.
+    static SAFE_AREA_INSETS: std::cell::Cell<(f64, f64, f64, f64)> =
+        const { std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)) };
+}
+
+/// Set the safe-area insets. Called by the platform runtime hook
+/// (iOS UIView.safeAreaInsets observer, Android WindowInsets
+/// listener). Today only the test path exercises this; the live
+/// platform hooks land in the Phase 39 mobile-runtime follow-on.
+pub fn set_safe_area_insets(top: f64, bottom: f64, left: f64, right: f64) {
+    SAFE_AREA_INSETS.with(|c| c.set((top, bottom, left, right)));
+}
+
+fn safe_area_top(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "safe_area.top")?;
+    Ok(Value::from_float(SAFE_AREA_INSETS.with(|c| c.get().0)))
+}
+
+fn safe_area_bottom(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "safe_area.bottom")?;
+    Ok(Value::from_float(SAFE_AREA_INSETS.with(|c| c.get().1)))
+}
+
+fn safe_area_left(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "safe_area.left")?;
+    Ok(Value::from_float(SAFE_AREA_INSETS.with(|c| c.get().2)))
+}
+
+fn safe_area_right(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "safe_area.right")?;
+    Ok(Value::from_float(SAFE_AREA_INSETS.with(|c| c.get().3)))
+}
+
+fn safe_area_rect(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "safe_area.rect")?;
+    let (top, bottom, left, right) = SAFE_AREA_INSETS.with(|c| c.get());
+    let mut fields: HashMap<String, Value> = HashMap::new();
+    fields.insert("top".to_string(), Value::from_float(top));
+    fields.insert("bottom".to_string(), Value::from_float(bottom));
+    fields.insert("left".to_string(), Value::from_float(left));
+    fields.insert("right".to_string(), Value::from_float(right));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "safe_area",
+    }))))
+}
+
+fn tuple2_f64(v: &Value, fn_name: &str, arg_name: &str) -> Result<(f64, f64), RuntimeError> {
+    if v.is_list() {
+        let list = v.as_list();
+        let l = list.borrow();
+        if l.len() == 2 {
+            return Ok((
+                as_f64(&l[0], fn_name)?,
+                as_f64(&l[1], fn_name)?,
+            ));
+        }
+    }
+    Err(RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{fn_name}: {arg_name} must be a 2-tuple (x, y)"),
+        help: None,
+    })
+}
+
+// ---------------------------------------------------------------
+// Phase 38 session 3: assets namespace — environment introspection.
+//
+// Per the wgpu-on-web audit (Phase 38 session 2), the actual asset
+// routing on browser builds happens inside the runner: existing
+// `texture(path)` / `mesh(path)` / `sound.play(path)` builtins
+// reroute through `fetch` on wasm32, transparent to scripts.
+//
+// What scripts sometimes need is a way to ask "am I running in a
+// browser?" so they can adapt e.g. controls (touch-only) or UI
+// (skip the fullscreen toggle that browsers don't allow without a
+// gesture). `assets.is_browser()` is that primitive.
+// ---------------------------------------------------------------
+
+fn install_assets(env: &mut Env) {
+    let mut a = HashMap::new();
+    a.insert(
+        "is_browser".to_string(),
+        Value::from_builtin("assets.is_browser", &[], assets_is_browser),
+    );
+    a.insert(
+        "is_mobile".to_string(),
+        Value::from_builtin("assets.is_mobile", &[], assets_is_mobile),
+    );
+    a.insert(
+        "platform".to_string(),
+        Value::from_builtin("assets.platform", &[], assets_platform),
+    );
+    env.set(
+        "assets".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: a,
+            kind: "module",
+        }))),
+    );
+}
+
+/// True iff this build is running in a browser (wasm32 target).
+fn assets_is_browser(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "assets.is_browser")?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(Value::from_bool(true))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Ok(Value::from_bool(false))
+    }
+}
+
+/// True iff this build is running on a mobile device. Today this
+/// returns false (no mobile runtime ships yet); the iOS / Android
+/// runtime hooks (Phase 39 follow-on session) flip this true.
+fn assets_is_mobile(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "assets.is_mobile")?;
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    {
+        Ok(Value::from_bool(true))
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        Ok(Value::from_bool(false))
+    }
+}
+
+/// Returns a string describing the host platform: "windows", "macos",
+/// "linux", "ios", "android", "browser", "unknown".
+fn assets_platform(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "assets.platform")?;
+    let s = if cfg!(target_arch = "wasm32") {
+        "browser"
+    } else if cfg!(target_os = "ios") {
+        "ios"
+    } else if cfg!(target_os = "android") {
+        "android"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    };
+    Ok(Value::from_string(s.to_string()))
 }
 
 // ---------------------------------------------------------------

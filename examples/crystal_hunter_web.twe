@@ -1,0 +1,128 @@
+# @task: Browser-3D placeholder demo with branching on assets.platform
+# @inputs: mouse / WASD (when browser 3D ships) / Esc to return
+# @expected: detects browser platform and shows the "wgpu-on-web port pending" message
+# @category: 3d
+# @difficulty: medium
+#
+# Crystal Hunter Web — placeholder for the browser-3D variant of
+# `examples/crystal_hunter.twe`.
+#
+# Phase 38 session 6. The full browser 3D experience (porting the
+# wgpu pipeline + winit canvas + async device-acquisition) is the
+# deferred follow-on session — see
+# `docs/changes/2026-05-11-phase-38-wgpu-on-web-audit.md` for the
+# audit + barrier list.
+#
+# What this example *does* ship: a working cross-platform demo that
+# uses the Phase 38 session 3 `assets.platform()` builtin to detect
+# the runtime environment. On a desktop build it shows the native
+# placeholder; on a browser build it shows the deferral message. The
+# moment the wgpu-on-web port lands, this file becomes a meaningful
+# browser-3D scene (camera + sentinel + crystal pickups), but until
+# then it's the canonical "platform-aware Twe script" reference.
+#
+# Run with:
+#   Desktop:  twec play examples/crystal_hunter_web.twe
+#   Browser:  twec build --target wasm32-3d examples/crystal_hunter_web.twe
+#             (today this produces the dist/web-3d/ layout; the runtime
+#              that consumes it is the deferred port)
+
+scene CrystalHunterWeb:
+    var platform = "unknown"
+    var is_browser = false
+    var is_mobile = false
+    var ticks = 0
+
+    initial: probe
+
+    state probe:
+        on enter:
+            platform = assets.platform()
+            is_browser = assets.is_browser()
+            is_mobile = assets.is_mobile()
+            -> running
+
+    state running:
+        on update(dt):
+            ticks += 1
+            if key_press.escape:
+                quit()
+
+        on render():
+            rect(at: (0, 0), size: (640, 480), color: color.black)
+            text(
+                "CRYSTAL HUNTER — WEB",
+                at: (160, 60),
+                size: 28,
+                color: color.white,
+            )
+            text(
+                "platform: {platform}",
+                at: (40, 130),
+                size: 18,
+                color: color.yellow,
+            )
+            text(
+                "is_browser: {is_browser}",
+                at: (40, 160),
+                size: 18,
+                color: color.gray,
+            )
+            text(
+                "is_mobile: {is_mobile}",
+                at: (40, 190),
+                size: 18,
+                color: color.gray,
+            )
+
+            if is_browser:
+                text(
+                    "Browser 3D pipeline (wgpu-on-web) is",
+                    at: (40, 250),
+                    size: 16,
+                    color: color.white,
+                )
+                text(
+                    "deferred to Phase 38 follow-on session.",
+                    at: (40, 270),
+                    size: 16,
+                    color: color.white,
+                )
+                text(
+                    "See docs/changes/2026-05-11-phase-38-",
+                    at: (40, 300),
+                    size: 14,
+                    color: color.gray,
+                )
+                text(
+                    "wgpu-on-web-audit.md",
+                    at: (40, 320),
+                    size: 14,
+                    color: color.gray,
+                )
+            else:
+                text(
+                    "Run examples/crystal_hunter.twe for the",
+                    at: (40, 250),
+                    size: 16,
+                    color: color.white,
+                )
+                text(
+                    "full native 3D experience.",
+                    at: (40, 270),
+                    size: 16,
+                    color: color.white,
+                )
+
+            text(
+                "tick: {ticks}",
+                at: (40, 440),
+                size: 12,
+                color: color.gray,
+            )
+            text(
+                "Esc to quit",
+                at: (500, 460),
+                size: 12,
+                color: color.gray,
+            )

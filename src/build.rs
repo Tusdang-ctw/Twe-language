@@ -44,6 +44,35 @@ pub enum BuildTarget {
     /// this target today to produce the bundle + server launcher for
     /// a host that already runs a desktop session.
     LinuxServer,
+    /// Phase 38 session 1: browser 3D target. Same shape as
+    /// `Wasm32` (the 2D path) but the produced HTML wires up a
+    /// wgpu-on-web context instead of macroquad's GL backend. The
+    /// directory layout is `dist/web-3d/` with the same file set as
+    /// `Wasm32`. **Honest scaffolding:** the browser wgpu pipeline
+    /// itself (porting `src/play3d.rs` past its
+    /// `cfg(not(target_arch = "wasm32"))` gates) is deferred to a
+    /// follow-on session — Phase 38 of `docs/05-roadmap.md` is
+    /// itself gated on Firefox-stable + Safari-stable browser wgpu
+    /// support. The target descriptor lets the build pipeline grow
+    /// the third matrix row today; production of a working web-3D
+    /// experience waits on browser maturity.
+    Wasm32_3D,
+    /// Phase 39 session 1: iOS aarch64 target. Produces
+    /// `dist/<game>-ios/` containing the bundle + Info.plist
+    /// scaffold + signing instructions. **Honest scaffolding:** the
+    /// actual `.ipa` packaging + xcodebuild integration + signing
+    /// pipeline land in a follow-on session — Phase 39 of the
+    /// roadmap explicitly calls out the store-submission gauntlet
+    /// as the bulk of the cost. The target descriptor lets the
+    /// build pipeline grow today; cross-compile from a non-macOS
+    /// host produces the directory layout but not the signed .ipa.
+    IosAarch64,
+    /// Phase 39 session 1: Android aarch64 APK / AAB target.
+    /// Produces `dist/<game>-android/` containing the bundle +
+    /// AndroidManifest.xml scaffold + Gradle wrapper instructions.
+    /// **Honest scaffolding:** the actual gradle build + keystore +
+    /// signing land in a follow-on session for the same reason as iOS.
+    AndroidAarch64,
 }
 
 impl BuildTarget {
@@ -59,6 +88,11 @@ impl BuildTarget {
             }
             "wasm32" | "wasm32-unknown-unknown" => Some(BuildTarget::Wasm32),
             "linux-server" | "x86_64-unknown-linux-server" => Some(BuildTarget::LinuxServer),
+            "wasm32-3d" | "wasm32-unknown-unknown-3d" => Some(BuildTarget::Wasm32_3D),
+            "ios" | "ios-aarch64" | "aarch64-apple-ios" => Some(BuildTarget::IosAarch64),
+            "android" | "android-aarch64" | "aarch64-linux-android" => {
+                Some(BuildTarget::AndroidAarch64)
+            }
             _ => None,
         }
     }
@@ -103,9 +137,11 @@ impl BuildTarget {
             BuildTarget::MacOsAarch64
             | BuildTarget::MacOsX86_64
             | BuildTarget::LinuxX86_64
-            | BuildTarget::LinuxServer => "",
-            // WASM output is a directory, not a file; extension unused.
-            BuildTarget::Wasm32 => "",
+            | BuildTarget::LinuxServer
+            | BuildTarget::IosAarch64
+            | BuildTarget::AndroidAarch64 => "",
+            // WASM outputs are directories, not files; extension unused.
+            BuildTarget::Wasm32 | BuildTarget::Wasm32_3D => "",
         }
     }
 
@@ -117,6 +153,9 @@ impl BuildTarget {
             BuildTarget::LinuxX86_64 => "linux-x86_64",
             BuildTarget::Wasm32 => "wasm32",
             BuildTarget::LinuxServer => "linux-server",
+            BuildTarget::Wasm32_3D => "wasm32-3d",
+            BuildTarget::IosAarch64 => "ios-aarch64",
+            BuildTarget::AndroidAarch64 => "android-aarch64",
         }
     }
 }
@@ -646,6 +685,9 @@ pub fn run(mut args: BuildArgs) -> i32 {
         }
         BuildTarget::LinuxX86_64 => build_linux_appdir(&project, &out_path, &args, &resolved),
         BuildTarget::LinuxServer => build_linux_server(&project, &out_path, &args, &resolved),
+        BuildTarget::Wasm32_3D => build_wasm3d_target(&project, &args),
+        BuildTarget::IosAarch64 => build_ios_layout(&project, &out_path, &args, &resolved),
+        BuildTarget::AndroidAarch64 => build_android_layout(&project, &out_path, &args, &resolved),
         #[allow(unreachable_patterns)]
         _ => {
             // Standalone bundle as the universal fallback. Today
@@ -1685,6 +1727,299 @@ fn build_linux_server(
          session; today the launcher invokes the full desktop `twec` binary."
     );
     0
+}
+
+/// Phase 38 session 1: browser 3D build layout. Same directory shape
+/// as Phase 30's `Wasm32` target, but the produced index.html wires
+/// up a wgpu-on-web context instead of macroquad-GL. Today this
+/// emits only the directory + bundle + a placeholder HTML; the
+/// actual wgpu-on-web pipeline (porting `src/play3d.rs` past its
+/// `cfg(not(target_arch = "wasm32"))` gates) is the deferred
+/// follow-on session.
+fn build_wasm3d_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
+    let web_dir = match &args.out {
+        Some(p) => p.clone(),
+        None => project.root.join("dist").join("web-3d"),
+    };
+    if let Err(e) = fs::create_dir_all(&web_dir) {
+        eprintln!("error: cannot create '{}': {e}", web_dir.display());
+        return 1;
+    }
+    if let Err(e) = fs::write(web_dir.join("index.html"), wasm3d_html(&project.name)) {
+        eprintln!("error: cannot write index.html: {e}");
+        return 1;
+    }
+    if let Err(e) = fs::copy(&project.main, web_dir.join("main.twe")) {
+        eprintln!("error: cannot copy main.twe: {e}");
+        return 1;
+    }
+    for asset in &project.assets {
+        let dest = web_dir.join(&asset.bundle_key);
+        if let Some(p) = dest.parent() {
+            let _ = fs::create_dir_all(p);
+        }
+        if let Err(e) = fs::copy(&asset.abs, &dest) {
+            eprintln!(
+                "error: cannot copy asset '{}': {e}",
+                asset.abs.display()
+            );
+            return 1;
+        }
+    }
+    let readme = format!(
+        "Twe browser 3D build — {}\n\
+         \n\
+         This target produces the directory layout for a wgpu-on-web build.\n\
+         The wgpu pipeline port (src/play3d.rs past its cfg gates) is\n\
+         deferred to a Phase 38 follow-on session, gated on Firefox-stable\n\
+         + Safari-stable browser wgpu support (as of 2026-05, Chrome ships;\n\
+         Safari Tech Preview ships; Firefox lags).\n\
+         \n\
+         Use Phase 30's `--target wasm32` for 2D browser play today.\n",
+        project.name
+    );
+    let _ = fs::write(web_dir.join("README.txt"), readme);
+    eprintln!(
+        "[twec build] wrote {} (wasm32-3d directory layout; wgpu-on-web pipeline deferred)",
+        web_dir.display()
+    );
+    0
+}
+
+fn wasm3d_html(game_name: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n\
+         <html><head><meta charset=\"utf-8\"><title>{game_name}</title>\n\
+         <style>\n\
+         body {{ margin: 0; background: #000; color: #ccc; font: 14px monospace; padding: 24px; }}\n\
+         canvas {{ display: block; margin: 24px auto; image-rendering: pixelated; aspect-ratio: 4 / 3; }}\n\
+         </style></head><body>\n\
+         <h1>{game_name}</h1>\n\
+         <p>Browser 3D target (wasm32-3d). This build directory ships the layout;\n\
+         the wgpu-on-web rendering pipeline is a Phase 38 follow-on session,\n\
+         gated on Firefox-stable + Safari-stable browser wgpu support.</p>\n\
+         <p>For 2D browser play today, rebuild with <code>--target wasm32</code>.</p>\n\
+         <canvas id=\"glcanvas\" width=\"800\" height=\"600\"></canvas>\n\
+         </body></html>\n"
+    )
+}
+
+/// Phase 39 session 1: iOS aarch64 build layout. Produces the
+/// directory structure + Info.plist template + bundle. The actual
+/// `.ipa` packaging + xcodebuild integration + provisioning-profile
+/// signing live in a follow-on session.
+fn build_ios_layout(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    args: &BuildArgs,
+    resolved: &ResolvedConfig,
+) -> i32 {
+    let exec_name = project.name.clone();
+    let dist_dir = if out_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.ends_with("-ios"))
+        .unwrap_or(false)
+    {
+        out_path.to_path_buf()
+    } else {
+        let mut p = out_path.to_path_buf();
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&exec_name)
+            .to_string();
+        p.set_file_name(format!("{stem}-ios"));
+        p
+    };
+    if let Err(e) = fs::create_dir_all(dist_dir.join("Payload").join(format!("{exec_name}.app"))) {
+        eprintln!("error: cannot create '{}': {e}", dist_dir.display());
+        return 1;
+    }
+    let bundle_bytes = match encode_bundle_to_vec(
+        project,
+        resolved.compress,
+        args.target,
+        args.config,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let app_dir = dist_dir.join("Payload").join(format!("{exec_name}.app"));
+    let bundle_path = app_dir.join(format!("{exec_name}.twebundle"));
+    if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
+        eprintln!("error: cannot write '{}': {e}", bundle_path.display());
+        return 1;
+    }
+    let identifier = format!("dev.twe.{}", sanitize_identifier(&exec_name));
+    let plist = render_ios_info_plist(&exec_name, &identifier, env!("CARGO_PKG_VERSION"));
+    if let Err(e) = fs::write(app_dir.join("Info.plist"), plist) {
+        eprintln!("error: cannot write Info.plist: {e}");
+        return 1;
+    }
+    let readme = format!(
+        "Twe iOS build — {exec_name}\n\
+         \n\
+         This directory ships the Payload/{exec_name}.app layout: bundle\n\
+         + Info.plist template. Producing a signed .ipa requires:\n\
+         \n\
+         1. A macOS host with Xcode 15+ installed.\n\
+         2. An Apple Developer account + provisioning profile for the\n\
+            bundle identifier '{identifier}'.\n\
+         3. Cross-compiling the twec runtime for aarch64-apple-ios via\n\
+            `cargo build --target aarch64-apple-ios --release` and\n\
+            copying the resulting binary into\n\
+            Payload/{exec_name}.app/{exec_name}.\n\
+         4. `codesign --sign <Developer ID> Payload/{exec_name}.app`.\n\
+         5. `zip -r {exec_name}.ipa Payload/`.\n\
+         6. Upload via Transporter or App Store Connect.\n\
+         \n\
+         Phase 39 codebase-side ships the directory layout + Info.plist\n\
+         template. Cross-compile + signing + TestFlight upload are\n\
+         follow-on operator-action items.\n"
+    );
+    let _ = fs::write(dist_dir.join("README.txt"), readme);
+    eprintln!(
+        "[twec build] wrote {} ({} bundle bytes; iOS layout — .ipa packaging deferred)",
+        dist_dir.display(),
+        bundle_bytes.len()
+    );
+    0
+}
+
+fn render_ios_info_plist(exec_name: &str, identifier: &str, version: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         \t<key>CFBundleDevelopmentRegion</key>\n\t<string>en</string>\n\
+         \t<key>CFBundleExecutable</key>\n\t<string>{exec_name}</string>\n\
+         \t<key>CFBundleIdentifier</key>\n\t<string>{identifier}</string>\n\
+         \t<key>CFBundleInfoDictionaryVersion</key>\n\t<string>6.0</string>\n\
+         \t<key>CFBundleName</key>\n\t<string>{exec_name}</string>\n\
+         \t<key>CFBundlePackageType</key>\n\t<string>APPL</string>\n\
+         \t<key>CFBundleShortVersionString</key>\n\t<string>{version}</string>\n\
+         \t<key>CFBundleVersion</key>\n\t<string>{version}</string>\n\
+         \t<key>LSRequiresIPhoneOS</key>\n\t<true/>\n\
+         \t<key>UILaunchStoryboardName</key>\n\t<string>LaunchScreen</string>\n\
+         \t<key>UIRequiredDeviceCapabilities</key>\n\
+         \t<array>\n\t\t<string>arm64</string>\n\t\t<string>metal</string>\n\t</array>\n\
+         \t<key>UISupportedInterfaceOrientations</key>\n\
+         \t<array>\n\
+         \t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\
+         \t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\
+         \t</array>\n\
+         </dict>\n</plist>\n"
+    )
+}
+
+/// Phase 39 session 1: Android aarch64 build layout. Produces the
+/// directory + AndroidManifest.xml template + bundle. The actual
+/// gradle / keystore / AAB packaging lives in a follow-on session.
+fn build_android_layout(
+    project: &DiscoveredProject,
+    out_path: &Path,
+    args: &BuildArgs,
+    resolved: &ResolvedConfig,
+) -> i32 {
+    let exec_name = project.name.clone();
+    let dist_dir = if out_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.ends_with("-android"))
+        .unwrap_or(false)
+    {
+        out_path.to_path_buf()
+    } else {
+        let mut p = out_path.to_path_buf();
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&exec_name)
+            .to_string();
+        p.set_file_name(format!("{stem}-android"));
+        p
+    };
+    let assets_dir = dist_dir.join("app").join("src").join("main").join("assets");
+    if let Err(e) = fs::create_dir_all(&assets_dir) {
+        eprintln!("error: cannot create '{}': {e}", assets_dir.display());
+        return 1;
+    }
+    let bundle_bytes = match encode_bundle_to_vec(
+        project,
+        resolved.compress,
+        args.target,
+        args.config,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let bundle_path = assets_dir.join(format!("{exec_name}.twebundle"));
+    if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
+        eprintln!("error: cannot write '{}': {e}", bundle_path.display());
+        return 1;
+    }
+    let identifier = format!("dev.twe.{}", sanitize_identifier(&exec_name));
+    let manifest_dir = dist_dir.join("app").join("src").join("main");
+    let manifest = render_android_manifest(&identifier, &exec_name);
+    if let Err(e) = fs::write(manifest_dir.join("AndroidManifest.xml"), manifest) {
+        eprintln!("error: cannot write AndroidManifest.xml: {e}");
+        return 1;
+    }
+    let readme = format!(
+        "Twe Android build — {exec_name}\n\
+         \n\
+         This directory ships the Android Studio module layout:\n\
+         app/src/main/assets/{exec_name}.twebundle + AndroidManifest.xml.\n\
+         Producing a signed .apk / .aab requires:\n\
+         \n\
+         1. Android Studio (or command-line Android SDK + NDK + Gradle).\n\
+         2. A keystore for app signing.\n\
+         3. Cross-compiling the twec runtime for aarch64-linux-android via\n\
+            `cargo build --target aarch64-linux-android --release` (requires\n\
+            the Android NDK linker).\n\
+         4. A Gradle module wrapping the layout this directory provides.\n\
+         5. `./gradlew bundleRelease` to produce the .aab for Play Store.\n\
+         \n\
+         Phase 39 codebase-side ships the directory layout + manifest\n\
+         template. Cross-compile + Gradle wrapper + Play Store upload are\n\
+         follow-on operator-action items.\n"
+    );
+    let _ = fs::write(dist_dir.join("README.txt"), readme);
+    eprintln!(
+        "[twec build] wrote {} ({} bundle bytes; Android layout — .apk/.aab packaging deferred)",
+        dist_dir.display(),
+        bundle_bytes.len()
+    );
+    0
+}
+
+fn render_android_manifest(identifier: &str, exec_name: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n\
+                   package=\"{identifier}\">\n\
+             <uses-feature android:glEsVersion=\"0x00030000\" android:required=\"true\" />\n\
+             <application android:label=\"{exec_name}\" android:hasCode=\"false\">\n\
+                 <activity android:name=\"android.app.NativeActivity\"\n\
+                           android:configChanges=\"orientation|keyboardHidden|screenSize\"\n\
+                           android:screenOrientation=\"landscape\">\n\
+                     <meta-data android:name=\"android.app.lib_name\" android:value=\"twec\" />\n\
+                     <intent-filter>\n\
+                         <action android:name=\"android.intent.action.MAIN\" />\n\
+                         <category android:name=\"android.intent.category.LAUNCHER\" />\n\
+                     </intent-filter>\n\
+                 </activity>\n\
+             </application>\n\
+         </manifest>\n"
+    )
 }
 
 /// XDG `.desktop` entry for the AppDir. Minimal — `Type`, `Name`,

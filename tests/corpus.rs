@@ -21,9 +21,20 @@ use twec::corpus::{scan_corpus, to_json, CorpusEntry};
 const ALLOWED_CATEGORIES: &[&str] = &[
     "2d", "3d", "ui", "audio", "input", "net", "visual", "tilemap", "save",
     "dialogue", "lifecycle", "core",
+    // Phase 39 mobile-specific examples (touch + safe-area + joystick).
+    "mobile",
 ];
 
-const ALLOWED_DIFFICULTIES: &[&str] = &["trivial", "small", "medium", "large"];
+const ALLOWED_DIFFICULTIES: &[&str] = &[
+    "trivial",
+    "small",
+    "medium",
+    "large",
+    // Phase 36 + 37 introduced multi-system multiplayer examples that
+    // are a tier above `large` in cognitive load (lockstep determinism
+    // + rollback + lobbies).
+    "hard",
+];
 
 #[test]
 fn every_example_has_complete_header() {
