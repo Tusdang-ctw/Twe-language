@@ -996,6 +996,60 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ---
 
+## v1.0.1 — Polish release (in flight, 2026-05-12)
+
+**Status:** in development. 1/13 feature sessions shipped. Full plan in `docs/v1.0.1-plan.md`.
+
+**Goal:** patch-tier polish release after v1.0. Makes the Survivors-class shipping path *easier and better*, not different. Each item sized to 1–3 sessions per the Phase 14–16 sizing discipline; phase-sized work (browser-3D wgpu port, MMO server runtime, console partner SDKs) stays out by definition.
+
+**Thesis:** v1.0 proves a Twe developer *can* ship a Survivors-class game (`examples/survive_beta/`, 1,264 LOC, self-extracting `.exe`). v1.0.1 makes that experience *good*: game feel that calls one function, audio that doesn't pop on 200-overlap, saves that survive a patch, lighting that doesn't need a custom shader, and a contributor LSP that handles cross-module rename.
+
+**Sessions** (priority order from `docs/v1.0.1-plan.md` §Priority order):
+
+| # | Session | Status |
+|---|---------|--------|
+| 1 | `fx.*` procedural VFX library | ✅ shipped 2026-05-12 |
+| 2 | `tween.*` interpolation primitives | pending |
+| 3 | `light2d.*` dynamic 2D lighting | pending |
+| 4 | Audio polish: pooling + ducking + music layers | pending |
+| 5 | `save SaveSlot:` block + version migrations | pending |
+| 6 | Per-state pause opt-out (`pause: false` / `persistent`) | pending |
+| 7 | Nine-slice / nine-patch panels | pending |
+| 8 | Camera2D: follow + zoom + cinematic pan | pending |
+| 9 | LSP cross-module go-to-def + rename | pending |
+| 10 | Replay-on-crash | pending |
+| 11 | CI perf-bench snapshot + regression alert | pending |
+| 12 | Localization plurals | pending |
+| 13 | `twec doctor` | pending |
+| 14 | Closeout | pending |
+
+**Decided against:** cloud-hosted asset CDN. Determinism (`Phase 29 replay`), offline self-extracting `.exe` (`Phase 12`), LLM grounding (`Phase 33 stdlib manifest`), and project-as-CDN risk all push toward fully procedural fx/lighting libraries (`fx.*` Session 1, `light2d.*` Session 3) plus an opt-in user-owned `assets.download_to_cache(url, sha256)`. The Twe project never hosts assets.
+
+**Exit criteria:**
+
+- All 13 feature sessions land with their test in `tests/programs/` or `tests/`.
+- Net test count is ≥ +20 vs the v1.0 baseline (938 → ≥958).
+- `cargo build --release` zero warnings on Windows + macOS + Linux + WASM targets.
+- `cargo clippy --release --all-targets -- -D warnings` clean.
+- `examples/survive_beta/main.twe` rewritten to use `fx.*`, `camera2d.follow`, `sound.pool`, and `save SaveSlot:` — LOC count goes down or holds steady.
+- Phase 11 perf baseline JSON checked in at `docs/perf-snapshots/v1.0.1-baseline.json` and CI's `perf-diff` gate is green.
+- Closeout note shipped at `docs/changes/<date>-v1.0.1-closeout.md`.
+
+**Anti-goals** (re-enter in the listed phase):
+
+- VM dispatch-loop rework (computed-goto / direct-threaded) — phase-sized; re-enters v1.1. Session 11's CI perf snapshot is the prerequisite either way.
+- Browser-3D wgpu port — Phase 38 honest deferral; re-enters when Firefox-stable + Safari-stable hit usable wgpu coverage.
+- Live mobile safe-area hooks — Phase 39 deferral; needs live mobile hardware.
+- Steam Workshop runtime — Phase 41 stubs exist; phase-sized.
+- MMO server runtime — Phase 41 honest deferral; v2.0 or never.
+- Cloud-hosted asset CDN — decided against (see above).
+- Macros / metaprogramming — locked.
+- List comprehensions, `then` keyword expansion — Snake's NP3 / NP10; not pressured by Survivors.
+
+**Size:** S (3–4 weeks at ~15 hr/week).
+
+---
+
 ## What's intentionally *not* in any plan
 
 These are deferred indefinitely (the v3.0+ era or never), with cause:

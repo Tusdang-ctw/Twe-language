@@ -10,6 +10,51 @@ ships. Until then, every minor (v0.x) release is permitted to break
 the surface, with deprecations rather than removals where the
 removal would be load-bearing.
 
+## v1.0.1 — Polish release (in development)
+
+> Patch-tier release after v1.0 that hardens the Survivors-class
+> path: game feel as one-call procedural effects, audio polish, 2D
+> dynamic lighting, save migrations, contributor LSP, replay-on-crash,
+> and CI perf snapshots. Full plan in [`docs/v1.0.1-plan.md`](docs/v1.0.1-plan.md).
+> No cloud-hosted assets — fully procedural fx/lighting libraries
+> instead, for the determinism + offline-`.exe` + LLM-grounding
+> reasons enumerated in the plan.
+
+### Added
+
+- **`fx.*` procedural VFX library** (Session 1, 2026-05-12).
+  Twelve call-and-go effects covering the standard Survivors-class
+  hit-feedback vocabulary, all procedural — no PNGs, no shaders,
+  no asset CDN:
+  - `fx.hit_flash(at, size, color, duration)` — tint flash over a sprite rect
+  - `fx.screen_shake(amount, duration)` — canonical screen-shake (`camera.shake` kept as a back-compat alias; shares state)
+  - `fx.hit_stop(duration)` — freeze gameplay for N seconds (counts in physics ticks, replay-safe)
+  - `fx.damage_number(at, value, color)` — rising fading number
+  - `fx.crit_text(at, value)` — bigger yellow crit text
+  - `fx.death_burst(at, count, color)` — radial particle explosion
+  - `fx.pickup_pop(at, color)` — expanding outlined circle
+  - `fx.dash_trail(at, color)` — call per-frame to leave a streak
+  - `fx.level_up_ring(at, color)` — expanding ring
+  - `fx.blood_splat(at, dir, color)` — directional cone splatter
+  - `fx.muzzle_flash(at, dir)` — gunfire flash
+  - `fx.ground_shockwave(at, radius)` — white expanding ring
+
+  Reference: [`examples/fx_demo.twe`](examples/fx_demo.twe). Documented in
+  [`docs/06-design-document.md`](docs/06-design-document.md) §7.8b.
+  All four play-loop variants wired (tree-walker `run_loop` /
+  `run_loop_wasm` / `run_loop_embedded`, bytecode VM `run_loop_bytecode`).
+  +4 unit tests. **942 tests pass.**
+
+### Sessions pending
+
+Sessions 2–14 per [`docs/v1.0.1-plan.md`](docs/v1.0.1-plan.md): tween,
+light2d, audio pool/duck/music-layers, `save SaveSlot:` migrations,
+per-state pause opt-out, nine-slice panels, camera2d follow/zoom/pan,
+LSP cross-module rename, replay-on-crash, CI perf snapshot,
+localization plurals, `twec doctor`, closeout.
+
+---
+
 ## v0.1.0 — First public release (2026-05-07)
 
 The first public-tagged release of Twe. Everything below the line
