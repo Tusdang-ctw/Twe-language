@@ -8,6 +8,11 @@ pub mod ast_json;
 pub mod bytecode;
 pub mod compiler;
 pub mod eval;
+// v1.0.1 session 1: procedural VFX library. Pure macroquad — no
+// platform deps, no cfg gate. State is thread_local; visual fx
+// decay on wall-clock dt, `fx.hit_stop` decays in physics ticks
+// for replay determinism.
+pub mod fx;
 // Phase 33 session 1: portable grammar export. Pure Rust, no
 // platform deps — compiles on every target.
 pub mod grammar;

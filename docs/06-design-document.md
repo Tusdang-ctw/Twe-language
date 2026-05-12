@@ -800,6 +800,33 @@ camera.reset()                    # snap to defaults
 
 **3D** (`twec play3d`): `camera.eye`, `camera.target`, `camera.up` are 3-tuples.
 
+### 7.8b VFX  *(v1.0.1 Session 1)*
+
+The `fx.*` namespace is a procedural visual-effects library. Every effect is generated from code — no PNG assets, no shaders, no cloud lookups. State lives on the runtime side; scripts fire and forget.
+
+```twe
+fx.hit_flash(at: enemy.pos, size: (28, 28),
+             color: (1.0, 1.0, 1.0, 0.8), duration: 0.08)
+fx.screen_shake(amount: 8.0, duration: 0.25)
+fx.hit_stop(duration: 0.05)                # freeze gameplay for N seconds
+fx.damage_number(at: pos, value: 42, color: color.red)
+fx.crit_text(at: pos, value: 100)          # bigger, yellow, longer-lived
+fx.death_burst(at: pos, count: 12, color: color.cyan)
+fx.pickup_pop(at: pos, color: color.yellow)
+fx.dash_trail(at: entity.pos, color: color.white)  # call per-frame for a streak
+fx.level_up_ring(at: pos, color: color.yellow)
+fx.blood_splat(at: pos, dir: (fx_dir, fy_dir), color: color.red)
+fx.muzzle_flash(at: pos, dir: (fx_dir, fy_dir))
+fx.ground_shockwave(at: pos, radius: 60.0)
+```
+
+Determinism contract:
+- **Visual fx** (everything except `hit_stop` and `screen_shake`) decay on wall-clock `frame_dt` since they are render-only and never observed by scripts. Replay of the same input may render minor per-frame variations in their appearance but gameplay state is unchanged.
+- **`fx.hit_stop(duration)`** counts in physics ticks: `ceil(duration / time.physics_dt)`. Each scheduled tick is consumed inside the play loop's substep accumulator before `tick_frame` runs; the substep is skipped (`accumulator` still drains, so wall-clock doesn't accumulate a backlog). Replay sees the same number of skipped substeps regardless of host FPS.
+- **`fx.screen_shake(amount, duration)`** delegates to the same internal state as the older `camera.shake(...)`. `fx.screen_shake` is the new canonical surface (P2: one obvious way); `camera.shake` remains for backwards compatibility. Stacking semantics: max amplitude wins, max remaining duration wins.
+
+Reference example: `examples/fx_demo.twe`.
+
 ### 7.9 Assets
 
 ```twe

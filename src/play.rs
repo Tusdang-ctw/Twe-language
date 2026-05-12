@@ -349,6 +349,16 @@ async fn run_loop_wasm() {
             while accumulator >= crate::eval::PHYSICS_DT
                 && substeps < crate::eval::MAX_SUBSTEPS
             {
+                // v1.0.1 session 1: `fx.hit_stop` skips simulation
+                // substeps without draining wall-clock time. Decrement
+                // the accumulator and counter, but don't advance the
+                // game state — render still runs every frame so the
+                // freeze is visible.
+                if crate::fx::consume_hit_stop_tick() {
+                    accumulator -= crate::eval::PHYSICS_DT;
+                    substeps += 1;
+                    continue;
+                }
                 if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
                     tick_err = Some(e);
                     break;
@@ -369,6 +379,7 @@ async fn run_loop_wasm() {
         clear_background(BLACK);
         env.in_render = true;
         crate::stdlib::camera_tick(frame_dt);
+        crate::fx::fx_tick(frame_dt);
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
@@ -377,6 +388,11 @@ async fn run_loop_wasm() {
             set_camera(&cam);
         }
         let render_result = crate::eval::render_frame(&mut env);
+        // v1.0.1 session 1: fx overlay draws under the same camera
+        // transform as the world render — bursts, damage numbers, and
+        // shockwaves sit on top of the script's draws but still scroll
+        // with the camera in world-space.
+        crate::fx::fx_draw_overlay();
         if cam_active {
             set_default_camera();
         }
@@ -495,6 +511,11 @@ async fn run_loop(path: String) {
             while accumulator >= crate::eval::PHYSICS_DT
                 && substeps < crate::eval::MAX_SUBSTEPS
             {
+                if crate::fx::consume_hit_stop_tick() {
+                    accumulator -= crate::eval::PHYSICS_DT;
+                    substeps += 1;
+                    continue;
+                }
                 if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
                     tick_err = Some(e);
                     break;
@@ -528,6 +549,7 @@ async fn run_loop(path: String) {
         // a visual effect, not deterministic gameplay state, so smooth
         // decay at display rate is the right behaviour.
         crate::stdlib::camera_tick(frame_dt);
+        crate::fx::fx_tick(frame_dt);
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
@@ -536,6 +558,7 @@ async fn run_loop(path: String) {
             set_camera(&cam);
         }
         let render_result = crate::eval::render_frame(&mut env);
+        crate::fx::fx_draw_overlay();
         if cam_active {
             set_default_camera();
         }
@@ -1019,6 +1042,11 @@ async fn run_loop_bytecode(path: String) {
         let mut substeps: u32 = 0;
         let mut tick_err: Option<crate::value::RuntimeError> = None;
         while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
+            if crate::fx::consume_hit_stop_tick() {
+                accumulator -= crate::eval::PHYSICS_DT;
+                substeps += 1;
+                continue;
+            }
             if let Err(e) = vm.tick(crate::eval::PHYSICS_DT) {
                 tick_err = Some(e);
                 break;
@@ -1036,10 +1064,15 @@ async fn run_loop_bytecode(path: String) {
         flush_vm_output(&mut vm);
 
         clear_background(BLACK);
+        // v1.0.1 session 1: bytecode VM doesn't drive the camera
+        // transform here, so fx overlay draws in screen coords (the
+        // same coord space the VM's rect/circle/text calls use).
+        crate::fx::fx_tick(frame_dt);
         if let Err(e) = vm.render() {
             eprintln!("{path_ref}: runtime error: {e}");
             break;
         }
+        crate::fx::fx_draw_overlay();
         flush_vm_output(&mut vm);
 
         hud_draw();
@@ -1089,6 +1122,11 @@ async fn run_loop_embedded(source: String) {
             while accumulator >= crate::eval::PHYSICS_DT
                 && substeps < crate::eval::MAX_SUBSTEPS
             {
+                if crate::fx::consume_hit_stop_tick() {
+                    accumulator -= crate::eval::PHYSICS_DT;
+                    substeps += 1;
+                    continue;
+                }
                 if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
                     tick_err = Some(e);
                     break;
@@ -1109,6 +1147,7 @@ async fn run_loop_embedded(source: String) {
         clear_background(BLACK);
         env.in_render = true;
         crate::stdlib::camera_tick(frame_dt);
+        crate::fx::fx_tick(frame_dt);
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
@@ -1117,6 +1156,7 @@ async fn run_loop_embedded(source: String) {
             set_camera(&cam);
         }
         let render_result = crate::eval::render_frame(&mut env);
+        crate::fx::fx_draw_overlay();
         if cam_active {
             set_default_camera();
         }

@@ -1,0 +1,92 @@
+# @task: Exercise every fx.* builtin from v1.0.1 Session 1
+# @inputs: arrows = move, letters = trigger each effect, space = hit combo
+# @expected: each key fires its effect at the player; combo demonstrates hit-stop
+# @category: 2d
+# @difficulty: small
+#
+# `twec play examples/fx_demo.twe`
+#
+# v1.0.1 session 1 reference example for the procedural VFX library.
+# Twelve call-and-go effects, no PNGs, no shaders, no cloud assets.
+#
+# Key mapping (digit fields can't be accessed via `.`, so letters):
+#   q   fx.hit_flash         white tint over the player rect
+#   w   fx.screen_shake      8 px shake for 0.25s
+#   e   fx.hit_stop          freeze gameplay for 0.06s
+#   r   fx.damage_number     red "42" rises and fades
+#   t   fx.crit_text         yellow "100!" — bigger, longer
+#   y   fx.death_burst       cyan 12-particle radial burst
+#   u   fx.pickup_pop        yellow expanding ring
+#   i   fx.dash_trail        white trail dot at player
+#   o   fx.level_up_ring     gold ring expansion
+#   p   fx.blood_splat       red cone splatter forward
+#   a   fx.muzzle_flash      gunfire flash forward
+#   s   fx.ground_shockwave  white expanding ring
+#   space  combo: hit_flash + screen_shake + hit_stop + damage_number
+
+var player_x = 320.0
+var player_y = 240.0
+var facing_x = 1.0
+var facing_y = 0.0
+
+scene Demo:
+    var speed = 200.0
+
+    initial: playing
+
+    state playing:
+        every 16ms:
+            let step = speed * time.dt
+            if key.right:
+                player_x += step
+                facing_x = 1.0
+                facing_y = 0.0
+            if key.left:
+                player_x -= step
+                facing_x = -1.0
+                facing_y = 0.0
+            if key.up:
+                player_y -= step
+                facing_x = 0.0
+                facing_y = -1.0
+            if key.down:
+                player_y += step
+                facing_x = 0.0
+                facing_y = 1.0
+
+        on key_press.q:
+            fx.hit_flash(at: (player_x, player_y), size: (28, 28), color: (1.0, 1.0, 1.0, 0.8), duration: 0.08)
+        on key_press.w:
+            fx.screen_shake(amount: 8.0, duration: 0.25)
+        on key_press.e:
+            fx.hit_stop(duration: 0.06)
+        on key_press.r:
+            fx.damage_number(at: (player_x, player_y - 16), value: 42, color: color.red)
+        on key_press.t:
+            fx.crit_text(at: (player_x, player_y - 24), value: 100)
+        on key_press.y:
+            fx.death_burst(at: (player_x, player_y), count: 12, color: color.cyan)
+        on key_press.u:
+            fx.pickup_pop(at: (player_x, player_y), color: color.yellow)
+        on key_press.i:
+            fx.dash_trail(at: (player_x, player_y), color: color.white)
+        on key_press.o:
+            fx.level_up_ring(at: (player_x, player_y), color: color.yellow)
+        on key_press.p:
+            fx.blood_splat(at: (player_x, player_y), dir: (facing_x, facing_y), color: color.red)
+        on key_press.a:
+            fx.muzzle_flash(at: (player_x, player_y), dir: (facing_x, facing_y))
+        on key_press.s:
+            fx.ground_shockwave(at: (player_x, player_y), radius: 60.0)
+
+        on key_press.space:
+            # Survivors-class hit combo: flash + shake + freeze + number.
+            fx.hit_flash(at: (player_x, player_y), size: (28, 28), color: (1.0, 1.0, 1.0, 0.8), duration: 0.08)
+            fx.screen_shake(amount: 6.0, duration: 0.18)
+            fx.hit_stop(duration: 0.05)
+            fx.damage_number(at: (player_x, player_y - 16), value: 42, color: color.red)
+
+        on render():
+            rect(at: (player_x - 14, player_y - 14), size: (28, 28), color: color.white)
+            text("q-s trigger fx | space = combo | arrows = move",
+                 at: (10, 22), size: 14, color: color.gray)

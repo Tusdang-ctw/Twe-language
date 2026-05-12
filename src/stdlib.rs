@@ -129,6 +129,10 @@ pub fn clear_asset_caches() {
     // reloaded script would inherit the previous run's `sound.now()`
     // and stale pending entries.
     reset_audio_schedule();
+    // v1.0.1 session 1: drop every queued visual fx and any pending
+    // hit-stop ticks. A hot-reloaded script that just lost its boss
+    // shouldn't inherit the death-burst from the previous run.
+    crate::fx::clear();
 }
 
 /// Decay the camera-shake timer by `dt` seconds. The play loop calls
@@ -738,6 +742,13 @@ pub fn install(env: &mut Env) {
     install_platform_services(env);
     install_mmo(env);
     install_workshop(env);
+    // v1.0.1 session 1: procedural VFX library. 12 call-and-go
+    // effects (hit_flash / screen_shake / hit_stop / damage_number /
+    // crit_text / death_burst / pickup_pop / dash_trail /
+    // level_up_ring / blood_splat / muzzle_flash / ground_shockwave).
+    // State lives in `crate::fx`; the play loop calls
+    // `fx::fx_tick`, `fx::consume_hit_stop_tick`, `fx::fx_draw_overlay`.
+    install_fx(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_world(env);
     #[cfg(not(target_arch = "wasm32"))]
@@ -3753,6 +3764,306 @@ fn workshop_install(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     arity(args, 1, "workshop.install")?;
     // Returns false today — no actual workshop integration.
     Ok(Value::from_bool(false))
+}
+
+// ---------------------------------------------------------------
+// v1.0.1 session 1: `fx.*` — procedural VFX library.
+//
+// Twelve call-and-go effects. Each impl reads its args, builds an
+// `fx::ActiveFx` (visual) or schedules a hit-stop (gameplay), and
+// returns NIL. The play loop calls `fx::fx_tick(frame_dt)` to decay
+// animations and `fx::fx_draw_overlay()` to render them.
+//
+// Determinism: `fx.screen_shake` writes to `CAMERA_SHAKE` (visual,
+// wall-clock). `fx.hit_stop` is the one gameplay-visible primitive
+// and counts in physics ticks — `eval::PHYSICS_DT` — so replay
+// determinism is preserved regardless of host FPS.
+// ---------------------------------------------------------------
+
+fn install_fx(env: &mut Env) {
+    let mut f = HashMap::new();
+    f.insert(
+        "hit_flash".to_string(),
+        Value::from_builtin(
+            "fx.hit_flash",
+            &["at", "size", "color", "duration"],
+            fx_hit_flash,
+        ),
+    );
+    f.insert(
+        "screen_shake".to_string(),
+        Value::from_builtin(
+            "fx.screen_shake",
+            &["amount", "duration"],
+            fx_screen_shake,
+        ),
+    );
+    f.insert(
+        "hit_stop".to_string(),
+        Value::from_builtin("fx.hit_stop", &["duration"], fx_hit_stop),
+    );
+    f.insert(
+        "damage_number".to_string(),
+        Value::from_builtin(
+            "fx.damage_number",
+            &["at", "value", "color"],
+            fx_damage_number,
+        ),
+    );
+    f.insert(
+        "crit_text".to_string(),
+        Value::from_builtin("fx.crit_text", &["at", "value"], fx_crit_text),
+    );
+    f.insert(
+        "death_burst".to_string(),
+        Value::from_builtin(
+            "fx.death_burst",
+            &["at", "count", "color"],
+            fx_death_burst,
+        ),
+    );
+    f.insert(
+        "pickup_pop".to_string(),
+        Value::from_builtin("fx.pickup_pop", &["at", "color"], fx_pickup_pop),
+    );
+    f.insert(
+        "dash_trail".to_string(),
+        Value::from_builtin("fx.dash_trail", &["at", "color"], fx_dash_trail),
+    );
+    f.insert(
+        "level_up_ring".to_string(),
+        Value::from_builtin("fx.level_up_ring", &["at", "color"], fx_level_up_ring),
+    );
+    f.insert(
+        "blood_splat".to_string(),
+        Value::from_builtin(
+            "fx.blood_splat",
+            &["at", "dir", "color"],
+            fx_blood_splat,
+        ),
+    );
+    f.insert(
+        "muzzle_flash".to_string(),
+        Value::from_builtin("fx.muzzle_flash", &["at", "dir"], fx_muzzle_flash),
+    );
+    f.insert(
+        "ground_shockwave".to_string(),
+        Value::from_builtin(
+            "fx.ground_shockwave",
+            &["at", "radius"],
+            fx_ground_shockwave,
+        ),
+    );
+    env.set(
+        "fx".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: f,
+            kind: "module",
+        }))),
+    );
+}
+
+fn fx_hit_flash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "fx.hit_flash")?;
+    let (x, y) = xy_of(&args[0], "fx.hit_flash.at")?;
+    let (w, h) = xy_of(&args[1], "fx.hit_flash.size")?;
+    let color = color_of(&args[2], "fx.hit_flash.color")?;
+    let duration = number(&args[3], "fx.hit_flash.duration")?;
+    if duration <= 0.0 {
+        return Ok(Value::NIL);
+    }
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::HitFlash {
+            color,
+            width: w as f32,
+            height: h as f32,
+        },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: duration as f32,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_screen_shake(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "fx.screen_shake")?;
+    let amp = number(&args[0], "fx.screen_shake.amount")?;
+    let dur = number(&args[1], "fx.screen_shake.duration")?;
+    if amp < 0.0 || dur < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "fx.screen_shake: amount and duration must be non-negative".to_string(),
+            help: None,
+        });
+    }
+    // P2 (one obvious way): route through the existing CAMERA_SHAKE
+    // thread_local so `fx.screen_shake` and the older `camera.shake`
+    // share state — last-write-with-max-amp / max-duration wins.
+    CAMERA_SHAKE.with(|c| {
+        let mut s = c.borrow_mut();
+        if amp > s.amplitude {
+            s.amplitude = amp;
+        }
+        if dur > s.remaining {
+            s.remaining = dur;
+        }
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_hit_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "fx.hit_stop")?;
+    let dur = number(&args[0], "fx.hit_stop.duration")?;
+    if dur <= 0.0 {
+        return Ok(Value::NIL);
+    }
+    crate::fx::schedule_hit_stop(dur, crate::eval::PHYSICS_DT);
+    Ok(Value::NIL)
+}
+
+fn fx_damage_number(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "fx.damage_number")?;
+    let (x, y) = xy_of(&args[0], "fx.damage_number.at")?;
+    let value = number(&args[1], "fx.damage_number.value")?;
+    let color = color_of(&args[2], "fx.damage_number.color")?;
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::DamageNumber { value, color },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.8,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_crit_text(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "fx.crit_text")?;
+    let (x, y) = xy_of(&args[0], "fx.crit_text.at")?;
+    let value = number(&args[1], "fx.crit_text.value")?;
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::CritText { value },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 1.0,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_death_burst(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "fx.death_burst")?;
+    let (x, y) = xy_of(&args[0], "fx.death_burst.at")?;
+    let count = number(&args[1], "fx.death_burst.count")?.max(0.0) as usize;
+    let color = color_of(&args[2], "fx.death_burst.color")?;
+    // Deterministic particle pattern (no RNG) — each particle is
+    // a point on a circle, given an outward velocity. Replay-safe
+    // even though render decay is wall-clock, because the spawn
+    // pattern is fixed for a given `count`.
+    let count = count.min(64);
+    let mut particles = Vec::with_capacity(count);
+    let n = count.max(1) as f32;
+    for i in 0..count {
+        let theta = (i as f32 / n) * std::f32::consts::TAU;
+        let (s, c) = theta.sin_cos();
+        let speed = 90.0;
+        particles.push((0.0, 0.0, c * speed, s * speed));
+    }
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::Burst { color, particles },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.7,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_pickup_pop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "fx.pickup_pop")?;
+    let (x, y) = xy_of(&args[0], "fx.pickup_pop.at")?;
+    let color = color_of(&args[1], "fx.pickup_pop.color")?;
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::Pop { color },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.35,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_dash_trail(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "fx.dash_trail")?;
+    let (x, y) = xy_of(&args[0], "fx.dash_trail.at")?;
+    let color = color_of(&args[1], "fx.dash_trail.color")?;
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::Trail { color },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.4,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_level_up_ring(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "fx.level_up_ring")?;
+    let (x, y) = xy_of(&args[0], "fx.level_up_ring.at")?;
+    let color = color_of(&args[1], "fx.level_up_ring.color")?;
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::Ring {
+            color,
+            radius_from: 8.0,
+            radius_to: 64.0,
+        },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.6,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_blood_splat(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "fx.blood_splat")?;
+    let (x, y) = xy_of(&args[0], "fx.blood_splat.at")?;
+    let (dx, dy) = xy_of(&args[1], "fx.blood_splat.dir")?;
+    let color = color_of(&args[2], "fx.blood_splat.color")?;
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::Splat {
+            dir: (dx as f32, dy as f32),
+            color,
+        },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.5,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_muzzle_flash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "fx.muzzle_flash")?;
+    let (x, y) = xy_of(&args[0], "fx.muzzle_flash.at")?;
+    let (dx, dy) = xy_of(&args[1], "fx.muzzle_flash.dir")?;
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::MuzzleFlash {
+            dir: (dx as f32, dy as f32),
+        },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.08,
+    });
+    Ok(Value::NIL)
+}
+
+fn fx_ground_shockwave(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "fx.ground_shockwave")?;
+    let (x, y) = xy_of(&args[0], "fx.ground_shockwave.at")?;
+    let radius = number(&args[1], "fx.ground_shockwave.radius")?.max(0.0);
+    crate::fx::spawn(crate::fx::ActiveFx {
+        kind: crate::fx::FxKind::Shockwave {
+            radius: radius as f32,
+        },
+        pos: (x as f32, y as f32),
+        age: 0.0,
+        lifetime: 0.5,
+    });
+    Ok(Value::NIL)
 }
 
 // ---------------------------------------------------------------
