@@ -1006,6 +1006,38 @@ fn runs_math_phase9_smoothstep_mix_noise() {
 }
 
 #[test]
+fn runs_tween_phase_v1_0_1_session_2() {
+    // v1.0.1 session 2: tween.* — pure deterministic easing primitives.
+    // Outputs are byte-identical algebraic values (no fp drift in the
+    // chosen cases) so the test catches any regression in the curve
+    // math. The final `60` line is the 60-tick determinism gate from
+    // the plan — each iteration computes `lerp_eased` twice and
+    // asserts equality, so a hidden-state regression flips this to
+    // a smaller number.
+    let out = run_program("tests/programs/tween.twe").expect("program should run");
+    let expected = "0.0\n\
+        0.5\n\
+        1.0\n\
+        0.875\n\
+        0.5\n\
+        0.0\n\
+        1.0\n\
+        25.0\n\
+        50.0\n\
+        25.0\n\
+        0.0\n\
+        100.0\n\
+        0.0\n\
+        75.0\n\
+        0.0\n\
+        true\n\
+        14\n\
+        linear\n\
+        60\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn runs_lists() {
     let out = run_program("tests/programs/lists.twe").expect("program should run");
     let expected = "[1, 2, 3]\n3\n1\n2\n3\n\

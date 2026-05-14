@@ -13,6 +13,10 @@ pub mod eval;
 // decay on wall-clock dt, `fx.hit_stop` decays in physics ticks
 // for replay determinism.
 pub mod fx;
+// v1.0.1 session 2: deterministic easing primitives. Pure functions
+// of `t` — no thread_local, no `dt` accumulator. Replay-safe by
+// construction. No platform deps, no cfg gate.
+pub mod tween;
 // Phase 33 session 1: portable grammar export. Pure Rust, no
 // platform deps — compiles on every target.
 pub mod grammar;

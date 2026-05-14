@@ -827,6 +827,64 @@ Determinism contract:
 
 Reference example: `examples/fx_demo.twe`.
 
+### 7.8c Tween *(v1.0.1 Session 2)*
+
+The `tween.*` namespace ships **six pure functions** for deterministic easing. No thread-local state, no `dt` accumulator — outputs are byte-identical functions of inputs, so easing math participates in the Phase 29 replay contract for free.
+
+```twe
+tween.ease(name, t)                        # Penner curve at t ∈ [0, 1]
+tween.lerp(a, b, t)                        # linear interp
+tween.lerp_eased(a, b, t, ease_name)       # lerp(a, b, ease(name, t))
+tween.bounce(a, b, t)                      # out-and-back: a → b → a, peaks at t=0.5
+tween.shake(seed, t, freq)                 # decaying sinusoid in [-1, 1]·(1-t)
+tween.eases()                              # list of supported ease names
+```
+
+`t` is clamped to `[0, 1]` inside `ease` / `lerp` / `lerp_eased` / `bounce` — callers don't have to worry about overshoot from a slightly-off accumulator.
+
+Supported ease names (Penner family + WGSL `smoothstep` alias):
+
+```
+linear
+ease_in_quad      ease_out_quad      ease_in_out_quad
+ease_in_cubic     ease_out_cubic     ease_in_out_cubic
+ease_in_quart     ease_out_quart     ease_in_out_quart
+ease_out_back     ease_out_elastic   ease_out_bounce
+smoothstep        # alias for ease_in_out_quad — same 3t² − 2t³ Hermite
+```
+
+Why pure functions and not a stateful registry: Twe has no refs, and a registry would couple the easing layer to a tick source that re-introduces the determinism worry the language design specifically wants to eliminate. Scripts can build a registry on top in a handful of lines — the language ships the deterministic primitive.
+
+Usage (a damage-number lift over half a second):
+
+```twe
+entity DamageNumber:
+    var spawn_t: float = 0.0
+
+on update(dn):
+    let age = time.now - dn.spawn_t
+    if age >= 0.5:
+        dn.kill()
+        return
+    let t = age / 0.5
+    dn.y = dn.spawn_y - tween.ease("ease_out_cubic", t) * 40.0
+    dn.alpha = 1.0 - tween.ease("linear", t)
+```
+
+A UI-bounce on a score widget:
+
+```twe
+let bumped_scale = tween.bounce(1.0, 1.15, ui_bump_t)   # ui_bump_t advances 0→1
+```
+
+A deterministic shake offset (e.g. on a level-up flash):
+
+```twe
+let dx = tween.shake(seed: 17, t: shake_t, freq: 8.0) * 4.0
+```
+
+Reference test: `tests/programs/tween.twe`.
+
 ### 7.9 Assets
 
 ```twe

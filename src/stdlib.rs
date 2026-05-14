@@ -749,6 +749,13 @@ pub fn install(env: &mut Env) {
     // State lives in `crate::fx`; the play loop calls
     // `fx::fx_tick`, `fx::consume_hit_stop_tick`, `fx::fx_draw_overlay`.
     install_fx(env);
+    // v1.0.1 session 2: deterministic easing. Six pure functions —
+    // `tween.ease(name, t)` / `tween.lerp(a, b, t)` /
+    // `tween.lerp_eased(a, b, t, name)` / `tween.bounce(a, b, t)` /
+    // `tween.shake(seed, t, freq)` / `tween.eases()`. No thread_local,
+    // no global state — outputs are byte-identical functions of inputs
+    // so replay determinism (Phase 29) is preserved automatically.
+    install_tween(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_world(env);
     #[cfg(not(target_arch = "wasm32"))]
@@ -4064,6 +4071,124 @@ fn fx_ground_shockwave(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
         lifetime: 0.5,
     });
     Ok(Value::NIL)
+}
+
+// ---------------------------------------------------------------
+// v1.0.1 session 2: `tween.*` — deterministic easing primitives.
+//
+// Six pure functions implemented in `crate::tween`. Each wrapper
+// parses its args, calls the pure function, returns the result.
+// No state, no thread_local — replay-safe by construction.
+// ---------------------------------------------------------------
+
+fn install_tween(env: &mut Env) {
+    let mut t = HashMap::new();
+    t.insert(
+        "ease".to_string(),
+        Value::from_builtin("tween.ease", &["name", "t"], tween_ease),
+    );
+    t.insert(
+        "lerp".to_string(),
+        Value::from_builtin("tween.lerp", &["a", "b", "t"], tween_lerp),
+    );
+    t.insert(
+        "lerp_eased".to_string(),
+        Value::from_builtin(
+            "tween.lerp_eased",
+            &["a", "b", "t", "ease"],
+            tween_lerp_eased,
+        ),
+    );
+    t.insert(
+        "bounce".to_string(),
+        Value::from_builtin("tween.bounce", &["a", "b", "t"], tween_bounce),
+    );
+    t.insert(
+        "shake".to_string(),
+        Value::from_builtin("tween.shake", &["seed", "t", "freq"], tween_shake),
+    );
+    t.insert(
+        "eases".to_string(),
+        Value::from_builtin("tween.eases", &[], tween_eases),
+    );
+    env.set(
+        "tween".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: t,
+            kind: "module",
+        }))),
+    );
+}
+
+fn tween_ease(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "tween.ease")?;
+    let name = string_arg(&args[0], "tween.ease", "name")?;
+    let t = number(&args[1], "tween.ease.t")?;
+    match crate::tween::ease(&name, t) {
+        Some(v) => Ok(Value::from_float(v)),
+        None => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("tween.ease: unknown ease '{name}'"),
+            help: Some(format!(
+                "supported eases: {}",
+                crate::tween::EASE_NAMES.join(", ")
+            )),
+        }),
+    }
+}
+
+fn tween_lerp(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "tween.lerp")?;
+    let a = number(&args[0], "tween.lerp.a")?;
+    let b = number(&args[1], "tween.lerp.b")?;
+    let t = number(&args[2], "tween.lerp.t")?;
+    Ok(Value::from_float(crate::tween::lerp(a, b, t)))
+}
+
+fn tween_lerp_eased(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "tween.lerp_eased")?;
+    let a = number(&args[0], "tween.lerp_eased.a")?;
+    let b = number(&args[1], "tween.lerp_eased.b")?;
+    let t = number(&args[2], "tween.lerp_eased.t")?;
+    let name = string_arg(&args[3], "tween.lerp_eased", "ease")?;
+    match crate::tween::lerp_eased(a, b, t, &name) {
+        Some(v) => Ok(Value::from_float(v)),
+        None => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("tween.lerp_eased: unknown ease '{name}'"),
+            help: Some(format!(
+                "supported eases: {}",
+                crate::tween::EASE_NAMES.join(", ")
+            )),
+        }),
+    }
+}
+
+fn tween_bounce(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "tween.bounce")?;
+    let a = number(&args[0], "tween.bounce.a")?;
+    let b = number(&args[1], "tween.bounce.b")?;
+    let t = number(&args[2], "tween.bounce.t")?;
+    Ok(Value::from_float(crate::tween::bounce_value(a, b, t)))
+}
+
+fn tween_shake(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "tween.shake")?;
+    let seed = number(&args[0], "tween.shake.seed")?;
+    let t = number(&args[1], "tween.shake.t")?;
+    let freq = number(&args[2], "tween.shake.freq")?;
+    Ok(Value::from_float(crate::tween::shake(seed, t, freq)))
+}
+
+fn tween_eases(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "tween.eases")?;
+    let items: Vec<Value> = crate::tween::EASE_NAMES
+        .iter()
+        .map(|s| Value::from_string((*s).to_string()))
+        .collect();
+    Ok(Value::from_list(Rc::new(RefCell::new(items))))
 }
 
 // ---------------------------------------------------------------
