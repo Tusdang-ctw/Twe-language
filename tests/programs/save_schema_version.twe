@@ -1,0 +1,35 @@
+# v1.0.1 Session 5 — save schema version stamping + loaded-version
+# readback. Exercises the MVP of save migrations: schema versions
+# are stamped on write and surfaced on read, so the script can run
+# its own migration steps. (Block-syntax `save SaveSlot:` + `migration
+# from N:` is honest-deferred to v1.0.2.)
+
+# Default schema version is 1 (the unstamped historical layout).
+print(save.schema_version())
+
+# Bump to v3 and write a save with some data.
+save.set_schema_version(3)
+print(save.schema_version())
+
+save.int("hp", 100)
+save.int("level", 7)
+save.string("class", "warrior")
+save.write("save_schema_version_test.json")
+
+# loaded_version is still NIL — we haven't read anything yet.
+# (display() of NIL prints as "nil")
+print(save.loaded_version())
+
+# Clear in-memory store and re-read. loaded_version should now be 3.
+save.clear()
+print(save.get_int("hp"))
+
+save.read("save_schema_version_test.json")
+print(save.loaded_version())
+print(save.get_int("hp"))
+print(save.get_int("level"))
+print(save.get_string("class"))
+
+# The reserved `_schema_version` key does NOT leak through the typed
+# getters — it's hidden from the user-visible store.
+print(save.has("_schema_version"))

@@ -885,6 +885,28 @@ let dx = tween.shake(seed: 17, t: shake_t, freq: 8.0) * 4.0
 
 Reference test: `tests/programs/tween.twe`.
 
+### 7.8d 2D dynamic lighting *(v1.0.1 Session 3)*
+
+The `light2d.*` namespace draws an ambient darkness overlay plus per-frame glow circles over the rendered world. Scripts call `light2d.add(...)` once per light each frame inside `on render():` — same fire-and-forget shape as `rect(...)` / `circle(...)` / `fx.*`. Lights clear at end-of-frame; ambient and occluder lists persist.
+
+```twe
+on render():
+    # ...world render here...
+    light2d.ambient(color.rgba(0.02, 0.04, 0.10, 0.78))   # dark blue
+    light2d.add(at: torch_pos, color: color.warm_orange,
+                radius: 120, flicker: 0.18)
+    light2d.add(at: (player.x, player.y), color: color.white,
+                radius: 90, flicker: 0.0)
+    # Optional occluder registration (shadow math is a v1.0.2 follow-on).
+    light2d.cast_shadows(tilemap_solid_aabbs(map))
+```
+
+Up to 16 lights per frame; further calls drop silently and increment a counter the engine HUD can expose. Lights are rendered as soft alpha-blended halos in 6 concentric rings (centre fully tinted, outer ring fully transparent). The ambient pass dims the world; lights brighten lit spots.
+
+**Determinism contract:** `light2d.*` calls return NIL — the script can't read the light buffer back. Flicker is driven by wall-clock seconds, same regime as the visual fx layer; replay parity is preserved by construction. Per-pixel shadow occlusion against the registered `cast_shadows` AABBs is the v1.0.2 follow-on, ideally implemented as a custom WGSL fragment-shader pass (true additive blending in the same pass). The MVP uses macroquad's default alpha blending; the visual effect is "dim dungeon + warm torch halos," not photoreal additive lighting.
+
+Reference example: `examples/dungeon_demo.twe`.
+
 ### 7.9 Assets
 
 ```twe
@@ -937,6 +959,32 @@ WAV and Ogg Vorbis supported.
 
 **Honest deferral:** the underlying audio backend (macroquad's quad-snd) is buffer-aligned, not sample-aligned. Scheduled sounds fire on the simulation tick that crosses their deadline, giving ±1/60s ≈ ±16.7ms accuracy. True sample-accurate scheduling would require a different audio crate (cpal + custom mixer) — captured as a follow-on phase.
 
+### 7.10b Audio polish *(v1.0.1 Session 4)*
+
+Survivors-class audio without per-voice-handle support. Three families of builtin extend `sound.*` / `music.*`:
+
+```twe
+# 1) Pool throttling — a 9th overlapping play inside the 1.0s window is dropped.
+sound.pool(hit_sfx, max_voices: 8)
+sound.play(hit_sfx)        # cheap repeat; the pool drops over-budget calls
+
+# 2) Ducking — pooled SFX in a named channel scale down while another sound is sounding.
+sound.duck(channel: "sfx", to: 0.3, while_playing: "music/boss_intro.ogg")
+
+# 3) Music layers — multiple looped tracks, weights ramp to targets at 4.0/s (~0.25s/0→1).
+music.layer("music/base.ogg", weight: 1.0)
+music.layer("music/drums.ogg", weight: enemy_count / 50.0)   # blends in as enemies arrive
+music.crossfade("music/level1.ogg", "music/level2.ogg", duration: 2.0)
+```
+
+**How pool budgets are enforced.** macroquad's audio backend is fire-and-forget — once a sound starts, no per-voice handle exists to steal voices from. The pool is therefore implemented as a **rolling time-window throttle**: each call to `sound.play(handle)` for a pooled path records a timestamp; calls exceeding `max_voices` within the 1.0s window are silently dropped. The user experience is "200 overlapping plays no longer overlap into clipping," which is the actual ask.
+
+**Duck factor application.** Duck scales are applied to the volume passed to `play_sound` at call time. A duck is "active" if any of: a music layer with that path has `current_weight > 0`, *or* a pool in the same path has a recent play within the window. Mid-play volume changes are not retro-applied to already-started sounds (consequence of the macroquad backend) — for music tracks this doesn't matter (`set_sound_volume` ramps work because layers are single-voice loops); for SFX one-shots the next play picks up the new factor.
+
+**Crossfades** ramp via `set_sound_volume` on both endpoints — the `from` track stops when its volume hits zero. Multiple concurrent crossfades are allowed and tick independently.
+
+**Honest deferral:** true per-voice voice-stealing + per-voice volume ramps need a different audio crate (`cpal` + custom mixer). Captured as a v1.0.2 follow-on; the v1.0.1 throttle + duck-at-call-time covers the Survivors-class case.
+
 ### 7.11 Save / load
 
 ```twe
@@ -946,6 +994,39 @@ let wave = data.wave
 ```
 
 `save_to` serializes any Twe value to JSON. `load_from` returns a record. Path is relative to the project directory at runtime; inside a built `.exe` the save file lands in the OS data directory.
+
+### 7.11b Save schema migrations *(v1.0.1 Session 5)*
+
+A real shipping game eventually patches its save format. `save.*` ships schema-version stamping so the script can migrate old saves forward on load.
+
+```twe
+# Declare the running game's schema at process start. Defaults to 1.
+save.set_schema_version(3)
+
+# Reading a save populates the typed store *and* records the version
+# the file was written with. Saves written before this session carry
+# no version key and load as v1 (the unstamped historical layout).
+if save.try_read("save.json"):
+    let v = save.loaded_version()
+    if v < 2:
+        # v1 → v2: clamp player level to at least 1 (an old bug let
+        # it drop to 0 and crash the upgrade picker).
+        let lvl = save.get_int("level")
+        if lvl < 1:
+            save.int("level", 1)
+    if v < 3:
+        # v2 → v3: rename a key from "char_class" to "class".
+        if save.has("char_class"):
+            save.string("class", save.get_string("char_class"))
+            save.remove("char_class")
+
+# `save.write` stamps the current schema version into the file.
+save.write("save.json")
+```
+
+Reserved key: `_schema_version` is the stamping key inside the saved JSON. It does NOT leak through the user-visible typed getters (`save.has` returns `false` for it, `save.get_int` returns `nil`). Scripts read it only via `save.loaded_version()`.
+
+**Honest deferral:** the canonical `save SaveSlot:` block with `migration from N:` sub-blocks (Example 7 / `docs/07-save-system.md`) is the long-form syntax — language-level keyword, AST node, parser block, both runtime mirrors. That's a phase-sized chunk on its own; v1.0.1 ships the call-and-go form (this section) and captures the block syntax as a v1.0.2 follow-on. The functional intent — "saves survive a patch" — ships now.
 
 ### 7.12 Settings (persistent config)
 

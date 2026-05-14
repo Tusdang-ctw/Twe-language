@@ -1,0 +1,55 @@
+# @task: Demonstrate light2d.* ambient + torch + player-light overlay
+# @inputs: mouse move — drag the cool player light around the room
+# @expected: dark blue ambient with three warm torches and one cool mouse light
+# @category: 2d
+# @difficulty: small
+#
+# v1.0.1 Session 3 — light2d.* dungeon demo.
+#
+# A dark room with three stationary torches and a player light that
+# follows the mouse. Demonstrates ambient darkness + per-frame additive
+# lights at the call-and-go shape the v1.0.1 plan calls for.
+
+let view_w = 640
+let view_h = 480
+
+let torch_a = (160, 160)
+let torch_b = (480, 160)
+let torch_c = (320, 360)
+
+let warm = (1.0, 0.7, 0.35, 1.0)
+let cool = (0.55, 0.8, 1.0, 1.0)
+
+on render():
+    # Floor tint so we can see the lighting effect against something.
+    rect((0, 0), (view_w, view_h), (0.12, 0.1, 0.08, 1.0))
+
+    # Three stone walls — give the dungeon some shape.
+    rect((220, 220), (32, 32), (0.25, 0.22, 0.18, 1.0))
+    rect((388, 220), (32, 32), (0.25, 0.22, 0.18, 1.0))
+    rect((304, 280), (32, 32), (0.25, 0.22, 0.18, 1.0))
+
+    # Torch glyphs (drawn before lighting so the lights overlay them).
+    circle(torch_a, 5, (0.85, 0.5, 0.2, 1.0))
+    circle(torch_b, 5, (0.85, 0.5, 0.2, 1.0))
+    circle(torch_c, 5, (0.85, 0.5, 0.2, 1.0))
+
+    # Ambient darkness — alpha controls how dim un-lit areas feel.
+    light2d.ambient((0.02, 0.04, 0.1, 0.78))
+
+    # Three torches with warm orange flicker.
+    light2d.add(torch_a, warm, 110, 0.18)
+    light2d.add(torch_b, warm, 110, 0.18)
+    light2d.add(torch_c, warm, 130, 0.22)
+
+    # Player light follows the mouse — cool blue, no flicker.
+    let mouse_pos = (mouse.x, mouse.y)
+    light2d.add(mouse_pos, cool, 90, 0.0)
+
+    # Register wall AABBs as occluders. (Shadow occlusion math is a
+    # v1.0.2 follow-on; the call is here for forwards-compat.)
+    light2d.cast_shadows([
+        (220, 220, 32, 32),
+        (388, 220, 32, 32),
+        (304, 280, 32, 32),
+    ])

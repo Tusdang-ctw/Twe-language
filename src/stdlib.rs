@@ -133,6 +133,19 @@ pub fn clear_asset_caches() {
     // hit-stop ticks. A hot-reloaded script that just lost its boss
     // shouldn't inherit the death-burst from the previous run.
     crate::fx::clear();
+    // v1.0.1 session 3: wipe per-frame lights, ambient, and shadow
+    // occluders so a hot-reloaded dungeon-demo doesn't start with
+    // the previous run's torches.
+    crate::light2d::clear();
+    // v1.0.1 session 4: drop all audio pooling / ducking / layer /
+    // crossfade state. A hot-reload starts the audio mixer fresh —
+    // no carryover of a boss-music duck into the next session.
+    crate::audio_polish::clear();
+    // v1.0.1 session 5: reset schema versions so a hot reload starts
+    // the version at 1 (default) and re-stamps from the next call
+    // to `save.set_schema_version(N)`. Matches fresh-process state.
+    SAVE_SCHEMA_VERSION.with(|cell| *cell.borrow_mut() = 1);
+    SAVE_LOADED_VERSION.with(|cell| *cell.borrow_mut() = None);
 }
 
 /// Decay the camera-shake timer by `dt` seconds. The play loop calls
@@ -756,6 +769,13 @@ pub fn install(env: &mut Env) {
     // no global state — outputs are byte-identical functions of inputs
     // so replay determinism (Phase 29) is preserved automatically.
     install_tween(env);
+    // v1.0.1 session 3: dynamic 2D lighting. `light2d.add` pushes a
+    // per-frame light; `light2d.ambient` sets the global darkness
+    // tint; `light2d.cast_shadows` registers occluder AABBs; the
+    // play loop's render path draws the resulting overlay between
+    // the world render and the fx overlay. State lives in
+    // `crate::light2d`; visual-only, never script-observable.
+    install_light2d(env);
     #[cfg(not(target_arch = "wasm32"))]
     install_world(env);
     #[cfg(not(target_arch = "wasm32"))]
@@ -899,6 +919,17 @@ thread_local! {
     /// replaces the map from a file. Typed helpers (vec3, f32,
     /// int, string) read/write through this map.
     static SAVE_STORE: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
+    /// v1.0.1 session 5: schema version of the running game. Stamped
+    /// into the save file on `save.write` and consulted by scripts
+    /// on `save.read` to decide which migrations to run. Set via
+    /// `save.set_schema_version(N)`; defaults to 1 — the unstamped
+    /// historical layout the typed save namespace started shipping.
+    static SAVE_SCHEMA_VERSION: RefCell<i64> = const { RefCell::new(1) };
+    /// v1.0.1 session 5: schema version observed in the most recently
+    /// `save.read` / `save.try_read` file. NIL until a read succeeds.
+    /// Saves written before this session lack the version key — those
+    /// load as version 1 so legacy saves migrate forward cleanly.
+    static SAVE_LOADED_VERSION: RefCell<Option<i64>> = const { RefCell::new(None) };
     /// Phase 21: per-mesh-handle animation state. Keyed by the
     /// texture-handle u32 the script passed to `mesh_textured`
     /// (we reuse texture handles as the mesh-instance identity
@@ -1718,6 +1749,25 @@ fn install_sound(env: &mut Env) {
         "set_volume".to_string(),
         Value::from_builtin("sound.set_volume", &["handle", "volume"], sound_set_volume),
     );
+    // v1.0.1 session 4: pool + duck. `sound.pool(handle, max_voices)`
+    // throttles a sound to at most `max_voices` plays per ~1s window
+    // — the Survivors-class "200 overlapping hit sfx don't all clip"
+    // fix. `sound.duck(channel, to, while_playing)` registers a
+    // volume-scale rule that pooled plays in `channel` consult while
+    // a music layer or recent pool play matching `while_playing` is
+    // sounding. The play_sound_path helper enforces both.
+    sound.insert(
+        "pool".to_string(),
+        Value::from_builtin("sound.pool", &["handle", "max_voices"], sound_pool),
+    );
+    sound.insert(
+        "duck".to_string(),
+        Value::from_builtin(
+            "sound.duck",
+            &["channel", "to", "while_playing"],
+            sound_duck,
+        ),
+    );
     // Phase 23: 3D spatial audio. Pans + attenuates a one-shot
     // play based on distance from the camera. Uses the Phase 9
     // audio layer underneath; no new crate dep.
@@ -1752,6 +1802,23 @@ fn install_sound(env: &mut Env) {
     music.insert(
         "stop".to_string(),
         Value::from_builtin("music.stop", &["handle"], sound_stop),
+    );
+    // v1.0.1 session 4: dynamic music layering + crossfade. The play
+    // loop ticks `audio_polish::dirty_layers` per frame and dispatches
+    // / volume-adjusts the underlying macroquad sounds. `music.layer`
+    // retargets a layer without restarting it; `music.crossfade`
+    // ramps between two paths over the given duration.
+    music.insert(
+        "layer".to_string(),
+        Value::from_builtin("music.layer", &["handle", "weight"], music_layer),
+    );
+    music.insert(
+        "crossfade".to_string(),
+        Value::from_builtin(
+            "music.crossfade",
+            &["from", "to", "duration"],
+            music_crossfade,
+        ),
     );
     env.set(
         "music".to_string(),
@@ -2115,6 +2182,21 @@ fn play_sound_path(
     volume: f32,
     looped: bool,
 ) -> Result<(), RuntimeError> {
+    // v1.0.1 session 4: pool throttle + duck factor are applied
+    // *before* the macroquad dispatch. Looped plays (music tracks)
+    // skip the pool check — they're managed by `music.layer` /
+    // `music.crossfade` instead.
+    let final_vol = if looped {
+        volume
+    } else {
+        if !crate::audio_polish::try_pool_play(path) {
+            return Ok(());
+        }
+        // Channel for ducking is the path itself as a string match.
+        // Scripts that want a coarser grouping can pool multiple
+        // sfx under the same name by aliasing in user code.
+        crate::audio_polish::duck_scale(path, volume)
+    };
     SOUND_CACHE.with(|cache| -> Result<(), RuntimeError> {
         let mut c = cache.borrow_mut();
         if !c.contains_key(path) {
@@ -2137,9 +2219,95 @@ fn play_sound_path(
             c.insert(path.to_string(), snd);
         }
         let snd = &c[path];
-        macroquad::audio::play_sound(snd, macroquad::audio::PlaySoundParams { looped, volume });
+        macroquad::audio::play_sound(
+            snd,
+            macroquad::audio::PlaySoundParams {
+                looped,
+                volume: final_vol,
+            },
+        );
         Ok(())
     })
+}
+
+// v1.0.1 session 4 wrappers. Each parses arguments, calls the
+// corresponding `audio_polish::*` setter, and returns NIL.
+
+fn sound_pool(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "sound.pool")?;
+    let path = sound_handle_path(&args[0], "sound.pool")?;
+    let max_voices = number(&args[1], "sound.pool.max_voices")?.max(0.0) as u32;
+    crate::audio_polish::pool(&path, max_voices);
+    Ok(Value::NIL)
+}
+
+fn sound_duck(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "sound.duck")?;
+    let channel = string_arg(&args[0], "sound.duck", "channel")?;
+    let to = number(&args[1], "sound.duck.to")?.clamp(0.0, 1.0) as f32;
+    let while_playing = string_arg(&args[2], "sound.duck", "while_playing")?;
+    crate::audio_polish::duck(&channel, to, &while_playing);
+    Ok(Value::NIL)
+}
+
+fn music_layer(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "music.layer")?;
+    let path = sound_handle_path(&args[0], "music.layer")?;
+    let weight = number(&args[1], "music.layer.weight")?.clamp(0.0, 1.0) as f32;
+    crate::audio_polish::set_layer(&path, weight);
+    Ok(Value::NIL)
+}
+
+fn music_crossfade(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "music.crossfade")?;
+    let from = sound_handle_path(&args[0], "music.crossfade")?;
+    let to = sound_handle_path(&args[1], "music.crossfade")?;
+    let duration = number(&args[2], "music.crossfade.duration")?.max(0.0);
+    crate::audio_polish::crossfade(&from, &to, duration);
+    Ok(Value::NIL)
+}
+
+/// v1.0.1 session 4: sync per-frame audio-polish state to macroquad.
+/// Called once per render frame from each `play.rs::run_loop*`
+/// variant after `audio_polish::tick(dt)` has advanced state.
+///
+/// - Music layers: first-time dispatch to a looped `play_sound`,
+///   subsequent ticks just `set_sound_volume` to ramp into the
+///   target weight.
+/// - Crossfades: `set_sound_volume` on both endpoints; on finish,
+///   stop the `from` track.
+pub fn sync_audio_polish() {
+    // Layers.
+    for (path, weight, playing) in crate::audio_polish::dirty_layers() {
+        if !playing && weight > 0.0 {
+            // First-time start. Reuse the existing play helper —
+            // it handles bundle loading + lazy decode + caches.
+            if play_sound_path(&path, "music.layer", weight, true).is_ok() {
+                crate::audio_polish::mark_playing(&path);
+            }
+        } else if playing {
+            SOUND_CACHE.with(|cache| {
+                if let Some(snd) = cache.borrow().get(&path) {
+                    macroquad::audio::set_sound_volume(snd, weight.clamp(0.0, 1.0));
+                }
+            });
+        }
+    }
+    // Crossfades.
+    for (from, to, from_vol, to_vol, finished) in crate::audio_polish::crossfade_snapshot() {
+        SOUND_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            if let Some(snd) = cache.get(&from) {
+                macroquad::audio::set_sound_volume(snd, from_vol.clamp(0.0, 1.0));
+                if finished {
+                    macroquad::audio::stop_sound(snd);
+                }
+            }
+            if let Some(snd) = cache.get(&to) {
+                macroquad::audio::set_sound_volume(snd, to_vol.clamp(0.0, 1.0));
+            }
+        });
+    }
 }
 
 fn install_time(env: &mut Env) {
@@ -4189,6 +4357,124 @@ fn tween_eases(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         .map(|s| Value::from_string((*s).to_string()))
         .collect();
     Ok(Value::from_list(Rc::new(RefCell::new(items))))
+}
+
+// ---------------------------------------------------------------
+// v1.0.1 session 3: `light2d.*` — dynamic 2D lighting.
+//
+// Four builtins. State lives in `crate::light2d`; per-frame lights
+// are pushed by `light2d.add(...)` calls inside `on render():` and
+// cleared by the play loop after `light2d::draw_overlay` runs.
+// ---------------------------------------------------------------
+
+fn install_light2d(env: &mut Env) {
+    let mut l = HashMap::new();
+    l.insert(
+        "add".to_string(),
+        Value::from_builtin(
+            "light2d.add",
+            &["at", "color", "radius", "flicker"],
+            light2d_add,
+        ),
+    );
+    l.insert(
+        "ambient".to_string(),
+        Value::from_builtin("light2d.ambient", &["color"], light2d_ambient),
+    );
+    l.insert(
+        "cast_shadows".to_string(),
+        Value::from_builtin("light2d.cast_shadows", &["aabbs"], light2d_cast_shadows),
+    );
+    l.insert(
+        "clear".to_string(),
+        Value::from_builtin("light2d.clear", &[], light2d_clear),
+    );
+    env.set(
+        "light2d".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: l,
+            kind: "module",
+        }))),
+    );
+}
+
+fn light2d_add(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "light2d.add")?;
+    let (x, y) = xy_of(&args[0], "light2d.add.at")?;
+    let color = color_of(&args[1], "light2d.add.color")?;
+    let radius = number(&args[2], "light2d.add.radius")?.max(0.0);
+    let flicker = number(&args[3], "light2d.add.flicker")?.clamp(0.0, 1.0);
+    crate::light2d::add(crate::light2d::Light2D {
+        pos: (x as f32, y as f32),
+        color,
+        radius: radius as f32,
+        flicker: flicker as f32,
+    });
+    Ok(Value::NIL)
+}
+
+fn light2d_ambient(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "light2d.ambient")?;
+    let color = color_of(&args[0], "light2d.ambient.color")?;
+    crate::light2d::set_ambient(color);
+    Ok(Value::NIL)
+}
+
+fn light2d_cast_shadows(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "light2d.cast_shadows")?;
+    // Accept either a list of (x, y, w, h) tuples or an empty list.
+    let v = args[0];
+    if !v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "light2d.cast_shadows expects a list of (x, y, w, h) tuples, got {}",
+                v.type_name()
+            ),
+            help: Some("e.g. `light2d.cast_shadows([(0, 0, 32, 32), (32, 0, 32, 32)])`".to_string()),
+        });
+    }
+    let list = v.as_list();
+    let borrowed = list.borrow();
+    let mut aabbs = Vec::with_capacity(borrowed.len());
+    for item in borrowed.iter() {
+        if !item.is_tuple() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: "light2d.cast_shadows: each occluder must be a 4-tuple (x, y, w, h)"
+                    .to_string(),
+                help: None,
+            });
+        }
+        let t = item.as_tuple();
+        if t.len() != 4 {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "light2d.cast_shadows: each occluder must be (x, y, w, h), got {}-tuple",
+                    t.len()
+                ),
+                help: None,
+            });
+        }
+        aabbs.push(crate::light2d::AabbOccluder {
+            x: number(&t[0], "light2d.cast_shadows.x")? as f32,
+            y: number(&t[1], "light2d.cast_shadows.y")? as f32,
+            w: number(&t[2], "light2d.cast_shadows.w")? as f32,
+            h: number(&t[3], "light2d.cast_shadows.h")? as f32,
+        });
+    }
+    crate::light2d::cast_shadows(aabbs);
+    Ok(Value::NIL)
+}
+
+fn light2d_clear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "light2d.clear")?;
+    crate::light2d::clear();
+    Ok(Value::NIL)
 }
 
 // ---------------------------------------------------------------
@@ -6826,13 +7112,20 @@ fn save_clear_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeErro
 fn save_write_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "save.write")?;
     let path = string_arg(&args[0], "save.write", "path")?;
-    // Build an Object Value from the store map and pipe through
-    // the Phase 8 save_to codec. Avoids a parallel JSON writer.
+    // v1.0.1 session 5: stamp the running game's schema version
+    // into the save under the reserved key `_schema_version`. On
+    // load, scripts read this back via `save.loaded_version()` and
+    // run their own migration steps for v < current.
+    let schema_version = SAVE_SCHEMA_VERSION.with(|v| *v.borrow());
     let value = SAVE_STORE.with(|s| {
         let mut obj_fields = HashMap::new();
         for (k, v) in s.borrow().iter() {
             obj_fields.insert(k.clone(), *v);
         }
+        obj_fields.insert(
+            "_schema_version".to_string(),
+            Value::from_int(schema_version),
+        );
         Value::from_object(Rc::new(RefCell::new(Object {
             fields: obj_fields,
             kind: "save_store",
@@ -6873,13 +7166,73 @@ fn apply_save_from_value(value: Value) {
     }
     let rc = value.as_object();
     let o = rc.borrow();
+    // v1.0.1 session 5: extract the loaded schema version. Files
+    // written before this session lack `_schema_version`; those
+    // saves load as v1 so legacy data is detected and migrated
+    // forward cleanly.
+    let loaded_version = o
+        .fields
+        .get("_schema_version")
+        .and_then(|v| if v.is_int() { Some(v.as_int()) } else { None })
+        .unwrap_or(1);
+    SAVE_LOADED_VERSION.with(|v| *v.borrow_mut() = Some(loaded_version));
     SAVE_STORE.with(|s| {
         let mut store = s.borrow_mut();
         store.clear();
         for (k, v) in o.fields.iter() {
+            if k == "_schema_version" {
+                // Don't expose the reserved key through user-visible
+                // typed getters. Scripts read it via `save.loaded_version()`.
+                continue;
+            }
             store.insert(k.clone(), *v);
         }
     });
+}
+
+fn save_set_schema_version_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    arity(args, 1, "save.set_schema_version")?;
+    let v = number(&args[0], "save.set_schema_version.version")? as i64;
+    if v < 1 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "save.set_schema_version: version must be >= 1, got {v}"
+            ),
+            help: Some(
+                "schema versions are monotonically increasing integers; \
+                 the unstamped historical layout is v1"
+                    .to_string(),
+            ),
+        });
+    }
+    SAVE_SCHEMA_VERSION.with(|cell| *cell.borrow_mut() = v);
+    Ok(Value::NIL)
+}
+
+fn save_schema_version_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    arity(args, 0, "save.schema_version")?;
+    let v = SAVE_SCHEMA_VERSION.with(|cell| *cell.borrow());
+    Ok(Value::from_int(v))
+}
+
+fn save_loaded_version_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    arity(args, 0, "save.loaded_version")?;
+    let v = SAVE_LOADED_VERSION.with(|cell| *cell.borrow());
+    Ok(match v {
+        Some(n) => Value::from_int(n),
+        None => Value::NIL,
+    })
 }
 
 // ---------- Phase 21: animation state ----------
@@ -10402,6 +10755,28 @@ fn install_3d(env: &mut Env) {
     save_fields.insert(
         "try_read".to_string(),
         Value::from_builtin("save.try_read", &["path"], save_try_read_impl),
+    );
+    // v1.0.1 session 5: schema versioning for save migrations. Set the
+    // current schema with `save.set_schema_version(N)`; reads stamp
+    // `save.loaded_version()` so the script can run its own migration
+    // logic (`if save.loaded_version() < 2: ...`). Block-syntax for
+    // `save SaveSlot:` + `migration from N:` blocks is honest-deferred
+    // to v1.0.2 (needs lexer/parser/AST work).
+    save_fields.insert(
+        "set_schema_version".to_string(),
+        Value::from_builtin(
+            "save.set_schema_version",
+            &["version"],
+            save_set_schema_version_impl,
+        ),
+    );
+    save_fields.insert(
+        "schema_version".to_string(),
+        Value::from_builtin("save.schema_version", &[], save_schema_version_impl),
+    );
+    save_fields.insert(
+        "loaded_version".to_string(),
+        Value::from_builtin("save.loaded_version", &[], save_loaded_version_impl),
     );
     env.set(
         "save".to_string(),

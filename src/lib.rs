@@ -17,6 +17,17 @@ pub mod fx;
 // of `t` — no thread_local, no `dt` accumulator. Replay-safe by
 // construction. No platform deps, no cfg gate.
 pub mod tween;
+// v1.0.1 session 3: dynamic 2D lighting. Per-frame light list +
+// ambient overlay; rendered as alpha-blended glow circles via
+// macroquad primitives in `play.rs::run_loop*`. State is thread_local
+// — visual only, no replay-observable surface.
+pub mod light2d;
+// v1.0.1 session 4: audio polish — pooling + ducking + music layers
+// + crossfades. State book-keeping lives here; the macroquad
+// `play_sound` / `set_sound_volume` plumbing reads it from
+// `stdlib::play_sound_path` and from the play loop's per-frame
+// `tick(dt)`. Native-only — wasm32's audio backend gates separately.
+pub mod audio_polish;
 // Phase 33 session 1: portable grammar export. Pure Rust, no
 // platform deps — compiles on every target.
 pub mod grammar;

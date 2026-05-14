@@ -380,6 +380,9 @@ async fn run_loop_wasm() {
         env.in_render = true;
         crate::stdlib::camera_tick(frame_dt);
         crate::fx::fx_tick(frame_dt);
+        crate::light2d::tick(frame_dt);
+        crate::audio_polish::tick(frame_dt);
+        crate::stdlib::sync_audio_polish();
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
@@ -388,11 +391,16 @@ async fn run_loop_wasm() {
             set_camera(&cam);
         }
         let render_result = crate::eval::render_frame(&mut env);
+        // v1.0.1 session 3: light overlay sits between world and fx —
+        // ambient darkness dims the world, glow circles brighten lit
+        // spots, fx layer (damage numbers / bursts) draws on top.
+        draw_light2d_overlay(cam_active, px + sx, py + sy, zoom);
         // v1.0.1 session 1: fx overlay draws under the same camera
         // transform as the world render — bursts, damage numbers, and
         // shockwaves sit on top of the script's draws but still scroll
         // with the camera in world-space.
         crate::fx::fx_draw_overlay();
+        crate::light2d::clear_frame_lights();
         if cam_active {
             set_default_camera();
         }
@@ -550,6 +558,9 @@ async fn run_loop(path: String) {
         // decay at display rate is the right behaviour.
         crate::stdlib::camera_tick(frame_dt);
         crate::fx::fx_tick(frame_dt);
+        crate::light2d::tick(frame_dt);
+        crate::audio_polish::tick(frame_dt);
+        crate::stdlib::sync_audio_polish();
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
@@ -558,7 +569,9 @@ async fn run_loop(path: String) {
             set_camera(&cam);
         }
         let render_result = crate::eval::render_frame(&mut env);
+        draw_light2d_overlay(cam_active, px + sx, py + sy, zoom);
         crate::fx::fx_draw_overlay();
+        crate::light2d::clear_frame_lights();
         if cam_active {
             set_default_camera();
         }
@@ -975,6 +988,38 @@ fn hud_draw() {
 /// the screen center, with `zoom > 1.0` zooming in and `< 1.0` zooming
 /// out. Y axis stays inverted (+y down) so call-site coordinates keep
 /// matching the screen's pixel orientation.
+// v1.0.1 session 3: helper that draws the light2d ambient overlay
+// + per-light glow circles in the same coord space the world was
+// rendered in. The play loop calls this between `eval::render_frame`
+// and `fx::fx_draw_overlay` so ambient darkness sits *over* the
+// world but *under* the fx layer (damage numbers / bursts stay
+// crisp even in a dim dungeon).
+//
+// When the 2D camera is active the view rect is in world coordinates
+// and we expand by 4x in every direction so the ambient overlay
+// safely covers any reasonable on-screen world. When the camera is
+// default the view rect is in screen pixels — same as direct
+// `rect(...)` calls from a `play_bytecode` script.
+fn draw_light2d_overlay(cam_active: bool, px: f64, py: f64, zoom: f64) {
+    let sw = screen_width();
+    let sh = screen_height();
+    if cam_active {
+        let z = zoom.max(0.0001) as f32;
+        // Half the world-space view in each axis, plus a slack
+        // factor so the ambient rect doesn't crop on zoom out.
+        let half_w = (sw / 2.0 / z) * 4.0;
+        let half_h = (sh / 2.0 / z) * 4.0;
+        crate::light2d::draw_overlay(
+            px as f32 - half_w,
+            py as f32 - half_h,
+            half_w * 2.0,
+            half_h * 2.0,
+        );
+    } else {
+        crate::light2d::draw_overlay(0.0, 0.0, sw, sh);
+    }
+}
+
 fn build_camera2d(cx: f64, cy: f64, zoom: f64) -> Camera2D {
     let w = screen_width();
     let h = screen_height();
@@ -1068,11 +1113,18 @@ async fn run_loop_bytecode(path: String) {
         // transform here, so fx overlay draws in screen coords (the
         // same coord space the VM's rect/circle/text calls use).
         crate::fx::fx_tick(frame_dt);
+        crate::light2d::tick(frame_dt);
+        crate::audio_polish::tick(frame_dt);
+        crate::stdlib::sync_audio_polish();
         if let Err(e) = vm.render() {
             eprintln!("{path_ref}: runtime error: {e}");
             break;
         }
+        // Bytecode-VM path has no 2D camera in this loop, so the
+        // light overlay rect spans the screen directly.
+        draw_light2d_overlay(false, 0.0, 0.0, 1.0);
         crate::fx::fx_draw_overlay();
+        crate::light2d::clear_frame_lights();
         flush_vm_output(&mut vm);
 
         hud_draw();
@@ -1148,6 +1200,9 @@ async fn run_loop_embedded(source: String) {
         env.in_render = true;
         crate::stdlib::camera_tick(frame_dt);
         crate::fx::fx_tick(frame_dt);
+        crate::light2d::tick(frame_dt);
+        crate::audio_polish::tick(frame_dt);
+        crate::stdlib::sync_audio_polish();
         let ((px, py), zoom) = crate::stdlib::camera_view(&env);
         let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
         let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
@@ -1156,7 +1211,9 @@ async fn run_loop_embedded(source: String) {
             set_camera(&cam);
         }
         let render_result = crate::eval::render_frame(&mut env);
+        draw_light2d_overlay(cam_active, px + sx, py + sy, zoom);
         crate::fx::fx_draw_overlay();
+        crate::light2d::clear_frame_lights();
         if cam_active {
             set_default_camera();
         }

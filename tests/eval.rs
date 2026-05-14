@@ -1006,6 +1006,28 @@ fn runs_math_phase9_smoothstep_mix_noise() {
 }
 
 #[test]
+fn runs_save_schema_version_phase_v1_0_1_session_5() {
+    // v1.0.1 session 5: schema-version stamping on write +
+    // surfacing via `save.loaded_version()` on read. The block-syntax
+    // form (`save SaveSlot:` + `migration from N:`) defers to v1.0.2;
+    // this MVP covers the call-and-go API path.
+    let out =
+        run_program("tests/programs/save_schema_version.twe").expect("program should run");
+    let expected = "1\n\
+        3\n\
+        nil\n\
+        nil\n\
+        3\n\
+        100\n\
+        7\n\
+        warrior\n\
+        false\n";
+    assert_eq!(out, expected);
+    // Cleanup — best-effort.
+    let _ = std::fs::remove_file("save_schema_version_test.json");
+}
+
+#[test]
 fn runs_tween_phase_v1_0_1_session_2() {
     // v1.0.1 session 2: tween.* — pure deterministic easing primitives.
     // Outputs are byte-identical algebraic values (no fp drift in the
