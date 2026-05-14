@@ -1,0 +1,42 @@
+# v1.0.1 Session 6 — persistent-state registry MVP.
+# Demonstrates: a state registered as persistent keeps ticking through
+# the global pause flag. The plan's parser-sugar form (`state X:
+# pause: false`) defers to v1.0.2; this MVP closes the functional gap
+# with a stdlib registry.
+
+# Initially the registry is empty.
+print(is_persistent_state("pause_menu"))
+
+# Register the pause-menu state as exempt from pause.
+persistent_state("pause_menu")
+persistent_state("hud_overlay")
+print(is_persistent_state("pause_menu"))
+print(is_persistent_state("hud_overlay"))
+print(is_persistent_state("playing"))
+
+# Remove one — the other stays.
+clear_persistent_state("pause_menu")
+print(is_persistent_state("pause_menu"))
+print(is_persistent_state("hud_overlay"))
+
+# Wipe everything.
+clear_persistent_states()
+print(is_persistent_state("hud_overlay"))
+
+# Pause flag round-trip — independent of the persistent registry.
+print(is_paused())
+pause(true)
+print(is_paused())
+pause(false)
+print(is_paused())
+
+# Re-register and confirm pause + persistent compose: the registry
+# survives a pause toggle.
+persistent_state("toast")
+pause(true)
+print(is_paused())
+print(is_persistent_state("toast"))
+pause(false)
+print(is_paused())
+print(is_persistent_state("toast"))
+clear_persistent_states()

@@ -146,6 +146,14 @@ pub fn clear_asset_caches() {
     // to `save.set_schema_version(N)`. Matches fresh-process state.
     SAVE_SCHEMA_VERSION.with(|cell| *cell.borrow_mut() = 1);
     SAVE_LOADED_VERSION.with(|cell| *cell.borrow_mut() = None);
+    // v1.0.1 session 6: drop the persistent-state registry so a
+    // hot-reloaded script re-registers from scratch (otherwise a
+    // renamed pause menu would still bypass pause under its old name).
+    clear_persistent_states_internal();
+    // v1.0.1 session 8: drop any active camera2d zoom / pan animation
+    // and the world-bounds clamp so a hot-reloaded level doesn't
+    // inherit the previous run's mid-pan camera state.
+    clear_camera2d_state();
 }
 
 /// Decay the camera-shake timer by `dt` seconds. The play loop calls
@@ -762,6 +770,12 @@ pub fn install(env: &mut Env) {
     // State lives in `crate::fx`; the play loop calls
     // `fx::fx_tick`, `fx::consume_hit_stop_tick`, `fx::fx_draw_overlay`.
     install_fx(env);
+    // v1.0.1 session 8: camera2d.* — follow-with-deadzone, animated
+    // zoom, cinematic pan, and a world-bounds clamp. Sits next to the
+    // Phase 9 `camera.*` namespace (preserved for back-compat); the
+    // play loop calls `camera2d_tick(env, frame_dt)` once per render
+    // frame to advance animations + apply bounds.
+    install_camera2d(env);
     // v1.0.1 session 2: deterministic easing. Six pure functions —
     // `tween.ease(name, t)` / `tween.lerp(a, b, t)` /
     // `tween.lerp_eased(a, b, t, name)` / `tween.bounce(a, b, t)` /
@@ -796,6 +810,43 @@ pub fn install(env: &mut Env) {
     env.set(
         "is_paused".to_string(),
         Value::from_builtin("is_paused", &[], pause_get),
+    );
+    // v1.0.1 session 6: persistent-state registry. Scripts call
+    // `persistent_state("pause_menu")` once at startup to opt the
+    // pause menu's state out of the global pause flag; everything
+    // else keeps freezing as before. Parser-sugar form (`state X:
+    // pause: false`) is the canonical surface and defers to v1.0.2.
+    env.set(
+        "persistent_state".to_string(),
+        Value::from_builtin(
+            "persistent_state",
+            &["state_name"],
+            persistent_state_set,
+        ),
+    );
+    env.set(
+        "clear_persistent_state".to_string(),
+        Value::from_builtin(
+            "clear_persistent_state",
+            &["state_name"],
+            persistent_state_clear_one,
+        ),
+    );
+    env.set(
+        "clear_persistent_states".to_string(),
+        Value::from_builtin(
+            "clear_persistent_states",
+            &[],
+            persistent_state_clear_all,
+        ),
+    );
+    env.set(
+        "is_persistent_state".to_string(),
+        Value::from_builtin(
+            "is_persistent_state",
+            &["state_name"],
+            persistent_state_query,
+        ),
     );
     // Phase 11 session 1: screenshot capture. `screenshot(path)`
     // queues a write that the play loop honors after the current
@@ -1133,6 +1184,44 @@ pub fn is_paused() -> bool {
     PAUSED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// v1.0.1 session 6: per-state pause opt-out. A state name in this
+// thread_local set keeps ticking through `eval::tick_*` even when
+// the global pause flag is true — so a `pause_menu` state's update
+// logic still runs while the rest of the world is frozen.
+//
+// Scope reduction note: the plan's canonical form is the parser-sugar
+// `state X: pause: false` / `state X: persistent`. That requires
+// lexer/parser/AST work and is honest-deferred to v1.0.2; v1.0.1
+// ships the stdlib registry (`persistent_state(name)` builtin) that
+// closes the open CLAUDE.md "What is open" item with the same
+// functional semantic.
+thread_local! {
+    static PAUSE_EXEMPT_STATES: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// True iff `state_name` is currently registered as exempt from the
+/// global pause flag. Consulted by `eval::tick_scene` and
+/// `eval::tick_entities` before short-circuiting on `is_paused()`.
+pub fn is_persistent_state(state_name: &str) -> bool {
+    PAUSE_EXEMPT_STATES.with(|s| s.borrow().contains(state_name))
+}
+
+/// True iff at least one state name is registered as exempt. Used by
+/// the play loop to decide whether to call `tick_frame` at all under
+/// `is_paused()` — the cheap case (no exemptions) keeps the current
+/// "pause halts everything" gate.
+pub fn has_persistent_states() -> bool {
+    PAUSE_EXEMPT_STATES.with(|s| !s.borrow().is_empty())
+}
+
+/// Drop every registered exemption. Called by `clear_asset_caches`
+/// on hot-reload so a script that registers different persistent
+/// states between sessions doesn't accumulate stale entries.
+pub fn clear_persistent_states_internal() {
+    PAUSE_EXEMPT_STATES.with(|s| s.borrow_mut().clear());
+}
+
 /// Phase 11 session 11: play-loop write path for the pause flag.
 /// The idle-auto-pause machinery and any future focus-event
 /// integration go through here so they don't have to import the
@@ -1159,6 +1248,50 @@ fn pause_set(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn pause_get(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "is_paused")?;
     Ok(Value::from_bool(is_paused()))
+}
+
+/// v1.0.1 session 6: register a state name as "persistent" — its
+/// `on update(dt):` body and `every` clocks keep firing through the
+/// global pause flag. Pause menus, debug HUDs, and notification
+/// toasts opt out of pause this way.
+fn persistent_state_set(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "persistent_state")?;
+    let name = string_arg(&args[0], "persistent_state", "state_name")?;
+    PAUSE_EXEMPT_STATES.with(|s| {
+        s.borrow_mut().insert(name);
+    });
+    Ok(Value::NIL)
+}
+
+/// v1.0.1 session 6: remove a state name from the persistent set.
+/// `persistent_state` is idempotent on add; `clear_persistent_state`
+/// removes one entry. To drop everything, call `clear_persistent_states()`.
+fn persistent_state_clear_one(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    arity(args, 1, "clear_persistent_state")?;
+    let name = string_arg(&args[0], "clear_persistent_state", "state_name")?;
+    let removed = PAUSE_EXEMPT_STATES.with(|s| s.borrow_mut().remove(&name));
+    Ok(Value::from_bool(removed))
+}
+
+/// v1.0.1 session 6: drop every registered persistent state.
+fn persistent_state_clear_all(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    arity(args, 0, "clear_persistent_states")?;
+    clear_persistent_states_internal();
+    Ok(Value::NIL)
+}
+
+/// v1.0.1 session 6: returns true iff `state_name` is currently
+/// registered as exempt from pause.
+fn persistent_state_query(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "is_persistent_state")?;
+    let name = string_arg(&args[0], "is_persistent_state", "state_name")?;
+    Ok(Value::from_bool(is_persistent_state(&name)))
 }
 
 /// Phase 10 session 5b: `os` namespace. Currently houses
@@ -9016,6 +9149,23 @@ fn install_draw(env: &mut Env) {
         "panel".to_string(),
         Value::from_builtin("panel", &["at", "size"], draw_panel),
     );
+    // v1.0.1 session 7: nine-slice / nine-patch panels. `nine_slice`
+    // builds a reusable skin handle (path + border in pixels);
+    // `panel_skinned(at, size, skin)` blits the texture stretched
+    // across the panel rect with the four corners pinned, edges
+    // stretched along one axis, and the centre stretched in both.
+    env.set(
+        "nine_slice".to_string(),
+        Value::from_builtin("nine_slice", &["path", "border"], nine_slice_handle),
+    );
+    env.set(
+        "panel_skinned".to_string(),
+        Value::from_builtin(
+            "panel_skinned",
+            &["at", "size", "skin"],
+            draw_panel_skinned,
+        ),
+    );
     env.set(
         "stack".to_string(),
         Value::from_builtin(
@@ -10356,6 +10506,169 @@ fn draw_panel(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::NIL)
 }
 
+/// v1.0.1 session 7: `nine_slice(path, border)` — build a reusable
+/// skin handle for `panel_skinned(...)`. The texture file is path-
+/// validated eagerly (so a misspelled asset surfaces at script
+/// startup, not on first paint) and decoded lazily inside the
+/// render path the same way `sprite(...)` is — required because
+/// macroquad's GL context isn't live until the play loop is running.
+///
+/// Returns an Object with kind `nine_slice` and fields
+/// `path: string` + `border: int`. Reusable across many
+/// `panel_skinned` calls.
+fn nine_slice_handle(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "nine_slice")?;
+    let path = string_arg(&args[0], "nine_slice", "path")?;
+    let border = number(&args[1], "nine_slice.border")? as i64;
+    if border <= 0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "nine_slice: border must be > 0 pixels (got {border})"
+            ),
+            help: Some("border is the corner / edge width — e.g. `nine_slice(\"ui/panel.png\", 12)`".to_string()),
+        });
+    }
+    if crate::bundle::read_asset_bytes(&path).is_err() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("nine_slice: cannot find asset '{path}'"),
+            help: Some(
+                "the path is relative to the working directory; check spelling and case"
+                    .to_string(),
+            ),
+        });
+    }
+    let mut fields = HashMap::new();
+    fields.insert("path".to_string(), Value::from_string(path));
+    fields.insert("border".to_string(), Value::from_int(border));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "nine_slice",
+    }))))
+}
+
+/// v1.0.1 session 7: `panel_skinned(at, size, skin)` — render a
+/// stretched nine-slice texture into the (x, y, w, h) rectangle. The
+/// four corners are pinned at their texture-pixel size; the four
+/// edges stretch along the variable axis; the center stretches in
+/// both axes. Falls back to a transparent fill if `w` or `h` are
+/// smaller than `2 * border` (the corners would overlap).
+fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "panel_skinned")?;
+    arity(args, 3, "panel_skinned")?;
+    let (x, y) = xy_of(&args[0], "panel_skinned.at")?;
+    let (w, h) = xy_of(&args[1], "panel_skinned.size")?;
+    let skin = args[2];
+    if !skin.is_object() || skin.as_object().borrow().kind != "nine_slice" {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "panel_skinned: expected a nine_slice skin handle, got {}",
+                skin.type_name()
+            ),
+            help: Some(
+                "construct one with `nine_slice(\"ui/panel.png\", 12)`".to_string(),
+            ),
+        });
+    }
+    let (path, border) = {
+        let rc = skin.as_object();
+        let o = rc.borrow();
+        let path = o
+            .get_field("path")
+            .and_then(|v| if v.is_str() { Some(v.as_string()) } else { None })
+            .ok_or_else(|| RuntimeError {
+                line: 0,
+                col: 0,
+                message: "panel_skinned: skin missing `path` field".to_string(),
+                help: None,
+            })?;
+        let border = o
+            .get_field("border")
+            .and_then(|v| if v.is_int() { Some(v.as_int()) } else { None })
+            .ok_or_else(|| RuntimeError {
+                line: 0,
+                col: 0,
+                message: "panel_skinned: skin missing `border` field".to_string(),
+                help: None,
+            })?;
+        (path, border)
+    };
+    let b = border as f32;
+    let wf = w as f32;
+    let hf = h as f32;
+    if wf < 2.0 * b || hf < 2.0 * b {
+        // Degenerate — corners would overlap. No-op rather than
+        // panic / clip; the panel is too small to draw a 9-slice.
+        return Ok(Value::NIL);
+    }
+    SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
+        let mut c = cache.borrow_mut();
+        if !c.contains_key(&path) {
+            let bytes = crate::bundle::read_asset_bytes(&path).map_err(|e| RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("panel_skinned: cannot read '{path}': {e}"),
+                help: None,
+            })?;
+            let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
+            c.insert(path.clone(), tex);
+        }
+        let tex = &c[&path];
+        let tw = tex.width();
+        let th = tex.height();
+        let xf = x as f32;
+        let yf = y as f32;
+        // Stretch the texture's center band over the inner rect.
+        let inner_src_w = (tw - 2.0 * b).max(1.0);
+        let inner_src_h = (th - 2.0 * b).max(1.0);
+        let inner_dst_w = wf - 2.0 * b;
+        let inner_dst_h = hf - 2.0 * b;
+        // Slice triples: (dest_x_offset, dest_y_offset, dest_w, dest_h,
+        // src_x_offset, src_y_offset, src_w, src_h). The 9 cells of the
+        // panel laid out as a flat array — simpler to scan than the
+        // grid view, and lets the rendering loop be one body.
+        // Cell = (dest_x_offset, dest_y_offset, dest_w, dest_h,
+        //          src_x_offset, src_y_offset, src_w, src_h).
+        type NineSliceCell = (f32, f32, f32, f32, f32, f32, f32, f32);
+        let cells: [NineSliceCell; 9] = [
+            (0.0,        0.0,        b,            b,            0.0,       0.0,       b,            b),
+            (b,          0.0,        inner_dst_w,  b,            b,         0.0,       inner_src_w,  b),
+            (wf - b,     0.0,        b,            b,            tw - b,    0.0,       b,            b),
+            (0.0,        b,          b,            inner_dst_h,  0.0,       b,         b,            inner_src_h),
+            (b,          b,          inner_dst_w,  inner_dst_h,  b,         b,         inner_src_w,  inner_src_h),
+            (wf - b,     b,          b,            inner_dst_h,  tw - b,    b,         b,            inner_src_h),
+            (0.0,        hf - b,     b,            b,            0.0,       th - b,    b,            b),
+            (b,          hf - b,     inner_dst_w,  b,            b,         th - b,    inner_src_w,  b),
+            (wf - b,     hf - b,     b,            b,            tw - b,    th - b,    b,            b),
+        ];
+        for (dx, dy, dw, dh, sx, sy, sw, sh) in cells {
+            macroquad::texture::draw_texture_ex(
+                tex,
+                xf + dx,
+                yf + dy,
+                macroquad::color::WHITE,
+                macroquad::texture::DrawTextureParams {
+                    source: Some(macroquad::math::Rect {
+                        x: sx,
+                        y: sy,
+                        w: sw,
+                        h: sh,
+                    }),
+                    dest_size: Some(macroquad::math::vec2(dw, dh)),
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(())
+    })?;
+    Ok(Value::NIL)
+}
+
 /// Build a layout-result Object with `.at` (2-tuple) and `.size`
 /// (2-tuple) fields. Used by `stack`, `flex`, `grid` so scripts can
 /// destructure with `slot.at` / `slot.size` — same access shape as
@@ -11037,6 +11350,387 @@ fn camera_reset_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 /// directly via `camera_shake_offset`).
 pub fn camera_shake_remaining() -> f64 {
     CAMERA_SHAKE.with(|c| c.borrow().remaining)
+}
+
+// ---------------------------------------------------------------
+// v1.0.1 session 8: `camera2d.*` — follow-with-deadzone, animated
+// zoom, cinematic pan, and a world-bounds clamp.
+//
+// `camera.*` from Phase 9 stays for back-compat (`camera.follow`
+// without deadzone, `camera.shake`, `camera.reset`). `camera2d.*`
+// adds the Survivors / platformer / RPG patterns that scripts
+// were re-implementing by hand (deadzone follow, scripted zoom
+// for boss intros, cinematic camera moves, world-edge clamp).
+//
+// Animation state lives in the thread_local `CAMERA2D_ANIM`. Each
+// frame the play loop calls `camera2d_tick(env, dt)` once between
+// the script's update and the camera read, so a zoom started this
+// frame appears next frame at its first interpolated value.
+// ---------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+struct ZoomAnim {
+    from: f64,
+    to: f64,
+    t: f64,
+    duration: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PanAnim {
+    from: (f64, f64),
+    to: (f64, f64),
+    t: f64,
+    duration: f64,
+}
+
+#[derive(Clone, Copy)]
+struct BoundsRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Camera2dAnim {
+    zoom: Option<ZoomAnim>,
+    pan: Option<PanAnim>,
+    bounds: Option<BoundsRect>,
+}
+
+thread_local! {
+    static CAMERA2D_ANIM: RefCell<Camera2dAnim> =
+        const { RefCell::new(Camera2dAnim { zoom: None, pan: None, bounds: None }) };
+}
+
+/// Advance any active camera2d animations and write the interpolated
+/// values back to the `camera` ambient. Called once per frame from
+/// `play.rs::run_loop*` after the script's update finishes and before
+/// the camera transform is computed.
+pub fn camera2d_tick(env: &mut Env, dt: f64) {
+    let (zoom_out, pan_out) = CAMERA2D_ANIM.with(|c| {
+        let mut state = c.borrow_mut();
+        let mut zoom_val: Option<f64> = None;
+        let mut pan_val: Option<(f64, f64)> = None;
+        if let Some(z) = state.zoom.as_mut() {
+            z.t += dt;
+            let t = (z.t / z.duration.max(1e-6)).clamp(0.0, 1.0);
+            let eased = crate::tween::ease("ease_out_cubic", t).unwrap_or(t);
+            zoom_val = Some(z.from + (z.to - z.from) * eased);
+            if z.t >= z.duration {
+                state.zoom = None;
+            }
+        }
+        if let Some(p) = state.pan.as_mut() {
+            p.t += dt;
+            let t = (p.t / p.duration.max(1e-6)).clamp(0.0, 1.0);
+            let eased = crate::tween::ease("ease_in_out_cubic", t).unwrap_or(t);
+            pan_val = Some((
+                p.from.0 + (p.to.0 - p.from.0) * eased,
+                p.from.1 + (p.to.1 - p.from.1) * eased,
+            ));
+            if p.t >= p.duration {
+                state.pan = None;
+            }
+        }
+        (zoom_val, pan_val)
+    });
+    if zoom_out.is_none() && pan_out.is_none() {
+        // Bounds-only — still clamp pos in case the script moved it
+        // outside the world rect this frame.
+        apply_bounds(env);
+        return;
+    }
+    let cam = env.get("camera");
+    if let Some(cam) = cam {
+        if cam.is_object() {
+            let rc = cam.as_object();
+            let mut o = rc.borrow_mut();
+            if let Some(z) = zoom_out {
+                o.insert_field("zoom".to_string(), Value::from_float(z));
+            }
+            if let Some((px, py)) = pan_out {
+                o.insert_field(
+                    "pos".to_string(),
+                    Value::from_tuple(Rc::new(vec![
+                        Value::from_float(px),
+                        Value::from_float(py),
+                    ])),
+                );
+            }
+        }
+    }
+    apply_bounds(env);
+}
+
+fn apply_bounds(env: &mut Env) {
+    let bounds = CAMERA2D_ANIM.with(|c| c.borrow().bounds);
+    let Some(b) = bounds else { return };
+    let cam = match env.get("camera") {
+        Some(c) if c.is_object() => c,
+        _ => return,
+    };
+    let rc = cam.as_object();
+    let mut o = rc.borrow_mut();
+    let (px, py) = match o.get_field("pos") {
+        Some(v) if v.is_tuple() => {
+            let elems = v.as_tuple();
+            if elems.len() >= 2 {
+                (
+                    number(&elems[0], "camera.pos.x").unwrap_or(0.0),
+                    number(&elems[1], "camera.pos.y").unwrap_or(0.0),
+                )
+            } else {
+                return;
+            }
+        }
+        _ => return,
+    };
+    let cx = px.clamp(b.x, b.x + b.w);
+    let cy = py.clamp(b.y, b.y + b.h);
+    if (cx - px).abs() > 1e-9 || (cy - py).abs() > 1e-9 {
+        o.insert_field(
+            "pos".to_string(),
+            Value::from_tuple(Rc::new(vec![Value::from_float(cx), Value::from_float(cy)])),
+        );
+    }
+}
+
+fn install_camera2d(env: &mut Env) {
+    let mut c = HashMap::new();
+    c.insert(
+        "follow".to_string(),
+        Value::from_builtin(
+            "camera2d.follow",
+            &["target", "lerp", "deadzone"],
+            camera2d_follow,
+        ),
+    );
+    c.insert(
+        "zoom_to".to_string(),
+        Value::from_builtin(
+            "camera2d.zoom_to",
+            &["value", "duration"],
+            camera2d_zoom_to,
+        ),
+    );
+    c.insert(
+        "cinematic_pan".to_string(),
+        Value::from_builtin(
+            "camera2d.cinematic_pan",
+            &["from", "to", "duration"],
+            camera2d_cinematic_pan,
+        ),
+    );
+    c.insert(
+        "bounds".to_string(),
+        Value::from_builtin(
+            "camera2d.bounds",
+            &["x", "y", "w", "h"],
+            camera2d_bounds,
+        ),
+    );
+    c.insert(
+        "clear_bounds".to_string(),
+        Value::from_builtin("camera2d.clear_bounds", &[], camera2d_clear_bounds),
+    );
+    env.set(
+        "camera2d".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: c,
+            kind: "module",
+        }))),
+    );
+}
+
+/// Wipe any active zoom / pan animation + bounds. Called by
+/// `clear_asset_caches` on hot-reload.
+pub fn clear_camera2d_state() {
+    CAMERA2D_ANIM.with(|c| *c.borrow_mut() = Camera2dAnim::default());
+}
+
+/// `camera2d.follow(target, lerp, deadzone)` — exponential follow
+/// with a deadzone rectangle. The camera only moves when the target
+/// has drifted outside `(camera.pos.x ± deadzone.x, camera.pos.y ±
+/// deadzone.y)`; inside that box it stays put. The lerp coefficient
+/// is the per-call blend toward the *deadzone edge*, not toward the
+/// target — so a small deadzone with lerp=0.15 still feels reactive.
+fn camera2d_follow(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "camera2d.follow")?;
+    let (tx, ty) = xy_of(&args[0], "camera2d.follow.target")?;
+    let lerp = number(&args[1], "camera2d.follow.lerp")?.clamp(0.0, 1.0);
+    let (dx_zone, dy_zone) = xy_of(&args[2], "camera2d.follow.deadzone")?;
+    let cam = env.get("camera").ok_or_else(|| RuntimeError {
+        line: 0,
+        col: 0,
+        message: "camera2d.follow: `camera` ambient is missing".to_string(),
+        help: None,
+    })?;
+    if !cam.is_object() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "camera2d.follow: `camera` is not an object, got {}",
+                cam.type_name()
+            ),
+            help: None,
+        });
+    }
+    let rc = cam.as_object();
+    let mut o = rc.borrow_mut();
+    let (cx, cy) = match o.get_field("pos") {
+        Some(v) if v.is_tuple() => {
+            let elems = v.as_tuple();
+            if elems.len() >= 2 {
+                (
+                    number(&elems[0], "camera.pos.x")?,
+                    number(&elems[1], "camera.pos.y")?,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        }
+        _ => (0.0, 0.0),
+    };
+    // Per-axis: if the target is inside the deadzone, no movement.
+    // Otherwise, lerp the camera toward the deadzone edge nearest
+    // the target (so the target lands just inside the deadzone, not
+    // at the screen center — that's the deadzone-follow contract).
+    let new_x = if (tx - cx).abs() <= dx_zone {
+        cx
+    } else if tx > cx {
+        cx + (tx - cx - dx_zone) * lerp
+    } else {
+        cx + (tx - cx + dx_zone) * lerp
+    };
+    let new_y = if (ty - cy).abs() <= dy_zone {
+        cy
+    } else if ty > cy {
+        cy + (ty - cy - dy_zone) * lerp
+    } else {
+        cy + (ty - cy + dy_zone) * lerp
+    };
+    o.insert_field(
+        "pos".to_string(),
+        Value::from_tuple(Rc::new(vec![
+            Value::from_float(new_x),
+            Value::from_float(new_y),
+        ])),
+    );
+    Ok(Value::NIL)
+}
+
+/// `camera2d.zoom_to(value, duration)` — start an eased zoom from
+/// the current `camera.zoom` to `value` over `duration` seconds.
+/// Calling again before the previous animation finishes retargets
+/// from the *current* interpolated zoom — no snap.
+fn camera2d_zoom_to(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "camera2d.zoom_to")?;
+    let value = number(&args[0], "camera2d.zoom_to.value")?;
+    let duration = number(&args[1], "camera2d.zoom_to.duration")?.max(0.0);
+    if value <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("camera2d.zoom_to: zoom must be > 0 (got {value})"),
+            help: Some("zoom > 1 zooms in; < 1 zooms out".to_string()),
+        });
+    }
+    let from = camera_view(env).1;
+    if duration < 1e-6 {
+        // Zero-duration → snap.
+        if let Some(cam) = env.get("camera") {
+            if cam.is_object() {
+                cam.as_object()
+                    .borrow_mut()
+                    .insert_field("zoom".to_string(), Value::from_float(value));
+            }
+        }
+        CAMERA2D_ANIM.with(|c| c.borrow_mut().zoom = None);
+        return Ok(Value::NIL);
+    }
+    CAMERA2D_ANIM.with(|c| {
+        c.borrow_mut().zoom = Some(ZoomAnim {
+            from,
+            to: value,
+            t: 0.0,
+            duration,
+        });
+    });
+    Ok(Value::NIL)
+}
+
+/// `camera2d.cinematic_pan(from, to, duration)` — animated camera
+/// pan between two world-space points using `ease_in_out_cubic`.
+/// Useful for boss intros / scripted reveals. Cancels any active
+/// pan animation.
+fn camera2d_cinematic_pan(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "camera2d.cinematic_pan")?;
+    let (fx, fy) = xy_of(&args[0], "camera2d.cinematic_pan.from")?;
+    let (tx, ty) = xy_of(&args[1], "camera2d.cinematic_pan.to")?;
+    let duration = number(&args[2], "camera2d.cinematic_pan.duration")?.max(0.0);
+    if duration < 1e-6 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "camera2d.cinematic_pan: duration must be > 0".to_string(),
+            help: Some("use `camera.pos = to` for instant snaps".to_string()),
+        });
+    }
+    CAMERA2D_ANIM.with(|c| {
+        c.borrow_mut().pan = Some(PanAnim {
+            from: (fx, fy),
+            to: (tx, ty),
+            t: 0.0,
+            duration,
+        });
+    });
+    Ok(Value::NIL)
+}
+
+/// `camera2d.bounds(x, y, w, h)` — clamp `camera.pos` to the
+/// rectangle so the camera never reveals the void outside the
+/// world. Set once at level load.
+fn camera2d_bounds(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "camera2d.bounds")?;
+    let x = number(&args[0], "camera2d.bounds.x")?;
+    let y = number(&args[1], "camera2d.bounds.y")?;
+    let w = number(&args[2], "camera2d.bounds.w")?;
+    let h = number(&args[3], "camera2d.bounds.h")?;
+    if w < 0.0 || h < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "camera2d.bounds: width and height must be >= 0 (got w={w}, h={h})"
+            ),
+            help: None,
+        });
+    }
+    CAMERA2D_ANIM.with(|c| {
+        c.borrow_mut().bounds = Some(BoundsRect { x, y, w, h });
+    });
+    Ok(Value::NIL)
+}
+
+fn camera2d_clear_bounds(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "camera2d.clear_bounds")?;
+    CAMERA2D_ANIM.with(|c| c.borrow_mut().bounds = None);
+    Ok(Value::NIL)
+}
+
+/// Inspect-only: is a `camera2d.zoom_to` animation currently in flight?
+/// Same pattern as `camera_shake_remaining` — tests use it; the play
+/// loop drives state through `camera2d_tick` directly.
+pub fn has_camera2d_zoom_anim() -> bool {
+    CAMERA2D_ANIM.with(|c| c.borrow().zoom.is_some())
+}
+
+/// Inspect-only: is a `camera2d.cinematic_pan` animation currently in flight?
+pub fn has_camera2d_pan_anim() -> bool {
+    CAMERA2D_ANIM.with(|c| c.borrow().pan.is_some())
 }
 
 fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

@@ -343,7 +343,14 @@ async fn run_loop_wasm() {
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
         let mut tick_err: Option<crate::value::RuntimeError> = None;
-        if !crate::stdlib::is_paused() {
+        // v1.0.1 session 6: persistent states (registered via
+        // `persistent_state(name)`) keep ticking through pause —
+        // pause menus / debug HUDs / toasts opt out this way. The
+        // per-state filter that actually skips non-persistent work
+        // lives in `eval::tick_frame` (top-level `on update` is
+        // always skipped under pause; entity / scene updates check
+        // the current state name).
+        if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
             accumulator += frame_dt;
             let mut substeps: u32 = 0;
             while accumulator >= crate::eval::PHYSICS_DT
@@ -379,6 +386,11 @@ async fn run_loop_wasm() {
         clear_background(BLACK);
         env.in_render = true;
         crate::stdlib::camera_tick(frame_dt);
+        // v1.0.1 session 8: advance any active camera2d zoom_to /
+        // cinematic_pan animations and apply the bounds clamp. Sits
+        // between camera shake decay (which is also visual / wall-
+        // clock) and the camera transform read.
+        crate::stdlib::camera2d_tick(&mut env, frame_dt);
         crate::fx::fx_tick(frame_dt);
         crate::light2d::tick(frame_dt);
         crate::audio_polish::tick(frame_dt);
@@ -513,7 +525,14 @@ async fn run_loop(path: String) {
         // the simulation sees a constant dt — required for replay
         // determinism + sample-accurate audio + stable physics.
         let mut tick_err: Option<crate::value::RuntimeError> = None;
-        if !crate::stdlib::is_paused() {
+        // v1.0.1 session 6: persistent states (registered via
+        // `persistent_state(name)`) keep ticking through pause —
+        // pause menus / debug HUDs / toasts opt out this way. The
+        // per-state filter that actually skips non-persistent work
+        // lives in `eval::tick_frame` (top-level `on update` is
+        // always skipped under pause; entity / scene updates check
+        // the current state name).
+        if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
             accumulator += frame_dt;
             let mut substeps: u32 = 0;
             while accumulator >= crate::eval::PHYSICS_DT
@@ -557,6 +576,11 @@ async fn run_loop(path: String) {
         // a visual effect, not deterministic gameplay state, so smooth
         // decay at display rate is the right behaviour.
         crate::stdlib::camera_tick(frame_dt);
+        // v1.0.1 session 8: advance any active camera2d zoom_to /
+        // cinematic_pan animations and apply the bounds clamp. Sits
+        // between camera shake decay (which is also visual / wall-
+        // clock) and the camera transform read.
+        crate::stdlib::camera2d_tick(&mut env, frame_dt);
         crate::fx::fx_tick(frame_dt);
         crate::light2d::tick(frame_dt);
         crate::audio_polish::tick(frame_dt);
@@ -1168,7 +1192,14 @@ async fn run_loop_embedded(source: String) {
         idle.apply();
         blur.tick(crate::window_focus::is_focused());
         let mut tick_err: Option<crate::value::RuntimeError> = None;
-        if !crate::stdlib::is_paused() {
+        // v1.0.1 session 6: persistent states (registered via
+        // `persistent_state(name)`) keep ticking through pause —
+        // pause menus / debug HUDs / toasts opt out this way. The
+        // per-state filter that actually skips non-persistent work
+        // lives in `eval::tick_frame` (top-level `on update` is
+        // always skipped under pause; entity / scene updates check
+        // the current state name).
+        if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
             accumulator += frame_dt;
             let mut substeps: u32 = 0;
             while accumulator >= crate::eval::PHYSICS_DT
@@ -1199,6 +1230,11 @@ async fn run_loop_embedded(source: String) {
         clear_background(BLACK);
         env.in_render = true;
         crate::stdlib::camera_tick(frame_dt);
+        // v1.0.1 session 8: advance any active camera2d zoom_to /
+        // cinematic_pan animations and apply the bounds clamp. Sits
+        // between camera shake decay (which is also visual / wall-
+        // clock) and the camera transform read.
+        crate::stdlib::camera2d_tick(&mut env, frame_dt);
         crate::fx::fx_tick(frame_dt);
         crate::light2d::tick(frame_dt);
         crate::audio_polish::tick(frame_dt);

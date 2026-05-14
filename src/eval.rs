@@ -69,16 +69,36 @@ pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeErro
 pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     let _profile = crate::profile::scope("tick");
     update_time_ambient(env, dt);
-    if let Some(handler) = env.on_update.clone() {
-        env.set(handler.param.clone(), Value::from_float(dt));
-        run_block(env, &handler.body)?;
-        if env.returning.take().is_some() {
-            return Ok(());
+    // v1.0.1 session 6: when paused, the top-level `on update()` is
+    // never persistent — it isn't bound to any state, so the global
+    // pause flag halts it. State-scoped logic (scene / entity
+    // updates) flows through `tick_scene` / `tick_entities`, which
+    // consult the persistent-state registry per-instance.
+    let paused = crate::stdlib::is_paused();
+    if !paused {
+        if let Some(handler) = env.on_update.clone() {
+            env.set(handler.param.clone(), Value::from_float(dt));
+            run_block(env, &handler.body)?;
+            if env.returning.take().is_some() {
+                return Ok(());
+            }
         }
     }
     if let Some(scene) = env.active_scene.clone() {
-        dispatch_key_press(env, &scene)?;
-        tick_scene(env, &scene, dt)?;
+        // Key-press dispatch + state tick filter per-scene. A paused
+        // game whose active scene is currently in a persistent state
+        // (e.g. `pause_menu`) still receives input and runs its
+        // update; non-persistent states no-op until pause clears.
+        let scene_state_persistent = scene
+            .borrow()
+            .current_state
+            .as_ref()
+            .map(|s| crate::stdlib::is_persistent_state(s))
+            .unwrap_or(false);
+        if !paused || scene_state_persistent {
+            dispatch_key_press(env, &scene)?;
+            tick_scene(env, &scene, dt)?;
+        }
     }
     tick_entities(env, dt)?;
     prune_despawned(env);
@@ -91,6 +111,11 @@ pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
 }
 
 fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
+    // v1.0.1 session 6: when the global pause flag is set, only
+    // entities whose current state is registered as persistent
+    // continue updating. Entities with no explicit state (the
+    // pre-state-machine default) freeze with the rest of the world.
+    let paused = crate::stdlib::is_paused();
     let entities = env.active_entities.clone();
     for entity in entities {
         if entity.borrow().despawned {
@@ -100,6 +125,17 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
         if class.kind == "particles" {
             tick_particle_emitter(env, &entity, &class, dt)?;
             continue;
+        }
+        if paused {
+            let persistent = entity
+                .borrow()
+                .current_state
+                .as_ref()
+                .map(|s| crate::stdlib::is_persistent_state(s))
+                .unwrap_or(false);
+            if !persistent {
+                continue;
+            }
         }
         let method = match find_method(&class, "update") {
             Some(m) => m,

@@ -1006,6 +1006,58 @@ fn runs_math_phase9_smoothstep_mix_noise() {
 }
 
 #[test]
+fn runs_camera2d_phase_v1_0_1_session_8() {
+    // v1.0.1 session 8: camera2d.* follow + zoom + pan + bounds.
+    // Animation tick (cinematic_pan, zoom_to non-zero duration)
+    // requires the play loop's camera2d_tick(env, dt); covered by
+    // Rust-side has_camera2d_zoom_anim / has_camera2d_pan_anim.
+    let out =
+        run_program("tests/programs/camera2d.twe").expect("program should run");
+    let expected = "(0.0, 0.0)\n\
+        1.0\n\
+        (0.0, 0.0)\n\
+        (140.0, 0.0)\n\
+        1.5\n\
+        bounds ok\n\
+        anims registered\n";
+    assert_eq!(out, expected);
+    assert!(
+        twec::stdlib::has_camera2d_zoom_anim(),
+        "expected an active zoom animation registered at the script's tail"
+    );
+    assert!(
+        twec::stdlib::has_camera2d_pan_anim(),
+        "expected an active pan animation registered at the script's tail"
+    );
+}
+
+#[test]
+fn runs_persistent_state_phase_v1_0_1_session_6() {
+    // v1.0.1 session 6: persistent-state registry. The parser-sugar
+    // form (`state X: pause: false`) defers to v1.0.2; this MVP
+    // closes the functional gap with the stdlib registry consulted
+    // by `eval::tick_frame` / `tick_entities` to skip non-persistent
+    // states under the global pause flag.
+    let out =
+        run_program("tests/programs/persistent_state.twe").expect("program should run");
+    let expected = "false\n\
+        true\n\
+        true\n\
+        false\n\
+        false\n\
+        true\n\
+        false\n\
+        false\n\
+        true\n\
+        false\n\
+        true\n\
+        true\n\
+        false\n\
+        true\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn runs_save_schema_version_phase_v1_0_1_session_5() {
     // v1.0.1 session 5: schema-version stamping on write +
     // surfacing via `save.loaded_version()` on read. The block-syntax

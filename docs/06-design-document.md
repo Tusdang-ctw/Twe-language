@@ -800,6 +800,29 @@ camera.reset()                    # snap to defaults
 
 **3D** (`twec play3d`): `camera.eye`, `camera.target`, `camera.up` are 3-tuples.
 
+The `camera2d.*` namespace (v1.0.1 Session 8) adds **follow with deadzone**, **animated zoom**, **cinematic pan**, and **world bounds clamp** — the four Survivors/platformer/RPG camera patterns scripts were re-implementing by hand:
+
+```twe
+# Follow the player; camera only moves when the player drifts outside
+# the 60×40 deadzone box centered on the camera. lerp = blend toward
+# the deadzone edge (0 = no movement, 1 = snap).
+camera2d.follow(target: (player.x, player.y), lerp: 0.15, deadzone: (60, 40))
+
+# Eased zoom from current value to 1.4 over 0.6 seconds. Calling
+# again before the previous finishes retargets from the current
+# interpolated value — no snap.
+camera2d.zoom_to(value: 1.4, duration: 0.6)
+
+# Scripted pan A → B over 1.5 seconds. Uses ease_in_out_cubic.
+camera2d.cinematic_pan(from: arena_center, to: boss_pos, duration: 1.5)
+
+# Clamp `camera.pos` to a world-bounds rect — set once at level load.
+camera2d.bounds(x: 0, y: 0, w: 4096, h: 2048)
+camera2d.clear_bounds()
+```
+
+Animations live in a thread-local; the play loop calls `camera2d_tick(env, frame_dt)` between camera-shake decay and the camera transform read. `zoom_to(value, 0)` is the snap path (no animation). Bounds clamp every frame in `camera2d_tick`, after pan animations apply.
+
 ### 7.8b VFX  *(v1.0.1 Session 1)*
 
 The `fx.*` namespace is a procedural visual-effects library. Every effect is generated from code — no PNG assets, no shaders, no cloud lookups. State lives on the runtime side; scripts fire and forget.
@@ -1070,6 +1093,21 @@ if button(at: slot.at, size: slot.size, label: items[i]):
 
 Also: `stack(...)`, `flex(...)`, `panel(at:, size:)`, `scroll(at:, size:, content_height:)`.
 
+#### 7.13b Nine-slice panels *(v1.0.1 Session 7)*
+
+UI skins via a stretched nine-patch texture. Four corners are pinned at their texture-pixel size; four edges stretch along one axis; the center fills the inner rect.
+
+```twe
+# Build a reusable skin handle. Path + border-width in pixels.
+let panel_skin = nine_slice("ui/panel.png", 12)
+
+# Render anywhere — the skin handle is cached.
+panel_skinned(at: (40, 60), size: (320, 80), skin: panel_skin)
+panel_skinned(at: (40, 160), size: (480, 200), skin: panel_skin)
+```
+
+The texture is path-validated when `nine_slice(...)` is called (misspelled assets surface early) and lazily GL-decoded on the first paint inside `on render():` — same caching shape as `sprite(...)` / `load_atlas(...)`. Calls where `w < 2 * border` or `h < 2 * border` no-op rather than panic (the corners would overlap). Reuses [src/stdlib.rs](../src/stdlib.rs) `SPRITE_CACHE`.
+
 ### 7.14 Pause
 
 ```twe
@@ -1080,6 +1118,34 @@ let p = is_paused()
 auto_pause_when_idle(30.0)   # pause after 30s with no input
 auto_pause_on_blur(true)     # pause when window loses focus (Windows; macOS/Linux stubbed)
 ```
+
+#### 7.14b Per-state pause opt-out *(v1.0.1 Session 6)*
+
+A state registered as **persistent** keeps ticking through the global pause flag — its `on update(dt):` body, every-clocks, predicate hooks, and key-press handlers all fire while the rest of the world is frozen. Pause menus, debug HUDs, and toast notifications use this to stay interactive under pause.
+
+```twe
+# Register at startup. The names match `state X:` block names.
+persistent_state("pause_menu")
+persistent_state("hud_overlay")
+
+# Inspect or unregister:
+is_persistent_state("pause_menu")    # true
+clear_persistent_state("pause_menu") # remove one
+clear_persistent_states()            # remove all
+```
+
+When the global pause is set, `eval::tick_frame` skips the top-level `on update()` plus any entity / scene whose current state is NOT persistent. The render path is unaffected; persistent states still see their `on render():` fire.
+
+**Honest scope reduction:** the plan's canonical surface is parser-sugar on the `state` block —
+
+```twe
+state pause_menu:
+    pause: false           # never paused
+state hud_overlay:
+    persistent             # alias — never paused
+```
+
+— which requires a new keyword, an AST field, parser work, and codegen mirror in both runtimes. That's a phase-sized chunk. v1.0.1 ships the stdlib registry (above) to close the [CLAUDE.md](../CLAUDE.md) "What is open" item with the same functional semantic; the block-sugar form defers to v1.0.2.
 
 ### 7.15 Localization
 

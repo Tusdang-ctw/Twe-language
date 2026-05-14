@@ -1,0 +1,38 @@
+# v1.0.1 Session 8 — camera2d.* follow / zoom / pan / bounds.
+# Tests the call-and-go API surface. Animation-tick behaviour
+# (cinematic_pan, zoom_to with non-zero duration) requires the
+# play loop's `camera2d_tick(env, dt)` to advance; covered by
+# Rust unit tests in src/stdlib.rs.
+
+# camera ambient is installed by `install_camera`. Default pos = (0, 0).
+print(camera.pos)
+print(camera.zoom)
+
+# follow with deadzone: target (10, 0) is outside the 60-wide deadzone
+# on the right -> camera lerps. With lerp = 1 it lands at the deadzone
+# edge — target - deadzone = 10 - 60 = -50.
+# But target's *distance* from cam (10 - 0 = 10) is less than deadzone
+# (60), so the camera does NOT move.
+camera2d.follow((10, 0), 1.0, (60, 40))
+print(camera.pos)
+
+# Target (200, 0) is outside deadzone — camera moves to target - deadzone
+# = 200 - 60 = 140 (with lerp = 1.0 it lands at the deadzone edge).
+camera2d.follow((200, 0), 1.0, (60, 40))
+print(camera.pos)
+
+# Snap zoom (duration = 0 takes the immediate-write path).
+camera2d.zoom_to(1.5, 0)
+print(camera.zoom)
+
+# Bounds set + clear are no-ops at API level (the apply runs in the
+# play loop's camera2d_tick). They should not error.
+camera2d.bounds(0, 0, 1000, 1000)
+camera2d.clear_bounds()
+print("bounds ok")
+
+# Animated zoom registration (non-zero duration). The animation
+# advances inside the play loop, not here — we just confirm no error.
+camera2d.zoom_to(2.0, 0.5)
+camera2d.cinematic_pan((0, 0), (320, 240), 1.0)
+print("anims registered")
