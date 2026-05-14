@@ -1,0 +1,58 @@
+name: perf
+
+# v1.0.1 session 11: bench regression gate.
+#
+# Runs the criterion bench suite (`benches/vm.rs`) against the
+# baseline checked in at `docs/perf-snapshots/v1.0.1-baseline.json`
+# and fails when any tracked bench regresses by more than 5%.
+#
+# Not part of `ci.yml` because criterion sample collection adds
+# minutes to every PR. This workflow is triggered manually
+# (`workflow_dispatch`) and on pushes to main so the baseline is
+# checked against the canonical branch, not every transient PR.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  perf:
+    name: perf-diff vs baseline
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+
+      # `--sample-size 10` cuts criterion runtime ~3x for CI use; the
+      # tradeoff is noisier per-bench numbers, which is why the gate
+      # threshold is 5%. For *baseline* recapture, drop the override.
+      - name: Run benches
+        run: cargo bench --bench vm -- --sample-size 10 --warm-up-time 1 --measurement-time 3
+
+      - name: Scrape criterion -> current snapshot
+        run: cargo run --release -- perf-snapshot -o /tmp/perf-current.json
+
+      - name: Diff against baseline
+        run: cargo run --release -- perf-diff docs/perf-snapshots/v1.0.1-baseline.json /tmp/perf-current.json
+
+      - name: Upload current snapshot as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-current.json
+          path: /tmp/perf-current.json

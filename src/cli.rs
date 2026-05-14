@@ -6,6 +6,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      play [--vm tree|bytecode] <file> | \
      play3d <file> | \
      play_visual <file> | \
+     replay <script.twe> <replay-file> | \
      profile [--frames N] [-o trace.json] <file> | \
      build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] <project_dir> | \
      bundle [-o PATH] <project_dir> | \
@@ -18,6 +19,8 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      corpus [--json] [-o PATH] | \
      eval [SUITE] [--source FILE] [--source-dir DIR] [--root DIR] [--json] [-o PATH] | \
      mutate [--root DIR] [--out DIR] [--rules RULESET] | \
+     perf-snapshot [--target DIR] [-o PATH] | \
+     perf-diff [--threshold PCT] <baseline.json> <current.json> | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -110,7 +113,20 @@ pub fn run() {
             process::exit(handle_api_snapshot(&args[2..]))
         }
         "api-diff" | "api_diff" => process::exit(handle_api_diff(&args[2..])),
+        // v1.0.1 session 11: perf-bench snapshot + diff. Scrapes
+        // `target/criterion/` from `cargo bench` into a canonical JSON
+        // document, and exits non-zero when a tracked bench regresses
+        // beyond the threshold (default 5%).
+        "perf-snapshot" | "perf_snapshot" => {
+            process::exit(handle_perf_snapshot(&args[2..]))
+        }
+        "perf-diff" | "perf_diff" => process::exit(handle_perf_diff(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
+        // v1.0.1 session 10: replay a crash bundle (or any v1
+        // replay log) by running a script under playback. The play
+        // loop's existing `replay::tick` picks up the playing mode
+        // and overwrites the input ambients per frame.
+        "replay" => process::exit(handle_replay(&args[2..])),
         "play_visual" => process::exit(handle_play_visual(&args[2..])),
         "fmt" => process::exit(handle_fmt(&args[2..])),
         "lsp" => process::exit(handle_lsp(&args[2..])),
@@ -204,6 +220,44 @@ fn handle_play3d(args: &[String]) -> i32 {
     }
     let path = path.expect("non-empty args + no flags ⇒ at least one positional");
     crate::play3d::launch(path)
+}
+
+/// v1.0.1 session 10: `twec replay <script.twe> <replay-file>` —
+/// re-runs `script.twe` under the play loop with `replay-file`
+/// driving every per-frame input. The standard crash-reporter hook
+/// writes a sibling `twec-crash-<secs>-<pid>.replay` next to every
+/// `.log`, so the canonical bug-bundle workflow is "user posts the
+/// `.log` + `.replay` pair → maintainer runs `twec replay <repro-script>
+/// <crash.replay>`." Returns the same exit code as the underlying
+/// `play` invocation; replay halts automatically at end-of-file and
+/// the script keeps running with no further input.
+fn handle_replay(args: &[String]) -> i32 {
+    let mut positional: Vec<&str> = Vec::new();
+    for a in args {
+        if a.starts_with('-') {
+            eprintln!("error: unknown flag for `replay`: {a}");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+        positional.push(a.as_str());
+    }
+    if positional.len() != 2 {
+        eprintln!(
+            "error: `twec replay` takes exactly two positional args: <script.twe> <replay-file>"
+        );
+        eprintln!("{USAGE}");
+        return 2;
+    }
+    let script = positional[0].to_string();
+    let replay_path = positional[1];
+    if let Err(e) = crate::replay::start_playing(replay_path) {
+        eprintln!("error: {e}");
+        return 1;
+    }
+    let code = crate::play::launch(script);
+    crate::replay::stop();
+    crate::play::shutdown_gilrs();
+    code
 }
 
 /// `twec build [--target T] [--config C] [--out PATH] [--dry-run]
@@ -1154,6 +1208,144 @@ fn handle_api_diff(args: &[String]) -> i32 {
     3
 }
 
+/// v1.0.1 session 11: `twec perf-snapshot [--target DIR] [-o PATH]`.
+/// Scrapes `<target-dir>/criterion/` for every bench's
+/// `new/estimates.json` (falls back to `base/`) and writes the
+/// canonical JSON snapshot. Default target dir is `./target`;
+/// default output is stdout.
+fn handle_perf_snapshot(args: &[String]) -> i32 {
+    let mut target: std::path::PathBuf = "target".into();
+    let mut out: Option<std::path::PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `--target` needs a value");
+                    return 2;
+                };
+                target = v.into();
+                i += 1;
+            }
+            "-o" | "--out" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `-o` needs a path");
+                    return 2;
+                };
+                out = Some(v.into());
+                i += 1;
+            }
+            other => {
+                eprintln!("error: unknown argument for `perf-snapshot`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let snap = match crate::perf_snapshot::scrape_criterion(&target) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let body = snap.to_json();
+    match out {
+        Some(p) => match crate::perf_snapshot::write_snapshot(&snap, &p) {
+            Ok(()) => {
+                eprintln!(
+                    "[twec perf-snapshot] wrote {} ({} benches)",
+                    p.display(),
+                    snap.benches.len()
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+        None => {
+            println!("{body}");
+            0
+        }
+    }
+}
+
+/// v1.0.1 session 11: `twec perf-diff [--threshold PCT] <baseline.json>
+/// <current.json>`. Exits 0 when no bench regressed beyond the
+/// threshold (default 5%), 1 when a regression is found, 2 on usage
+/// errors. The human-readable report goes to stdout in both cases.
+fn handle_perf_diff(args: &[String]) -> i32 {
+    let mut threshold = crate::perf_snapshot::DEFAULT_THRESHOLD_PCT;
+    let mut positional: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--threshold" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `--threshold` needs a percent value");
+                    return 2;
+                };
+                match v.parse::<f64>() {
+                    Ok(t) if t >= 0.0 => threshold = t,
+                    Ok(_) => {
+                        eprintln!("error: `--threshold` must be non-negative");
+                        return 2;
+                    }
+                    Err(_) => {
+                        eprintln!("error: `--threshold` must be a number");
+                        return 2;
+                    }
+                }
+                i += 1;
+            }
+            a if a.starts_with('-') => {
+                eprintln!("error: unknown flag for `perf-diff`: {a}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+            _ => {
+                positional.push(args[i].as_str());
+                i += 1;
+            }
+        }
+    }
+    if positional.len() != 2 {
+        eprintln!("error: `twec perf-diff` takes two snapshot paths");
+        eprintln!("usage: twec perf-diff [--threshold PCT] <baseline.json> <current.json>");
+        return 2;
+    }
+    let baseline = match crate::perf_snapshot::read_snapshot(std::path::Path::new(positional[0])) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let current = match crate::perf_snapshot::read_snapshot(std::path::Path::new(positional[1])) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let d = crate::perf_snapshot::diff(&baseline, &current);
+    print!("{}", d.format_human(threshold));
+    if d.regressed(threshold) {
+        eprintln!(
+            "perf-diff: at least one bench regressed beyond +{:.1}% — failing CI",
+            threshold
+        );
+        1
+    } else {
+        0
+    }
+}
+
 /// `twec play_visual <file>` — Phase 9 session 11: render the
 /// first `visual` block in the file as a fullscreen wgpu fragment
 /// shader. Time uniform is driven from the system clock; Esc
@@ -1709,12 +1901,16 @@ fn write_crash_dump(info: &std::panic::PanicHookInfo<'_>) -> Option<String> {
     let dir = std::env::var_os("TWEC_CRASH_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let path = dir.join(format!(
-        "twec-crash-{secs}-{pid}.log",
-        pid = std::process::id()
-    ));
+    let pid = std::process::id();
+    let path = dir.join(format!("twec-crash-{secs}-{pid}.log"));
     let body = format_crash_body(info, secs);
     fs::write(&path, body).ok()?;
+    // v1.0.1 session 10: flush the input ring next to the .log so
+    // the user (or `twec replay`) can reproduce the crash. Errors
+    // are swallowed — we still want the .log even if the .replay
+    // can't land.
+    let replay_path = dir.join(format!("twec-crash-{secs}-{pid}.replay"));
+    let _ = crate::replay::dump_ring_to(&replay_path);
     Some(path.display().to_string())
 }
 

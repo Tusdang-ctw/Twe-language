@@ -160,12 +160,49 @@ impl Server {
             }
             Some("textDocument/definition") => {
                 let result = self
-                    .resolve_position(msg)
+                    .resolve_position_cross_module(msg)
                     .map(|(uri, sym)| {
-                        let text = self.documents.get(&uri).cloned().unwrap_or_default();
+                        let text = self.documents.get(&uri).cloned().unwrap_or_else(|| {
+                            // Cross-module hit on a file the client
+                            // hasn't opened — re-read from disk so
+                            // the Location range is computed against
+                            // the same text the goto-def landed in.
+                            uri_to_path(&uri)
+                                .and_then(|p| std::fs::read_to_string(p).ok())
+                                .unwrap_or_default()
+                        });
                         symbol_to_location(&uri, &sym, &text)
                     })
                     .unwrap_or(Value::Null);
+                self.send_response(output, id, result)?;
+                Ok(true)
+            }
+            // v1.0.1 session 9: cross-document references. Scans
+            // every open document for word-boundary occurrences of
+            // the identifier under the cursor, returning Locations.
+            Some("textDocument/references") => {
+                let result = self
+                    .references_for(msg)
+                    .map(Value::Array)
+                    .unwrap_or(Value::Null);
+                self.send_response(output, id, result)?;
+                Ok(true)
+            }
+            // v1.0.1 session 9: rename refactor. Returns a
+            // WorkspaceEdit grouping per-document TextEdits.
+            Some("textDocument/rename") => {
+                let result = self.rename_for(msg).unwrap_or(Value::Null);
+                self.send_response(output, id, result)?;
+                Ok(true)
+            }
+            // LSP also asks `prepareRename` before rename; reply with
+            // the identifier range under the cursor (or null to
+            // reject). Without this VS Code falls back to a heuristic
+            // word match — fine, but providing the precise range
+            // avoids selecting punctuation when the cursor sits at
+            // a word boundary.
+            Some("textDocument/prepareRename") => {
+                let result = self.prepare_rename(msg).unwrap_or(Value::Null);
                 self.send_response(output, id, result)?;
                 Ok(true)
             }
@@ -326,6 +363,230 @@ impl Server {
         let symbols = collect_symbols(&program);
         let sym = symbols.into_iter().find(|s| s.name == name)?;
         Some((uri, sym))
+    }
+
+    /// v1.0.1 session 9: cross-module variant of `resolve_position`.
+    /// First tries the current file (existing behaviour). If the
+    /// identifier doesn't resolve there, walks the file's `import`
+    /// statements and looks for a top-level symbol with that name in
+    /// each imported module — opening the file from disk if the
+    /// client hasn't already opened it. Returns the URI + Symbol of
+    /// the first hit. Local lets / parameters in the imported file
+    /// are ignored, matching `collect_symbols`'s top-level-only
+    /// scoping rule.
+    fn resolve_position_cross_module(&self, msg: &Value) -> Option<(String, Symbol)> {
+        if let Some(hit) = self.resolve_position(msg) {
+            return Some(hit);
+        }
+        let params = msg.get("params")?;
+        let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+        let pos = params.get("position")?;
+        let line = pos.get("line")?.as_i64()? as u32;
+        let character = pos.get("character")?.as_i64()? as u32;
+        let text = self.documents.get(uri)?;
+        let name = identifier_at(text, line, character)?;
+        let tokens = lexer::lex(text).ok()?;
+        let program = parser::parse(&tokens).ok()?;
+        for (import_uri, _alias, _line) in self.imports_of(uri, &program) {
+            let imported_text = self
+                .documents
+                .get(&import_uri)
+                .cloned()
+                .or_else(|| uri_to_path(&import_uri).and_then(|p| std::fs::read_to_string(p).ok()))?;
+            let imported_tokens = lexer::lex(&imported_text).ok()?;
+            let imported_program = parser::parse(&imported_tokens).ok()?;
+            if let Some(sym) = collect_symbols(&imported_program)
+                .into_iter()
+                .find(|s| s.name == name)
+            {
+                return Some((import_uri, sym));
+            }
+        }
+        None
+    }
+
+    /// Resolve every `import "path"` in `program` to an absolute file
+    /// URI relative to `from_uri`'s directory. Returns (uri, alias,
+    /// import-line) so the caller can prefer same-name top-level
+    /// hits in the directly imported file before fallback searches.
+    fn imports_of(
+        &self,
+        from_uri: &str,
+        program: &Program,
+    ) -> Vec<(String, Option<String>, u32)> {
+        let mut out = Vec::new();
+        let from_dir = uri_to_path(from_uri).and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let Some(dir) = from_dir else {
+            return out;
+        };
+        for stmt in &program.stmts {
+            if let Stmt::Import {
+                path, alias, line, ..
+            } = stmt
+            {
+                let mut joined = dir.join(path);
+                if joined.extension().is_none() {
+                    joined.set_extension("twe");
+                }
+                if let Some(uri) = path_to_uri(&joined) {
+                    out.push((uri, alias.clone(), *line));
+                }
+            }
+        }
+        out
+    }
+
+    /// v1.0.1 session 9: collect all references to the identifier
+    /// under the cursor across every open document. Returns LSP
+    /// `Location[]` (an empty array — never null — when the cursor
+    /// isn't on an identifier, so the client's "go to references"
+    /// UI shows "no results" instead of an error).
+    fn references_for(&self, msg: &Value) -> Option<Vec<Value>> {
+        let params = msg.get("params")?;
+        let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+        let pos = params.get("position")?;
+        let line = pos.get("line")?.as_i64()? as u32;
+        let character = pos.get("character")?.as_i64()? as u32;
+        let text = self.documents.get(uri)?;
+        let name = identifier_at(text, line, character)?;
+        let include_decl = params
+            .get("context")
+            .and_then(|c| c.get("includeDeclaration"))
+            .map(|v| matches!(v, Value::Bool(true)))
+            .unwrap_or(true);
+        let mut locations = Vec::new();
+        for (doc_uri, doc_text) in &self.documents {
+            for (l, c) in find_occurrences(doc_text, &name) {
+                // The declaration site is included unless the client
+                // explicitly opted out. Detecting "this is the decl"
+                // robustly requires walking the AST; for the MVP we
+                // skip the cursor's own position when `include_decl`
+                // is false. That handles the common case (the user
+                // is at the declaration and wants only call sites).
+                if !include_decl && doc_uri.as_str() == uri && l == line && covers(c, &name, character) {
+                    continue;
+                }
+                locations.push(location(doc_uri, l, c, &name));
+            }
+        }
+        // Stable order so tests + UI lists don't shuffle.
+        locations.sort_by(|a, b| {
+            let ua = a.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+            let ub = b.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+            ua.cmp(ub).then_with(|| {
+                let la = a
+                    .get("range")
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let lb = b
+                    .get("range")
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                la.cmp(&lb)
+            })
+        });
+        Some(locations)
+    }
+
+    /// v1.0.1 session 9: build a `WorkspaceEdit` renaming every
+    /// occurrence of the identifier under the cursor to `newName`.
+    /// The cursor's identifier is the *old name* (we re-extract it
+    /// from the file text so the request body is just (uri, pos,
+    /// newName) per the spec). Returns null when the cursor isn't
+    /// on an identifier or `newName` is empty / not an identifier.
+    fn rename_for(&self, msg: &Value) -> Option<Value> {
+        let params = msg.get("params")?;
+        let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+        let pos = params.get("position")?;
+        let line = pos.get("line")?.as_i64()? as u32;
+        let character = pos.get("character")?.as_i64()? as u32;
+        let new_name = params.get("newName")?.as_str()?;
+        if !is_valid_identifier(new_name) {
+            return None;
+        }
+        let text = self.documents.get(uri)?;
+        let old_name = identifier_at(text, line, character)?;
+        if old_name == new_name {
+            // No-op rename — return an empty WorkspaceEdit so the
+            // client still treats the action as successful.
+            return Some(obj([("changes", Value::Object(Default::default()))]));
+        }
+        let mut changes: std::collections::BTreeMap<String, Value> =
+            std::collections::BTreeMap::new();
+        for (doc_uri, doc_text) in &self.documents {
+            let occs = find_occurrences(doc_text, &old_name);
+            if occs.is_empty() {
+                continue;
+            }
+            let edits: Vec<Value> = occs
+                .into_iter()
+                .map(|(l, c)| {
+                    let start = obj([
+                        ("line", Value::Int(l as i64)),
+                        ("character", Value::Int(c as i64)),
+                    ]);
+                    let end = obj([
+                        ("line", Value::Int(l as i64)),
+                        ("character", Value::Int(c as i64 + old_name.chars().count() as i64)),
+                    ]);
+                    obj([
+                        ("range", obj([("start", start), ("end", end)])),
+                        ("newText", Value::Str(new_name.into())),
+                    ])
+                })
+                .collect();
+            changes.insert(doc_uri.clone(), Value::Array(edits));
+        }
+        Some(obj([("changes", Value::Object(changes))]))
+    }
+
+    /// v1.0.1 session 9: prepareRename support. Returns the range of
+    /// the identifier under the cursor so the client previews the
+    /// rename target precisely. `null` rejects the rename (the
+    /// cursor isn't on an identifier).
+    fn prepare_rename(&self, msg: &Value) -> Option<Value> {
+        let params = msg.get("params")?;
+        let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+        let pos = params.get("position")?;
+        let line = pos.get("line")?.as_i64()? as u32;
+        let character = pos.get("character")?.as_i64()? as u32;
+        let text = self.documents.get(uri)?;
+        let name = identifier_at(text, line, character)?;
+        // Find the exact start column of the identifier under the
+        // cursor on the requested line.
+        let line_text = text.lines().nth(line as usize)?;
+        let bytes = line_text.as_bytes();
+        let mut i = 0;
+        let needle = name.as_bytes();
+        while i + needle.len() <= bytes.len() {
+            let prev_ok = i == 0 || !is_id_continue_byte(bytes[i - 1]);
+            let next_ok = i + needle.len() == bytes.len()
+                || !is_id_continue_byte(bytes[i + needle.len()]);
+            if prev_ok
+                && next_ok
+                && &bytes[i..i + needle.len()] == needle
+                && (i..i + needle.len()).contains(&(character as usize))
+            {
+                let start = obj([
+                    ("line", Value::Int(line as i64)),
+                    ("character", Value::Int(i as i64)),
+                ]);
+                let end = obj([
+                    ("line", Value::Int(line as i64)),
+                    ("character", Value::Int((i + needle.len()) as i64)),
+                ]);
+                return Some(obj([
+                    ("range", obj([("start", start), ("end", end)])),
+                    ("placeholder", Value::Str(name)),
+                ]));
+            }
+            i += 1;
+        }
+        None
     }
 
     /// Build the completion list for the document referenced by
@@ -660,6 +921,128 @@ fn is_id_continue_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Word-boundary occurrence scan. Returns every (line, col) where
+/// `name` appears as a standalone identifier in `text` — both
+/// 0-indexed (LSP convention). Skips matches inside string literals
+/// and line comments using a minimal scanner: '#' to end-of-line is
+/// a comment; '"'-delimited regions are strings (backslash escapes
+/// a closing quote). Matches inside `"..."` and after `#` would
+/// produce false-positive renames; the rest of the time the heuristic
+/// is harmless. The lexer is the long-term answer; this lightweight
+/// scan keeps the implementation surface small.
+pub fn find_occurrences(text: &str, name: &str) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    if name.is_empty() {
+        return out;
+    }
+    let needle = name.as_bytes();
+    for (line_idx, line_text) in text.lines().enumerate() {
+        let bytes = line_text.as_bytes();
+        let mut i = 0;
+        let mut in_string = false;
+        let mut escaped = false;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            if b == b'#' {
+                break; // line comment — skip the rest of the line.
+            }
+            if b == b'"' {
+                in_string = true;
+                i += 1;
+                continue;
+            }
+            if i + needle.len() <= bytes.len() && &bytes[i..i + needle.len()] == needle {
+                let prev_ok = i == 0 || !is_id_continue_byte(bytes[i - 1]);
+                let next_ok = i + needle.len() == bytes.len()
+                    || !is_id_continue_byte(bytes[i + needle.len()]);
+                if prev_ok && next_ok {
+                    out.push((line_idx as u32, i as u32));
+                    i += needle.len();
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Build an LSP `Location` for an occurrence at (line, col). Both
+/// inputs 0-indexed; range covers `name.len()` characters.
+fn location(uri: &str, line: u32, col: u32, name: &str) -> Value {
+    let name_len = name.chars().count() as i64;
+    let start = obj([
+        ("line", Value::Int(line as i64)),
+        ("character", Value::Int(col as i64)),
+    ]);
+    let end = obj([
+        ("line", Value::Int(line as i64)),
+        ("character", Value::Int(col as i64 + name_len)),
+    ]);
+    obj([
+        ("uri", Value::Str(uri.to_string())),
+        ("range", obj([("start", start), ("end", end)])),
+    ])
+}
+
+/// True when `character` (LSP cursor — 0-indexed, sits *between*
+/// chars) is inside or right after the run at `col..col+name.len()`.
+fn covers(col: u32, name: &str, character: u32) -> bool {
+    let end = col + name.chars().count() as u32;
+    character >= col && character <= end
+}
+
+/// Reject `newName` that the lexer would not tokenise as a single
+/// identifier — empty string, leading digit, embedded whitespace,
+/// punctuation. `_` and digits are fine after the first char.
+fn is_valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if is_id_start(c) => chars.all(is_id_continue),
+        _ => false,
+    }
+}
+
+/// Best-effort `file://` URI → `PathBuf`. Returns `None` for non-file
+/// schemes. URL-encoding is left as-is on Windows (the LSP client
+/// plus VS Code consistently produce `file:///C:/...`-style URIs that
+/// hand back to `std::fs` cleanly).
+pub fn uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    // file:///C:/foo on Windows; file:///home/x on Unix. Drop the
+    // leading slash on Windows so `Path::new("C:/foo")` works.
+    let rest = if cfg!(windows) {
+        rest.strip_prefix('/').unwrap_or(rest)
+    } else {
+        rest
+    };
+    Some(std::path::PathBuf::from(rest))
+}
+
+/// Reverse of [`uri_to_path`]. Used to construct `file://` URIs when
+/// the client only opened the importing file and we follow an
+/// import edge to an unopened module.
+pub fn path_to_uri(p: &std::path::Path) -> Option<String> {
+    let s = p.to_str()?;
+    let normalised = s.replace('\\', "/");
+    if cfg!(windows) {
+        Some(format!("file:///{normalised}"))
+    } else {
+        Some(format!("file://{normalised}"))
+    }
+}
+
 /// Build an LSP `Hover` for a `Symbol` with its inferred type
 /// (when known). Markdown content rendered as a fenced `twe`
 /// code block. When inference produced a useful type
@@ -701,6 +1084,15 @@ fn initialize_result() -> Value {
                 ("textDocumentSync", Value::Int(1)),
                 ("definitionProvider", Value::Bool(true)),
                 ("hoverProvider", Value::Bool(true)),
+                // v1.0.1 session 9: find-references + rename.
+                // `prepareRename` returns the precise range under
+                // the cursor; `rename` returns a multi-file
+                // WorkspaceEdit.
+                ("referencesProvider", Value::Bool(true)),
+                (
+                    "renameProvider",
+                    obj([("prepareProvider", Value::Bool(true))]),
+                ),
                 (
                     "completionProvider",
                     obj([
@@ -1494,12 +1886,150 @@ mod tests {
         assert_eq!(greet.get("kind").and_then(|v| v.as_i64()), Some(3));
     }
 
+    // --- v1.0.1 session 9: references + rename + cross-module ---
+
+    #[test]
+    fn initialize_advertises_references_and_rename() {
+        let out = lsp_exchange(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#,
+            r#"{"jsonrpc":"2.0","method":"exit"}"#,
+        ]);
+        let init = json::parse(&split_messages(&out)[0]).expect("init");
+        let caps = init.get("result").unwrap().get("capabilities").unwrap();
+        assert_eq!(caps.get("referencesProvider"), Some(&Value::Bool(true)));
+        assert!(caps.get("renameProvider").is_some());
+    }
+
+    #[test]
+    fn find_occurrences_skips_strings_and_comments() {
+        let text = r#"let foo = 5
+print(foo)
+# foo in a comment
+let s = "foo is a string"
+let bar = foo + foo
+"#;
+        let hits = find_occurrences(text, "foo");
+        // Should hit the let-decl, the print arg, and both addends.
+        // Should NOT hit the comment or the string literal.
+        assert_eq!(hits.len(), 4, "got {hits:?}");
+        assert_eq!(hits[0], (0, 4));
+        assert_eq!(hits[1], (1, 6));
+        // Skips: line 2 (comment), line 3 (inside string).
+        assert_eq!(hits[2].0, 4);
+        assert_eq!(hits[3].0, 4);
+    }
+
+    #[test]
+    fn references_returns_all_open_doc_locations() {
+        // Two open docs share the same identifier; references on the
+        // cursor's identifier should pick up both.
+        let a_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///a.twe","languageId":"twe","version":1,"text":"let shared = 1\nprint(shared)\n"}}}"#;
+        let b_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b.twe","languageId":"twe","version":1,"text":"print(shared)\n"}}}"#;
+        let refs = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/references","params":{"textDocument":{"uri":"file:///a.twe"},"position":{"line":1,"character":6},"context":{"includeDeclaration":true}}}"#;
+        let out = lsp_exchange(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            a_open,
+            b_open,
+            refs,
+            r#"{"jsonrpc":"2.0","id":99,"method":"shutdown"}"#,
+            r#"{"jsonrpc":"2.0","method":"exit"}"#,
+        ]);
+        let msgs = split_messages(&out);
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("references reply");
+        let v = json::parse(reply).expect("parse");
+        let locs = v.get("result").unwrap().as_array().unwrap();
+        // a.twe: decl + print arg. b.twe: print arg. = 3 total.
+        assert_eq!(locs.len(), 3, "got {locs:?}");
+    }
+
+    #[test]
+    fn rename_returns_workspace_edit_across_docs() {
+        let a_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///a.twe","languageId":"twe","version":1,"text":"let old_name = 5\nprint(old_name)\n"}}}"#;
+        let b_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b.twe","languageId":"twe","version":1,"text":"print(old_name + 1)\n"}}}"#;
+        let rename = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{"textDocument":{"uri":"file:///a.twe"},"position":{"line":0,"character":4},"newName":"new_name"}}"#;
+        let out = lsp_exchange(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            a_open,
+            b_open,
+            rename,
+            r#"{"jsonrpc":"2.0","id":99,"method":"shutdown"}"#,
+            r#"{"jsonrpc":"2.0","method":"exit"}"#,
+        ]);
+        let msgs = split_messages(&out);
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("rename reply");
+        let v = json::parse(reply).expect("parse");
+        let changes = v.get("result").unwrap().get("changes").unwrap();
+        // Both files get edits.
+        assert!(changes.get("file:///a.twe").is_some());
+        assert!(changes.get("file:///b.twe").is_some());
+        let a_edits = changes.get("file:///a.twe").unwrap().as_array().unwrap();
+        assert_eq!(a_edits.len(), 2, "a.twe should have decl + print");
+        let new_text = a_edits[0]
+            .get("newText")
+            .and_then(|v| v.as_str())
+            .expect("newText");
+        assert_eq!(new_text, "new_name");
+    }
+
+    #[test]
+    fn rename_rejects_invalid_new_name() {
+        let a_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///a.twe","languageId":"twe","version":1,"text":"let foo = 5\n"}}}"#;
+        // Leading digit — not a valid identifier; rename must reject.
+        let rename = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{"textDocument":{"uri":"file:///a.twe"},"position":{"line":0,"character":4},"newName":"9bad"}}"#;
+        let out = lsp_exchange(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            a_open,
+            rename,
+            r#"{"jsonrpc":"2.0","id":99,"method":"shutdown"}"#,
+            r#"{"jsonrpc":"2.0","method":"exit"}"#,
+        ]);
+        let msgs = split_messages(&out);
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("rename reply");
+        let v = json::parse(reply).expect("parse");
+        assert_eq!(v.get("result"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn prepare_rename_returns_identifier_range() {
+        let open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///p.twe","languageId":"twe","version":1,"text":"let counter_42 = 5\n"}}}"#;
+        let prep = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file:///p.twe"},"position":{"line":0,"character":7}}}"#;
+        let out = lsp_exchange(&[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            open,
+            prep,
+            r#"{"jsonrpc":"2.0","id":99,"method":"shutdown"}"#,
+            r#"{"jsonrpc":"2.0","method":"exit"}"#,
+        ]);
+        let msgs = split_messages(&out);
+        let reply = msgs
+            .iter()
+            .find(|m| m.contains(r#""id":2"#))
+            .expect("prepareRename reply");
+        let v = json::parse(reply).expect("parse");
+        let placeholder = v
+            .get("result")
+            .unwrap()
+            .get("placeholder")
+            .and_then(|s| s.as_str())
+            .expect("placeholder");
+        assert_eq!(placeholder, "counter_42");
+    }
+
     #[test]
     fn unknown_method_request_returns_method_not_found() {
-        // Pick a method we haven't implemented (rename is way beyond
-        // current scope); confirm we reply MethodNotFound rather
-        // than letting the client hang.
-        let unknown = r#"{"jsonrpc":"2.0","id":42,"method":"textDocument/rename","params":{}}"#;
+        // Pick a method we haven't implemented; confirm we reply
+        // MethodNotFound rather than letting the client hang.
+        let unknown = r#"{"jsonrpc":"2.0","id":42,"method":"textDocument/codeAction","params":{}}"#;
         let out = lsp_exchange(&[
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
             unknown,

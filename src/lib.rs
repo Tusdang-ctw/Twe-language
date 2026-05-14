@@ -58,6 +58,10 @@ pub mod parser;
 pub mod play;
 pub mod printer;
 pub mod profile;
+// v1.0.1 session 11: CI perf-bench snapshot + regression alert.
+// Pure stdlib + crate::json. No criterion runtime dep — we scrape
+// criterion's `target/criterion/` output files instead.
+pub mod perf_snapshot;
 pub mod replay;
 pub mod save;
 pub mod stdlib;

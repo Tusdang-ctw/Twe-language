@@ -85,6 +85,74 @@ struct Frame {
 
 thread_local! {
     static MODE: RefCell<Mode> = const { RefCell::new(Mode::Idle) };
+
+    // v1.0.1 session 10: always-on input ring. Captures the last
+    // ~30s of input frames (at 60 Hz that's 1800 frames, ~110 KB
+    // on disk in v1 format). The play loop's `tick(env)` snapshots
+    // inputs once per frame; on crash, `dump_ring_to(path)` flushes
+    // the ring as a valid v1 replay log so the user can reproduce
+    // the bug with `twec replay <script> <log>`. The ring runs in
+    // parallel with Mode — explicit `replay.record(path)` writes
+    // both to disk *and* keeps populating the ring, so a crash
+    // during deliberate recording still gets the rolling snapshot.
+    static RING: RefCell<Ring> = const { RefCell::new(Ring::new()) };
+}
+
+/// Bounded circular buffer of recent input frames. Size is fixed so
+/// the implementation needs no allocator beyond the initial Vec
+/// extension. Capacity matches the design target: 30 seconds at
+/// 60 Hz.
+pub const RING_CAPACITY: usize = 30 * 60;
+
+struct Ring {
+    buf: Vec<Frame>,
+    head: usize,
+    len: usize,
+}
+
+impl Ring {
+    const fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, f: Frame) {
+        if self.buf.len() < RING_CAPACITY {
+            self.buf.push(f);
+            self.len = self.buf.len();
+            self.head = self.len % RING_CAPACITY;
+            return;
+        }
+        // At capacity — overwrite the oldest entry.
+        self.buf[self.head] = f;
+        self.head = (self.head + 1) % RING_CAPACITY;
+        self.len = RING_CAPACITY;
+    }
+
+    /// Snapshot the ring in chronological order (oldest first). Used
+    /// by the crash-dump path; the live ring is never drained.
+    fn snapshot(&self) -> Vec<Frame> {
+        if self.len < RING_CAPACITY {
+            self.buf.clone()
+        } else {
+            let mut out = Vec::with_capacity(self.len);
+            for i in 0..self.len {
+                let idx = (self.head + i) % RING_CAPACITY;
+                out.push(self.buf[idx].clone());
+            }
+            out
+        }
+    }
+
+    #[cfg(test)]
+    fn clear(&mut self) {
+        self.buf.clear();
+        self.head = 0;
+        self.len = 0;
+    }
 }
 
 /// Begin recording inputs to `path`. Truncates any pre-existing file.
@@ -149,6 +217,11 @@ pub fn is_recording() -> bool {
 /// (the script keeps running with whatever real input arrives).
 pub fn tick(env: &mut Env) {
     let snap = snapshot_inputs(env);
+    // v1.0.1 session 10: always populate the ring, regardless of
+    // Mode. The cost is one frame clone + a slot overwrite, and
+    // we get a free 30s reproducer for every crash that occurs
+    // during interactive play.
+    RING.with(|r| r.borrow_mut().push(snap.clone()));
     let mut should_stop_after = false;
     MODE.with(|m| {
         let mut mode = m.borrow_mut();
@@ -305,6 +378,34 @@ fn write_mouse_pos(env: &mut Env, x: f64, y: f64) {
 
 // ---------- I/O ----------
 
+/// v1.0.1 session 10: flush the in-memory ring to a v1 replay log
+/// at `path`. Called by the crash-reporter hook in `cli::install_crash_reporter`.
+/// Returns the number of frames written, or an IO error. A zero-frame
+/// ring still writes a header so the file is recognisable as a Twe
+/// replay log; consumers see "playback ended" on the first tick.
+pub fn dump_ring_to(path: &std::path::Path) -> std::io::Result<usize> {
+    let frames = RING.with(|r| r.borrow().snapshot());
+    let f = fs::File::create(path)?;
+    let mut w = std::io::BufWriter::new(f);
+    writeln!(w, "{HEADER}")?;
+    for fr in &frames {
+        write_frame(&mut w, fr)?;
+    }
+    w.flush()?;
+    Ok(frames.len())
+}
+
+/// Drop the ring contents — used by tests that need a clean baseline.
+#[cfg(test)]
+pub fn clear_ring_for_test() {
+    RING.with(|r| r.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub fn ring_len_for_test() -> usize {
+    RING.with(|r| r.borrow().len)
+}
+
 fn write_frame(w: &mut std::io::BufWriter<fs::File>, f: &Frame) -> std::io::Result<()> {
     writeln!(
         w,
@@ -392,5 +493,69 @@ mod tests {
     fn rejects_bad_header() {
         let err = parse_log("WRONG-HEADER\n").err().unwrap();
         assert!(err.contains("bad header"));
+    }
+
+    // --- v1.0.1 session 10: input ring + crash dump ---
+
+    #[test]
+    fn ring_dump_writes_last_n_frames_after_overflow() {
+        // The ring is shared thread-local state across the test
+        // suite; serialise via a dedicated thread + clear before.
+        clear_ring_for_test();
+        // Push more than RING_CAPACITY frames and confirm the ring
+        // only retains the last RING_CAPACITY (oldest entries
+        // evicted in arrival order).
+        let n = RING_CAPACITY + 50;
+        for i in 0..n {
+            let f = Frame {
+                keys_held: vec![format!("k{i}")],
+                ..Default::default()
+            };
+            RING.with(|r| r.borrow_mut().push(f));
+        }
+        let path = std::env::temp_dir().join(format!(
+            "twec-ring-dump-{}.replay",
+            std::process::id()
+        ));
+        let written = dump_ring_to(&path).expect("dump");
+        assert_eq!(written, RING_CAPACITY);
+        // First line of body should be the OLDEST surviving frame,
+        // which is the (n - RING_CAPACITY)-th frame pushed.
+        let body = std::fs::read_to_string(&path).unwrap();
+        let first_data_line = body.lines().nth(1).expect("body");
+        let expected_first_key = format!("k{}", n - RING_CAPACITY);
+        assert!(
+            first_data_line.starts_with(&expected_first_key),
+            "wrong first frame: got `{first_data_line}`, want `{expected_first_key}`"
+        );
+        let _ = std::fs::remove_file(&path);
+        clear_ring_for_test();
+    }
+
+    #[test]
+    fn ring_dump_round_trips_through_parse_log() {
+        clear_ring_for_test();
+        for i in 0..5u32 {
+            let f = Frame {
+                keys_held: vec![if i % 2 == 0 { "up" } else { "down" }.into()],
+                mouse_x: i as f64 * 10.0,
+                mouse_y: i as f64 * 20.0,
+                ..Default::default()
+            };
+            RING.with(|r| r.borrow_mut().push(f));
+        }
+        let path = std::env::temp_dir().join(format!(
+            "twec-ring-roundtrip-{}.replay",
+            std::process::id()
+        ));
+        dump_ring_to(&path).expect("dump");
+        let body = std::fs::read_to_string(&path).unwrap();
+        let frames = parse_log(&body).expect("parse");
+        assert_eq!(frames.len(), 5);
+        assert_eq!(frames[0].keys_held, vec!["up".to_string()]);
+        assert_eq!(frames[1].mouse_x, 10.0);
+        assert_eq!(frames[2].keys_held, vec!["up".to_string()]);
+        let _ = std::fs::remove_file(&path);
+        clear_ring_for_test();
     }
 }

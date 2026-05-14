@@ -1187,6 +1187,24 @@ cloud.load("slot1.json")             # returns string or nil if not found
 
 Stats are committed to Steam servers automatically on clean exit. Call `stat.commit()` to flush mid-session.
 
+### 7.19 Replay  *(v1.0.1 Session 10)*
+
+```twe
+replay.record("session.replay")       # capture keyboard + mouse to disk
+replay.play("session.replay")          # replay a captured log into the live env
+replay.stop()                          # end either mode
+```
+
+`replay.tick` runs once per simulation step inside the play loop, so user code doesn't observe the recorder. The deterministic-input contract from Phase 29 still holds: same script + same input log → byte-identical run.
+
+**Always-on input ring.** v1.0.1 Session 10 adds a 30-second circular buffer that captures every frame's input regardless of explicit `replay.record` state. When the runtime crashes (any panic), the crash reporter writes a sibling `twec-crash-<secs>-<pid>.replay` next to its `.log`. Reproduce the bug with:
+
+```bash
+twec replay <repro-script.twe> twec-crash-<secs>-<pid>.replay
+```
+
+The replay halts automatically at end-of-file and the script continues with live input from then on. The ring file format is the same v1 line-based replay log; it's grep-friendly + diff-friendly + zero-dependency to parse.
+
 ---
 
 ## 8. Error model
