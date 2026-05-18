@@ -537,8 +537,12 @@ impl<'a> Lexer<'a> {
         }
 
         // Blank line, comment-only line, or end-of-file: skip indent processing.
+        // `\r` covers CRLF blank lines on Windows checkouts — the main loop
+        // treats `\r` as whitespace and the trailing `\n` produces the newline
+        // token, but without this branch a blank CRLF line trips the indent
+        // tracker into emitting a phantom Indent at column 0.
         match self.peek() {
-            None | Some(b'\n') | Some(b'#') => return Ok(()),
+            None | Some(b'\n') | Some(b'\r') | Some(b'#') => return Ok(()),
             _ => {}
         }
 

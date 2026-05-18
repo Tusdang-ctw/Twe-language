@@ -19,7 +19,9 @@ removal would be load-bearing.
 > closeout at [`docs/changes/2026-05-18-v1.0.1-closeout.md`](docs/changes/2026-05-18-v1.0.1-closeout.md).
 > No cloud-hosted assets — fully procedural fx/lighting libraries
 > instead, for the determinism + offline-`.exe` + LLM-grounding
-> reasons enumerated in the plan. Net **+41 tests; 979 passing.**
+> reasons enumerated in the plan. Net **+53 tests; 991 passing**
+> (includes closing the 12 pre-existing CRLF-cascade failures via
+> a one-line lexer fix).
 
 ### Added
 
@@ -65,18 +67,24 @@ removal would be load-bearing.
   (weighted blend), `music.crossfade`, `music.stop`. Reference:
   `examples/audio_demo.twe`.
 
-- **`save SaveSlot:` block + version migrations** (Session 5,
-  2026-05-14). Language-level save schema declaration with per-
-  version migration clauses; closes the `docs/07-save-system.md`
-  "What is open" item. `save SaveSlot:` declares versioned fields
-  with defaults; `migration from N:` blocks run when an older
-  save loads. Reference: `tests/programs/save_migrate.twe`.
+- **Save schema versioning (MVP)** (Session 5, 2026-05-14). Three
+  builtins on `save.*`: `set_schema_version(n)` stamps the in-memory
+  store; `schema_version()` reads it; `loaded_version()` reads what
+  the on-disk save was stamped with. Scripts branch on the loaded
+  version to run their own migration logic. **Honest scope reduction:**
+  the language-level `save SaveSlot:` block + `migration from N:`
+  sub-blocks defer to v1.0.2 (needs lexer / parser / AST work).
+  Reference: `tests/programs/save_schema_version.twe`.
 
-- **Per-state pause opt-out** (Session 6, 2026-05-15). `state foo:`
-  blocks accept `pause: false` (or the `persistent` alias) so debug
-  overlays / pause menus / toast HUDs keep running while gameplay
-  states are paused. Closes the second `CLAUDE.md` "What is open"
-  item.
+- **Per-state pause opt-out (MVP)** (Session 6, 2026-05-15). Stdlib
+  registry of "persistent" state names: `persistent_state(name)` /
+  `clear_persistent_state(name)` / `clear_persistent_states()` /
+  `is_persistent_state(name)`. The eval / VM pause filter walks the
+  registry and keeps registered states ticking while the global
+  pause flag is set, so debug overlays / pause menus / toast HUDs
+  keep running. **Honest scope reduction:** parser-sugar form
+  (`state X: pause: false` / `state X: persistent`) defers to v1.0.2.
+  The MVP closes the *functional* `CLAUDE.md` "What is open" item.
 
 - **Nine-slice / nine-patch panels** (Session 7, 2026-05-15).
   `panel(at, size, skin: nine_slice("path", border: N))` lets the
@@ -126,6 +134,34 @@ removal would be load-bearing.
   directory (via `$TWEC_CACHE_DIR`). `--json` for the
   LLM-grounded support workflow; `-o PATH` writes to a file.
   Always exits 0.
+
+### Fixed
+
+- **CRLF blank-line indent tracker** ([src/lexer.rs](src/lexer.rs)).
+  `handle_line_start` now treats a lone `\r` (Windows blank line)
+  as a blank-line marker, alongside `\n` / `#` / EOF. Without this,
+  40 of 53 `examples/*.twe` files on Windows checkouts tripped the
+  parser with a phantom column-0 Indent token at the next non-blank
+  line. Closes the 12 pre-existing CRLF-cascade test failures that
+  had carried through v1.0.
+
+### Changed
+
+- **`sound.pool` accepts a string path** in addition to a loaded
+  handle. The plan's documented call shape is `sound.pool("sfx/
+  hit.wav", max_voices: 8)`; the previous implementation only
+  accepted a `sound.load(...)` handle, which can't run at top level
+  before macroquad initialises. Pool is voice-budget declaration —
+  the asset doesn't need to exist yet.
+
+- **`examples/survive_beta/main.twe` rewritten to use v1.0.1 polish
+  APIs.** All four damage sites funnel through a `take_player_damage`
+  helper that calls `fx.hit_flash` / `fx.screen_shake` /
+  `fx.damage_number`; hand-rolled camera-clamp replaced with
+  `camera2d.bounds` + `camera2d.follow(deadzone: (60, 40))`;
+  boss-arrival shake + ground shockwave; `save.set_schema_version(1)`
+  + `sound.pool(...)` declared at top level. **Net: 1300 → 1286 LOC
+  (-14).** Closes Exit Criterion 5 in [`docs/v1.0.1-plan.md`](docs/v1.0.1-plan.md).
 
 ### Closeout (Session 14)
 

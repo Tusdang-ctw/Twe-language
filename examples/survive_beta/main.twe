@@ -87,19 +87,14 @@ var best_time = 0.0
 # Boss spawn cadence. Counts up every wave roll; on hitting 5,
 # spawns one boss and resets. Wave 5 is the first boss wave.
 var boss_wave_counter = 0
-# Hit-flash overlay timer. When >0, the playing render draws a
-# semi-bright red layer on top of the world. Set to 0.1s every
-# time the player takes damage, decremented each frame.
-var hit_flash = 0.0
-# Audio: deferred. `sound.load` requires the macroquad thread
-# context to be initialized, which only happens inside
-# `twec play` — top-level loads break headless tooling like
-# `twec run --frames N` and the build pipeline's headless
-# parse-and-infer pass. The visual feedback (Spark death-poof
-# + hit_flash overlay) carries the Game Feel for v1; audio
-# wiring rides a Phase 14 polish follow-on once we have a
-# play-loop-detected helper or a dedicated `audio.lazy_load`.
-
+# v1.0.1 polish: hit feedback flows through `fx.*` (hit_flash +
+# screen_shake + damage_number); camera tracking flows through
+# `camera2d.*`; save schema versioning via `save.*`. Audio remains
+# deferred — `sound.pool` pre-declares the voice budget so the
+# slime-hit / boss-roar SFX clip-stack cleanly when wired.
+sound.pool("examples/assets/silence.wav", 4)
+save.set_schema_version(1)
+camera2d.bounds(view_w * 0.5, view_h * 0.5, arena_w - view_w, arena_h - view_h)
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
 
@@ -113,6 +108,19 @@ var camera_y = player_y - view_h * 0.5
 # / `magnetic_radius` / `player_speed` / `player_max_hp` all live
 # at file scope.
 # ---------------------------------------------------------------
+
+# Every enemy's contact-damage path funnels through this one
+# function so `fx.*` feedback (hit_flash + screen_shake +
+# damage_number) stays consistent across enemy classes.
+function take_player_damage(amount):
+    player_hp -= amount
+    player_iframes = 0.6
+    let sx = player_x - camera_x
+    let sy = player_y - camera_y
+    fx.hit_flash(at: (sx - 12.0, sy - 12.0), size: (24.0, 24.0), color: color.red, duration: 0.12)
+    fx.screen_shake(amount: 4.0, duration: 0.12)
+    fx.damage_number(at: (sx, sy - 24.0), value: amount, color: color.white)
+
 function upgrade_name(id):
     if id == 0:
         return "Faster Attack  (-15% cooldown)"
@@ -208,9 +216,7 @@ entity Slime:
         let r = 22.0
         if dx * dx + dy * dy < r * r:
             if player_iframes <= 0.0:
-                player_hp -= damage
-                player_iframes = 0.6
-                hit_flash = 0.1
+                take_player_damage(damage)
 
     function render():
         if in_levelup:
@@ -259,9 +265,7 @@ entity Bat:
         # Contact damage. Same 22px radius + 0.6s i-frames as Slime.
         if mag2 < 22.0 * 22.0:
             if player_iframes <= 0.0:
-                player_hp -= damage
-                player_iframes = 0.6
-                hit_flash = 0.1
+                take_player_damage(damage)
 
     function render():
         if in_levelup:
@@ -347,9 +351,7 @@ entity SkeletonBolt:
         let dy2 = player_y - pos.y
         if dx2 * dx2 + dy2 * dy2 < 18.0 * 18.0:
             if player_iframes <= 0.0:
-                player_hp -= 12.0
-                player_iframes = 0.6
-                hit_flash = 0.1
+                take_player_damage(12)
             despawn self
 
     function render():
@@ -392,9 +394,10 @@ entity Boss:
         # 36px hit radius (boss half-extent 24 + player half 12).
         if mag2 < 36.0 * 36.0:
             if player_iframes <= 0.0:
-                player_hp -= damage
-                player_iframes = 0.6
-                hit_flash = 0.1
+                take_player_damage(damage)
+                # Boss hits land harder — extra shake on top of the
+                # shared take_player_damage feedback.
+                fx.screen_shake(amount: 8.0, duration: 0.25)
 
     function render():
         if in_levelup:
@@ -832,8 +835,6 @@ scene SurviveBeta:
             weapon_time += dt
             if player_iframes > 0.0:
                 player_iframes -= dt
-            if hit_flash > 0.0:
-                hit_flash -= dt
 
             # ---- Wave pacing. Index rolls every 30s. Each new wave
             # tightens the spawn cadence by 0.15s (floor 0.4s) and
@@ -857,6 +858,9 @@ scene SurviveBeta:
                         camera_x + view_w * 0.5,
                         camera_y - 60.0,
                     )
+                    # Boss-arrival kinesthetic.
+                    fx.screen_shake(amount: 14.0, duration: 0.4)
+                    fx.ground_shockwave(at: (player_x - camera_x, player_y - camera_y), radius: 120.0)
 
             # Spawn burst.
             wave_timer += dt
@@ -961,18 +965,11 @@ scene SurviveBeta:
             if player_y > arena_h - 16.0:
                 player_y = arena_h - 16.0
 
-            # ---- Camera follow. Tracks the player but clamps so
-            # the viewport never shows past the world's edge. ----
-            camera_x = player_x - view_w * 0.5
-            camera_y = player_y - view_h * 0.5
-            if camera_x < 0.0:
-                camera_x = 0.0
-            if camera_x > arena_w - view_w:
-                camera_x = arena_w - view_w
-            if camera_y < 0.0:
-                camera_y = 0.0
-            if camera_y > arena_h - view_h:
-                camera_y = arena_h - view_h
+            # Camera follow via camera2d.* — deadzone-follow with a
+            # Survivors-class lerp. Bounds set at top level.
+            camera2d.follow(target: (player_x, player_y), lerp: 0.15, deadzone: (60.0, 40.0))
+            camera_x = camera.pos.x - view_w * 0.5
+            camera_y = camera.pos.y - view_h * 0.5
 
             # Game-over transition. HP is replenished + slimes
             # cleared in the `game_over` -> `playing` restart hook
@@ -1080,17 +1077,7 @@ scene SurviveBeta:
                 color: px_color
             )
 
-            # Hit flash. Renders a red full-viewport overlay for
-            # 100ms after the player takes damage; the i-frames
-            # tint on the player itself isn't always visible
-            # (player can be off-camera-clamped near walls), so a
-            # screen-edge tint is the load-bearing feedback.
-            if hit_flash > 0.0:
-                rect(
-                    at: (0, 0),
-                    size: (view_w, view_h),
-                    color: color.red,
-                )
+            # Damage feedback flows through fx.* — see take_player_damage.
 
             # HUD.
             let elapsed_s = math.floor(elapsed)
@@ -1282,7 +1269,6 @@ scene SurviveBeta:
                 player_max_hp = 100.0
                 player_speed = 220.0
                 player_iframes = 0.0
-                hit_flash = 0.0
                 elapsed = 0.0
                 kills = 0
                 xp = 0

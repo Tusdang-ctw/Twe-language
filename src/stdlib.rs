@@ -2678,7 +2678,14 @@ fn play_sound_path(
 
 fn sound_pool(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "sound.pool")?;
-    let path = sound_handle_path(&args[0], "sound.pool")?;
+    // Accept either a string path or a loaded handle. The pool is
+    // about declaring voice limits ahead of time — the asset doesn't
+    // need to exist yet (matches docs/v1.0.1-plan.md §Session 4).
+    let path = if args[0].is_str() {
+        args[0].as_string().clone()
+    } else {
+        sound_handle_path(&args[0], "sound.pool")?
+    };
     let max_voices = number(&args[1], "sound.pool.max_voices")?.max(0.0) as u32;
     crate::audio_polish::pool(&path, max_voices);
     Ok(Value::NIL)
