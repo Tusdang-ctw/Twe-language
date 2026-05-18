@@ -996,9 +996,9 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ---
 
-## v1.0.1 — Polish release (in flight, 2026-05-12)
+## v1.0.1 — Polish release (closed 2026-05-18)
 
-**Status:** in development. 1/13 feature sessions shipped. Full plan in `docs/v1.0.1-plan.md`.
+**Status:** **closed 2026-05-18.** 13/13 feature sessions plus the closeout shipped. Full plan in `docs/v1.0.1-plan.md`; closeout at `docs/changes/2026-05-18-v1.0.1-closeout.md`. **979 tests pass; +41 over the v1.0 baseline of 938.**
 
 **Goal:** patch-tier polish release after v1.0. Makes the Survivors-class shipping path *easier and better*, not different. Each item sized to 1–3 sessions per the Phase 14–16 sizing discipline; phase-sized work (browser-3D wgpu port, MMO server runtime, console partner SDKs) stays out by definition.
 
@@ -1009,19 +1009,19 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 | # | Session | Status |
 |---|---------|--------|
 | 1 | `fx.*` procedural VFX library | ✅ shipped 2026-05-12 |
-| 2 | `tween.*` interpolation primitives | pending |
-| 3 | `light2d.*` dynamic 2D lighting | pending |
-| 4 | Audio polish: pooling + ducking + music layers | pending |
-| 5 | `save SaveSlot:` block + version migrations | pending |
-| 6 | Per-state pause opt-out (`pause: false` / `persistent`) | pending |
-| 7 | Nine-slice / nine-patch panels | pending |
-| 8 | Camera2D: follow + zoom + cinematic pan | pending |
-| 9 | LSP cross-module go-to-def + rename | pending |
-| 10 | Replay-on-crash | pending |
-| 11 | CI perf-bench snapshot + regression alert | pending |
-| 12 | Localization plurals | pending |
-| 13 | `twec doctor` | pending |
-| 14 | Closeout | pending |
+| 2 | `tween.*` interpolation primitives | ✅ shipped 2026-05-13 |
+| 3 | `light2d.*` dynamic 2D lighting | ✅ shipped 2026-05-14 |
+| 4 | Audio polish: pooling + ducking + music layers | ✅ shipped 2026-05-14 |
+| 5 | `save SaveSlot:` block + version migrations | ✅ shipped 2026-05-14 |
+| 6 | Per-state pause opt-out (`pause: false` / `persistent`) | ✅ shipped 2026-05-15 |
+| 7 | Nine-slice / nine-patch panels | ✅ shipped 2026-05-15 |
+| 8 | Camera2D: follow + zoom + cinematic pan | ✅ shipped 2026-05-15 |
+| 9 | LSP cross-module go-to-def + rename | ✅ shipped 2026-05-16 |
+| 10 | Replay-on-crash | ✅ shipped 2026-05-16 |
+| 11 | CI perf-bench snapshot + regression alert | ✅ shipped 2026-05-16 |
+| 12 | Localization plurals | ✅ shipped 2026-05-18 |
+| 13 | `twec doctor` | ✅ shipped 2026-05-18 |
+| 14 | Closeout | ✅ shipped 2026-05-18 |
 
 **Decided against:** cloud-hosted asset CDN. Determinism (`Phase 29 replay`), offline self-extracting `.exe` (`Phase 12`), LLM grounding (`Phase 33 stdlib manifest`), and project-as-CDN risk all push toward fully procedural fx/lighting libraries (`fx.*` Session 1, `light2d.*` Session 3) plus an opt-in user-owned `assets.download_to_cache(url, sha256)`. The Twe project never hosts assets.
 

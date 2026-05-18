@@ -10,15 +10,16 @@ ships. Until then, every minor (v0.x) release is permitted to break
 the surface, with deprecations rather than removals where the
 removal would be load-bearing.
 
-## v1.0.1 — Polish release (in development)
+## v1.0.1 — Polish release (closed 2026-05-18)
 
 > Patch-tier release after v1.0 that hardens the Survivors-class
 > path: game feel as one-call procedural effects, audio polish, 2D
 > dynamic lighting, save migrations, contributor LSP, replay-on-crash,
-> and CI perf snapshots. Full plan in [`docs/v1.0.1-plan.md`](docs/v1.0.1-plan.md).
+> and CI perf snapshots. Full plan in [`docs/v1.0.1-plan.md`](docs/v1.0.1-plan.md);
+> closeout at [`docs/changes/2026-05-18-v1.0.1-closeout.md`](docs/changes/2026-05-18-v1.0.1-closeout.md).
 > No cloud-hosted assets — fully procedural fx/lighting libraries
 > instead, for the determinism + offline-`.exe` + LLM-grounding
-> reasons enumerated in the plan.
+> reasons enumerated in the plan. Net **+41 tests; 979 passing.**
 
 ### Added
 
@@ -45,13 +46,90 @@ removal would be load-bearing.
   `run_loop_wasm` / `run_loop_embedded`, bytecode VM `run_loop_bytecode`).
   +4 unit tests. **942 tests pass.**
 
-### Sessions pending
+- **`tween.*` deterministic easing primitives** (Session 2,
+  2026-05-13). Pure functions of `t` — replay-safe by construction:
+  `tween.ease(name, t)`, `tween.lerp(a, b, t)`, `tween.lerp_eased`,
+  `tween.bounce`, `tween.shake`, `tween.eases()` enumerates the
+  fourteen supported curves.
 
-Sessions 2–14 per [`docs/v1.0.1-plan.md`](docs/v1.0.1-plan.md): tween,
-light2d, audio pool/duck/music-layers, `save SaveSlot:` migrations,
-per-state pause opt-out, nine-slice panels, camera2d follow/zoom/pan,
-LSP cross-module rename, replay-on-crash, CI perf snapshot,
-localization plurals, `twec doctor`, closeout.
+- **`light2d.*` dynamic 2D lighting** (Session 3, 2026-05-14).
+  Cheap additive multi-light pass with optional AABB shadow caster.
+  `light2d.add(at, color, radius, flicker)`, `light2d.set_ambient`,
+  `light2d.cast_shadows`, `light2d.clear`. 16-light budget per
+  frame. Reference: `examples/dungeon_demo.twe`.
+
+- **Audio polish — pooling + ducking + music layers** (Session 4,
+  2026-05-14). `sound.pool("path", max_voices: N)` lifts the
+  per-`play` voice limit; `sound.duck` ducks a channel while a
+  triggered sound plays. New `music.*` namespace: `music.layer`
+  (weighted blend), `music.crossfade`, `music.stop`. Reference:
+  `examples/audio_demo.twe`.
+
+- **`save SaveSlot:` block + version migrations** (Session 5,
+  2026-05-14). Language-level save schema declaration with per-
+  version migration clauses; closes the `docs/07-save-system.md`
+  "What is open" item. `save SaveSlot:` declares versioned fields
+  with defaults; `migration from N:` blocks run when an older
+  save loads. Reference: `tests/programs/save_migrate.twe`.
+
+- **Per-state pause opt-out** (Session 6, 2026-05-15). `state foo:`
+  blocks accept `pause: false` (or the `persistent` alias) so debug
+  overlays / pause menus / toast HUDs keep running while gameplay
+  states are paused. Closes the second `CLAUDE.md` "What is open"
+  item.
+
+- **Nine-slice / nine-patch panels** (Session 7, 2026-05-15).
+  `panel(at, size, skin: nine_slice("path", border: N))` lets the
+  Phase 10 widget set render skinned panels. Solid-color fallback
+  preserved.
+
+- **`camera2d.*` follow + zoom + cinematic pan** (Session 8,
+  2026-05-15). Survivors-class follow camera in a one-liner:
+  `camera2d.follow(entity, lerp, deadzone)`, `camera2d.zoom_to`,
+  `camera2d.cinematic_pan`, `camera2d.bounds`. `examples/survive_beta`
+  rewrites its hand-rolled follow logic against the new API.
+
+- **LSP cross-module find-references + rename** (Session 9,
+  2026-05-16). Phase 13 modules + Phase 3/13 LSP now support
+  cross-`import`-boundary go-to-definition, find-references, and
+  rename refactor (multi-file safe; word-boundary scan skips
+  strings + `#` comments).
+
+- **Replay-on-crash + `twec replay`** (Session 10, 2026-05-16).
+  Always-on input ring stores the last 30 seconds of frames; the
+  crash reporter writes a sibling `twec-crash-<secs>-<pid>.replay`
+  next to every `.log`. New CLI subcommand `twec replay <script>
+  <replay-file>` re-runs the bug.
+
+- **CI perf snapshot + `twec perf-snapshot` / `twec perf-diff`**
+  (Session 11, 2026-05-16). New `.github/workflows/perf.yml` runs
+  `cargo bench --bench vm` on push-to-main, scrapes criterion's
+  `target/criterion/` into a deterministic JSON document, and
+  diffs against the checked-in
+  `docs/perf-snapshots/v1.0.1-baseline.json`. Default 5% regression
+  threshold fails CI.
+
+- **Localization plurals** (Session 12, 2026-05-18). CLDR-style
+  cardinal plural rules for **en / es / de / ja / pl** plus ten more
+  Steam-relevant locales (fr / it / nl / pt / sv / no / da / zh /
+  ko / th / vi / ru / uk). `lang.t_plural(key, n, args)` selects a
+  `<key>.<one|few|many|other>` template; `{n}` substitutes the
+  count, `{0}+` substitutes positional args (same shape as
+  `lang.tf`). `lang.plural_category(locale, n)` exposes the rule
+  directly; `lang.set_plural_rule(locale, base_locale)` aliases
+  long-tail locales onto a built-in rule (e.g. `pt-BR` → `es`).
+  Closes the third `CLAUDE.md` "What is open" item.
+
+- **`twec doctor`** (Session 13, 2026-05-18). Triage diagnostic
+  command. Reports twec version + target triple + active feature
+  flags + effective crash directory + last 3 crash logs + cache
+  directory (via `$TWEC_CACHE_DIR`). `--json` for the
+  LLM-grounded support workflow; `-o PATH` writes to a file.
+  Always exits 0.
+
+### Closeout (Session 14)
+
+See [`docs/changes/2026-05-18-v1.0.1-closeout.md`](docs/changes/2026-05-18-v1.0.1-closeout.md).
 
 ---
 

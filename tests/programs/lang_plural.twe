@@ -1,0 +1,49 @@
+# v1.0.1 session 12 — localization plurals.
+# Bundles supply `<key>.<cat>` templates; lang.t_plural picks the
+# category from the active locale's rule and substitutes {n} + {0}+.
+
+# Build an `en` bundle in-script. lang.load reads JSON from disk;
+# here we set the in-memory shape directly via lang.bundles.<locale>
+# (an Object of flat key→string). The point of the test is the rule
+# engine, not the JSON loader (already covered by Phase 10 tests).
+
+# ---- en — simple one/other.
+lang.set_locale("en")
+print(lang.plural_category("en", 0))
+print(lang.plural_category("en", 1))
+print(lang.plural_category("en", 2))
+print(lang.plural_category("en", 17))
+
+# ---- de — same one/other rule as en.
+print(lang.plural_category("de", 1))
+print(lang.plural_category("de", 2))
+
+# ---- ja — always `other` (no grammatical cardinals).
+print(lang.plural_category("ja", 0))
+print(lang.plural_category("ja", 1))
+print(lang.plural_category("ja", 5))
+
+# ---- pl — CLDR rule: one / few(2-4) / many(rest, incl 12-14).
+print(lang.plural_category("pl", 1))
+print(lang.plural_category("pl", 2))
+print(lang.plural_category("pl", 3))
+print(lang.plural_category("pl", 4))
+print(lang.plural_category("pl", 5))
+print(lang.plural_category("pl", 12))
+print(lang.plural_category("pl", 13))
+print(lang.plural_category("pl", 14))
+print(lang.plural_category("pl", 22))
+print(lang.plural_category("pl", 0))
+
+# ---- es — same single-form rule as en/de.
+print(lang.plural_category("es", 1))
+print(lang.plural_category("es", 2))
+
+# ---- alias: pretend Brazilian Portuguese routes through `es`.
+lang.set_plural_rule("pt-BR", "es")
+print(lang.plural_category("pt-BR", 1))
+print(lang.plural_category("pt-BR", 2))
+
+# ---- t_plural — no bundle yet, falls back to the bare key.
+print(lang.t_plural("missing_key", 1, []))
+print(lang.t_plural("missing_key", 5, []))

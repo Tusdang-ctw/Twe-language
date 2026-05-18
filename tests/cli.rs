@@ -372,3 +372,33 @@ fn verify_subcommand_no_args_errors() {
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("requires a file path"), "stderr: {err}");
 }
+
+#[test]
+fn doctor_subcommand_emits_text_report() {
+    // v1.0.1 session 13: `twec doctor` prints a triage report with
+    // the load-bearing fields (version, platform, crash listing).
+    let stdout = run_cli(&["doctor"]);
+    assert!(stdout.contains("twec doctor"), "stdout: {stdout}");
+    assert!(stdout.contains("twec version"), "stdout: {stdout}");
+    assert!(stdout.contains("platform"), "stdout: {stdout}");
+    assert!(stdout.contains("crash dir"), "stdout: {stdout}");
+}
+
+#[test]
+fn doctor_subcommand_emits_json_report() {
+    // The --json variant is the LLM-grounded support workflow:
+    // identifies as `twec-doctor`, includes platform fields with
+    // correct types (numbers unquoted, strings quoted).
+    let stdout = run_cli(&["doctor", "--json"]);
+    assert!(
+        stdout.contains("\"tool\":\"twec-doctor\""),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("\"twec_version\":"), "stdout: {stdout}");
+    assert!(stdout.contains("\"os\":"), "stdout: {stdout}");
+    assert!(stdout.contains("\"features\":{"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("\"recent_crashes\":["),
+        "stdout: {stdout}"
+    );
+}

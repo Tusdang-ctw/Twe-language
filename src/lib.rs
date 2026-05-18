@@ -62,6 +62,11 @@ pub mod profile;
 // Pure stdlib + crate::json. No criterion runtime dep — we scrape
 // criterion's `target/criterion/` output files instead.
 pub mod perf_snapshot;
+// v1.0.1 session 13: `twec doctor` diagnostic command. Pure stdlib
+// + std::fs — no platform deps. The report mirrors what a maintainer
+// would ask for in a first triage round (version, target triple,
+// active features, crash bundles, cache size).
+pub mod doctor;
 pub mod replay;
 pub mod save;
 pub mod stdlib;

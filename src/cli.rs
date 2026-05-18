@@ -21,6 +21,7 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      mutate [--root DIR] [--out DIR] [--rules RULESET] | \
      perf-snapshot [--target DIR] [-o PATH] | \
      perf-diff [--threshold PCT] <baseline.json> <current.json> | \
+     doctor [--json] [-o PATH] | \
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
@@ -121,6 +122,9 @@ pub fn run() {
             process::exit(handle_perf_snapshot(&args[2..]))
         }
         "perf-diff" | "perf_diff" => process::exit(handle_perf_diff(&args[2..])),
+        // v1.0.1 session 13: `twec doctor [--json] [-o PATH]` —
+        // single-page environment + crash-history report for triage.
+        "doctor" => process::exit(handle_doctor(&args[2..])),
         "play3d" => process::exit(handle_play3d(&args[2..])),
         // v1.0.1 session 10: replay a crash bundle (or any v1
         // replay log) by running a script under playback. The play
@@ -1343,6 +1347,63 @@ fn handle_perf_diff(args: &[String]) -> i32 {
         1
     } else {
         0
+    }
+}
+
+/// v1.0.1 session 13: `twec doctor [--json] [-o PATH]` — single-page
+/// triage report. Prints human-readable text by default; `--json`
+/// switches to the machine-readable schema documented in
+/// `crate::doctor::Report::to_json`. Always exits 0 — the diagnostic
+/// surfaces problems through `warnings`, never by failing the
+/// process (a triage tool that exits non-zero is useless for the
+/// "paste the output of `twec doctor`" support workflow).
+fn handle_doctor(args: &[String]) -> i32 {
+    let mut json = false;
+    let mut out_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "-o" | "--out" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    eprintln!("error: `-o` takes a path argument");
+                    return 2;
+                };
+                out_path = Some(v.clone());
+                i += 1;
+            }
+            other => {
+                eprintln!("error: unknown argument for `doctor`: {other}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+        }
+    }
+    let report = crate::doctor::Report::capture();
+    let body = if json {
+        report.to_json()
+    } else {
+        report.to_text()
+    };
+    match out_path {
+        Some(p) => match fs::write(&p, &body) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: cannot write `{p}`: {e}");
+                1
+            }
+        },
+        None => {
+            print!("{body}");
+            if !body.ends_with('\n') {
+                println!();
+            }
+            0
+        }
     }
 }
 

@@ -1637,6 +1637,36 @@ fn install_lang(env: &mut Env) {
         "tf".to_string(),
         Value::from_builtin("lang.tf", &["key", "args"], lang_tf),
     );
+    // v1.0.1 session 12: CLDR-style plurals. Bundles supply
+    // pluralised templates keyed by `<key>.<cat>` (one/few/many/other);
+    // the rule per locale selects which template to draw.
+    lang.insert(
+        "t_plural".to_string(),
+        Value::from_builtin("lang.t_plural", &["key", "n", "args"], lang_t_plural),
+    );
+    lang.insert(
+        "set_plural_rule".to_string(),
+        Value::from_builtin(
+            "lang.set_plural_rule",
+            &["locale", "base_locale"],
+            lang_set_plural_rule,
+        ),
+    );
+    lang.insert(
+        "plural_category".to_string(),
+        Value::from_builtin(
+            "lang.plural_category",
+            &["locale", "n"],
+            lang_plural_category,
+        ),
+    );
+    lang.insert(
+        "plural_aliases".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: HashMap::new(),
+            kind: "module",
+        }))),
+    );
     env.set(
         "lang".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -1831,6 +1861,286 @@ fn lang_tf(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         }
     }
     Ok(Value::from_string(out))
+}
+
+/// v1.0.1 session 12: CLDR cardinal plural categories. Twe ships
+/// rules for the locales the v1.0 community most directly produces
+/// game content in. Long-tail locales alias onto one of these via
+/// `lang.set_plural_rule(locale, base_locale)`.
+///
+/// Built-in rules cover en/es/de/ja/pl per `docs/v1.0.1-plan.md` §12,
+/// plus fr/it/nl/pt/sv/no/da (same single-form rule as en/de) and
+/// zh/ko/th/vi (Asian no-plural family, same as ja) so the common
+/// Steam-release language set works out of the box.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PluralCat {
+    One,
+    Few,
+    Many,
+    Other,
+}
+
+impl PluralCat {
+    fn name(self) -> &'static str {
+        match self {
+            PluralCat::One => "one",
+            PluralCat::Few => "few",
+            PluralCat::Many => "many",
+            PluralCat::Other => "other",
+        }
+    }
+}
+
+fn is_known_plural_locale(locale: &str) -> bool {
+    matches!(
+        locale,
+        "en" | "es"
+            | "de"
+            | "ja"
+            | "pl"
+            | "fr"
+            | "it"
+            | "nl"
+            | "pt"
+            | "sv"
+            | "no"
+            | "da"
+            | "zh"
+            | "ko"
+            | "th"
+            | "vi"
+            | "ru"
+            | "uk"
+    )
+}
+
+fn plural_category_for(locale: &str, n: i64) -> PluralCat {
+    let abs = n.unsigned_abs() as i64;
+    let mod10 = abs % 10;
+    let mod100 = abs % 100;
+    match locale {
+        // No grammatical number distinction for cardinals.
+        "ja" | "zh" | "ko" | "th" | "vi" => PluralCat::Other,
+        // CLDR pl rule.
+        "pl" => {
+            if n == 1 {
+                PluralCat::One
+            } else if (2..=4).contains(&mod10) && !(12..=14).contains(&mod100) {
+                PluralCat::Few
+            } else {
+                PluralCat::Many
+            }
+        }
+        // CLDR ru/uk rule.
+        "ru" | "uk" => {
+            if mod10 == 1 && mod100 != 11 {
+                PluralCat::One
+            } else if (2..=4).contains(&mod10) && !(12..=14).contains(&mod100) {
+                PluralCat::Few
+            } else {
+                PluralCat::Many
+            }
+        }
+        // en/de/es/fr/it/nl/pt/sv/no/da and the implicit-default for
+        // unknown locales: one if exactly 1, else other.
+        _ => {
+            if n == 1 {
+                PluralCat::One
+            } else {
+                PluralCat::Other
+            }
+        }
+    }
+}
+
+/// Resolve a locale through the user-installed alias table (set via
+/// `lang.set_plural_rule`). Returns the resolved built-in locale.
+fn resolve_plural_locale(env: &Env, locale: &str) -> String {
+    let Ok(lang_rc) = lang_namespace(env, "lang.t_plural") else {
+        return locale.to_string();
+    };
+    let lang_o = lang_rc.borrow();
+    let Some(aliases_v) = lang_o.get_field("plural_aliases") else {
+        return locale.to_string();
+    };
+    if !aliases_v.is_object() {
+        return locale.to_string();
+    }
+    let aliases = aliases_v.as_object();
+    let aliases_o = aliases.borrow();
+    if let Some(v) = aliases_o.get_field(locale) {
+        if v.is_str() {
+            return v.as_string().clone();
+        }
+    }
+    locale.to_string()
+}
+
+fn format_plural_template(template: &str, n: i64, positional: &[Value]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            let mut name = String::new();
+            let mut closed = false;
+            for c2 in chars.by_ref() {
+                if c2 == '}' {
+                    closed = true;
+                    break;
+                }
+                name.push(c2);
+            }
+            if !closed {
+                out.push('{');
+                out.push_str(&name);
+                continue;
+            }
+            if name == "n" {
+                out.push_str(&n.to_string());
+            } else {
+                match name.parse::<usize>() {
+                    Ok(idx) if idx < positional.len() => {
+                        out.push_str(&positional[idx].display());
+                    }
+                    _ => {
+                        // Unknown placeholder — emit literally so missing
+                        // args are visible at runtime, matching `lang.tf`.
+                        out.push('{');
+                        out.push_str(&name);
+                        out.push('}');
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn lang_t_plural(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "lang.t_plural")?;
+    let key = string_arg(&args[0], "lang.t_plural", "key")?;
+    let n_v = args[1];
+    if !n_v.is_int_or_boxed_int() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "lang.t_plural expects an integer count, got {}",
+                n_v.type_name()
+            ),
+            help: Some(
+                "pass an integer count, e.g. `lang.t_plural(\"enemies_killed\", count, [])`"
+                    .to_string(),
+            ),
+        });
+    }
+    let n = n_v.as_int();
+    let args_v = args[2];
+    if !args_v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "lang.t_plural expects a list of positional args, got {}",
+                args_v.type_name()
+            ),
+            help: Some(
+                "pass `[]` if there are no extra args, e.g. `lang.t_plural(\"kills\", n, [])`."
+                    .to_string(),
+            ),
+        });
+    }
+    let active = {
+        let lang = lang_namespace(env, "lang.t_plural")?;
+        let lang_o = lang.borrow();
+        lang_o
+            .get_field("active")
+            .filter(|v| v.is_str())
+            .map(|v| v.as_string().clone())
+            .unwrap_or_else(|| "en".to_string())
+    };
+    let resolved = resolve_plural_locale(env, &active);
+    let cat = plural_category_for(&resolved, n);
+    let cat_key = format!("{}.{}", key, cat.name());
+    let (found, template) = lang_lookup(env, &cat_key);
+    let template = if found {
+        template
+    } else if cat != PluralCat::Other {
+        let other_key = format!("{}.other", key);
+        let (other_found, other_template) = lang_lookup(env, &other_key);
+        if other_found {
+            other_template
+        } else {
+            let (_, bare) = lang_lookup(env, &key);
+            bare
+        }
+    } else {
+        let (_, bare) = lang_lookup(env, &key);
+        bare
+    };
+    let args_rc = args_v.as_list();
+    let args_o = args_rc.borrow();
+    Ok(Value::from_string(format_plural_template(
+        &template, n, &args_o,
+    )))
+}
+
+fn lang_set_plural_rule(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "lang.set_plural_rule")?;
+    let locale = string_arg(&args[0], "lang.set_plural_rule", "locale")?;
+    let base = string_arg(&args[1], "lang.set_plural_rule", "base_locale")?;
+    if !is_known_plural_locale(&base) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "lang.set_plural_rule: base_locale '{base}' is not a built-in rule"
+            ),
+            help: Some(
+                "built-in plural locales: en, es, de, ja, pl, fr, it, nl, pt, sv, no, da, zh, ko, th, vi, ru, uk."
+                    .to_string(),
+            ),
+        });
+    }
+    let lang = lang_namespace(env, "lang.set_plural_rule")?;
+    let aliases_v = lang
+        .borrow()
+        .get_field("plural_aliases")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| RuntimeError {
+            line: 0,
+            col: 0,
+            message: "lang.set_plural_rule: `lang.plural_aliases` is missing".to_string(),
+            help: None,
+        })?;
+    let aliases = aliases_v.as_object();
+    aliases
+        .borrow_mut()
+        .fields
+        .insert(locale, Value::from_string(base));
+    Ok(Value::NIL)
+}
+
+fn lang_plural_category(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "lang.plural_category")?;
+    let locale = string_arg(&args[0], "lang.plural_category", "locale")?;
+    let n_v = args[1];
+    if !n_v.is_int_or_boxed_int() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "lang.plural_category expects an integer count, got {}",
+                n_v.type_name()
+            ),
+            help: None,
+        });
+    }
+    let resolved = resolve_plural_locale(env, &locale);
+    let cat = plural_category_for(&resolved, n_v.as_int());
+    Ok(Value::from_string(cat.name().to_string()))
 }
 
 fn install_sound(env: &mut Env) {

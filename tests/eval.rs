@@ -1112,6 +1112,42 @@ fn runs_tween_phase_v1_0_1_session_2() {
 }
 
 #[test]
+fn runs_lang_plural_phase_v1_0_1_session_12() {
+    // v1.0.1 session 12: localization plurals — CLDR cardinal rules
+    // for en/es/de/ja/pl plus alias support via lang.set_plural_rule.
+    // The test asserts category-selection per locale; bundle-driven
+    // formatting is exercised through the missing-key fallback path
+    // (returns the bare key, identical to lang.t).
+    let out = run_program("tests/programs/lang_plural.twe").expect("program should run");
+    let expected = "other\n\
+        one\n\
+        other\n\
+        other\n\
+        one\n\
+        other\n\
+        other\n\
+        other\n\
+        other\n\
+        one\n\
+        few\n\
+        few\n\
+        few\n\
+        many\n\
+        many\n\
+        many\n\
+        many\n\
+        few\n\
+        many\n\
+        one\n\
+        other\n\
+        one\n\
+        other\n\
+        missing_key\n\
+        missing_key\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn runs_lists() {
     let out = run_program("tests/programs/lists.twe").expect("program should run");
     let expected = "[1, 2, 3]\n3\n1\n2\n3\n\
