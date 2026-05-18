@@ -69,8 +69,8 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | `tween.*` — deterministic easing primitives (replay-safe, 14 curves) | v1.0.1 |
 | `light2d.*` — additive multi-light pass + optional AABB shadow caster | v1.0.1 |
 | Audio polish — `sound.pool` / `sound.duck` / `music.layer` / `music.crossfade` | v1.0.1 |
-| `save SaveSlot:` block + `migration from N:` version migrations | v1.0.1 |
-| Per-state pause opt-out (`pause: false` / `persistent`) | v1.0.1 |
+| Save schema versioning — `save.set_schema_version` / `loaded_version` (block syntax v1.0.2) | v1.0.1 |
+| Per-state pause opt-out — `persistent_state(name)` registry (parser sugar v1.0.2) | v1.0.1 |
 | Nine-slice panels (`panel(... skin: nine_slice("path", border: N))`) | v1.0.1 |
 | `camera2d.*` — `follow` / `zoom_to` / `cinematic_pan` / `bounds` | v1.0.1 |
 | LSP cross-module find-references + rename | v1.0.1 |

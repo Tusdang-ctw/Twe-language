@@ -998,7 +998,7 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ## v1.0.1 — Polish release (closed 2026-05-18)
 
-**Status:** **closed 2026-05-18.** 13/13 feature sessions plus the closeout shipped. Full plan in `docs/v1.0.1-plan.md`; closeout at `docs/changes/2026-05-18-v1.0.1-closeout.md`. **979 tests pass; +41 over the v1.0 baseline of 938.**
+**Status:** **closed 2026-05-18.** 13/13 feature sessions plus the closeout shipped. Full plan in `docs/v1.0.1-plan.md`; closeout at `docs/changes/2026-05-18-v1.0.1-closeout.md`. **991 tests pass; +53 over the v1.0 baseline of 938** (includes a one-line lexer fix that closes the 12 pre-existing CRLF-cascade failures). Sessions 5 + 6 shipped MVP-shaped (`save SaveSlot:` block + `state X: pause: false` parser sugar defer to v1.0.2); `examples/survive_beta/main.twe` rewritten to use `fx.*` + `camera2d.follow` + `camera2d.bounds` + `sound.pool` + `save.set_schema_version` (net −14 LOC).
 
 **Goal:** patch-tier polish release after v1.0. Makes the Survivors-class shipping path *easier and better*, not different. Each item sized to 1–3 sessions per the Phase 14–16 sizing discipline; phase-sized work (browser-3D wgpu port, MMO server runtime, console partner SDKs) stays out by definition.
 
