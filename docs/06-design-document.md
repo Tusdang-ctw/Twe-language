@@ -1160,11 +1160,21 @@ text(lang.tf("score", [kills]), at: (10, 10), size: 18, color: color.white)
 
 `lang.t(key)` returns the key itself if the locale is missing the entry.
 
-### 7.16 OS / clipboard
+### 7.16 OS / clipboard / data directory
 
 ```twe
 let text = os.clipboard.read()   # empty string if unavailable
 os.clipboard.write("copied!")
+
+# Per-user, writable directory for saves + settings. Created on first
+# call, so a shipped .exe (whose bundle mounts read-only) has a safe
+# place to write. Pass a single app-name folder (no path separators).
+let dir = os.data_dir("MyGame")
+#   Windows: %APPDATA%\MyGame   macOS: ~/Library/Application Support/MyGame
+#   Linux:   $XDG_DATA_HOME/MyGame (or ~/.local/share/MyGame)
+#   WASM:    "" — the browser persists via localStorage instead
+save.write(dir + "/slot1.json")
+settings.save(dir + "/settings.json")
 ```
 
 ### 7.17 Screenshot

@@ -1328,6 +1328,10 @@ fn install_os(env: &mut Env) {
             kind: "module",
         }))),
     );
+    os_obj.insert(
+        "data_dir".to_string(),
+        Value::from_builtin("os.data_dir", &["app"], os_data_dir),
+    );
     env.set(
         "os".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -1366,6 +1370,96 @@ fn clipboard_write(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
         let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
     }
     Ok(Value::NIL)
+}
+
+/// `os.data_dir(app)` — the platform-correct, per-user, writable
+/// directory where a shipped game should store saves and settings. It is
+/// created on first call (best-effort) so writing a save into it just
+/// works inside a self-extracting `.exe`, whose bundle mounts read-only
+/// in a temp dir leaving the script nowhere else safe to write.
+///
+/// Returns the absolute path with no trailing separator: `%APPDATA%\app`
+/// on Windows, `~/Library/Application Support/app` on macOS, and
+/// `$XDG_DATA_HOME/app` (or `~/.local/share/app`) on Linux. On WASM it
+/// returns the empty string, since the browser target persists via
+/// localStorage (Phase 30) rather than a filesystem path.
+///
+/// `app` must be a single folder name; path separators are rejected so it
+/// cannot escape the platform base directory (Principle 3).
+fn os_data_dir(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "os.data_dir")?;
+    let app = string_arg(&args[0], "os.data_dir", "app")?;
+    if app.trim().is_empty() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "os.data_dir(app) needs a non-empty app name".to_string(),
+            help: Some("e.g. `os.data_dir(\"MyGame\")`".to_string()),
+        });
+    }
+    if app.contains('/') || app.contains('\\') {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "os.data_dir(app): app name `{app}` must not contain path separators"
+            ),
+            help: Some("pass a single folder name like `\"MyGame\"`".to_string()),
+        });
+    }
+    // WASM has no filesystem; saves route through localStorage (Phase 30),
+    // so there's no meaningful path to return.
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(Value::from_string(String::new()))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = platform_data_dir(&app);
+        // Best-effort create. If it fails (permissions), still return the
+        // path so the eventual `save.write` surfaces the real error with
+        // its own context rather than failing opaquely here.
+        let _ = std::fs::create_dir_all(&path);
+        Ok(Value::from_string(path.to_string_lossy().into_owned()))
+    }
+}
+
+/// Per-OS base for `os.data_dir`. Std-only — no `dirs`-crate dependency,
+/// per the project's "buildable from `cargo build` with no special
+/// tooling" bar.
+#[cfg(not(target_arch = "wasm32"))]
+fn platform_data_dir(app: &str) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(|p| PathBuf::from(p).join("AppData").join("Roaming"))
+            })
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(app)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Library")
+            .join("Application Support")
+            .join(app)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        // Linux / other Unix: XDG Base Directory spec.
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(app)
+    }
 }
 
 fn key_held_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

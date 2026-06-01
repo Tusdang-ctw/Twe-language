@@ -2276,6 +2276,42 @@ fn run_program_str(src: &str) -> Result<String, String> {
     eval::run(&program).map_err(|e| format!("eval: {e}"))
 }
 
+#[test]
+fn os_data_dir_returns_app_scoped_created_path() {
+    // ship-pipeline: `os.data_dir(app)` gives a shipped game a writable,
+    // per-user location for saves/settings. Assert the path is app-scoped
+    // and the directory is actually created (so a later `save.write` into
+    // it succeeds). Uses a unique app name and cleans up after itself.
+    let out = run_program_str("print(os.data_dir(\"TweUnitTestDataDir\"))\n")
+        .expect("program should run");
+    let path = out.trim();
+    assert!(!path.is_empty(), "data dir path should be non-empty");
+    assert!(
+        path.ends_with("TweUnitTestDataDir"),
+        "path should be app-scoped, got: {path}"
+    );
+    assert!(
+        std::path::Path::new(path).is_dir(),
+        "os.data_dir should create the directory, missing: {path}"
+    );
+    // Cleanup — best-effort; the dir lives in the real user data dir.
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn os_data_dir_rejects_path_separators() {
+    let err = run_program_str("print(os.data_dir(\"evil/escape\"))\n")
+        .expect_err("path separators must be rejected");
+    assert!(err.contains("path separator"), "got: {err}");
+}
+
+#[test]
+fn os_data_dir_rejects_empty_name() {
+    let err = run_program_str("print(os.data_dir(\"\"))\n")
+        .expect_err("empty app name must be rejected");
+    assert!(err.contains("non-empty"), "got: {err}");
+}
+
 // --- Phase 5 task 2: cooperative fibers via `wait <duration>` ---
 
 #[test]

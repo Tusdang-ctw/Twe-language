@@ -10,6 +10,16 @@ ships. Until then, every minor (v0.x) release is permitted to break
 the surface, with deprecations rather than removals where the
 removal would be load-bearing.
 
+## Unreleased
+
+### Added
+- `os.data_dir(app)` — returns the platform-correct, per-user, writable
+  directory (`%APPDATA%\<app>` on Windows, `~/Library/Application Support/
+  <app>` on macOS, `$XDG_DATA_HOME`/`~/.local/share/<app>` on Linux; `""`
+  on WASM), creating it on first call. Gives a shipped game a safe place
+  to write saves/settings when its bundle is mounted read-only. Std-only,
+  no new dependency.
+
 ## v1.0.2 — Deferral-debt patch (closed 2026-05-26)
 
 > Patch-tier release after v1.0.1 that closes the structural half
