@@ -200,12 +200,21 @@ impl Frame {
 
 struct Compiler {
     frames: Vec<Frame>,
+    /// Method names of the class/scene currently being compiled, set
+    /// across Pass 2 of `emit_decl`. A bare-name call inside a
+    /// method/state body whose name is in this set lowers to
+    /// `self.name(args)` via `OP_INVOKE` — mirroring the tree-walker's
+    /// `eval_call` self-method precedence. Declarations don't nest in
+    /// v0.1 (`emit_decl` is global-scope-only), but the value is
+    /// saved/restored around Pass 2 to stay nesting-safe.
+    current_class_methods: Option<Rc<HashSet<String>>>,
 }
 
 impl Compiler {
     fn new() -> Self {
         Self {
             frames: vec![Frame::new(FrameKind::Script, "<script>", 0)],
+            current_class_methods: None,
         }
     }
 
@@ -1263,6 +1272,31 @@ impl Compiler {
             self.frame_mut().chunk.write_byte(args.len() as u8, *fline);
             return Ok(());
         }
+        // Bare-name call to a sibling method on `self` — lower to
+        // `self.name(args)` via `OP_INVOKE`. Mirrors the tree-walker's
+        // `eval_call`, which dispatches a bare call to a method on
+        // `self` before any local/global resolution when the enclosing
+        // class declares that method. Without this, a scene method
+        // called from a state's `every` / on_update body (e.g.
+        // `bump()` in `tests/programs/scene_methods.twe`) compiled to
+        // `OP_GET_GLOBAL` and failed at runtime with "name not defined".
+        if let Expr::Ident { name, .. } = callee {
+            if self.is_self_method(name) {
+                self.frame_mut().chunk.write_op(OpCode::GetLocal, line);
+                self.frame_mut().chunk.write_byte(0, line); // self
+                for arg in args {
+                    self.emit_expr(arg)?;
+                }
+                let name_idx = self
+                    .frame_mut()
+                    .chunk
+                    .add_constant(Value::from_string(name.clone()));
+                self.frame_mut().chunk.write_op(OpCode::Invoke, line);
+                self.frame_mut().chunk.write_byte(name_idx, line);
+                self.frame_mut().chunk.write_byte(args.len() as u8, line);
+                return Ok(());
+            }
+        }
         self.emit_expr(callee)?;
         for arg in args {
             self.emit_expr(arg)?;
@@ -1358,6 +1392,21 @@ impl Compiler {
             return false;
         }
         match &self.frame().class_fields {
+            Some(set) => set.contains(name),
+            None => false,
+        }
+    }
+
+    /// True when a bare call `name(args)` should rewrite to
+    /// `self.name(args)` — the active frame is a method/state body and
+    /// `name` is one of the enclosing class's declared methods. Mirrors
+    /// the tree-walker's `eval_call`, which dispatches a bare call to a
+    /// method on `self` (when present) before any local/global lookup.
+    fn is_self_method(&self, name: &str) -> bool {
+        if !self.frame().is_method {
+            return false;
+        }
+        match &self.current_class_methods {
             Some(set) => set.contains(name),
             None => false,
         }
@@ -1460,9 +1509,12 @@ impl Compiler {
             });
         }
 
-        // Pass 1: scan fields. Const-fold each default. Track names.
+        // Pass 1: scan fields. Const-fold each default. Track field
+        // and method names. Collecting method names up front lets a
+        // body forward-reference a method declared later in the block.
         let mut field_defaults: HashMap<String, Value> = HashMap::new();
         let mut field_names: HashSet<String> = HashSet::new();
+        let mut method_names: HashSet<String> = HashSet::new();
         let mut initial_state: Option<String> = None;
         for member in members {
             match member {
@@ -1484,6 +1536,9 @@ impl Compiler {
                     field_defaults.insert(fname.clone(), v);
                     field_names.insert(fname.clone());
                 }
+                DeclMember::Method { name: mname, .. } => {
+                    method_names.insert(mname.clone());
+                }
                 DeclMember::InitialState { name: sname, .. } => {
                     initial_state = Some(sname.clone());
                 }
@@ -1491,6 +1546,12 @@ impl Compiler {
             }
         }
         let class_fields = Rc::new(field_names);
+
+        // Make the class's method names visible to bare-name call
+        // lowering for the duration of Pass 2. Saved/restored so a
+        // (hypothetical, v0.1-forbidden) nested declaration can't leak
+        // its method set to the enclosing one.
+        let prev_class_methods = self.current_class_methods.replace(Rc::new(method_names));
 
         // Pass 2: compile methods + states with class_fields known.
         let mut methods: HashMap<String, Rc<BcFunction>> = HashMap::new();
@@ -1529,6 +1590,7 @@ impl Compiler {
                 }
             }
         }
+        self.current_class_methods = prev_class_methods;
 
         if let Some(start) = &initial_state {
             if !states.contains_key(start) {

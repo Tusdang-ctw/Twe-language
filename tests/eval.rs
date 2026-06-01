@@ -2083,6 +2083,29 @@ fn scene_methods_callable_by_bare_name() {
 }
 
 #[test]
+fn vm_scene_methods_callable_by_bare_name() {
+    // craft-hardening: the bytecode VM used to compile a bare sibling-
+    // method call (`bump()` inside a state's `every` body) to
+    // OP_GET_GLOBAL and fail at runtime with "name not defined". The
+    // compiler now lowers it to `self.bump(args)` via OP_INVOKE,
+    // matching the tree-walker exactly (see the tree-walker assertion
+    // above). Covers both the no-arg (`bump`) and with-arg (`bump_by`)
+    // forms, and both state transitions.
+    use twec::{compiler, lexer, parser, vm};
+    let src = fs::read_to_string("tests/programs/scene_methods.twe").expect("read");
+    let tokens = lexer::lex(&src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    let chunk = compiler::compile_program(&program).expect("compile");
+    let mut machine = vm::VM::new();
+    machine.run(&chunk).expect("vm boot");
+    for _ in 0..20 {
+        machine.tick(0.1).expect("tick");
+    }
+    let out = machine.take_out();
+    assert_eq!(out, "1\n2\n3\n13\n23\n33\n", "VM output: {out:?}");
+}
+
+#[test]
 fn snake_advances_right_by_default() {
     let src = std::fs::read_to_string("examples/snake.twe").expect("examples/snake.twe must exist");
     let tokens = twec::lexer::lex(&src).expect("lex");

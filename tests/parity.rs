@@ -108,14 +108,27 @@ const VM_UNSUPPORTED: &[(&str, &str)] = &[
 /// `(program, frames)` so we quarantine only the failing configuration
 /// and keep coverage of the passing ones. Every entry is a debt item:
 /// the goal is to empty this list, not grow it.
-const KNOWN_VM_BUGS: &[(&str, u32, &str)] = &[(
-    "scene_methods.twe",
-    10,
-    "scene-level methods (e.g. `bump()`) called from inside a state's `every` block are not \
-     resolved by the VM — `name not defined` at runtime. Phase-sized fix: compiler must \
-     resolve scene-method names (or VM Call must consult active_scene's class methods from \
-     state/every bodies). Passes at frames=0. See craft-hardening closeout.",
-)];
+///
+/// Empty as of the craft-hardening pass: the one prior entry
+/// (`scene_methods.twe` at frames=10 — bare sibling-method calls like
+/// `bump()` from a state's `every` body) is fixed in `compiler.rs`,
+/// which now lowers a bare call to a declared sibling method into
+/// `self.name(args)` via `OP_INVOKE`, mirroring the tree-walker's
+/// `eval_call` self-method precedence.
+const KNOWN_VM_BUGS: &[(&str, u32, &str)] = &[];
+
+/// Programs that write to the filesystem at a fixed repo-root path
+/// (e.g. `save.write("save_block_test.json")`). The parity sweep runs
+/// in parallel with the `eval` suite, whose dedicated save tests
+/// write/read/remove those same paths — running these here too races
+/// on a shared file and makes the suite flaky. Their tree/VM behaviour
+/// is already pinned by the dedicated `runs_save_*` eval tests, so the
+/// broad parity sweep skips them. Not a deferral; an isolation skip.
+const WRITES_FILES: &[&str] = &[
+    "save_block.twe",
+    "save_schema_version.twe",
+    "v1_0_2_sugar.twe",
+];
 
 /// Frame counts to exercise. 0 covers top-level evaluation; 10 ticks
 /// scenes / states / `every`-clocks so frame-driven divergences show.
@@ -144,6 +157,12 @@ fn bytecode_matches_tree_on_all_programs() {
         if let Some((_, reason)) = VM_UNSUPPORTED.iter().find(|(n, _)| *n == name) {
             skipped += 1;
             eprintln!("skip {name}: {reason}");
+            continue;
+        }
+
+        if WRITES_FILES.contains(&name.as_str()) {
+            skipped += 1;
+            eprintln!("skip {name}: writes to a shared repo-root path; covered by the eval suite");
             continue;
         }
 
