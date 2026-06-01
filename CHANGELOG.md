@@ -12,6 +12,15 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Fixed
+- Type inference now resolves **mutually-recursive** (and forward-
+  referenced) top-level functions. `walk_program` does a two-pass scan —
+  pre-register every top-level function signature, then walk bodies — so
+  `is_even` calling a later-declared `is_odd` no longer raises a spurious
+  strict-mode / `twec verify` "unknown name" error (it ran fine at
+  runtime; this was a false positive in the strict/verified tier).
+  Genuinely-undeclared names still error.
+
 ### Added
 - `then` sequencing keyword (Example 10): `<action> then <body>` evaluates
   the action (an expression yielding a duration), waits that long, then

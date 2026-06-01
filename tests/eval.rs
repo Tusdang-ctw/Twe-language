@@ -2335,6 +2335,14 @@ fn physics2d_collision_primitives() {
 }
 
 #[test]
+fn mutual_recursion_runs_on_tree_walker() {
+    // Companion to the infer-side regression: mutual recursion executes
+    // correctly (the parity harness confirms the VM agrees).
+    let out = run_program("tests/programs/mutual_recursion.twe").expect("program should run");
+    assert_eq!(out, "true\ntrue\nfalse\n");
+}
+
+#[test]
 fn then_sequences_after_action_duration() {
     // Example 10: `<action> then <body>` runs the action, waits for the
     // duration it yields, then runs the body — across fiber suspensions.

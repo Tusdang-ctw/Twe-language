@@ -23,13 +23,14 @@
 //!     needs the structural-record work landing in 4d)
 //!   - thread types through `for x in iter:` (would need to know
 //!     iter is List<T> -> bind x: T)
-//!   - resolve types across mutually-recursive top-level
-//!     functions (single forward pass — recursive self-ref
-//!     works because the function's signature is registered
-//!     before the body is walked, but mutual recursion needs a
-//!     two-pass scan of the program)
 //!
-//! These are 4d / 4e / 4f territory.
+//! Mutually-recursive top-level functions resolve correctly as of
+//! 2026-06-01: `walk_program` does a two-pass scan — pass 1 pre-
+//! registers every top-level function signature, pass 2 walks each
+//! body against those shared vars — so a forward (or mutual) call no
+//! longer raises a spurious strict-mode "unknown name" error.
+//!
+//! The remaining gaps are 4d / 4e / 4f territory.
 
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -254,9 +255,64 @@ impl Inferer {
     /// Walk the whole program, recording top-level bindings as
     /// we go. Function bodies are walked in a nested scope so
     /// param + local types don't leak into the global env.
+    ///
+    /// Two passes over the top level. Pass 1 pre-registers every
+    /// top-level function's *signature* (param + return type vars,
+    /// with annotations applied) so a body can forward-reference — and
+    /// mutually recurse with — any function declared later in the file.
+    /// Pass 2 walks each function body against the SAME signature vars
+    /// pre-registered in pass 1, so the constraints a caller imposes and
+    /// the constraints a callee's body imposes meet on one type var.
+    /// Without this, `is_even` calling a later `is_odd` saw an unbound
+    /// name and (in strict mode) produced a spurious "unknown name"
+    /// error even though the program runs fine.
     fn walk_program(&mut self, program: &Program) {
+        // Pass 1: pre-register top-level function signatures.
+        let mut presig: HashMap<String, (Vec<Type>, Type)> = HashMap::new();
         for stmt in &program.stmts {
-            self.walk_stmt(stmt);
+            if let Stmt::FunctionDecl {
+                name,
+                params,
+                ret,
+                line,
+                col,
+                ..
+            } = stmt
+            {
+                let param_vars: Vec<Type> = params.iter().map(|_| self.fresh_var()).collect();
+                let ret_var = self.fresh_var();
+                for (i, p) in params.iter().enumerate() {
+                    if let Some(ann) = &p.ty {
+                        self.try_unify(&param_vars[i], ann, *line, *col, "param annotation");
+                    }
+                }
+                if let Some(ann) = ret {
+                    self.try_unify(&ret_var, ann, *line, *col, "return annotation");
+                }
+                self.bind(name.clone(), Type::func(param_vars.clone(), ret_var.clone()));
+                presig.insert(name.clone(), (param_vars, ret_var));
+            }
+        }
+        // Pass 2: walk bodies (functions reuse their pass-1 vars) and
+        // every other top-level statement normally.
+        for stmt in &program.stmts {
+            match stmt {
+                Stmt::FunctionDecl {
+                    name,
+                    params,
+                    body,
+                    line,
+                    col,
+                    ..
+                } => {
+                    let (param_vars, ret_var) = presig
+                        .get(name)
+                        .cloned()
+                        .expect("every top-level function was pre-registered in pass 1");
+                    self.walk_function_body(params, body, &param_vars, &ret_var, *line, *col);
+                }
+                other => self.walk_stmt(other),
+            }
         }
     }
 
@@ -1280,6 +1336,56 @@ mod tests {
         let strict = detect_strict(&with_newline);
         let (_bindings, errors) = infer_program_strict(&program, strict);
         errors
+    }
+
+    // --- mutual recursion / forward references (two-pass scan) ---
+
+    #[test]
+    fn mutual_recursion_no_false_positive() {
+        // Regression: two top-level functions that call each other must
+        // both type-check in strict mode. Before the two-pass scan, the
+        // forward call to the later-declared function raised a spurious
+        // `unknown name` error even though the program runs fine.
+        let errors = strict_errors(
+            "# strict\n\
+             function is_even(n: int) -> bool:\n\
+             \x20   if n == 0:\n\
+             \x20       return true\n\
+             \x20   return is_odd(n - 1)\n\
+             function is_odd(n: int) -> bool:\n\
+             \x20   if n == 0:\n\
+             \x20       return false\n\
+             \x20   return is_even(n - 1)",
+        );
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn forward_reference_to_later_function_ok() {
+        // Even non-mutual: calling a function declared later must not
+        // error now that all top-level signatures pre-register.
+        let errors = strict_errors(
+            "# strict\n\
+             function a() -> int:\n\
+             \x20   return b()\n\
+             function b() -> int:\n\
+             \x20   return 1",
+        );
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn truly_unknown_name_still_errors_in_strict() {
+        // The two-pass scan must not mask genuinely-undeclared names.
+        let errors = strict_errors(
+            "# strict\n\
+             function a() -> int:\n\
+             \x20   return totally_undeclared()",
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("unknown name")),
+            "expected an unknown-name error, got: {errors:?}"
+        );
     }
 
     // --- 4a behaviour, regression tested ---

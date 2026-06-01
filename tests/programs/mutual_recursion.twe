@@ -1,0 +1,16 @@
+# Mutual recursion: is_even / is_odd each call the other (one declared
+# later). The two-pass type-inference scan means strict mode / `twec
+# verify` no longer flags the forward call as an unknown name.
+function is_even(n):
+    if n == 0:
+        return true
+    return is_odd(n - 1)
+
+function is_odd(n):
+    if n == 0:
+        return false
+    return is_even(n - 1)
+
+print(is_even(10))
+print(is_odd(7))
+print(is_even(3))
