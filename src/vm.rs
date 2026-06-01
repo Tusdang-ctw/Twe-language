@@ -297,6 +297,18 @@ impl VM {
         // every iteration. Reload it any time `reload!` runs.
         let mut slot_base = self.frames.last().unwrap().slot_base;
 
+        // 2026-06-01 VM-strategy perf spike: stride the GC safepoint.
+        // `gc_should_collect()` is a thread-local + RefCell borrow, and
+        // checking it on EVERY instruction dominated tight arithmetic
+        // loops (the `sum_loop` / `float_loop` / `entity_update`
+        // benches). A local countdown is ~free by comparison; the
+        // safepoint still fires within `GC_CHECK_STRIDE` instructions of
+        // the heap crossing its threshold, which bounds the extra
+        // allocation slack to one stride's worth. See
+        // `docs/changes/2026-06-01-vm-strategy-decision.md`.
+        const GC_CHECK_STRIDE: u32 = 64;
+        let mut gc_countdown: u32 = GC_CHECK_STRIDE;
+
         macro_rules! sync_ip {
             () => {
                 self.frames.last_mut().unwrap().ip = ip;
@@ -358,12 +370,17 @@ Err(RuntimeError {
                 return Ok(self.stack.pop().unwrap_or(Value::NIL));
             }
             // v0.2 Phase 8.5 session 8h: GC safepoint between bytecode
-            // instructions. Threshold-gated so non-allocating dispatch
-            // pays only the cheap `bytes_allocated >= threshold` check;
-            // a real collect fires only once per ~2× live-set growth.
-            if crate::heap::gc_should_collect() {
-                sync_ip!();
-                crate::heap::gc_collect_with(|| self.scan_roots());
+            // instructions, strided (2026-06-01 perf spike). The local
+            // countdown gates the thread-local `gc_should_collect()`
+            // check to once per `GC_CHECK_STRIDE` instructions; a real
+            // collect still fires only once per ~2× live-set growth.
+            gc_countdown -= 1;
+            if gc_countdown == 0 {
+                gc_countdown = GC_CHECK_STRIDE;
+                if crate::heap::gc_should_collect() {
+                    sync_ip!();
+                    crate::heap::gc_collect_with(|| self.scan_roots());
+                }
             }
             let line = current_func.chunk.lines[ip];
             let op = OpCode::from_u8(current_func.chunk.code[ip]);

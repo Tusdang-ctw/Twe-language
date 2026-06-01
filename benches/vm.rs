@@ -64,6 +64,60 @@ for i in 0..100000:
 print(x)
 "#;
 
+/// Game-representative hot path: N entities each running a small
+/// arithmetic `update(dt)` for K frames. This is the shape of a
+/// Vampire-Survivors-class per-frame load — thousands of cheap entity
+/// updates — unlike the micro-loops above. Per the 2026-06-01
+/// VM-strategy decision (`docs/changes/2026-06-01-vm-strategy-decision.md`),
+/// the A-vs-B VM verdict should be made against THIS, not `sum_loop`.
+const ENTITY_UPDATE: &str = r#"
+entity Mob:
+    var x = 0.0
+    var y = 0.0
+    var vx = 1.5
+    var vy = 0.5
+    update(dt):
+        x += vx * dt
+        y += vy * dt
+        if x > 1000.0:
+            x = 0.0
+
+var i = 0
+while i < 2000:
+    spawn Mob at (0, 0)
+    i += 1
+"#;
+
+/// Frames to tick the entity-update scene. 30 frames × 2000 entities
+/// ≈ 60k update calls — enough to dominate spawn/setup cost.
+const ENTITY_UPDATE_FRAMES: u32 = 30;
+
+fn run_tree_frames(src: &str, frames: u32) {
+    let program = parse(src);
+    eval::run_with_frames(&program, frames, 0.016).expect("eval frames");
+}
+
+fn run_bytecode_frames(src: &str, frames: u32) {
+    let program = parse(src);
+    let chunk = compiler::compile_program(&program).expect("compile");
+    let mut machine = vm::VM::new();
+    machine.run(&chunk).expect("vm boot");
+    for _ in 0..frames {
+        machine.tick(0.016).expect("vm tick");
+    }
+}
+
+fn bench_entity_update(c: &mut Criterion) {
+    let mut g = c.benchmark_group("entity_update");
+    g.bench_function(BenchmarkId::new("backend", "tree"), |b| {
+        b.iter(|| run_tree_frames(ENTITY_UPDATE, ENTITY_UPDATE_FRAMES))
+    });
+    g.bench_function(BenchmarkId::new("backend", "bytecode"), |b| {
+        b.iter(|| run_bytecode_frames(ENTITY_UPDATE, ENTITY_UPDATE_FRAMES))
+    });
+    g.finish();
+}
+
 fn bench_sum_loop(c: &mut Criterion) {
     let mut g = c.benchmark_group("sum_loop");
     g.bench_function(BenchmarkId::new("backend", "tree"), |b| {
@@ -101,6 +155,7 @@ criterion_group!(
     benches,
     bench_sum_loop,
     bench_fib_recursive,
-    bench_float_loop
+    bench_float_loop,
+    bench_entity_update
 );
 criterion_main!(benches);
