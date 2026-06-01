@@ -13,6 +13,11 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- State lifecycle hooks `on enter:` / `on exit:` (Snake NP9). `on enter:`
+  folds into the existing on-entry body (one entry mechanism; works on
+  both backends). `on exit:` runs when a state is left, before the next
+  state's entry — the cleanup counterpart to entry code (tree-walker
+  only; the bytecode VM rejects it at compile time). See `docs/06` §4.8a.
 - `rect_outline(at, size, thickness, color)` — the outline counterpart to
   `rect`, mirroring `circle` / `circle_outline`. Finalizes the v1.0
   drawing-primitive set (see `docs/06` §7.5); `triangle` / `polygon` /

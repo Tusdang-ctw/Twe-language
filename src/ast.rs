@@ -359,6 +359,23 @@ pub enum StateMember {
         line: u32,
         col: u32,
     },
+    /// `on enter: body` — explicit on-entry hook. Folds into the same
+    /// on-entry sequence the bare state body uses (one entry mechanism,
+    /// per Principle 2); it exists only to let authors visually separate
+    /// entry code from event handlers. Snake NP9.
+    OnEnter {
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
+    /// `on exit: body` — runs when the state is left, just before the
+    /// transition to the next state takes effect. The cleanup counterpart
+    /// to the entry body. Snake NP9.
+    OnExit {
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
 }
 
 impl StateMember {
@@ -369,7 +386,9 @@ impl StateMember {
             | StateMember::OnRender { line, .. }
             | StateMember::OnKeyPress { line, .. }
             | StateMember::OnUpdate { line, .. }
-            | StateMember::OnPredicate { line, .. } => *line,
+            | StateMember::OnPredicate { line, .. }
+            | StateMember::OnEnter { line, .. }
+            | StateMember::OnExit { line, .. } => *line,
         }
     }
 }

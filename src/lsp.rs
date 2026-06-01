@@ -800,7 +800,9 @@ fn collect_from_state_member(m: &StateMember, out: &mut Vec<Symbol>) {
         | StateMember::OnRender { body, .. }
         | StateMember::OnKeyPress { body, .. }
         | StateMember::OnUpdate { body, .. }
-        | StateMember::OnPredicate { body, .. } => {
+        | StateMember::OnPredicate { body, .. }
+        | StateMember::OnEnter { body, .. }
+        | StateMember::OnExit { body, .. } => {
             for s in body {
                 collect_from_stmt(s, out);
             }

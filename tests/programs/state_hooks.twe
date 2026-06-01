@@ -1,0 +1,29 @@
+# State lifecycle hooks: on enter: / on exit: (Snake NP9).
+# `on enter:` folds into the on-entry body; `on exit:` runs on leave,
+# before the next state's entry. Bare body statements also run on entry,
+# so "body a" + "enter a" both print when `a` is entered.
+
+scene Demo:
+    initial: a
+
+    state a:
+        print("body a")
+        on enter:
+            print("enter a")
+        every 100ms:
+            print("tick a")
+            -> b
+        on exit:
+            print("exit a")
+
+    state b:
+        on enter:
+            print("enter b")
+        every 100ms:
+            -> done
+        on exit:
+            print("exit b")
+
+    state done:
+        on enter:
+            print("enter done")

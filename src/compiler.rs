@@ -1783,6 +1783,22 @@ impl Compiler {
                     )?;
                     on_predicates.push((Rc::new(pred_func), Rc::new(body_func)));
                 }
+                // `on enter:` folds into the on-entry stream, exactly as
+                // the tree-walker does — one entry mechanism.
+                StateMember::OnEnter { body, .. } => {
+                    on_entry_stmts.extend(body.iter().cloned());
+                }
+                // `on exit:` runs cleanup on state-leave; the bytecode VM
+                // doesn't yet mirror the tree-walker's enter_state exit
+                // hook. Tree-walker-first per the 2026-06-01 VM-strategy
+                // decision; rejected here with a clear pointer.
+                StateMember::OnExit { line: el, col: ec, .. } => {
+                    return Err(self.unsupported(
+                        "`on exit:` state hook (tree-walker only for now; run with the default `--vm tree`)",
+                        *el,
+                        *ec,
+                    ));
+                }
             }
         }
         let on_entry = self.compile_on_entry(

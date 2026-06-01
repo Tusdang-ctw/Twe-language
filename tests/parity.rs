@@ -100,6 +100,11 @@ const VM_UNSUPPORTED: &[(&str, &str)] = &[
         "stdlib lang.set_plural_rule — custom Twe-closure plural rules are a tree-walker-only \
          runtime path (needs eval::call_function); the VM rejects at runtime",
     ),
+    (
+        "state_hooks.twe",
+        "compiler.rs — `on exit:` state hook is tree-walker-only (the VM doesn't yet mirror the \
+         enter_state exit hook); tree-walker-first per the 2026-06-01 VM-strategy decision",
+    ),
 ];
 
 /// Real tree-walker/VM divergences that are KNOWN BUGS, not agreed

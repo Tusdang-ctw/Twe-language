@@ -507,6 +507,18 @@ fn write_state_member(s: &mut String, m: &StateMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        StateMember::OnEnter { body, line, col } => {
+            s.push_str("{\"kind\":\"OnEnter\",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
+        StateMember::OnExit { body, line, col } => {
+            s.push_str("{\"kind\":\"OnExit\",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
     }
 }
 

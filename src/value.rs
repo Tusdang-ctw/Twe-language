@@ -53,6 +53,9 @@ pub struct StateDef {
     /// instance and fires the body on a false → true transition
     /// (edge-triggered). Phase 5 task 4 (Example 4 surface).
     pub on_predicates: Vec<PredicateHandlerDef>,
+    /// `on exit:` body — runs when the state is left, just before the
+    /// next state's entry. `None` if the state declares no exit hook.
+    pub on_exit: Option<Vec<crate::ast::Stmt>>,
 }
 
 #[derive(Debug)]

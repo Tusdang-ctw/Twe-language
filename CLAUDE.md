@@ -74,7 +74,7 @@ These decisions are settled. Do not reopen them without an explicit user request
 These are unresolved. When you encounter them, flag explicitly and propose; do not silently decide:
 
 - ~~The exact set of stdlib drawing primitives (`rect`, `text`, etc.)~~ — **CLOSED 2026-06-01.** Finalized set documented in `docs/06-design-document.md` §7.5: `rect` / `rect_outline` / `circle` / `circle_outline` / `line` / `text` / `text_with_font` + `sprite*`. `rect_outline` was added to restore the filled/outline symmetry `circle` already had (and it was already used internally for UI borders). `triangle` / `polygon` / `arc` / `ellipse` / `bezier` / `pixel` are deliberately excluded — not required by any of the 50+ examples and composable from the primitives (Principle 2). Re-opens only if a shipped example needs filled arbitrary polygons.
-- `on enter:` / `on exit:` state hooks (deferred per Snake's NP9).
+- ~~`on enter:` / `on exit:` state hooks (deferred per Snake's NP9).~~ **CLOSED 2026-06-01.** Both ship on the tree-walker (see `docs/06` §4.8a). `on enter:` folds into the existing on-entry body (one entry mechanism, per Principle 2) and works on both backends; `on exit:` runs on state-leave before the next entry (fired in `eval::enter_state`) and is tree-walker-only (the VM rejects it at compile time, tree-walker-first per the VM-strategy decision). `tests/programs/state_hooks.twe` pins the ordering.
 - List comprehensions (deferred per Snake's NP3).
 - Keyword pruning — the current 50-keyword list is at the high end.
 - The fate of `then` as a sequencing keyword (only used in Example 10).

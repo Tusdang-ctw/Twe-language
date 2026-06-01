@@ -860,6 +860,27 @@ fn enter_state(
             }
         }
     };
+    // Snake NP9: run the outgoing state's `on exit:` hook before we
+    // switch, so cleanup observes the state it's leaving still active.
+    // Skipped on the initial entry (no prior state). on_exit is
+    // synchronous cleanup — it runs to completion here, and any
+    // transition it raises is discarded so it can't hijack the
+    // transition already in flight.
+    let outgoing = scene.borrow().current_state.clone();
+    if let Some(old_name) = outgoing {
+        let exit_body = scene
+            .borrow()
+            .class
+            .states
+            .get(&old_name)
+            .and_then(|s| s.on_exit.clone());
+        if let Some(body) = exit_body {
+            let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+            run_block(env, &body)?;
+            env.transitioning = None;
+            env.self_value = prev_self;
+        }
+    }
     // Replace current_state, reset timers / intervals.
     {
         let mut inst = scene.borrow_mut();
@@ -3207,9 +3228,18 @@ fn eval_decl(
                 let mut on_key_press: HashMap<String, Vec<Stmt>> = HashMap::new();
                 let mut on_update: Option<OnUpdateHandler> = None;
                 let mut on_predicates: Vec<crate::value::PredicateHandlerDef> = Vec::new();
+                let mut on_exit: Option<Vec<Stmt>> = None;
                 for sm in smembers {
                     match sm {
                         StateMember::Stmt(stmt) => on_entry.push(stmt.clone()),
+                        // `on enter:` folds into the same on-entry stream
+                        // as the bare body — one entry mechanism.
+                        StateMember::OnEnter { body, .. } => {
+                            on_entry.extend(body.iter().cloned());
+                        }
+                        StateMember::OnExit { body, .. } => {
+                            on_exit = Some(body.clone());
+                        }
                         StateMember::Every { interval, body, .. } => {
                             every_clocks.push(EveryClockDef {
                                 interval: interval.clone(),
@@ -3248,6 +3278,7 @@ fn eval_decl(
                         on_key_press,
                         on_update,
                         on_predicates,
+                        on_exit,
                     }),
                 );
             }

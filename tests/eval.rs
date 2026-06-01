@@ -2335,6 +2335,19 @@ fn physics2d_collision_primitives() {
 }
 
 #[test]
+fn state_enter_exit_hooks_fire_in_order() {
+    // Snake NP9: `on enter:` folds into the on-entry body (so the bare
+    // "body a" and "enter a" both print on entry), and `on exit:` runs
+    // when a state is left, before the next state's entry.
+    let out = run_program_frames("tests/programs/state_hooks.twe", 4, 0.1)
+        .expect("program should run");
+    assert_eq!(
+        out,
+        "body a\nenter a\ntick a\nexit a\nenter b\nexit b\nenter done\n"
+    );
+}
+
+#[test]
 fn rect_outline_is_registered_and_render_gated() {
     // The finalized drawing set adds rect_outline (the missing outline
     // counterpart to `rect`, mirroring circle/circle_outline). Confirm

@@ -454,6 +454,25 @@ Semantics:
 - Statement-level `wait` inside a state suspends without leaving the state.
 - `on <predicate>:` registers an edge-triggered handler scoped to the state. The runtime evaluates the predicate each frame and fires the body on the false → true transition. The body is *not* re-fired while the predicate stays true (Phase 5 task 4 — both backends ship this).
 
+#### 4.8a Lifecycle hooks: `on enter:` / `on exit:`  *(Snake NP9)*
+
+A state may declare explicit entry/exit hooks:
+
+```twe
+state alert:
+    on enter:
+        sound.play("alarm.wav")
+    every 100ms:
+        scan_for_player()
+    on exit:
+        sound.stop(alarm)
+```
+
+- **`on enter:`** runs when the state becomes active. It is *the same on-entry mechanism* as the bare state body — both run on entry, in source order — so there is one entry concept, not two (Principle 2). Use `on enter:` purely to separate entry code visually from the handlers when a state has many.
+- **`on exit:`** runs when the state is left, immediately *before* the next state's entry, so cleanup observes the state it's leaving as still active. It is synchronous — it cannot `wait`, and a `-> <state>` raised inside it is ignored (exit is cleanup, not control flow). It does not run on the initial state's first activation (there is no prior state to leave).
+
+`on exit:` is a tree-walker feature; the bytecode VM rejects it at compile time (tree-walker-first, per the 2026-06-01 VM-strategy decision). `on enter:` works on both backends (it lowers into the on-entry body).
+
 ### 4.9 Visual blocks
 
 A `visual` block compiles to a fragment shader.

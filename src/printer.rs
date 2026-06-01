@@ -674,6 +674,8 @@ fn state_member_takes_blank(m: &StateMember) -> bool {
             | StateMember::OnRender { .. }
             | StateMember::OnKeyPress { .. }
             | StateMember::OnUpdate { .. }
+            | StateMember::OnEnter { .. }
+            | StateMember::OnExit { .. }
     )
 }
 
@@ -713,6 +715,16 @@ fn print_state_member(out: &mut String, m: &StateMember, depth: usize, cursor: &
             out.push_str("on ");
             print_expr(out, predicate, Prec::Lowest);
             out.push_str(":\n");
+            print_block(out, body, depth + 1, cursor);
+        }
+        StateMember::OnEnter { body, .. } => {
+            push_indent(out, depth);
+            out.push_str("on enter:\n");
+            print_block(out, body, depth + 1, cursor);
+        }
+        StateMember::OnExit { body, .. } => {
+            push_indent(out, depth);
+            out.push_str("on exit:\n");
             print_block(out, body, depth + 1, cursor);
         }
     }

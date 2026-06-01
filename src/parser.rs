@@ -1521,6 +1521,42 @@ impl<'a> Parser<'a> {
                 col: kw.col,
             });
         }
+        // `on enter:` / `on exit:` — state lifecycle hooks (Snake NP9).
+        // `enter`/`exit` are plain idents (contextual here), so these
+        // must be recognised before the generic `on <predicate>:` arm
+        // below, which would otherwise parse `enter` as an expression.
+        if matches!(self.peek().kind, TokenKind::On)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "enter")
+            && self.pos + 2 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 2].kind, TokenKind::Colon)
+        {
+            let kw = self.bump().clone();
+            self.bump(); // ident "enter"
+            self.expect(TokenKind::Colon, "expected ':' after `on enter`")?;
+            let body = self.parse_block()?;
+            return Ok(StateMember::OnEnter {
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
+        if matches!(self.peek().kind, TokenKind::On)
+            && self.pos + 1 < self.tokens.len()
+            && matches!(&self.tokens[self.pos + 1].kind, TokenKind::Ident(s) if s == "exit")
+            && self.pos + 2 < self.tokens.len()
+            && matches!(self.tokens[self.pos + 2].kind, TokenKind::Colon)
+        {
+            let kw = self.bump().clone();
+            self.bump(); // ident "exit"
+            self.expect(TokenKind::Colon, "expected ':' after `on exit`")?;
+            let body = self.parse_block()?;
+            return Ok(StateMember::OnExit {
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
         // `on <predicate>: body` — predicate event handler. Falls
         // through to here after the three name-shaped on-handlers
         // above. The predicate is any expression; the runtime
