@@ -13,6 +13,12 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Fixed
+- Strict-mode field access on a **record-typed** value (e.g. a parameter
+  annotated `{ x: int, y: int }`) now resolves to the declared field
+  type. Previously `p.x` inferred `Unknown`, so using it — e.g.
+  `p.x + p.y` — raised a spurious `? vs ?` arithmetic mismatch even when
+  the call type-checked via width subtyping. Width subtyping (a value
+  missing a required field still fails the call) is unchanged.
 - Type inference now resolves **mutually-recursive** (and forward-
   referenced) top-level functions. `walk_program` does a two-pass scan —
   pre-register every top-level function signature, then walk bodies — so

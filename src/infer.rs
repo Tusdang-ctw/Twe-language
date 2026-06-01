@@ -894,6 +894,15 @@ impl Inferer {
                         .get(class_name.as_str())
                         .and_then(|shape| shape.get(field).cloned())
                         .unwrap_or(Type::Unknown),
+                    // Field access on a record-typed value (e.g. a
+                    // parameter annotated `{ x: int, y: int }`) resolves
+                    // to the declared field type. Without this, `p.x`
+                    // was Unknown, so `p.x + p.y` reported a spurious
+                    // strict-mode `? vs ?` arithmetic mismatch even
+                    // though the call type-checked via width subtyping.
+                    (Type::Record(fields), field) => {
+                        fields.get(field).cloned().unwrap_or(Type::Unknown)
+                    }
                     _ => Type::Unknown,
                 }
             }
@@ -1372,6 +1381,47 @@ mod tests {
              \x20   return 1",
         );
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn record_field_access_resolves_field_type() {
+        // Regression: field access on a record-typed parameter resolves
+        // to the declared field type, so `p.x + p.y` type-checks instead
+        // of raising a spurious `? vs ?` arithmetic mismatch. The call
+        // itself passes via width subtyping (Point's fields ⊇ {x, y}).
+        let errors = strict_errors(
+            "# strict\n\
+             entity Point:\n\
+             \x20   var x = 0\n\
+             \x20   var y = 0\n\
+             \x20   var label = \"p\"\n\
+             function mag(p: { x: int, y: int }) -> int:\n\
+             \x20   return p.x + p.y\n\
+             let pt = Point()\n\
+             print(mag(pt))",
+        );
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn record_width_subtyping_rejects_missing_field() {
+        // The fix must not over-correct: a value missing a required
+        // field still fails the call, and only the call (no spurious
+        // body error).
+        let errors = strict_errors(
+            "# strict\n\
+             function mag(p: { x: int, y: int }) -> int:\n\
+             \x20   return p.x + p.y\n\
+             entity Line:\n\
+             \x20   var x = 0\n\
+             let l = Line()\n\
+             print(mag(l))",
+        );
+        assert_eq!(errors.len(), 1, "expected exactly one error, got: {errors:?}");
+        assert!(
+            errors[0].message.contains("call argument"),
+            "expected a call-argument mismatch, got: {errors:?}"
+        );
     }
 
     #[test]
