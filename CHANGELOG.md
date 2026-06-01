@@ -13,12 +13,18 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
-- `physics2d.*` — hand-rolled, std-only 2D collision queries (no
-  `rapier2d` dependency): `overlap(a, b)`, `resolve(a, b)` (minimum
-  translation vector), `sweep(box, vel, solids)` (swept-AABB time-of-
-  impact + normal, for resting contact / platformers), `circle_overlap`,
-  and `circle_hits(center, r, boxes)`. Boxes are `(x, y, w, h)` top-left
-  tuples. Broad-phase grid + rigid-body dynamics are deferred follow-ons.
+- `physics2d.*` — hand-rolled, std-only 2D collision + motion (no
+  `rapier2d` dependency). Narrow phase: `overlap(a, b)`, `resolve(a, b)`
+  (minimum translation vector), `sweep(box, vel, solids)` (swept-AABB
+  time-of-impact + normal), `circle_overlap`, `circle_hits(center, r,
+  boxes)`. Broad phase: `broadphase(boxes, cell)` builds a spatial-hash
+  grid (handle), `grid_query` / `grid_near` return sorted candidate
+  indices, `grid_free` releases it. Dynamics: `move_and_slide(box, vel,
+  dt, solids)` integrates a body against static solids with swept
+  collision + sliding, returning `{x, y, vx, vy, on_ground, on_ceiling,
+  on_wall, hit}` (stateless; the script owns the body). Boxes are
+  `(x, y, w, h)` top-left tuples. Rigid-body dynamics (mass, restitution,
+  joints) remain a deferred follow-on.
 - `os.data_dir(app)` — returns the platform-correct, per-user, writable
   directory (`%APPDATA%\<app>` on Windows, `~/Library/Application Support/
   <app>` on macOS, `$XDG_DATA_HOME`/`~/.local/share/<app>` on Linux; `""`

@@ -2334,6 +2334,39 @@ fn physics2d_collision_primitives() {
     assert_eq!(out, expected);
 }
 
+#[test]
+fn physics2d_broadphase_and_move_and_slide() {
+    // Broad-phase spatial grid (build/query/near/free) + dynamic
+    // move_and_slide (swept collision response with sliding). Pins
+    // correctness; the parity harness confirms the VM agrees.
+    let out =
+        run_program("tests/programs/physics2d_dynamics.twe").expect("program should run");
+    let expected = "[0, 2]\n\
+        [0, 2]\n\
+        [3]\n\
+        40.0\n\
+        0.0\n\
+        true\n\
+        50.0\n\
+        40.0\n\
+        50.0\n\
+        0.0\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn physics2d_grid_free_then_query_errors() {
+    // Querying a freed grid is a tracked footgun, not a silent empty
+    // result (Principle 3).
+    let err = run_program_str(
+        "let g = physics2d.broadphase([(0, 0, 8, 8)], 16)\n\
+         physics2d.grid_free(g)\n\
+         print(physics2d.grid_query(g, (0, 0, 8, 8)))\n",
+    )
+    .expect_err("query after free should error");
+    assert!(err.contains("not found"), "got: {err}");
+}
+
 // --- Phase 5 task 2: cooperative fibers via `wait <duration>` ---
 
 #[test]

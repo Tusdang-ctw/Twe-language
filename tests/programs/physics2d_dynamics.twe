@@ -1,0 +1,22 @@
+# Broad-phase spatial grid + dynamic move_and_slide (collision response).
+
+# --- broad-phase grid (build, query, free) ---
+let boxes = [(0, 0, 10, 10), (100, 0, 10, 10), (5, 5, 10, 10), (200, 200, 10, 10)]
+let grid = physics2d.broadphase(boxes, 32)
+print(physics2d.grid_query(grid, (0, 0, 12, 12)))       # near origin
+print(physics2d.grid_near(grid, (0, 0), 12))            # circle near origin
+print(physics2d.grid_query(grid, (200, 200, 10, 10)))   # far corner
+physics2d.grid_free(grid)
+
+# --- dynamic: fall straight onto a floor, land and stop ---
+let r = physics2d.move_and_slide((0, 0, 10, 10), (0, 100), 1, [(0, 50, 100, 10)])
+print(r.y)            # bottom rests on floor top (y = 50)
+print(r.vy)           # vertical velocity killed
+print(r.on_ground)
+
+# --- dynamic: diagonal into floor → slide horizontally, keep vx ---
+let s = physics2d.move_and_slide((0, 0, 10, 10), (50, 100), 1, [(0, 50, 200, 10)])
+print(s.x)            # horizontal motion preserved
+print(s.y)
+print(s.vx)
+print(s.vy)

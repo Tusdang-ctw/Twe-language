@@ -1314,6 +1314,25 @@ if h.hit:
 # Circle queries — the cheap radius tests action games lean on.
 physics2d.circle_overlap((px, py), 12, (ex, ey), 8)        # pickup range → bool
 physics2d.circle_hits((px, py), 90, enemy_boxes)           # aura → list[int] of indices
+
+# Broad phase: a spatial-hash grid so M bullets vs N enemies isn't
+# O(M·N). Build once per frame from a box list (each box's index is its
+# id), query per object, then free. Results are sorted candidate indices
+# (still run narrow-phase overlap on them).
+let grid = physics2d.broadphase(enemy_boxes, 64)   # 64 = cell size
+for b in bullets:
+    for i in physics2d.grid_query(grid, bullet_box(b)):
+        if physics2d.overlap(bullet_box(b), enemy_boxes[i]): hit(i)
+physics2d.grid_near(grid, (px, py), pickup_radius)  # candidates near a circle
+physics2d.grid_free(grid)                            # release (querying after free errors)
+
+# Dynamic motion: integrate a body by velocity (units/sec) over dt
+# against static solids, stopping at contacts and sliding along them.
+# Stateless — the script owns position/velocity. Apply gravity first.
+e.vy += GRAVITY * dt
+let m = physics2d.move_and_slide((e.x, e.y, e.w, e.h), (e.vx, e.vy), dt, level_solids)
+e.x = m.x; e.y = m.y; e.vx = m.vx; e.vy = m.vy   # vy is 0 after landing
+if m.on_ground and jump_pressed: e.vy = -JUMP    # m.on_ground / on_wall / on_ceiling
 ```
 
 ---

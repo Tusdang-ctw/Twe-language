@@ -5516,6 +5516,40 @@ fn install_physics2d(env: &mut Env) {
             physics2d_circle_hits,
         ),
     );
+    // Broad-phase spatial hash (stateful — frame-rebuilt, explicitly freed).
+    p.insert(
+        "broadphase".to_string(),
+        Value::from_builtin(
+            "physics2d.broadphase",
+            &["boxes", "cell"],
+            physics2d_broadphase,
+        ),
+    );
+    p.insert(
+        "grid_query".to_string(),
+        Value::from_builtin("physics2d.grid_query", &["grid", "box"], physics2d_grid_query),
+    );
+    p.insert(
+        "grid_near".to_string(),
+        Value::from_builtin(
+            "physics2d.grid_near",
+            &["grid", "center", "r"],
+            physics2d_grid_near,
+        ),
+    );
+    p.insert(
+        "grid_free".to_string(),
+        Value::from_builtin("physics2d.grid_free", &["grid"], physics2d_grid_free),
+    );
+    // Dynamic motion: swept collision response with sliding.
+    p.insert(
+        "move_and_slide".to_string(),
+        Value::from_builtin(
+            "physics2d.move_and_slide",
+            &["box", "vel", "dt", "solids"],
+            physics2d_move_and_slide,
+        ),
+    );
     env.set(
         "physics2d".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -5544,6 +5578,45 @@ fn box4_of(v: &Value, what: &str) -> Result<(f32, f32, f32, f32), RuntimeError> 
         message: format!("{what} expects a box `(x, y, w, h)`, got {}", (*v).type_name()),
         help: Some("a 2D box is `(x, y, w, h)` with `(x, y)` the top-left corner".to_string()),
     })
+}
+
+/// Extract a list of 2D boxes from a Twe list Value.
+fn boxes_of(v: &Value, what: &str) -> Result<Vec<(f32, f32, f32, f32)>, RuntimeError> {
+    if !v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what} expects a list of boxes, got {}", v.type_name()),
+            help: Some("pass `[(x, y, w, h), ...]`".to_string()),
+        });
+    }
+    let list = v.as_list();
+    let l = list.borrow();
+    let mut out = Vec::with_capacity(l.len());
+    for (i, item) in l.iter().enumerate() {
+        out.push(box4_of(item, &format!("{what}[{i}]"))?);
+    }
+    Ok(out)
+}
+
+/// Earliest swept-AABB contact of moving box `m` (velocity `vx,vy`)
+/// against a slice of static solids. Shared by `physics2d.sweep` and
+/// `physics2d.move_and_slide`.
+fn sweep_solids(
+    m: (f32, f32, f32, f32),
+    vx: f32,
+    vy: f32,
+    solids: &[(f32, f32, f32, f32)],
+) -> Option<(f32, f32, f32)> {
+    let mut best: Option<(f32, f32, f32)> = None;
+    for &s in solids {
+        if let Some((t, nx, ny)) = swept_aabb(m, vx, vy, s) {
+            if best.map(|(bt, _, _)| t < bt).unwrap_or(true) {
+                best = Some((t, nx, ny));
+            }
+        }
+    }
+    best
 }
 
 /// `physics2d.overlap(a, b)` — do two AABBs overlap? Edge-touching boxes
@@ -5643,30 +5716,8 @@ fn physics2d_sweep(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
     arity(args, 3, "physics2d.sweep")?;
     let m = box4_of(&args[0], "physics2d.sweep.box")?;
     let (vx, vy) = xy_of(&args[1], "physics2d.sweep.vel")?;
-    if !args[2].is_list() {
-        return Err(RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!(
-                "physics2d.sweep expects a list of solid boxes, got {}",
-                args[2].type_name()
-            ),
-            help: Some("pass `[(x, y, w, h), ...]`".to_string()),
-        });
-    }
-    let solids = args[2].as_list();
-    let mut best: Option<(f32, f32, f32)> = None;
-    {
-        let list = solids.borrow();
-        for (i, item) in list.iter().enumerate() {
-            let s = box4_of(item, &format!("physics2d.sweep.solids[{i}]"))?;
-            if let Some((t, nx, ny)) = swept_aabb(m, vx as f32, vy as f32, s) {
-                if best.map(|(bt, _, _)| t < bt).unwrap_or(true) {
-                    best = Some((t, nx, ny));
-                }
-            }
-        }
-    }
+    let solids = boxes_of(&args[2], "physics2d.sweep.solids")?;
+    let best = sweep_solids(m, vx as f32, vy as f32, &solids);
     let mut fields = HashMap::new();
     match best {
         Some((t, nx, ny)) => {
@@ -5739,6 +5790,225 @@ fn physics2d_circle_hits(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
         }
     }
     Ok(Value::from_list(Rc::new(RefCell::new(hits))))
+}
+
+// Broad-phase spatial hash registry. Grids are stateful, keyed by a u32
+// handle, and meant to be rebuilt each frame and freed (matching the
+// thread-local-registry pattern used elsewhere in the stdlib). Query
+// results are sorted so output is deterministic regardless of HashMap
+// iteration order — required for the parity harness and replay.
+thread_local! {
+    static PHYSICS2D_GRIDS: RefCell<HashMap<u32, P2dGrid>> = RefCell::new(HashMap::new());
+    static PHYSICS2D_NEXT_GRID: RefCell<u32> = const { RefCell::new(1) };
+}
+
+struct P2dGrid {
+    cell: f32,
+    cells: HashMap<(i32, i32), Vec<i64>>,
+}
+
+impl P2dGrid {
+    fn cell_coord(&self, x: f32, y: f32) -> (i32, i32) {
+        ((x / self.cell).floor() as i32, (y / self.cell).floor() as i32)
+    }
+    fn insert(&mut self, id: i64, b: (f32, f32, f32, f32)) {
+        let (x, y, w, h) = b;
+        let (cx0, cy0) = self.cell_coord(x, y);
+        let (cx1, cy1) = self.cell_coord(x + w, y + h);
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                self.cells.entry((cx, cy)).or_default().push(id);
+            }
+        }
+    }
+    fn query(&self, b: (f32, f32, f32, f32)) -> Vec<i64> {
+        let (x, y, w, h) = b;
+        let (cx0, cy0) = self.cell_coord(x, y);
+        let (cx1, cy1) = self.cell_coord(x + w, y + h);
+        let mut out: Vec<i64> = Vec::new();
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                if let Some(v) = self.cells.get(&(cx, cy)) {
+                    out.extend_from_slice(v);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// Pull a grid handle (u32) from an int/number Value.
+fn grid_handle(v: &Value, what: &str) -> Result<u32, RuntimeError> {
+    let n = number(v, what)?;
+    if n < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what} expects a grid handle from physics2d.broadphase"),
+            help: None,
+        });
+    }
+    Ok(n as u32)
+}
+
+fn grid_not_found(id: u32) -> RuntimeError {
+    RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("physics2d: grid {id} not found (freed, or never created)"),
+        help: Some("build one with `physics2d.broadphase(boxes, cell)` and free it with `physics2d.grid_free(grid)`".to_string()),
+    }
+}
+
+/// `physics2d.broadphase(boxes, cell)` — build a spatial-hash grid from a
+/// list of boxes (each box's index becomes its id), bucketed into
+/// `cell`-sized squares. Returns an integer grid handle. Rebuild each
+/// frame; release with `physics2d.grid_free`.
+fn physics2d_broadphase(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics2d.broadphase")?;
+    let solids = boxes_of(&args[0], "physics2d.broadphase.boxes")?;
+    let cell = number(&args[1], "physics2d.broadphase.cell")? as f32;
+    if cell <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("physics2d.broadphase: cell size must be positive, got {cell}"),
+            help: Some("a good cell size is roughly the size of a typical object".to_string()),
+        });
+    }
+    let mut grid = P2dGrid {
+        cell,
+        cells: HashMap::new(),
+    };
+    for (i, &b) in solids.iter().enumerate() {
+        grid.insert(i as i64, b);
+    }
+    let id = PHYSICS2D_NEXT_GRID.with(|c| {
+        let mut c = c.borrow_mut();
+        let id = *c;
+        *c = c.wrapping_add(1).max(1);
+        id
+    });
+    PHYSICS2D_GRIDS.with(|g| g.borrow_mut().insert(id, grid));
+    Ok(Value::from_int(id as i64))
+}
+
+/// `physics2d.grid_query(grid, box)` — candidate box indices whose cells
+/// overlap the query box (broad phase; narrow-phase `overlap` still
+/// needed). Sorted, de-duplicated list of ints.
+fn physics2d_grid_query(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics2d.grid_query")?;
+    let id = grid_handle(&args[0], "physics2d.grid_query.grid")?;
+    let b = box4_of(&args[1], "physics2d.grid_query.box")?;
+    let ids = PHYSICS2D_GRIDS
+        .with(|g| g.borrow().get(&id).map(|grid| grid.query(b)))
+        .ok_or_else(|| grid_not_found(id))?;
+    Ok(Value::from_list(Rc::new(RefCell::new(
+        ids.into_iter().map(Value::from_int).collect(),
+    ))))
+}
+
+/// `physics2d.grid_near(grid, center, r)` — candidate box indices near a
+/// circle (its bounding box is queried). Sorted list of ints.
+fn physics2d_grid_near(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics2d.grid_near")?;
+    let id = grid_handle(&args[0], "physics2d.grid_near.grid")?;
+    let (cx, cy) = xy_of(&args[1], "physics2d.grid_near.center")?;
+    let r = number(&args[2], "physics2d.grid_near.r")? as f32;
+    let b = (cx as f32 - r, cy as f32 - r, 2.0 * r, 2.0 * r);
+    let ids = PHYSICS2D_GRIDS
+        .with(|g| g.borrow().get(&id).map(|grid| grid.query(b)))
+        .ok_or_else(|| grid_not_found(id))?;
+    Ok(Value::from_list(Rc::new(RefCell::new(
+        ids.into_iter().map(Value::from_int).collect(),
+    ))))
+}
+
+/// `physics2d.grid_free(grid)` — release a broad-phase grid. No-op if the
+/// handle is already gone.
+fn physics2d_grid_free(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "physics2d.grid_free")?;
+    let id = grid_handle(&args[0], "physics2d.grid_free.grid")?;
+    PHYSICS2D_GRIDS.with(|g| g.borrow_mut().remove(&id));
+    Ok(Value::NIL)
+}
+
+/// `physics2d.move_and_slide(box, vel, dt, solids)` — integrate a moving
+/// box by `vel` (units/sec) over `dt` against a list of static solids,
+/// stopping at contacts and sliding along surfaces. Stateless: the script
+/// owns the entity's position/velocity and feeds them back each frame.
+/// Returns a record `{x, y, vx, vy, on_ground, on_ceiling, on_wall, hit}`.
+/// `x` / `y` are the new top-left position after resolution. `vx` / `vy`
+/// are the velocity with the into-surface component removed at each
+/// contact (so landing zeroes `vy`) — apply gravity yourself before
+/// calling (`vy += g * dt`). The `on_ground` / `on_ceiling` / `on_wall`
+/// flags report contacts; screen-space `+y` is down, so a floor's normal
+/// points up and sets `on_ground`. Up to four slide iterations per call
+/// resolve corners and stacked solids.
+fn physics2d_move_and_slide(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "physics2d.move_and_slide")?;
+    let (bx, by, w, h) = box4_of(&args[0], "physics2d.move_and_slide.box")?;
+    let (vx, vy) = xy_of(&args[1], "physics2d.move_and_slide.vel")?;
+    let dt = number(&args[2], "physics2d.move_and_slide.dt")? as f32;
+    let solids = boxes_of(&args[3], "physics2d.move_and_slide.solids")?;
+
+    let mut pos = (bx, by);
+    let mut rem = (vx as f32 * dt, vy as f32 * dt);
+    let mut vel = (vx as f32, vy as f32);
+    let (mut on_ground, mut on_ceiling, mut on_wall, mut any_hit) = (false, false, false, false);
+
+    for _ in 0..4 {
+        if rem.0 == 0.0 && rem.1 == 0.0 {
+            break;
+        }
+        let cur = (pos.0, pos.1, w, h);
+        match sweep_solids(cur, rem.0, rem.1, &solids) {
+            None => {
+                pos.0 += rem.0;
+                pos.1 += rem.1;
+                break;
+            }
+            Some((t, nx, ny)) => {
+                any_hit = true;
+                // Advance to the contact point.
+                pos.0 += rem.0 * t;
+                pos.1 += rem.1 * t;
+                // Slide the leftover motion along the surface (drop the
+                // component along the contact normal).
+                let leftover = (rem.0 * (1.0 - t), rem.1 * (1.0 - t));
+                let dot = leftover.0 * nx + leftover.1 * ny;
+                rem = (leftover.0 - nx * dot, leftover.1 - ny * dot);
+                // Kill the velocity component into the surface so momentum
+                // along the wall/floor is preserved but not into it.
+                let vdot = vel.0 * nx + vel.1 * ny;
+                vel = (vel.0 - nx * vdot, vel.1 - ny * vdot);
+                if ny < 0.0 {
+                    on_ground = true;
+                } else if ny > 0.0 {
+                    on_ceiling = true;
+                }
+                if nx != 0.0 {
+                    on_wall = true;
+                }
+            }
+        }
+    }
+
+    let mut fields = HashMap::new();
+    fields.insert("x".to_string(), Value::from_float(pos.0 as f64));
+    fields.insert("y".to_string(), Value::from_float(pos.1 as f64));
+    fields.insert("vx".to_string(), Value::from_float(vel.0 as f64));
+    fields.insert("vy".to_string(), Value::from_float(vel.1 as f64));
+    fields.insert("on_ground".to_string(), Value::from_bool(on_ground));
+    fields.insert("on_ceiling".to_string(), Value::from_bool(on_ceiling));
+    fields.insert("on_wall".to_string(), Value::from_bool(on_wall));
+    fields.insert("hit".to_string(), Value::from_bool(any_hit));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "move_result",
+    }))))
 }
 
 /// True iff this build is running in a browser (wasm32 target).
