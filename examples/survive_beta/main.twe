@@ -349,9 +349,7 @@ entity SkeletonBolt:
         if lifetime <= 0.0:
             despawn self
             return
-        let dx2 = player_x - pos.x
-        let dy2 = player_y - pos.y
-        if dx2 * dx2 + dy2 * dy2 < 18.0 * 18.0:
+        if physics2d.circle_overlap((player_x, player_y), 12.0, (pos.x, pos.y), 6.0):
             if player_iframes <= 0.0:
                 take_player_damage(12)
             despawn self
@@ -504,25 +502,19 @@ entity Projectile:
         # 600 u/s × 16ms ≈ 10u per frame doesn't tunnel through.
         # The check spans every enemy class; first overlap wins.
         for slime in entities.of(Slime):
-            let dx = slime.pos.x - pos.x
-            let dy = slime.pos.y - pos.y
-            if dx * dx + dy * dy < 14.0 * 14.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 3.0, (slime.pos.x, slime.pos.y), 11.0):
                 despawn slime
                 despawn self
                 kills += 1
                 return
         for bat in entities.of(Bat):
-            let dx = bat.pos.x - pos.x
-            let dy = bat.pos.y - pos.y
-            if dx * dx + dy * dy < 14.0 * 14.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 3.0, (bat.pos.x, bat.pos.y), 11.0):
                 despawn bat
                 despawn self
                 kills += 1
                 return
         for sk in entities.of(Skeleton):
-            let dx = sk.pos.x - pos.x
-            let dy = sk.pos.y - pos.y
-            if dx * dx + dy * dy < 14.0 * 14.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 3.0, (sk.pos.x, sk.pos.y), 11.0):
                 despawn sk
                 despawn self
                 kills += 1
@@ -531,9 +523,7 @@ entity Projectile:
         # half-extent 24 + projectile half ~3 + slack ~5 ≈ 32).
         # Subtracts 5 damage; the boss only despawns when HP hits 0.
         for boss in entities.of(Boss):
-            let dx = boss.pos.x - pos.x
-            let dy = boss.pos.y - pos.y
-            if dx * dx + dy * dy < 32.0 * 32.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 8.0, (boss.pos.x, boss.pos.y), 24.0):
                 boss.hp -= 5.0
                 if boss.hp <= 0.0:
                     despawn boss
@@ -579,21 +569,15 @@ entity Blade:
         # one frame can clip multiple targets at once which is
         # the load-bearing feel for a melee orbit.
         for slime in entities.of(Slime):
-            let dx = slime.pos.x - pos.x
-            let dy = slime.pos.y - pos.y
-            if dx * dx + dy * dy < 18.0 * 18.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 6.0, (slime.pos.x, slime.pos.y), 12.0):
                 despawn slime
                 kills += 1
         for bat in entities.of(Bat):
-            let dx = bat.pos.x - pos.x
-            let dy = bat.pos.y - pos.y
-            if dx * dx + dy * dy < 18.0 * 18.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 6.0, (bat.pos.x, bat.pos.y), 12.0):
                 despawn bat
                 kills += 1
         for sk in entities.of(Skeleton):
-            let dx = sk.pos.x - pos.x
-            let dy = sk.pos.y - pos.y
-            if dx * dx + dy * dy < 18.0 * 18.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 6.0, (sk.pos.x, sk.pos.y), 12.0):
                 despawn sk
                 kills += 1
         # Boss takes 2 dmg per overlap-frame. With the blade
@@ -602,9 +586,7 @@ entity Blade:
         # in two orbits. Tunable in session 14 if it lands too
         # generous in playtest.
         for boss in entities.of(Boss):
-            let dx = boss.pos.x - pos.x
-            let dy = boss.pos.y - pos.y
-            if dx * dx + dy * dy < 32.0 * 32.0:
+            if physics2d.circle_overlap((pos.x, pos.y), 8.0, (boss.pos.x, boss.pos.y), 24.0):
                 boss.hp -= 2.0
                 if boss.hp <= 0.0:
                     despawn boss
@@ -639,21 +621,15 @@ entity Aura:
         if tick_timer >= tick_interval:
             tick_timer = 0.0
             for slime in entities.of(Slime):
-                let dx = slime.pos.x - player_x
-                let dy = slime.pos.y - player_y
-                if dx * dx + dy * dy < radius * radius:
+                if physics2d.circle_overlap((player_x, player_y), radius, (slime.pos.x, slime.pos.y), 0.0):
                     despawn slime
                     kills += 1
             for bat in entities.of(Bat):
-                let dx = bat.pos.x - player_x
-                let dy = bat.pos.y - player_y
-                if dx * dx + dy * dy < radius * radius:
+                if physics2d.circle_overlap((player_x, player_y), radius, (bat.pos.x, bat.pos.y), 0.0):
                     despawn bat
                     kills += 1
             for sk in entities.of(Skeleton):
-                let dx = sk.pos.x - player_x
-                let dy = sk.pos.y - player_y
-                if dx * dx + dy * dy < radius * radius:
+                if physics2d.circle_overlap((player_x, player_y), radius, (sk.pos.x, sk.pos.y), 0.0):
                     despawn sk
                     kills += 1
             # Aura ticks the boss for 6 dmg per pulse. With a
@@ -661,9 +637,7 @@ entity Aura:
             # aura to die from this weapon alone — rewards staying
             # in melee but doesn't trivialize.
             for boss in entities.of(Boss):
-                let dx = boss.pos.x - player_x
-                let dy = boss.pos.y - player_y
-                if dx * dx + dy * dy < radius * radius:
+                if physics2d.circle_overlap((player_x, player_y), radius, (boss.pos.x, boss.pos.y), 0.0):
                     boss.hp -= 6.0
                     if boss.hp <= 0.0:
                         despawn boss
