@@ -2355,6 +2355,37 @@ fn physics2d_broadphase_and_move_and_slide() {
 }
 
 #[test]
+fn physics2d_rigidbody_impulse_response() {
+    // Rigid-body-lite: bounce (reflect off static surface w/ restitution)
+    // and collide (mass-weighted two-body impulse). Pins correctness; the
+    // parity harness confirms the VM agrees.
+    let out =
+        run_program("tests/programs/physics2d_rigidbody.twe").expect("program should run");
+    let expected = "(3.0, -8.0)\n\
+        (3.0, -10.0)\n\
+        (-5.0, 0.0)\n\
+        (0.0, 0.0)\n\
+        -1.0\n\
+        0.0\n\
+        1.0\n\
+        0.0\n\
+        -1.0\n\
+        1.0\n\
+        0.0\n\
+        0.0\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn physics2d_collide_rejects_nonpositive_mass() {
+    let err = run_program_str(
+        "print(physics2d.collide((0, 0), (1, 0), 0, (5, 0), (-1, 0), 1, 1))\n",
+    )
+    .expect_err("zero mass should error");
+    assert!(err.contains("masses must be positive"), "got: {err}");
+}
+
+#[test]
 fn physics2d_grid_free_then_query_errors() {
     // Querying a freed grid is a tracked footgun, not a silent empty
     // result (Principle 3).

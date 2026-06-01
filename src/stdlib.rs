@@ -5550,6 +5550,23 @@ fn install_physics2d(env: &mut Env) {
             physics2d_move_and_slide,
         ),
     );
+    // Rigid-body-lite impulse response (linear; mass + restitution).
+    p.insert(
+        "bounce".to_string(),
+        Value::from_builtin(
+            "physics2d.bounce",
+            &["vel", "normal", "restitution"],
+            physics2d_bounce,
+        ),
+    );
+    p.insert(
+        "collide".to_string(),
+        Value::from_builtin(
+            "physics2d.collide",
+            &["p1", "v1", "m1", "p2", "v2", "m2", "restitution"],
+            physics2d_collide,
+        ),
+    );
     env.set(
         "physics2d".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -6009,6 +6026,98 @@ fn physics2d_move_and_slide(_env: &mut Env, args: &[Value]) -> Result<Value, Run
         fields,
         kind: "move_result",
     }))))
+}
+
+/// `physics2d.bounce(vel, normal, restitution)` — reflect a velocity off a
+/// static surface. `normal` points away from the surface (toward the
+/// incoming body); `restitution` in `[0, 1]` is bounciness (1 = perfectly
+/// elastic, 0 = killed). Returns the new velocity tuple. If the body is
+/// already moving away from the surface (or the normal is degenerate),
+/// `vel` is returned unchanged.
+fn physics2d_bounce(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics2d.bounce")?;
+    let (vx, vy) = xy_of(&args[0], "physics2d.bounce.vel")?;
+    let (mut nx, mut ny) = xy_of(&args[1], "physics2d.bounce.normal")?;
+    let e = number(&args[2], "physics2d.bounce.restitution")?;
+    let len = (nx * nx + ny * ny).sqrt();
+    let (rx, ry) = if len < 1e-9 {
+        (vx, vy)
+    } else {
+        nx /= len;
+        ny /= len;
+        let dot = vx * nx + vy * ny;
+        if dot < 0.0 {
+            let k = (1.0 + e) * dot;
+            (vx - k * nx, vy - k * ny)
+        } else {
+            (vx, vy)
+        }
+    };
+    Ok(Value::from_tuple(Rc::new(vec![
+        Value::from_float(rx),
+        Value::from_float(ry),
+    ])))
+}
+
+fn collision_record(v1x: f64, v1y: f64, v2x: f64, v2y: f64) -> Value {
+    let mut f = HashMap::new();
+    f.insert("v1x".to_string(), Value::from_float(v1x));
+    f.insert("v1y".to_string(), Value::from_float(v1y));
+    f.insert("v2x".to_string(), Value::from_float(v2x));
+    f.insert("v2y".to_string(), Value::from_float(v2y));
+    Value::from_object(Rc::new(RefCell::new(Object {
+        fields: f,
+        kind: "collision",
+    })))
+}
+
+/// `physics2d.collide(p1, v1, m1, p2, v2, m2, restitution)` — mass-weighted
+/// impulse resolution between two bodies (points/circles) along the line
+/// connecting their centers `p1`→`p2`. Conserves momentum; `restitution`
+/// in `[0, 1]` sets elasticity. Masses must be positive (use a large mass
+/// to approximate an immovable body). Returns `{v1x, v1y, v2x, v2y}`, the
+/// post-collision velocities; if the bodies are separating or coincident,
+/// the input velocities are returned unchanged.
+fn physics2d_collide(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 7, "physics2d.collide")?;
+    let (p1x, p1y) = xy_of(&args[0], "physics2d.collide.p1")?;
+    let (v1x, v1y) = xy_of(&args[1], "physics2d.collide.v1")?;
+    let m1 = number(&args[2], "physics2d.collide.m1")?;
+    let (p2x, p2y) = xy_of(&args[3], "physics2d.collide.p2")?;
+    let (v2x, v2y) = xy_of(&args[4], "physics2d.collide.v2")?;
+    let m2 = number(&args[5], "physics2d.collide.m2")?;
+    let e = number(&args[6], "physics2d.collide.restitution")?;
+    if m1 <= 0.0 || m2 <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "physics2d.collide: masses must be positive (got m1={m1}, m2={m2})"
+            ),
+            help: Some("use a large mass to approximate an immovable body".to_string()),
+        });
+    }
+    let mut nx = p2x - p1x;
+    let mut ny = p2y - p1y;
+    let len = (nx * nx + ny * ny).sqrt();
+    if len < 1e-9 {
+        return Ok(collision_record(v1x, v1y, v2x, v2y));
+    }
+    nx /= len;
+    ny /= len;
+    // Closing velocity of body 2 relative to body 1 along the normal.
+    let vel_along = (v2x - v1x) * nx + (v2y - v1y) * ny;
+    if vel_along > 0.0 {
+        return Ok(collision_record(v1x, v1y, v2x, v2y)); // separating
+    }
+    let j = -(1.0 + e) * vel_along / (1.0 / m1 + 1.0 / m2);
+    let (ix, iy) = (j * nx, j * ny);
+    Ok(collision_record(
+        v1x - ix / m1,
+        v1y - iy / m1,
+        v2x + ix / m2,
+        v2y + iy / m2,
+    ))
 }
 
 /// True iff this build is running in a browser (wasm32 target).

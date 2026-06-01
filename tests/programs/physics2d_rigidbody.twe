@@ -1,0 +1,24 @@
+# physics2d rigid-body-lite: impulse response (mass + restitution).
+
+# --- bounce off a static surface (normal points away from surface) ---
+print(physics2d.bounce((3, 10), (0, -1), 0.8))    # floor, 80% → (3.0, -8.0)
+print(physics2d.bounce((3, -10), (0, -1), 0.8))   # moving away → unchanged
+print(physics2d.bounce((5, 0), (-1, 0), 1))       # right wall, elastic → (-5.0, 0.0)
+print(physics2d.bounce((5, 0), (-1, 0), 0))       # inelastic → (0.0, 0.0)
+
+# --- two-body elastic collision (equal mass, head-on → swap) ---
+let c = physics2d.collide((0, 0), (1, 0), 1, (10, 0), (-1, 0), 1, 1)
+print(c.v1x)
+print(c.v1y)
+print(c.v2x)
+print(c.v2y)
+
+# --- separating bodies: no impulse, velocities unchanged ---
+let s = physics2d.collide((0, 0), (-1, 0), 1, (10, 0), (1, 0), 1, 1)
+print(s.v1x)
+print(s.v2x)
+
+# --- perfectly inelastic head-on (equal mass, e=0) → both stop ---
+let i = physics2d.collide((0, 0), (2, 0), 1, (10, 0), (-2, 0), 1, 0)
+print(i.v1x)
+print(i.v2x)

@@ -1333,7 +1333,20 @@ e.vy += GRAVITY * dt
 let m = physics2d.move_and_slide((e.x, e.y, e.w, e.h), (e.vx, e.vy), dt, level_solids)
 e.x = m.x; e.y = m.y; e.vx = m.vx; e.vy = m.vy   # vy is 0 after landing
 if m.on_ground and jump_pressed: e.vy = -JUMP    # m.on_ground / on_wall / on_ceiling
+
+# Rigid-body-lite impulse response (linear; mass + restitution). Stateless.
+# `bounce` reflects a velocity off a static surface (normal points away
+# from it); restitution 1 = elastic, 0 = killed.
+ball.vel = physics2d.bounce(ball.vel, wall_normal, 0.9)
+
+# `collide` resolves a two-body collision (mass-weighted, momentum-
+# conserving) along the line of centers — e.g. enemies shoving each other.
+let r = physics2d.collide((a.x, a.y), (a.vx, a.vy), a.mass,
+                          (b.x, b.y), (b.vx, b.vy), b.mass, 0.4)
+a.vx = r.v1x; a.vy = r.v1y; b.vx = r.v2x; b.vy = r.v2y
 ```
+
+Angular dynamics (rotation/torque) and joints are intentionally out of scope — the linear primitives above cover the 2D arcade / platformer / physics-toy genres Twe targets without a stateful rigid-body world.
 
 ---
 

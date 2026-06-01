@@ -23,8 +23,12 @@ removal would be load-bearing.
   dt, solids)` integrates a body against static solids with swept
   collision + sliding, returning `{x, y, vx, vy, on_ground, on_ceiling,
   on_wall, hit}` (stateless; the script owns the body). Boxes are
-  `(x, y, w, h)` top-left tuples. Rigid-body dynamics (mass, restitution,
-  joints) remain a deferred follow-on.
+  `(x, y, w, h)` top-left tuples. Rigid-body-lite: `bounce(vel, normal,
+  restitution)` reflects a velocity off a static surface, and
+  `collide(p1, v1, m1, p2, v2, m2, restitution)` resolves a mass-weighted,
+  momentum-conserving two-body collision → `{v1x, v1y, v2x, v2y}`. Angular
+  dynamics + joints remain out of scope. `examples/platformer_physics2d.twe`
+  demonstrates `move_and_slide`.
 - `os.data_dir(app)` — returns the platform-correct, per-user, writable
   directory (`%APPDATA%\<app>` on Windows, `~/Library/Application Support/
   <app>` on macOS, `$XDG_DATA_HOME`/`~/.local/share/<app>` on Linux; `""`
