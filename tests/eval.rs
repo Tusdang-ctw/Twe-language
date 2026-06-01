@@ -2312,6 +2312,28 @@ fn os_data_dir_rejects_empty_name() {
     assert!(err.contains("non-empty"), "got: {err}");
 }
 
+#[test]
+fn physics2d_collision_primitives() {
+    // genre coverage: hand-rolled 2D collision queries. Pins correctness;
+    // the parity harness separately confirms the bytecode VM agrees.
+    // Box = (x, y, w, h), top-left origin.
+    let out = run_program("tests/programs/physics2d.twe").expect("program should run");
+    let expected = "true\n\
+        false\n\
+        false\n\
+        (-5.0, 0.0)\n\
+        true\n\
+        0.25\n\
+        -1.0\n\
+        0.0\n\
+        false\n\
+        1.0\n\
+        true\n\
+        false\n\
+        [0, 2]\n";
+    assert_eq!(out, expected);
+}
+
 // --- Phase 5 task 2: cooperative fibers via `wait <duration>` ---
 
 #[test]

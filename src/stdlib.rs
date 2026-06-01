@@ -756,6 +756,7 @@ pub fn install(env: &mut Env) {
     #[cfg(not(target_arch = "wasm32"))]
     install_rollback(env);
     install_assets(env);
+    install_physics2d(env);
     install_touch(env);
     install_joystick_widget(env);
     install_safe_area(env);
@@ -5470,6 +5471,274 @@ fn install_assets(env: &mut Env) {
             kind: "module",
         }))),
     );
+}
+
+/// `physics2d.*` — hand-rolled, stateless 2D collision queries. No new
+/// dependency (std-only math), per the project's "buildable from `cargo
+/// build`" bar and the 2026-06-01 design decision to grow genre coverage
+/// (platformers, physics toys) without a `rapier2d` dependency. A 2D box
+/// is the 4-tuple `(x, y, w, h)` with `(x, y)` the top-left corner —
+/// matching `tilemap_aabb_touches`. Broad-phase grid + rigid-body
+/// dynamics are deferred follow-ons; these primitives are the 80/20 a
+/// Vampire-Survivors / platformer needs (overlap, penetration resolve,
+/// swept AABB for resting contact, circle queries).
+fn install_physics2d(env: &mut Env) {
+    let mut p = HashMap::new();
+    p.insert(
+        "overlap".to_string(),
+        Value::from_builtin("physics2d.overlap", &["a", "b"], physics2d_overlap),
+    );
+    p.insert(
+        "resolve".to_string(),
+        Value::from_builtin("physics2d.resolve", &["a", "b"], physics2d_resolve),
+    );
+    p.insert(
+        "sweep".to_string(),
+        Value::from_builtin(
+            "physics2d.sweep",
+            &["box", "vel", "solids"],
+            physics2d_sweep,
+        ),
+    );
+    p.insert(
+        "circle_overlap".to_string(),
+        Value::from_builtin(
+            "physics2d.circle_overlap",
+            &["c1", "r1", "c2", "r2"],
+            physics2d_circle_overlap,
+        ),
+    );
+    p.insert(
+        "circle_hits".to_string(),
+        Value::from_builtin(
+            "physics2d.circle_hits",
+            &["center", "r", "boxes"],
+            physics2d_circle_hits,
+        ),
+    );
+    env.set(
+        "physics2d".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: p,
+            kind: "module",
+        }))),
+    );
+}
+
+/// Extract a 2D box `(x, y, w, h)` from a 4-tuple Value.
+fn box4_of(v: &Value, what: &str) -> Result<(f32, f32, f32, f32), RuntimeError> {
+    if v.is_tuple() {
+        let elems = v.as_tuple();
+        if elems.len() == 4 {
+            return Ok((
+                number(&elems[0], what)? as f32,
+                number(&elems[1], what)? as f32,
+                number(&elems[2], what)? as f32,
+                number(&elems[3], what)? as f32,
+            ));
+        }
+    }
+    Err(RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{what} expects a box `(x, y, w, h)`, got {}", (*v).type_name()),
+        help: Some("a 2D box is `(x, y, w, h)` with `(x, y)` the top-left corner".to_string()),
+    })
+}
+
+/// `physics2d.overlap(a, b)` — do two AABBs overlap? Edge-touching boxes
+/// (shared border, zero overlap area) count as NOT overlapping.
+fn physics2d_overlap(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics2d.overlap")?;
+    let (ax, ay, aw, ah) = box4_of(&args[0], "physics2d.overlap.a")?;
+    let (bx, by, bw, bh) = box4_of(&args[1], "physics2d.overlap.b")?;
+    let hit = ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    Ok(Value::from_bool(hit))
+}
+
+/// `physics2d.resolve(a, b)` — minimum translation `(dx, dy)` to push box
+/// `a` out of box `b` along the axis of least penetration. `(0, 0)` if
+/// they don't overlap. The canonical resting-contact / depenetration step.
+fn physics2d_resolve(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics2d.resolve")?;
+    let (ax, ay, aw, ah) = box4_of(&args[0], "physics2d.resolve.a")?;
+    let (bx, by, bw, bh) = box4_of(&args[1], "physics2d.resolve.b")?;
+    let pen_x = (ax + aw).min(bx + bw) - ax.max(bx);
+    let pen_y = (ay + ah).min(by + bh) - ay.max(by);
+    let (dx, dy) = if pen_x <= 0.0 || pen_y <= 0.0 {
+        (0.0, 0.0)
+    } else if pen_x < pen_y {
+        let a_cx = ax + aw * 0.5;
+        let b_cx = bx + bw * 0.5;
+        (if a_cx < b_cx { -pen_x } else { pen_x }, 0.0)
+    } else {
+        let a_cy = ay + ah * 0.5;
+        let b_cy = by + bh * 0.5;
+        (0.0, if a_cy < b_cy { -pen_y } else { pen_y })
+    };
+    Ok(Value::from_tuple(Rc::new(vec![
+        Value::from_float(dx as f64),
+        Value::from_float(dy as f64),
+    ])))
+}
+
+/// Swept AABB (slab method on the Minkowski-inflated static box). Returns
+/// `Some((entry_t, nx, ny))` when the moving box `m` collides with static
+/// box `s` within this step (`entry_t` in `[0, 1]`), else `None`.
+fn swept_aabb(
+    m: (f32, f32, f32, f32),
+    vx: f32,
+    vy: f32,
+    s: (f32, f32, f32, f32),
+) -> Option<(f32, f32, f32)> {
+    let (mx, my, mw, mh) = m;
+    let (sx, sy, sw, sh) = s;
+    let (x_inv_entry, x_inv_exit) = if vx > 0.0 {
+        (sx - (mx + mw), (sx + sw) - mx)
+    } else {
+        ((sx + sw) - mx, sx - (mx + mw))
+    };
+    let (y_inv_entry, y_inv_exit) = if vy > 0.0 {
+        (sy - (my + mh), (sy + sh) - my)
+    } else {
+        ((sy + sh) - my, sy - (my + mh))
+    };
+    let (x_entry, x_exit) = if vx == 0.0 {
+        (f32::NEG_INFINITY, f32::INFINITY)
+    } else {
+        (x_inv_entry / vx, x_inv_exit / vx)
+    };
+    let (y_entry, y_exit) = if vy == 0.0 {
+        (f32::NEG_INFINITY, f32::INFINITY)
+    } else {
+        (y_inv_entry / vy, y_inv_exit / vy)
+    };
+    let entry = x_entry.max(y_entry);
+    let exit = x_exit.min(y_exit);
+    if entry > exit || !(0.0..=1.0).contains(&entry) {
+        return None;
+    }
+    let (nx, ny) = if x_entry > y_entry {
+        if x_inv_entry < 0.0 {
+            (1.0, 0.0)
+        } else {
+            (-1.0, 0.0)
+        }
+    } else if y_inv_entry < 0.0 {
+        (0.0, 1.0)
+    } else {
+        (0.0, -1.0)
+    };
+    Some((entry, nx, ny))
+}
+
+/// `physics2d.sweep(box, vel, solids)` — move `box` by `vel = (vx, vy)`
+/// against a list of solid boxes; returns the earliest contact as a
+/// record `{hit, t, nx, ny}`. `t` in `[0, 1]` is the fraction of `vel` to
+/// travel before contact (`hit = false`, `t = 1`, `nx = ny = 0` if the
+/// path is clear). `(nx, ny)` is the surface normal — use it to slide:
+/// move `box` by `vel * t`, then cancel the velocity component along the
+/// normal for the remainder.
+fn physics2d_sweep(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics2d.sweep")?;
+    let m = box4_of(&args[0], "physics2d.sweep.box")?;
+    let (vx, vy) = xy_of(&args[1], "physics2d.sweep.vel")?;
+    if !args[2].is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "physics2d.sweep expects a list of solid boxes, got {}",
+                args[2].type_name()
+            ),
+            help: Some("pass `[(x, y, w, h), ...]`".to_string()),
+        });
+    }
+    let solids = args[2].as_list();
+    let mut best: Option<(f32, f32, f32)> = None;
+    {
+        let list = solids.borrow();
+        for (i, item) in list.iter().enumerate() {
+            let s = box4_of(item, &format!("physics2d.sweep.solids[{i}]"))?;
+            if let Some((t, nx, ny)) = swept_aabb(m, vx as f32, vy as f32, s) {
+                if best.map(|(bt, _, _)| t < bt).unwrap_or(true) {
+                    best = Some((t, nx, ny));
+                }
+            }
+        }
+    }
+    let mut fields = HashMap::new();
+    match best {
+        Some((t, nx, ny)) => {
+            fields.insert("hit".to_string(), Value::from_bool(true));
+            fields.insert("t".to_string(), Value::from_float(t as f64));
+            fields.insert("nx".to_string(), Value::from_float(nx as f64));
+            fields.insert("ny".to_string(), Value::from_float(ny as f64));
+        }
+        None => {
+            fields.insert("hit".to_string(), Value::from_bool(false));
+            fields.insert("t".to_string(), Value::from_float(1.0));
+            fields.insert("nx".to_string(), Value::from_float(0.0));
+            fields.insert("ny".to_string(), Value::from_float(0.0));
+        }
+    }
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "sweep_hit",
+    }))))
+}
+
+/// `physics2d.circle_overlap(c1, r1, c2, r2)` — do two circles overlap?
+/// `c1` / `c2` are `(x, y)` centers. The cheap radius test Vampire-
+/// Survivors-style games use for pickup / contact ranges.
+fn physics2d_circle_overlap(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "physics2d.circle_overlap")?;
+    let (c1x, c1y) = xy_of(&args[0], "physics2d.circle_overlap.c1")?;
+    let r1 = number(&args[1], "physics2d.circle_overlap.r1")?;
+    let (c2x, c2y) = xy_of(&args[2], "physics2d.circle_overlap.c2")?;
+    let r2 = number(&args[3], "physics2d.circle_overlap.r2")?;
+    let dx = c2x - c1x;
+    let dy = c2y - c1y;
+    let rsum = r1 + r2;
+    Ok(Value::from_bool(dx * dx + dy * dy <= rsum * rsum))
+}
+
+/// `physics2d.circle_hits(center, r, boxes)` — indices of the boxes in
+/// `boxes` that a circle (`center = (x, y)`, radius `r`) touches, via the
+/// closest-point-on-AABB test. Returns a list of ints. The narrow-phase
+/// for an aura / explosion radius against a set of enemy AABBs.
+fn physics2d_circle_hits(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "physics2d.circle_hits")?;
+    let (cx, cy) = xy_of(&args[0], "physics2d.circle_hits.center")?;
+    let r = number(&args[1], "physics2d.circle_hits.r")? as f32;
+    if !args[2].is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "physics2d.circle_hits expects a list of boxes, got {}",
+                args[2].type_name()
+            ),
+            help: Some("pass `[(x, y, w, h), ...]`".to_string()),
+        });
+    }
+    let (cx, cy) = (cx as f32, cy as f32);
+    let boxes = args[2].as_list();
+    let mut hits: Vec<Value> = Vec::new();
+    {
+        let list = boxes.borrow();
+        for (i, item) in list.iter().enumerate() {
+            let (bx, by, bw, bh) = box4_of(item, &format!("physics2d.circle_hits.boxes[{i}]"))?;
+            let nearest_x = cx.clamp(bx, bx + bw);
+            let nearest_y = cy.clamp(by, by + bh);
+            let dx = cx - nearest_x;
+            let dy = cy - nearest_y;
+            if dx * dx + dy * dy <= r * r {
+                hits.push(Value::from_int(i as i64));
+            }
+        }
+    }
+    Ok(Value::from_list(Rc::new(RefCell::new(hits))))
 }
 
 /// True iff this build is running in a browser (wasm32 target).

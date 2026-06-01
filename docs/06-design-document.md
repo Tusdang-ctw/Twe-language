@@ -1291,6 +1291,31 @@ let ground_y = terrain.height_at(player.x, player.z)
 
 Honest deferrals tracked in `docs/changes/2026-05-10-phase-32-closeout.md`: SAH-optimal BVH build, 3D loose-grid (XZ-only today), LOD smooth transitions, streaming asset cache, occlusion culling proper, 50k-prop / 500-NPC integrated bench, the wgpu render-pipeline integration itself.
 
+### 7.21 2D physics / collision  *(hand-rolled, std-only)*
+
+Stateless 2D collision queries — no `rapier2d` dependency (2026-06-01 design decision). A box is the 4-tuple `(x, y, w, h)` with `(x, y)` the top-left corner (matching `tilemap_aabb_touches`). These are the primitives a Vampire-Survivors / platformer needs; a broad-phase grid and rigid-body dynamics are deferred follow-ons.
+
+```twe
+# AABB overlap (edge-touching boxes do NOT overlap).
+physics2d.overlap((0, 0, 10, 10), (5, 5, 10, 10))   # true
+
+# Minimum translation vector to push box a out of box b along the
+# axis of least penetration — the resting-contact / depenetration step.
+physics2d.resolve((0, 0, 10, 10), (5, 0, 10, 10))   # (-5.0, 0.0)
+
+# Swept AABB: move `box` by `vel` against a list of solids. Returns
+# {hit, t, nx, ny} — t in [0,1] is the fraction of vel before contact
+# (hit=false, t=1 if clear); (nx, ny) is the surface normal for sliding.
+let h = physics2d.sweep((0, 0, 10, 10), (20, 0), [(15, 0, 10, 10)])
+if h.hit:
+    player.x += 20 * h.t          # stop at the wall
+    # cancel velocity along the normal, keep the tangent → slide
+
+# Circle queries — the cheap radius tests action games lean on.
+physics2d.circle_overlap((px, py), 12, (ex, ey), 8)        # pickup range → bool
+physics2d.circle_hits((px, py), 90, enemy_boxes)           # aura → list[int] of indices
+```
+
 ---
 
 ## 8. Error model

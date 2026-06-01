@@ -1,0 +1,26 @@
+# physics2d hand-rolled collision primitives (ship-pipeline / genre coverage)
+# Box = (x, y, w, h) with (x, y) the top-left corner.
+
+# --- AABB overlap ---
+print(physics2d.overlap((0, 0, 10, 10), (5, 5, 10, 10)))     # overlapping
+print(physics2d.overlap((0, 0, 10, 10), (20, 20, 10, 10)))   # disjoint
+print(physics2d.overlap((0, 0, 10, 10), (10, 0, 10, 10)))    # edge-touch only
+
+# --- penetration resolve (minimum translation vector) ---
+print(physics2d.resolve((0, 0, 10, 10), (5, 0, 10, 10)))     # push a left out of b
+
+# --- swept AABB: moving box vs solids ---
+let hit = physics2d.sweep((0, 0, 10, 10), (20, 0), [(15, 0, 10, 10)])
+print(hit.hit)
+print(hit.t)
+print(hit.nx)
+print(hit.ny)
+
+let clear = physics2d.sweep((0, 0, 10, 10), (20, 0), [(100, 0, 10, 10)])
+print(clear.hit)
+print(clear.t)
+
+# --- circle queries ---
+print(physics2d.circle_overlap((0, 0), 5, (8, 0), 5))        # overlapping
+print(physics2d.circle_overlap((0, 0), 5, (20, 0), 5))       # disjoint
+print(physics2d.circle_hits((0, 0), 6, [(5, 0, 2, 2), (50, 50, 2, 2), (0, 5, 2, 2)]))

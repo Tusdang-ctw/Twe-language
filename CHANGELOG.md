@@ -13,6 +13,12 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- `physics2d.*` — hand-rolled, std-only 2D collision queries (no
+  `rapier2d` dependency): `overlap(a, b)`, `resolve(a, b)` (minimum
+  translation vector), `sweep(box, vel, solids)` (swept-AABB time-of-
+  impact + normal, for resting contact / platformers), `circle_overlap`,
+  and `circle_hits(center, r, boxes)`. Boxes are `(x, y, w, h)` top-left
+  tuples. Broad-phase grid + rigid-body dynamics are deferred follow-ons.
 - `os.data_dir(app)` — returns the platform-correct, per-user, writable
   directory (`%APPDATA%\<app>` on Windows, `~/Library/Application Support/
   <app>` on macOS, `$XDG_DATA_HOME`/`~/.local/share/<app>` on Linux; `""`
