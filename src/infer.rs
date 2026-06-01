@@ -1052,7 +1052,8 @@ impl Inferer {
         // cancel). Mixed units in * or / produce a combined unit
         // string (e.g. `m/s`).
         if let (Type::Quantity(u1), Type::Quantity(u2)) = (&lr, &rr) {
-            return self.infer_quantity_arith(op, u1, u2);
+            let (u1, u2) = (u1.clone(), u2.clone());
+            return self.infer_quantity_arith(op, &u1, &u2, line, col);
         }
         // Quantity scaled by a number on either side.
         if let Type::Quantity(unit) = &lr {
@@ -1284,12 +1285,40 @@ impl Inferer {
     /// doesn't yet parse compound units back into structured
     /// dimensions. Strict mode + a future dimension solver would
     /// canonicalise (`kg*m*s` vs `m*kg*s`).
-    fn infer_quantity_arith(&self, op: BinOp, u1: &Rc<String>, u2: &Rc<String>) -> Type {
+    fn infer_quantity_arith(
+        &mut self,
+        op: BinOp,
+        u1: &Rc<String>,
+        u2: &Rc<String>,
+        line: u32,
+        col: u32,
+    ) -> Type {
         match op {
             BinOp::Add | BinOp::Sub => {
                 if u1 == u2 {
                     Type::Quantity(u1.clone())
                 } else {
+                    // Dimensional safety (Principle 3, "dimensional units
+                    // enforced"): `+` / `-` require both operands to share
+                    // a unit. `5m + 3s` has no defined result. Strict mode
+                    // surfaces it; non-strict drops to Unknown silently.
+                    if self.strict {
+                        let verb = if matches!(op, BinOp::Add) {
+                            "add"
+                        } else {
+                            "subtract"
+                        };
+                        self.errors.push(TypeError {
+                            line,
+                            col,
+                            message: format!(
+                                "dimensional mismatch — cannot {verb} `{u1}` and `{u2}` (incompatible units)"
+                            ),
+                            help: Some(
+                                "`+` and `-` need both sides in the same unit; convert one side first (`*` / `/` may combine units, e.g. `m/s`)".to_string(),
+                            ),
+                        });
+                    }
                     Type::Unknown
                 }
             }
@@ -1445,6 +1474,37 @@ mod tests {
              \x20   return s",
         );
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn dimensional_mismatch_errors_in_strict() {
+        // Principle 3: `+` / `-` on incompatible units is a strict error.
+        let errs = strict_errors("# strict\nlet x = 5m + 3s");
+        assert!(
+            errs.iter().any(|e| e.message.contains("dimensional mismatch")),
+            "expected a dimensional mismatch, got: {errs:?}"
+        );
+        // Subtraction too.
+        let errs = strict_errors("# strict\nlet x = 5m - 3s");
+        assert!(
+            errs.iter().any(|e| e.message.contains("dimensional mismatch")),
+            "expected a dimensional mismatch, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn dimensional_valid_combinations_ok() {
+        // Same unit add, and unit-combining `*` / `/`, are all valid.
+        assert!(strict_errors("# strict\nlet x = 5m + 3m").is_empty());
+        assert!(strict_errors("# strict\nlet x = 5m * 3s").is_empty()); // m*s
+        assert!(strict_errors("# strict\nlet x = 10m / 2s").is_empty()); // m/s
+        assert!(strict_errors("# strict\nlet x = 10m / 2m").is_empty()); // unitless
+    }
+
+    #[test]
+    fn dimensional_mismatch_silent_in_non_strict() {
+        // No false positive in the default non-strict tier.
+        assert!(strict_errors("let x = 5m + 3s").is_empty());
     }
 
     #[test]

@@ -12,6 +12,15 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Added
+- **Dimensional checking in strict mode** (Principle 3, "dimensional units
+  enforced"): `+` / `-` between quantities with incompatible units now
+  raises in strict mode / `twec verify` — `5m + 3s` reports `dimensional
+  mismatch — cannot add \`m\` and \`s\``. Same-unit add (`5m + 3m`) and
+  unit-combining `*` / `/` (`m*s`, `m/s`, unit cancellation) are legal. The
+  default non-strict tier stays silent (no false positives). See `docs/06`
+  §5.5.
+
 ### Fixed
 - Strict-mode arithmetic no longer reports a false `type mismatch` when an
   operand is of **unknown type** (e.g. an element of an untyped iterable,

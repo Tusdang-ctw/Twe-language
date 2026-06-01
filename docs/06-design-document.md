@@ -576,11 +576,13 @@ if let hero = maybe_hero:
 Operations on unit-typed values must be dimensionally compatible:
 
 - `5m + 3m` is `8m`. Legal.
-- `5m + 3s` is a type error.
+- `5m + 3s` is a type error (`+` / `-` need matching units).
 - `5m / 1s` is `5 m/s`. Legal; the result type is the compound unit.
-- `5m * 3` is `15m`. Legal; scalars are unit-less.
+- `5m * 3s` is `m*s`; `5m * 3` is `15m`. Legal; `*` / `/` combine units, scalars are unit-less.
 
 Conversion between compatible units is automatic at the type level (`30cm + 1m == 1.3m`).
+
+**Enforcement (2026-06-01):** the `+` / `-` incompatible-unit check is enforced in **strict mode** / `twec verify` — `5m + 3s` reports `dimensional mismatch — cannot add \`m\` and \`s\``. Per the gradual-typing tiers, the default non-strict tier stays silent (no false positives); strict opts in to the check. (Unit *conversion* across compatible scales — `30cm + 1m` — is not yet performed; mismatched-unit *names* are what's checked.)
 
 ---
 
