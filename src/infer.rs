@@ -1117,11 +1117,17 @@ impl Inferer {
                 v
             }
             _ => {
-                // Two concrete types that don't pattern-match —
-                // this is the heart of "5m + 3s is a type error"
-                // (per docs/02 §"Dimensional units"). Strict mode
-                // surfaces it; non-strict drops to Unknown.
-                if self.strict {
+                // A mismatch like "5m + 3s" (per docs/02 §"Dimensional
+                // units") — surfaced in strict mode. BUT only when both
+                // operands are RESOLVED concrete types. If either side is
+                // still Unknown or an unbound Var, we can't prove the
+                // operation wrong (the unknown side could turn out
+                // numeric), so per the "no false positives" contract we
+                // stay silent rather than flag a spurious `int vs ?`.
+                // This is what made `for x in untyped_items: s = s + x`
+                // and record-field arithmetic report bogus errors.
+                let unresolved = |t: &Type| matches!(t, Type::Unknown | Type::Var(_));
+                if self.strict && !unresolved(&lr) && !unresolved(&rr) {
                     self.errors.push(TypeError {
                         line,
                         col,
@@ -1421,6 +1427,34 @@ mod tests {
         assert!(
             errors[0].message.contains("call argument"),
             "expected a call-argument mismatch, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn arithmetic_on_unresolved_operand_no_false_positive() {
+        // Regression: doing arithmetic on a value of unknown type (here
+        // the element of an untyped iterable) must NOT raise a strict
+        // `int vs ?` mismatch — we can't prove the unknown side isn't
+        // numeric ("no false positives").
+        let errors = strict_errors(
+            "# strict\n\
+             function total(items) -> int:\n\
+             \x20   var s = 0\n\
+             \x20   for x in items:\n\
+             \x20       s = s + x\n\
+             \x20   return s",
+        );
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+    }
+
+    #[test]
+    fn arithmetic_concrete_mismatch_still_errors() {
+        // The fix must not over-correct: a genuine concrete-vs-concrete
+        // mismatch (string + int) still surfaces in strict mode.
+        let errors = strict_errors("# strict\nlet a = \"x\"\nlet b = 3\nlet c = a + b");
+        assert!(
+            errors.iter().any(|e| e.message.contains("arithmetic")),
+            "expected an arithmetic mismatch, got: {errors:?}"
         );
     }
 

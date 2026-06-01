@@ -13,6 +13,13 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Fixed
+- Strict-mode arithmetic no longer reports a false `type mismatch` when an
+  operand is of **unknown type** (e.g. an element of an untyped iterable,
+  `for x in items: s = s + x`). The mismatch now fires only when *both*
+  operands are resolved concrete types — an Unknown/unbound operand can't
+  be proven non-numeric ("no false positives"). Genuine concrete mismatches
+  (`str + int`, `5m + 3s`) are unchanged. This is the root cause behind the
+  record-field symptom below.
 - Strict-mode field access on a **record-typed** value (e.g. a parameter
   annotated `{ x: int, y: int }`) now resolves to the declared field
   type. Previously `p.x` inferred `Unknown`, so using it — e.g.
