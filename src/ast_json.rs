@@ -620,6 +620,28 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Expr::ListComp {
+            element,
+            var,
+            iterable,
+            condition,
+            line,
+            col,
+        } => {
+            s.push_str("{\"kind\":\"ListComp\",\"element\":");
+            write_expr(s, element);
+            s.push_str(",\"var\":");
+            write_str_value(s, var);
+            s.push_str(",\"iterable\":");
+            write_expr(s, iterable);
+            s.push_str(",\"condition\":");
+            match condition {
+                Some(c) => write_expr(s, c),
+                None => s.push_str("null"),
+            }
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Expr::Index {
             object,
             index,

@@ -466,6 +466,16 @@ pub enum Expr {
         line: u32,
         col: u32,
     },
+    /// `[<element> for <var> in <iterable>]` with an optional
+    /// `if <condition>` filter. Evaluates to a list (Snake NP3).
+    ListComp {
+        element: Box<Expr>,
+        var: String,
+        iterable: Box<Expr>,
+        condition: Option<Box<Expr>>,
+        line: u32,
+        col: u32,
+    },
     Range {
         start: Box<Expr>,
         end: Box<Expr>,
@@ -568,6 +578,7 @@ impl Expr {
             | Expr::SelfRef { line, .. }
             | Expr::Tuple { line, .. }
             | Expr::List { line, .. }
+            | Expr::ListComp { line, .. }
             | Expr::Range { line, .. }
             | Expr::Index { line, .. }
             | Expr::Field { line, .. }
@@ -592,6 +603,7 @@ impl Expr {
             | Expr::SelfRef { col, .. }
             | Expr::Tuple { col, .. }
             | Expr::List { col, .. }
+            | Expr::ListComp { col, .. }
             | Expr::Range { col, .. }
             | Expr::Index { col, .. }
             | Expr::Field { col, .. }

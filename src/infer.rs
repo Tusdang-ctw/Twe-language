@@ -782,6 +782,31 @@ impl Inferer {
                     Type::list(Type::Unknown)
                 }
             }
+            Expr::ListComp {
+                element,
+                var,
+                iterable,
+                condition,
+                ..
+            } => {
+                // Bind the loop var to the iterable's element type, then
+                // infer the element expression — same scoping as a
+                // `for` loop. Returns List<element-type>.
+                let iter_t = self.expr_type(iterable);
+                let elem_t = match self.resolve(&iter_t) {
+                    Type::List(elem) => (*elem).clone(),
+                    Type::Range => Type::Int,
+                    _ => Type::Unknown,
+                };
+                self.push_scope();
+                self.bind(var.clone(), elem_t);
+                if let Some(cond) = condition {
+                    let _ = self.expr_type(cond);
+                }
+                let element_t = self.expr_type(element);
+                self.pop_scope();
+                Type::list(element_t)
+            }
             Expr::Range { .. } => Type::Range,
             Expr::Index { object, .. } => {
                 let obj_t = self.expr_type(object);

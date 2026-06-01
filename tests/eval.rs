@@ -2335,6 +2335,25 @@ fn physics2d_collision_primitives() {
 }
 
 #[test]
+fn list_comprehensions_map_filter_and_scope() {
+    // Snake NP3: [<elem> for <var> in <iter> (if <cond>)?]. Covers map,
+    // filter, list iteration, expression elements, and that the loop var
+    // is scoped to the comprehension (the outer `x = 99` is unchanged).
+    let out = run_program("tests/programs/list_comp.twe").expect("program should run");
+    assert_eq!(
+        out,
+        "[0, 2, 4, 6, 8, 10]\n[6, 7, 8, 9, 10]\n[a, b, c]\n[1, 4, 9]\n[0, 1, 2, 3]\n99\n"
+    );
+}
+
+#[test]
+fn list_comprehension_rejects_non_iterable() {
+    let err = run_program_str("print([x for x in 5])\n")
+        .expect_err("comprehending over a non-iterable must error");
+    assert!(err.contains("range, list, or tuple"), "got: {err}");
+}
+
+#[test]
 fn state_enter_exit_hooks_fire_in_order() {
     // Snake NP9: `on enter:` folds into the on-entry body (so the bare
     // "body a" and "enter a" both print on entry), and `on exit:` runs

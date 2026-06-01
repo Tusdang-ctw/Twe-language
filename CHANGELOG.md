@@ -13,6 +13,11 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- List comprehensions (Snake NP3): `[<elem> for <var> in <iter>]` with an
+  optional `if <cond>` filter. Iterates ranges / lists / tuples; the loop
+  variable is scoped to the comprehension. Tree-walker only (the frozen
+  bytecode VM rejects it at compile time). `infer` types it as
+  `List<element-type>`. See `docs/06` §6.1.
 - State lifecycle hooks `on enter:` / `on exit:` (Snake NP9). `on enter:`
   folds into the existing on-entry body (one entry mechanism; works on
   both backends). `on exit:` runs when a state is left, before the next

@@ -607,6 +607,18 @@ Conversion between compatible units is automatic at the type level (`30cm + 1m =
 | `T?` | Optional T | (no literal; produced by computation) |
 | `A \| B` | Tagged union | (no literal; produced by computation) |
 
+### 6.1 List comprehensions  *(Snake NP3)*
+
+An array can also be built with a comprehension — `[<element> for <var> in <iterable>]`, with an optional `if <condition>` filter:
+
+```twe
+let doubled = [x * 2 for x in 0..5]            # [0, 2, 4, 6, 8, 10]
+let evens   = [x for x in 0..10 if x > 5]      # [6, 7, 8, 9, 10]
+let names    = [e.name for e in entities.of(Slime)]
+```
+
+The iterable is a range, list, or tuple (the same set `for` loops accept). The loop variable is scoped to the comprehension — it does not leak into the surrounding scope, and shadows any outer binding of the same name for the duration. Filtering follows Twe's truthiness rule (only `false` is falsy). List comprehensions are a tree-walker feature; the frozen bytecode VM rejects them at compile time (tree-walker-first per the 2026-06-01 VM-strategy decision).
+
 ---
 
 ## 7. Standard library reference

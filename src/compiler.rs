@@ -1111,6 +1111,17 @@ impl Compiler {
                 self.frame_mut().chunk.write_op(OpCode::BuildList, *line);
                 self.frame_mut().chunk.write_byte(elems.len() as u8, *line);
             }
+            Expr::ListComp { line, col, .. } => {
+                // Tree-walker-only (Snake NP3). Compiling a comprehension
+                // means a hidden loop + accumulator; the bytecode VM is
+                // frozen experimental, so this is tree-walker-first per
+                // the 2026-06-01 VM-strategy decision.
+                return Err(self.unsupported(
+                    "list comprehension (tree-walker only for now; run with the default `--vm tree`)",
+                    *line,
+                    *col,
+                ));
+            }
             Expr::Range {
                 start,
                 end,

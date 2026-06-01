@@ -1,0 +1,12 @@
+# List comprehensions (Snake NP3): [<elem> for <var> in <iter> (if <cond>)?]
+
+print([x * 2 for x in 0..5])            # map over an inclusive range
+print([x for x in 0..10 if x > 5])      # filter
+print([w for w in ["a", "b", "c"]])     # iterate a list
+print([x * x for x in 1..3])            # expression element
+
+# The loop variable is scoped to the comprehension and does not leak.
+let x = 99
+let ys = [x for x in 0..3]
+print(ys)
+print(x)

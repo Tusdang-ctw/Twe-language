@@ -873,6 +873,25 @@ fn print_expr(out: &mut String, expr: &Expr, parent_prec: Prec) {
             }
             out.push(']');
         }
+        Expr::ListComp {
+            element,
+            var,
+            iterable,
+            condition,
+            ..
+        } => {
+            out.push('[');
+            print_expr(out, element, Prec::Lowest);
+            out.push_str(" for ");
+            out.push_str(var);
+            out.push_str(" in ");
+            print_expr(out, iterable, Prec::Lowest);
+            if let Some(cond) = condition {
+                out.push_str(" if ");
+                print_expr(out, cond, Prec::Lowest);
+            }
+            out.push(']');
+        }
         Expr::Range {
             start,
             end,

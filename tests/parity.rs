@@ -105,6 +105,12 @@ const VM_UNSUPPORTED: &[(&str, &str)] = &[
         "compiler.rs — `on exit:` state hook is tree-walker-only (the VM doesn't yet mirror the \
          enter_state exit hook); tree-walker-first per the 2026-06-01 VM-strategy decision",
     ),
+    (
+        "list_comp.twe",
+        "compiler.rs — list comprehensions are tree-walker-only (a comprehension lowers to a \
+         hidden loop + accumulator the frozen VM doesn't emit); tree-walker-first per the \
+         2026-06-01 VM-strategy decision",
+    ),
 ];
 
 /// Real tree-walker/VM divergences that are KNOWN BUGS, not agreed

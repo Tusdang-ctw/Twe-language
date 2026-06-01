@@ -403,6 +403,12 @@ fn check_expr(expr: &Expr, errors: &mut Vec<VisualError>) {
             line: *line,
             col: *col,
         }),
+        Expr::ListComp { line, col, .. } => errors.push(VisualError {
+            message: "list comprehensions aren't allowed inside a `visual` body".to_string(),
+            help: Some("shaders can't allocate or loop dynamically".to_string()),
+            line: *line,
+            col: *col,
+        }),
         Expr::Range { line, col, .. } => errors.push(VisualError {
             message: "range literals aren't allowed inside a `visual` body".to_string(),
             help: None,

@@ -2213,7 +2213,35 @@ impl<'a> Parser<'a> {
     fn parse_list(&mut self, lb_line: u32, lb_col: u32) -> Result<Expr, ParseError> {
         let mut elems = Vec::new();
         if !matches!(self.peek().kind, TokenKind::RBracket) {
-            elems.push(self.parse_expr()?);
+            let first = self.parse_expr()?;
+            // `[<elem> for <var> in <iter> (if <cond>)?]` — list
+            // comprehension (Snake NP3). The `for` right after the first
+            // expression distinguishes it from a plain list literal.
+            if matches!(self.peek().kind, TokenKind::For) {
+                self.bump(); // `for`
+                let var = self.expect_ident("expected a loop variable after `for` in a list comprehension")?;
+                self.expect(TokenKind::In, "expected `in` after the comprehension variable")?;
+                let iterable = self.parse_expr()?;
+                let condition = if matches!(self.peek().kind, TokenKind::If) {
+                    self.bump(); // `if`
+                    Some(Box::new(self.parse_expr()?))
+                } else {
+                    None
+                };
+                self.expect(
+                    TokenKind::RBracket,
+                    "expected ']' to close the list comprehension",
+                )?;
+                return Ok(Expr::ListComp {
+                    element: Box::new(first),
+                    var,
+                    iterable: Box::new(iterable),
+                    condition,
+                    line: lb_line,
+                    col: lb_col,
+                });
+            }
+            elems.push(first);
             while matches!(self.peek().kind, TokenKind::Comma) {
                 self.bump();
                 if matches!(self.peek().kind, TokenKind::RBracket) {
@@ -2400,6 +2428,20 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
                 .into_iter()
                 .map(|e| shift_expr(e, line, col))
                 .collect(),
+            line,
+            col,
+        },
+        Expr::ListComp {
+            element,
+            var,
+            iterable,
+            condition,
+            ..
+        } => Expr::ListComp {
+            element: Box::new(shift_expr(*element, line, col)),
+            var,
+            iterable: Box::new(shift_expr(*iterable, line, col)),
+            condition: condition.map(|c| Box::new(shift_expr(*c, line, col))),
             line,
             col,
         },

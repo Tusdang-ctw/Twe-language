@@ -603,6 +603,18 @@ fn walk_expr(
                 walk_expr(e, deprecated, out);
             }
         }
+        Expr::ListComp {
+            element,
+            iterable,
+            condition,
+            ..
+        } => {
+            walk_expr(element, deprecated, out);
+            walk_expr(iterable, deprecated, out);
+            if let Some(c) = condition {
+                walk_expr(c, deprecated, out);
+            }
+        }
         Expr::Range { start, end, .. } => {
             walk_expr(start, deprecated, out);
             walk_expr(end, deprecated, out);

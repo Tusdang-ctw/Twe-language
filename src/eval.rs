@@ -2296,6 +2296,51 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             }
             Ok(Value::from_list(Rc::new(RefCell::new(vals))))
         }
+        Expr::ListComp {
+            element,
+            var,
+            iterable,
+            condition,
+            line,
+            col,
+        } => {
+            let iter_val = eval_expr(env, iterable)?;
+            let items = iterable_snapshot(&iter_val, *line, *col)?;
+            // Shadow the loop variable for the duration of the
+            // comprehension, then restore it (matches `run_for`).
+            let saved = env.get(var);
+            let mut out = Vec::new();
+            let mut result = Ok(());
+            for item in items {
+                env.set(var.clone(), item);
+                if let Some(cond) = condition {
+                    match eval_expr(env, cond) {
+                        Ok(c) => {
+                            if !is_truthy(&c) {
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            result = Err(e);
+                            break;
+                        }
+                    }
+                }
+                match eval_expr(env, element) {
+                    Ok(v) => out.push(v),
+                    Err(e) => {
+                        result = Err(e);
+                        break;
+                    }
+                }
+            }
+            match saved {
+                Some(v) => env.set(var.clone(), v),
+                None => env.remove(var),
+            }
+            result?;
+            Ok(Value::from_list(Rc::new(RefCell::new(out))))
+        }
         Expr::Index { object, index, line, col } => {
             let obj = eval_expr(env, object)?;
             let idx = eval_expr(env, index)?;
@@ -3074,6 +3119,32 @@ fn run_while(env: &mut Env, cond: &Expr, body: &[Stmt]) -> Result<(), RuntimeErr
         }
     }
     Ok(())
+}
+
+/// Snapshot the values of an iterable (range / list / tuple) into a Vec.
+/// Shared by list comprehensions; mirrors the per-kind dispatch in
+/// `run_for`. Lists/tuples are cloned so mutation during iteration can't
+/// invalidate the walk.
+fn iterable_snapshot(val: &Value, line: u32, col: u32) -> Result<Vec<Value>, RuntimeError> {
+    if val.is_range() {
+        let (start, end, exclusive) = val.as_range();
+        let limit = if exclusive { end } else { end + 1 };
+        Ok((start..limit).map(Value::from_int).collect())
+    } else if val.is_list() {
+        Ok(val.as_list().borrow().clone())
+    } else if val.is_tuple() {
+        Ok(val.as_tuple().iter().cloned().collect())
+    } else {
+        Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "comprehension iterable must be a range, list, or tuple, got {}",
+                val.type_name()
+            ),
+            help: Some("iterate over `0..n`, a list, or a tuple".to_string()),
+        })
+    }
 }
 
 fn run_for(
