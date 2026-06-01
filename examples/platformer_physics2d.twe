@@ -1,0 +1,107 @@
+# @task: Platformer driven by physics2d.move_and_slide (swept AABB)
+# @inputs: arrow keys / A,D + SPACE
+# @expected: character walks, jumps, lands on platforms, slides on walls
+# @category: 2d
+# @difficulty: small
+#
+# Minimal platformer built on the `physics2d.*` collision module.
+# Where examples/platformer.twe hand-rolls per-axis tile collision (and
+# flags the missing swept-AABB primitive as a gap), this version hands
+# all of it to one call:
+#
+#   physics2d.move_and_slide(box, vel, dt, solids)
+#
+# which swept-moves the body against a list of solid boxes, stops at
+# contacts, slides along surfaces, and reports on_ground / on_wall.
+# No per-axis bookkeeping, no tunnelling at high speed.
+#
+# Run with:  twec play examples/platformer_physics2d.twe
+#
+# Controls
+#   ←/A,  →/D    move
+#   SPACE / W / ↑   jump
+
+let view_w = 640.0
+let view_h = 480.0
+
+let player_w = 20.0
+let player_h = 32.0
+
+let walk_v = 200.0
+let gravity = 1400.0
+let jump_v = 520.0
+
+# Level geometry: a flat list of solid boxes (x, y, w, h), top-left
+# origin. Walls, a ground strip, and three platforms to hop up.
+let solids = [
+    (0, 0, 16, 480),          # left wall
+    (624, 0, 16, 480),        # right wall
+    (0, 448, 640, 32),        # ground
+    (120, 360, 120, 16),      # platform 1
+    (320, 290, 120, 16),      # platform 2
+    (480, 210, 120, 16),      # platform 3
+]
+
+# Player state at file scope so the scene + helpers can mutate it
+# (the same pattern examples/platformer.twe + survive_beta use).
+let start_x = 40.0
+let start_y = 448.0 - player_h   # standing on the ground strip
+var px = start_x
+var py = start_y
+var vx = 0.0
+var vy = 0.0
+var on_ground = false
+
+function respawn():
+    px = start_x
+    py = start_y
+    vx = 0.0
+    vy = 0.0
+    on_ground = false
+
+scene Platformer:
+    initial: playing
+
+    state playing:
+        on update(dt):
+            # Horizontal input (instant, snappy — no accel ramp).
+            var move = 0.0
+            if key.a or key.left:
+                move -= 1.0
+            if key.d or key.right:
+                move += 1.0
+            vx = move * walk_v
+
+            # Jump only when standing on something.
+            if (key_press.space or key_press.up or key_press.w) and on_ground:
+                vy = -jump_v
+
+            # Gravity. move_and_slide zeroes vy on landing, so this
+            # accumulates only while airborne.
+            vy += gravity * dt
+
+            # One call does swept motion + collision response + slide.
+            let m = physics2d.move_and_slide(
+                (px, py, player_w, player_h), (vx, vy), dt, solids)
+            px = m.x
+            py = m.y
+            vx = m.vx
+            vy = m.vy
+            on_ground = m.on_ground
+
+            # Fell out of the world (shouldn't happen with walls, but
+            # cheap insurance).
+            if py > view_h + 100.0:
+                respawn()
+
+        on render():
+            # Platforms.
+            for s in solids:
+                rect(at: (s[0], s[1]), size: (s[2], s[3]), color: color.gray)
+            # Player — tinted green when grounded, white in the air.
+            var tint = color.white
+            if on_ground:
+                tint = color.green
+            rect(at: (px, py), size: (player_w, player_h), color: tint)
+            text("A/D move,  SPACE jump  —  physics2d.move_and_slide",
+                 at: (10, 10), size: 14, color: color.white)
