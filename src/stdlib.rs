@@ -10298,6 +10298,17 @@ fn install_draw(env: &mut Env) {
             draw_circle_outline,
         ),
     );
+    // Outline counterpart to `rect`, mirroring `circle` / `circle_outline`.
+    // `at` is the top-left corner (same as `rect`); the border is drawn
+    // inside the box edge.
+    env.set(
+        "rect_outline".to_string(),
+        Value::from_builtin(
+            "rect_outline",
+            &["at", "size", "thickness", "color"],
+            draw_rect_outline,
+        ),
+    );
     env.set(
         "line".to_string(),
         Value::from_builtin("line", &["from", "to", "width", "color"], draw_line),
@@ -10907,6 +10918,19 @@ fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     let thickness = number(&args[2], "circle_outline.thickness")? as f32;
     let color = color_of(&args[3], "circle_outline.color")?;
     macroquad::shapes::draw_circle_lines(x as f32, y as f32, radius, thickness, color);
+    Ok(Value::NIL)
+}
+
+fn draw_rect_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    require_render(env, "rect_outline")?;
+    arity(args, 4, "rect_outline")?;
+    let (x, y) = xy_of(&args[0], "rect_outline.at")?;
+    let (w, h) = xy_of(&args[1], "rect_outline.size")?;
+    let thickness = number(&args[2], "rect_outline.thickness")? as f32;
+    let color = color_of(&args[3], "rect_outline.color")?;
+    macroquad::shapes::draw_rectangle_lines(
+        x as f32, y as f32, w as f32, h as f32, thickness, color,
+    );
     Ok(Value::NIL)
 }
 

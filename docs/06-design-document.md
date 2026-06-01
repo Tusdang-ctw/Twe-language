@@ -689,8 +689,14 @@ color.to_srgb(c)                 # linear → sRGB
 
 ### 7.5 Drawing  *(render context required)*
 
+**Finalized v1.0 primitive set.** This is the complete, closed list of
+2D drawing primitives — the open question from the design notes is
+resolved here. Each filled shape has an outline counterpart; that
+symmetry (`rect`/`rect_outline`, `circle`/`circle_outline`) is the rule.
+
 ```twe
 rect(at: (10, 20), size: (100, 50), color: color.red)
+rect_outline(at: (10, 20), size: (100, 50), thickness: 2.0, color: color.white)
 circle(at: (320, 240), radius: 30.0, color: color.blue)
 circle_outline(at: (320, 240), radius: 30.0, thickness: 2.0, color: color.cyan)
 line(from: (0, 0), to: (100, 100), width: 2.0, color: color.white)
@@ -706,6 +712,20 @@ sprite_frame(atlas, at: (x, y), frame: 3)  # atlas cell, native size
 sprite_frame_at(atlas, at: (x, y), size: (w, h), frame: 3)
 text_with_font("Hi", at: (x, y), size: 18, color: color.white, font: my_font)
 ```
+
+**Deliberately excluded** (compose from the above; kept out to honor
+Principle 2 "one obvious way" and avoid an open-ended shape zoo):
+
+- `triangle` / `polygon` — no example needs them; a convex shape is a
+  `line` fan, and sprite art covers irregular shapes. Re-opens only if a
+  shipped example genuinely requires filled arbitrary polygons.
+- `arc` / `ellipse` / `bezier` — niche; not required by any of the 50+
+  examples. An ellipse is a scaled sprite; an arc is a short line strip.
+- `pixel` — degenerate `rect` of size `(1, 1)`.
+
+All drawing primitives must be called from inside an `on render():`
+handler; calling one elsewhere is a runtime error that points you at
+`render` (do state mutation in `every` / `on update(dt)`).
 
 ### 7.6 Input
 

@@ -2335,6 +2335,17 @@ fn physics2d_collision_primitives() {
 }
 
 #[test]
+fn rect_outline_is_registered_and_render_gated() {
+    // The finalized drawing set adds rect_outline (the missing outline
+    // counterpart to `rect`, mirroring circle/circle_outline). Confirm
+    // it's a known builtin (not "name not defined") and render-gated
+    // exactly like every other drawing primitive.
+    let err = run_program_str("rect_outline((0, 0), (10, 10), 2, color.white)\n")
+        .expect_err("drawing outside a render handler must error");
+    assert!(err.contains("on render"), "got: {err}");
+}
+
+#[test]
 fn physics2d_broadphase_and_move_and_slide() {
     // Broad-phase spatial grid (build/query/near/free) + dynamic
     // move_and_slide (swept collision response with sliding). Pins
