@@ -1,0 +1,15 @@
+# v1.0.2 Session 1 — no-save-loaded path of the `save SaveSlot:`
+# block. When `save.loaded_version()` is nil (no prior `read` or
+# `try_read`), every migration condition evaluates to false (nil
+# != int under Eq), so no migration body runs.
+
+save FreshSlot:
+    version: 3
+    migration from 1:
+        save.int("WRONG", 1)
+    migration from 2:
+        save.int("WRONG", 2)
+
+print(save.loaded_version())   # nil — never read anything
+print(save.schema_version())   # 3 — set by the block
+print(save.has("WRONG"))       # false — no migration fired

@@ -996,6 +996,31 @@ Phases 27 and 28 were pure code work. Phases 29 + 30 unblocked 31. Phase 32 requ
 
 ---
 
+## v1.0.2 — Deferral-debt patch (closed 2026-05-26)
+
+**Status:** **closed 2026-05-26.** 10 retained feature sessions plus the closeout shipped — every retained item in [`docs/v1.0.2-plan.md`](v1.0.2-plan.md) §Sessions landed. Session 3 (entity-block `lod = [...]` / `rollback = true` sugar) was cut at the planned spike; defers to v1.1 alongside Phase 32 wgpu render integration + Phase 37 eval-side rewind engine. Full closeout at [`changes/2026-05-26-v1.0.2-closeout.md`](changes/2026-05-26-v1.0.2-closeout.md). **1004 tests pass; +13 over the v1.0.1 baseline of 991.**
+
+**Goal:** patch-tier release after v1.0.1 that closes the structural half of two long-open `What is open` items (save-block + per-state-pause parser sugar) plus four cross-phase honest deferrals from Phases 13 / 32 / 37 / 39. Every retained session is **pure parser sugar over existing builtins** or **one small additive runtime hook**. Zero new public builtins; zero new AST variants.
+
+**Shipped sessions:**
+
+| # | Session | Outcome |
+|---|---------|---------|
+| 1 | `save SaveSlot:` block + `migration from N:` (Path B anchor-only) | ✅ pure parser sugar; Path A typed-fields defers to v1.1 |
+| 2 | `state X: pause: false` / `state X: persistent` parser sugar | ✅ lowers to v1.0.1 registry |
+| 3 | `entity X: lod` / `entity X: rollback` field sugar | ⌀ cut at spike; defers to v1.1 (runtime not ready) |
+| 4 | `lang.set_plural_rule(locale, fn)` accepts Twe closures | ✅ exposes `eval::call_function` as `pub(crate)` |
+| 5 | LSP rename — lexer-driven scan | ✅ no false-positives in triple-quoted strings |
+| 6 | `twec run <dir>` auto-detects `main.twe` | ✅ routes through module loader |
+| 7 | `touch.tap_count` play-loop hook | ✅ sliding-window detector (250ms hold, 500ms window) |
+| 8 | MSG_HELLO mode-mismatch handshake | ✅ 1-byte mode field; backward-compatible |
+| 9 | VM mirror of `world.*` + `terrain.*` | ✅ no-op (already mirrored); ship parity test |
+| 10 | `docs/06 §7.20` writeup for `world.*` + `terrain.*` | ✅ |
+| 11 | EXIT GATE — `survive_beta` migrated onto `save SaveSlot:` | ✅ LOC delta +2 (block-header fixed cost) |
+| 12 | Closeout note | ✅ |
+
+---
+
 ## v1.0.1 — Polish release (closed 2026-05-18)
 
 **Status:** **closed 2026-05-18.** 13/13 feature sessions plus the closeout shipped. Full plan in `docs/v1.0.1-plan.md`; closeout at `docs/changes/2026-05-18-v1.0.1-closeout.md`. **991 tests pass; +53 over the v1.0 baseline of 938** (includes a one-line lexer fix that closes the 12 pre-existing CRLF-cascade failures). Sessions 5 + 6 shipped MVP-shaped (`save SaveSlot:` block + `state X: pause: false` parser sugar defer to v1.0.2); `examples/survive_beta/main.twe` rewritten to use `fx.*` + `camera2d.follow` + `camera2d.bounds` + `sound.pool` + `save.set_schema_version` (net −14 LOC).

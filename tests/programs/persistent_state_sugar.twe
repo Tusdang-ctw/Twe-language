@@ -1,0 +1,32 @@
+# v1.0.2 Session 2 — `state X: pause: false` / `state X: persistent`
+# parser sugar. Both forms strip the sentinel from the state body and
+# inject a top-level `persistent_state("X")` call right after the
+# enclosing declaration. Lowering is pure parser sugar; eval / VM /
+# checker see no new AST.
+
+entity Hud:
+    initial: idle
+
+    state idle:
+        # `persistent` — bare-identifier alias for `pause: false`.
+        persistent
+
+    state showing:
+        # explicit form.
+        pause: false
+
+    state hidden:
+        # explicit `pause: true` is the default — parsed and dropped,
+        # state is NOT registered as persistent.
+        pause: true
+
+print(is_persistent_state("idle"))
+print(is_persistent_state("showing"))
+print(is_persistent_state("hidden"))
+
+# A plain state with no sentinel is also not persistent.
+entity Player:
+    initial: alive
+    state alive:
+
+print(is_persistent_state("alive"))

@@ -1,0 +1,33 @@
+# v1.0.2 Session 1 — `save SaveSlot:` block (Path B, anchor-only).
+# Block sugars to:
+#   save.set_schema_version(N)
+#   let __save_<Slot>_loaded = save.loaded_version()
+#   if __save_<Slot>_loaded == 1: <migration from 1 body>
+#   if __save_<Slot>_loaded == 1 or __save_<Slot>_loaded == 2:
+#       <migration from 2 body>
+# No new builtins, no new AST nodes.
+
+# Phase A — bootstrap a v1 save on disk.
+save.set_schema_version(1)
+save.int("hp", 100)
+save.int("level", 0)
+save.write("save_block_test.json")
+
+# Phase B — simulate a fresh process: clear memory, read the v1 file.
+save.clear()
+save.read("save_block_test.json")
+print(save.loaded_version())
+
+# Phase C — declare the v3 schema with two migrations. Migrations
+# should run cumulatively from loaded_version=1 up to version=3.
+save SaveSlot:
+    version: 3
+    migration from 1:
+        save.int("level", 1)
+    migration from 2:
+        save.int("mana", 50)
+
+print(save.schema_version())
+print(save.get_int("level"))
+print(save.get_int("mana"))
+print(save.get_int("hp"))

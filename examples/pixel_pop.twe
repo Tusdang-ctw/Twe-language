@@ -54,28 +54,30 @@ entity Bubble:
             col = color.green
         circle(at: (pos.x, pos.y), radius: bubble_radius, color: col)
 
+# Hoisted to file scope so `entity Bubble:` can read `lives` / `combo`
+# in its `function update(dt)` body. (Scene-scope `var` isn't visible
+# to entity blocks — same gotcha as `glyph_runner/main.twe`.)
+var score = 0
+var combo = 0
+var best_combo = 0
+var lives = 3
+var spawn_cd = 0.6
+var time_alive = 0.0
+var hi_score = 0
+var pointer_x = 0.0
+var pointer_y = 0.0
+var pointer_down = false
+var pointer_edge = false
+
+# Resume from last high score on launch. `save.try_read` loads the
+# whole-file blob into the save registry; `save.get_int` then reads
+# the typed slot. First launch returns 0 (default).
+save.try_read("pixel_pop.save")
+if save.has("hi_score"):
+    hi_score = save.get_int("hi_score")
+
 scene PixelPop:
-    var score = 0
-    var combo = 0
-    var best_combo = 0
-    var lives = 3
-    var spawn_cd = 0.6
-    var time_alive = 0.0
-    var hi_score = 0
-    var pointer_x = 0.0
-    var pointer_y = 0.0
-    var pointer_down = false
-    var pointer_edge = false
-
-    initial: probe
-
-    state probe:
-        on enter:
-            # Resume from last high score, if any.
-            let prev = save.try_load("hi_score")
-            if prev != nil:
-                hi_score = prev
-            -> playing
+    initial: playing
 
     state playing:
         on update(dt):
@@ -147,7 +149,8 @@ scene PixelPop:
             if lives <= 0:
                 if score > hi_score:
                     hi_score = score
-                    save.save_to_path("hi_score", hi_score)
+                    save.int("hi_score", hi_score)
+                    save.write("pixel_pop.save")
                 -> game_over
 
         on render():
@@ -158,6 +161,7 @@ scene PixelPop:
                 at: (center_x, center_y),
                 radius: danger_radius,
                 color: color.gray,
+                thickness: 2.0,
             )
             circle(
                 at: (center_x, center_y),

@@ -2478,7 +2478,37 @@ fn field_set(recv: &Value, name: &str, value: Value, line: u32) -> Result<(), Ru
         Ok(())
     } else if recv.is_object() {
         let rc = recv.as_object();
+        // Mirror the tree-walker's sprite-shaped pos<->x/y aliasing
+        // (`eval.rs` Object field-assign + `refresh_pos`): setting
+        // `.pos = (x, y)` also writes `.x` / `.y`, and setting `.x`
+        // or `.y` rebuilds `.pos = (x, y)`. Without this the bytecode
+        // VM diverged from the tree-walker on Example 1's
+        // `hero.pos = (200, 150)` / `hero.x += 50` idiom. Each step
+        // takes a fresh `borrow_mut` (dropped between) so no
+        // RefCell double-borrow can occur. Compound assignment
+        // (`hero.x += 50`) reaches here as GetField+arith+SetField, so
+        // `value` is already the final value — same as the
+        // tree-walker computing `final_value` before aliasing.
+        if name == "pos" && value.is_tuple() {
+            let elems = value.as_tuple();
+            if elems.len() >= 2 {
+                let mut o = rc.borrow_mut();
+                o.insert_field("x".to_string(), elems[0]);
+                o.insert_field("y".to_string(), elems[1]);
+            }
+        }
         rc.borrow_mut().insert_field(name.to_string(), value);
+        if name == "x" || name == "y" {
+            let (x, y) = {
+                let o = rc.borrow();
+                (
+                    o.get_field("x").unwrap_or(Value::NIL),
+                    o.get_field("y").unwrap_or(Value::NIL),
+                )
+            };
+            rc.borrow_mut()
+                .insert_field("pos".to_string(), Value::from_tuple(Rc::new(vec![x, y])));
+        }
         Ok(())
     } else {
         let other = *recv;

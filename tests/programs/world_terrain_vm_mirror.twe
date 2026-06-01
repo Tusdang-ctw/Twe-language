@@ -1,0 +1,31 @@
+# v1.0.2 Session 9 — world.* and terrain.* builtins reachable from
+# the bytecode VM. The tree-walker already wires the 35 builtins; the
+# VM's `new()` boots a tree-walker Env and copies its bindings into
+# the VM globals table, so the namespaces ride for free. This test
+# pins that path by exercising a representative subset under both
+# backends — the same .twe file is run with `--vm tree` and
+# `--vm bytecode`; the eval test asserts they produce identical
+# output.
+
+# --- world.set_lod_chain + world.lod_for_distance + world.lod_index_for_distance ---
+world.set_lod_chain("Tree", ["high.glb", "mid.glb", "low.glb"], [50.0, 200.0])
+print(world.lod_for_distance("Tree", 10.0))
+print(world.lod_for_distance("Tree", 100.0))
+print(world.lod_for_distance("Tree", 300.0))
+print(world.lod_index_for_distance("Tree", 10.0))
+print(world.lod_index_for_distance("Tree", 100.0))
+print(world.lod_index_for_distance("Tree", 300.0))
+
+# --- world.clear_lod nulls the table ---
+world.clear_lod()
+
+# --- terrain.set_chunk_size / set_chunk_resolution / set_chunk / height_at ---
+terrain.set_chunk_size(64.0)
+terrain.set_chunk_resolution(2)
+# 2x2 chunk (resolution=2 means 2x2 height samples — corner heights).
+terrain.set_chunk(0, 0, [0.0, 10.0, 10.0, 20.0])
+print(terrain.has_chunk(0, 0))
+print(terrain.has_chunk(1, 0))
+# height_at at the chunk's corners — exact lookup, no bilinear blur.
+print(terrain.height_at(0.0, 0.0))
+print(terrain.height_at(63.999, 63.999))

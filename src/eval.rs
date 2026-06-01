@@ -2880,7 +2880,7 @@ fn apply_call(
     }
 }
 
-fn call_function(
+pub(crate) fn call_function(
     env: &mut Env,
     def: &FunctionDef,
     args: &[Value],

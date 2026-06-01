@@ -385,6 +385,63 @@ fn doctor_subcommand_emits_text_report() {
 }
 
 #[test]
+fn run_vm_bytecode_matches_tree_on_world_terrain_v1_0_2_session_9() {
+    // v1.0.2 Session 9: the 35 builtins in `world.*` and `terrain.*`
+    // ship reachable from both backends. The VM's `new()` installs
+    // them via the same `crate::stdlib::install` path the
+    // tree-walker uses, so a Twe program exercising the namespaces
+    // produces identical output under either backend. This test
+    // pins that path so a regression that drops the install chain
+    // (or shadows one of the namespace Objects with a VM-tagged
+    // empty one) breaks here.
+    let tree = run_cli(&["run", "tests/programs/world_terrain_vm_mirror.twe"]);
+    let bc = run_cli(&[
+        "run",
+        "--vm",
+        "bytecode",
+        "tests/programs/world_terrain_vm_mirror.twe",
+    ]);
+    assert_eq!(tree, bc);
+    // Sanity floor: both must report at least one expected output
+    // line so a parity-passing-but-both-empty result still fails.
+    assert!(tree.contains("high.glb"), "tree output: {tree}");
+}
+
+#[test]
+fn run_on_directory_auto_detects_main_twe() {
+    // v1.0.2 Session 6: `twec run <dir>` resolves `<dir>/main.twe` as
+    // the entry point and routes through the module loader so
+    // multi-file projects work without `/main.twe` on the path.
+    // Closes the Phase 13 closeout deferral.
+    let stdout = run_cli(&["run", "examples/modular_math_demo"]);
+    assert!(
+        stdout.contains("player = (120.0, 80.0)"),
+        "expected first print line; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("distance(origin, player) ="),
+        "expected last print line; got: {stdout}"
+    );
+}
+
+#[test]
+fn run_on_directory_without_main_twe_errors() {
+    // `tests/` itself has no `main.twe`, so invoking `twec run tests`
+    // must fail with a clear missing-file message rather than
+    // silently doing the wrong thing.
+    let output = Command::new(twec_bin())
+        .args(["run", "tests"])
+        .output()
+        .expect("spawn twec");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("main.twe` not found"),
+        "expected `main.twe not found` in stderr; got: {stderr}"
+    );
+}
+
+#[test]
 fn doctor_subcommand_emits_json_report() {
     // The --json variant is the LLM-grounded support workflow:
     // identifies as `twec-doctor`, includes platform fields with

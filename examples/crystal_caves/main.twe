@@ -55,9 +55,9 @@ var crystal_positions = [
 ]
 var crystals = []
 for p in crystal_positions:
-    list.push(crystals, physics.static_sphere(p, 0.5))
+    crystals.append(physics.static_sphere(p, 0.5))
 var crystals_collected = 0
-let total_crystals = list.length(crystals)
+let total_crystals = crystals.length
 
 # === Trap positions ===
 # Pressure-plate trigger sensors. Walking onto one damages HP.
@@ -89,14 +89,17 @@ let jump_speed = 5.0
 # lights + 1 sun = 5 of the 8-light budget; rest reserved for
 # exit-shrine glow + future torch placements.
 sun.direction(vec3(-0.3, -1.0, -0.4))
-sun.color(0.6, 0.55, 0.5)
+sun.intensity(0.85)
 sun.shadow(true)
-postfx.bloom(true)
+postfx.tonemap(true)
+postfx.bloom(0.6)
 postfx.bloom_threshold(0.8)
 postfx.vignette(0.35)
 
-# Place a point light at the exit shrine.
-light.point(0, vec3(0.0, 2.0, 0.0), color.cyan, 6.0)
+# Glowing exit shrine light + a few path-finding crystal lights.
+light.add(vec3(0.0, 2.0, 0.0), color.cyan, 6.0)
+light.add(vec3(-12.0, 1.0, -12.0), color.cyan, 4.0)
+light.add(vec3(12.0, 1.0, 12.0), color.cyan, 4.0)
 
 var time = 0.0
 var won = false
@@ -115,43 +118,49 @@ on update(dt):
     let right_x = math.cos(yaw)
     let right_z = -math.sin(yaw)
 
-    # WASD movement on the XZ plane.
-    var dx = 0.0
-    var dz = 0.0
+    # WASD movement on the XZ plane. `physics.character_move` takes
+    # a velocity vector (units / second) plus dt — it scales internally
+    # and resolves slope + step. Don't pre-multiply by dt here.
+    # W moves toward the camera look direction (+fwd), matching the
+    # flipped camera math above.
+    var vx = 0.0
+    var vz = 0.0
     if key.w:
-        dx -= fwd_x * walk_speed * dt
-        dz -= fwd_z * walk_speed * dt
+        vx += fwd_x * walk_speed
+        vz += fwd_z * walk_speed
     if key.s:
-        dx += fwd_x * walk_speed * dt
-        dz += fwd_z * walk_speed * dt
+        vx -= fwd_x * walk_speed
+        vz -= fwd_z * walk_speed
     if key.a:
-        dx -= right_x * walk_speed * dt
-        dz -= right_z * walk_speed * dt
+        vx += right_x * walk_speed
+        vz += right_z * walk_speed
     if key.d:
-        dx += right_x * walk_speed * dt
-        dz += right_z * walk_speed * dt
+        vx -= right_x * walk_speed
+        vz -= right_z * walk_speed
 
-    # Gravity + jump (kinematic — we apply the delta ourselves).
-    var dy = -9.8 * dt
+    # Gravity + jump.
+    var vy = -9.8
     if key_press.space:
-        dy = jump_speed * dt
+        vy = jump_speed
 
-    physics.character_move(player, dx, dy, dz)
+    physics.character_move(player, (vx, vy, vz), dt)
 
-    # Camera follows the character.
+    # Camera follows the character. We look in the +fwd direction so
+    # yaw=0 faces +Z — the player spawns at z=-12 and the exit shrine
+    # is at z=0, so the initial view sees the geometry in front of them.
     let pp = physics.position(player)
     camera.eye = vec3(pp.x, pp.y + 0.6, pp.z)
     camera.target = vec3(
-        pp.x - fwd_x,
+        pp.x + fwd_x,
         pp.y + 0.6 + math.sin(pitch),
-        pp.z - fwd_z,
+        pp.z + fwd_z,
     )
 
     # Crystal pickup — sphere-overlap test. Mutate `crystal_positions`
     # via `.set(i, value)` (Twe lists are mutated through the method,
     # not via `list[i] = value` which isn't supported).
     var i = 0
-    while i < list.length(crystal_positions):
+    while i < crystal_positions.length:
         let cp = crystal_positions[i]
         if cp.y > -50.0:
             let ddx = pp.x - cp.x
@@ -169,7 +178,7 @@ on update(dt):
     trap_iframes -= dt
     if trap_iframes <= 0.0:
         var j = 0
-        while j < list.length(trap_positions):
+        while j < trap_positions.length:
             let tp = trap_positions[j]
             let tdx = pp.x - tp.x
             let tdz = pp.z - tp.z
@@ -189,110 +198,67 @@ on update(dt):
         # Reset. Restore each crystal to its original y from the
         # initial layout (the x / z are preserved through the lifted
         # state so we just bring y back).
-        for k in 0..total_crystals:
+        for k in 0..<total_crystals:
             let cur = crystal_positions[k]
             crystal_positions.set(k, (cur.x, 0.6, cur.z))
         crystals_collected = 0
         player_hp = 3
         won = false
-        physics.set_position(player, (0.0, 1.0, -12.0))
+        # `physics.set_position` doesn't exist as a builtin (Phase 18
+        # only exposes `physics.position` read). Reset leaves the
+        # player where they stood — fine for a short demo loop.
 
 on render():
-    # Floor + walls + pillars.
-    cube(at: (0, -0.5, 0), size: (30, 1, 30), color: color.gray)
-    cube(at: (-7.0, 1.5, -7.0), size: (1.5, 3, 1.5), color: color.gray)
-    cube(at: ( 7.0, 1.5, -7.0), size: (1.5, 3, 1.5), color: color.gray)
-    cube(at: (-7.0, 1.5,  7.0), size: (1.5, 3, 1.5), color: color.gray)
-    cube(at: ( 7.0, 1.5,  7.0), size: (1.5, 3, 1.5), color: color.gray)
+    # `cube()` in play3d takes a single uniform size (Phase 17 primitive
+    # surface). Non-uniform shapes still exist in physics via
+    # `physics.static_box` with tuple sizes — they bound the player
+    # without needing to render. The walls + non-cube floor stay
+    # invisible bumpers.
+    cube(at: (0.0, -0.5, 0.0), color: color.gray, size: 30.0)
 
-    # Exit shrine — pulses with time.
-    let pulse = 0.7 + 0.3 * math.sin(time * 2.0)
-    cube(
-        at: (0, 0.75, 0),
-        size: (1.5, 1.5, 1.5),
-        color: color.cyan,
-    )
+    # Pillars — uniform cubes, 1.5m wide.
+    cube(at: (-7.0, 1.5, -7.0), color: color.gray, size: 1.5)
+    cube(at: ( 7.0, 1.5, -7.0), color: color.gray, size: 1.5)
+    cube(at: (-7.0, 1.5,  7.0), color: color.gray, size: 1.5)
+    cube(at: ( 7.0, 1.5,  7.0), color: color.gray, size: 1.5)
+
+    # Exit shrine.
+    cube(at: (0.0, 0.75, 0.0), color: color.cyan, size: 1.5)
 
     # Crystals.
     var i = 0
-    while i < list.length(crystal_positions):
+    while i < crystal_positions.length:
         let cp = crystal_positions[i]
         if cp.y > -50.0:
             sphere(
                 at: (cp.x, cp.y + 0.2 * math.sin(time * 3.0 + i), cp.z),
-                radius: 0.3,
+                size: 0.3,
                 color: color.cyan,
             )
         i += 1
 
-    # Trap positions — visible as flat red squares.
+    # Trap positions — visible as small red cubes flush with the floor.
     var j = 0
-    while j < list.length(trap_positions):
+    while j < trap_positions.length:
         let tp = trap_positions[j]
-        cube(
-            at: (tp.x, 0.05, tp.z),
-            size: (1.0, 0.1, 1.0),
-            color: color.red,
-        )
+        cube(at: (tp.x, 0.25, tp.z), color: color.red, size: 0.5)
         j += 1
 
-    # HUD — drawn in screen-space (text() in play3d treats `at:`
-    # as pixel coordinates over the rendered scene).
-    text(
-        "CRYSTAL CAVES",
-        at: (16, 16),
-        size: 18,
-        color: color.white,
-    )
-    text(
-        "crystals: {crystals_collected} / {total_crystals}",
-        at: (16, 40),
-        size: 14,
-        color: color.cyan,
-    )
-    text(
-        "hp: {player_hp}    best: {best_score}",
-        at: (16, 60),
-        size: 14,
-        color: color.yellow,
-    )
-    if crystals_collected >= total_crystals:
-        text(
-            "Step onto the cyan shrine to escape.",
-            at: (16, 90),
-            size: 14,
+    # HUD elements (text + 2D rect overlays) aren't yet wired into
+    # play3d's render path — that's a macroquad-only path. Status
+    # is communicated visually instead: a wall of green cubes at
+    # the edge of the floor counts collected crystals; a single
+    # red cube near the spawn flags the GAME OVER state.
+    var hud_i = 0
+    while hud_i < crystals_collected:
+        cube(
+            at: (-14.0 + hud_i * 1.2, 4.0, -14.0),
             color: color.green,
+            size: 0.4,
         )
-    if won:
-        text(
-            "ESCAPED",
-            at: (260, 200),
-            size: 32,
-            color: color.green,
-        )
-        text(
-            "press R to restart",
-            at: (245, 240),
-            size: 14,
-            color: color.gray,
-        )
+        hud_i += 1
     if player_hp <= 0:
-        text(
-            "GAME OVER",
-            at: (245, 200),
-            size: 32,
-            color: color.red,
-        )
-        text(
-            "press R to restart",
-            at: (245, 240),
-            size: 14,
-            color: color.gray,
-        )
-    text(
-        "WASD move, mouse look, space jump",
-        at: (16, 440),
-        size: 12,
-        color: color.gray,
-    )
+        cube(at: (0.0, 4.0, -14.0), color: color.red, size: 1.0)
+    if won:
+        cube(at: (0.0, 4.0, -14.0), color: color.green, size: 1.0)
 

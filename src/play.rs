@@ -340,6 +340,12 @@ async fn run_loop_wasm() {
     loop {
         update_key_state(&mut env);
         crate::replay::tick(&mut env);
+        // v1.0.2 Session 7: tap-event diff. The detector reads the
+        // current `macroquad::input::touches()` set and updates the
+        // sliding-window counter consulted by `touch.tap_count()`.
+        // Cheap (HashSet of ~5 ids per frame in the worst case);
+        // safe on desktop where the touch list is always empty.
+        crate::stdlib::tick_touch_taps(macroquad::time::get_time());
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
         let mut tick_err: Option<crate::value::RuntimeError> = None;
@@ -506,6 +512,10 @@ async fn run_loop(path: String) {
         // synthetic input identical to the captured run. Idle in
         // between — zero-cost when not recording or playing.
         crate::replay::tick(&mut env);
+        // v1.0.2 Session 7: tap-event diff. Mirrored across every
+        // `run_loop_*` variant; populates the sliding-window counter
+        // `touch.tap_count()` reads.
+        crate::stdlib::tick_touch_taps(macroquad::time::get_time());
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
         idle.tick(frame_dt);
@@ -1098,6 +1108,12 @@ async fn run_loop_bytecode(path: String) {
         }
 
         update_vm_input(&vm);
+        // v1.0.2 Session 7: tap-event diff. Cheap (HashSet of ~5 ids
+        // per frame in the worst case); safe on desktop where the
+        // touch list is always empty. Mirrored across every
+        // `run_loop_*` variant so `touch.tap_count()` works under
+        // every backend / build target.
+        crate::stdlib::tick_touch_taps(macroquad::time::get_time());
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
         idle.tick(frame_dt);
@@ -1186,6 +1202,8 @@ async fn run_loop_embedded(source: String) {
         update_key_state(&mut env);
         // Phase 29 session 4: replay hook (see run_loop for context).
         crate::replay::tick(&mut env);
+        // v1.0.2 Session 7: tap-event diff (see run_loop for context).
+        crate::stdlib::tick_touch_taps(macroquad::time::get_time());
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
         idle.tick(frame_dt);

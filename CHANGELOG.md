@@ -10,6 +10,100 @@ ships. Until then, every minor (v0.x) release is permitted to break
 the surface, with deprecations rather than removals where the
 removal would be load-bearing.
 
+## v1.0.2 — Deferral-debt patch (closed 2026-05-26)
+
+> Patch-tier release after v1.0.1 that closes the structural half
+> of two long-open `What is open` items plus four cross-phase
+> deferrals from Phases 13 / 32 / 37 / 39. Every retained session
+> is pure parser sugar over existing builtins or one small additive
+> runtime hook. Full plan in
+> [`docs/v1.0.2-plan.md`](docs/v1.0.2-plan.md); closeout at
+> [`docs/changes/2026-05-26-v1.0.2-closeout.md`](docs/changes/2026-05-26-v1.0.2-closeout.md).
+> Session 3 (`entity X: lod` / `rollback` parser sugar) was cut at
+> the planned spike — runtime targets aren't ready; defers to v1.1
+> alongside Phase 32 wgpu render integration + Phase 37 eval-side
+> rewind engine. **Net +13 tests; 1004 passing.** Zero new public
+> builtins, zero new AST variants.
+
+### Added
+
+- **`save SaveSlot:` block + `migration from N:` clauses** (Session 1,
+  Path B anchor-only). Pure parser sugar over the v1.0.1 stateless
+  schema-version primitives. `version: N` declares the current
+  schema; each `migration from M:` body runs when
+  `save.loaded_version() ∈ {1..M}` and `M < N`. Closes the
+  structural half of the v1.0.1 Session 5 deferral; typed-field
+  Path A remains v1.1 work. See
+  [`docs/07-save-system.md`](docs/07-save-system.md) §What v1.0.2
+  implements.
+- **`state X: pause: false` / `state X: persistent` parser sugar**
+  (Session 2). Lowers to the v1.0.1 `persistent_state(name)`
+  registry. `persistent` is an alias for `pause: false`; both forms
+  inject a top-level `persistent_state("X")` call after the
+  enclosing declaration. Closes the v1.0.1 Session 6 parser-sugar
+  deferral.
+- **`lang.set_plural_rule(locale, fn)` accepts Twe closures**
+  (Session 4). Custom plural rules `(n: int) -> string` for the
+  long-tail locales the CLDR built-ins don't cover. Closes the
+  v1.0.1 Session 12 alias-only deferral. Exposes
+  `eval::call_function` as `pub(crate)` for stdlib callback paths.
+- **`twec run <dir>` auto-detects `main.twe`** (Session 6). Routes
+  through the module loader; multi-file projects work without
+  `/main.twe` on the command line. Closes the Phase 13 closeout
+  deferral.
+- **`touch.tap_count` play-loop hook** (Session 7). Sliding-window
+  detector — taps held <250ms count, window is 500ms.
+  Tap-press / tap-release diff runs once per frame against
+  `macroquad::input::touches()` from the play loop. Closes Phase 39
+  deferral #5.
+- **MSG_HELLO mode-mismatch handshake check** (Session 8). 1-byte
+  mode field in the MSG_HELLO payload; mismatched peers receive
+  `MSG_BYE` from the host and a clean error from the client side.
+  Closes Phase 37 deferral #4. Backward-compatible: pre-v1.0.2
+  4-byte hello payloads still accept (assume same mode).
+
+### Fixed
+
+- **LSP cross-module rename no longer false-positives inside
+  triple-quoted strings** (Session 5). `find_occurrences` now uses
+  a lexer-driven scan instead of a per-line byte scan; identifier
+  tokens come from the lexer, so string contents are never matched
+  regardless of how many lines they span. The byte-scan path is
+  retained as a fallback for documents the lexer rejects.
+
+### Internal
+
+- **VM-mirror parity test for `world.*` + `terrain.*` builtins**
+  (Session 9). The 35 builtins were already reachable from the
+  bytecode VM via `VM::new()` → `stdlib::install` → globals copy;
+  the test pins the path so a future regression that shadows the
+  `world` Object trips here rather than at release-tag time.
+- **`docs/06-design-document.md` §7.20 writeup** for the
+  `world.*` + `terrain.*` namespaces (Session 10) with worked
+  examples from `examples/openworld_demo.twe`. Closes the Phase 32
+  doc deferral.
+- **EXIT GATE: `examples/survive_beta/main.twe` migrated onto
+  `save SaveSlot:`** (Session 11). LOC delta +2 — the block-header
+  fixed cost, accepted in the plan's honest exit-criterion
+  revision. `tests/programs/v1_0_2_sugar.twe` exercises both
+  shipped sugar paths end-to-end.
+
+### Notes
+
+- Session 3 (`entity X: lod = [...]` / `entity X: rollback = true`
+  parser sugar) was cut at the planned 30-minute spike. Tuple-with-
+  named-fields isn't real Twe syntax, the rollback runtime has no
+  per-entity hook, and both halves are defer-on-defer over
+  phase-sized runtime work. Re-enters in v1.1 alongside its
+  respective runtime follow-on.
+- No new keywords: `save`, `version`, `from`, `migration`,
+  `persistent`, `pause` all stay as contextual idents recognized by
+  the parser. The Phase-35 API stability snapshot
+  (`docs/api-snapshots/2026-05-10-baseline.json`) sees only
+  additive surface.
+
+---
+
 ## v1.0.1 — Polish release (closed 2026-05-18)
 
 > Patch-tier release after v1.0 that hardens the Survivors-class

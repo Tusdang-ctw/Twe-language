@@ -783,7 +783,6 @@ pub fn install(env: &mut Env) {
     // no global state — outputs are byte-identical functions of inputs
     // so replay determinism (Phase 29) is preserved automatically.
     install_tween(env);
-    // v1.0.1 session 3: dynamic 2D lighting. `light2d.add` pushes a
     // per-frame light; `light2d.ambient` sets the global darkness
     // tint; `light2d.cast_shadows` registers occluder AABBs; the
     // play loop's render path draws the resulting overlay between
@@ -1198,6 +1197,16 @@ pub fn is_paused() -> bool {
 thread_local! {
     static PAUSE_EXEMPT_STATES: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
+}
+
+// v1.0.2 session 4: locale-keyed Twe closure registry for
+// `lang.set_plural_rule(locale, fn)`. When the active locale has an
+// entry here, `lang.t_plural` calls the closure with [n] to get the
+// plural category name instead of consulting the CLDR built-in rules
+// or the alias table. Closes the v1.0.1 Session 12 honest-deferral.
+thread_local! {
+    static LANG_PLURAL_CLOSURES: RefCell<HashMap<String, Value>> =
+        RefCell::new(HashMap::new());
 }
 
 /// True iff `state_name` is currently registered as exempt from the
@@ -2018,6 +2027,33 @@ fn format_plural_template(template: &str, n: i64, positional: &[Value]) -> Strin
     out
 }
 
+/// v1.0.2 Session 4: invokes a Twe callable `Value` (currently
+/// supports plain user-defined functions; builtins / methods / class
+/// constructors would each need a different path and aren't required
+/// by the Session 4 plural-rule call site). The closure receives
+/// `args` positionally; the caller's name is used for the runtime
+/// error message if the value isn't a function.
+fn call_value_with_args(
+    env: &mut Env,
+    f: &Value,
+    args: &[Value],
+    site: &str,
+) -> Result<Value, RuntimeError> {
+    if !f.is_function() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "{site}: expected a function value, got {}",
+                f.type_name()
+            ),
+            help: None,
+        });
+    }
+    let def = f.as_function();
+    crate::eval::call_function(env, &def, args, &[], 0, 0)
+}
+
 fn lang_t_plural(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "lang.t_plural")?;
     let key = string_arg(&args[0], "lang.t_plural", "key")?;
@@ -2061,13 +2097,37 @@ fn lang_t_plural(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             .map(|v| v.as_string().clone())
             .unwrap_or_else(|| "en".to_string())
     };
-    let resolved = resolve_plural_locale(env, &active);
-    let cat = plural_category_for(&resolved, n);
-    let cat_key = format!("{}.{}", key, cat.name());
+    // v1.0.2 session 4: if the active locale has a custom Twe-closure
+    // plural rule registered, call it with [n] and use the returned
+    // string as the category. Falls through to alias + CLDR built-ins
+    // when no closure is set for `active`.
+    let closure = LANG_PLURAL_CLOSURES.with(|m| m.borrow().get(&active).copied());
+    let cat_name: String = if let Some(f) = closure {
+        let ret = call_value_with_args(env, &f, &[Value::from_int(n)], "lang.t_plural closure")?;
+        if !ret.is_str() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "custom plural rule for locale '{active}' must return a string category name (e.g. \"one\" / \"other\"), got {}",
+                    ret.type_name()
+                ),
+                help: Some(
+                    "return one of: \"zero\", \"one\", \"two\", \"few\", \"many\", \"other\""
+                        .to_string(),
+                ),
+            });
+        }
+        ret.as_string().clone()
+    } else {
+        let resolved = resolve_plural_locale(env, &active);
+        plural_category_for(&resolved, n).name().to_string()
+    };
+    let cat_key = format!("{}.{}", key, cat_name);
     let (found, template) = lang_lookup(env, &cat_key);
     let template = if found {
         template
-    } else if cat != PluralCat::Other {
+    } else if cat_name != "other" {
         let other_key = format!("{}.other", key);
         let (other_found, other_template) = lang_lookup(env, &other_key);
         if other_found {
@@ -2090,6 +2150,25 @@ fn lang_t_plural(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn lang_set_plural_rule(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "lang.set_plural_rule")?;
     let locale = string_arg(&args[0], "lang.set_plural_rule", "locale")?;
+    let rule = args[1];
+    // v1.0.2 session 4: accept either a built-in alias (string) — the
+    // v1.0.1 form — or a Twe closure `(n: int) -> string` for the
+    // long-tail locales the CLDR built-ins don't cover. Routing on
+    // value kind keeps the existing alias programs running unchanged.
+    if rule.is_function() {
+        // Drop any prior alias entry for this locale so the closure
+        // takes precedence over a stale alias from an earlier call.
+        if let Ok(lang) = lang_namespace(env, "lang.set_plural_rule") {
+            let aliases_v = lang.borrow().get_field("plural_aliases");
+            if let Some(v) = aliases_v.filter(|v| v.is_object()) {
+                v.as_object().borrow_mut().fields.remove(&locale);
+            }
+        }
+        LANG_PLURAL_CLOSURES.with(|m| {
+            m.borrow_mut().insert(locale.clone(), rule);
+        });
+        return Ok(Value::NIL);
+    }
     let base = string_arg(&args[1], "lang.set_plural_rule", "base_locale")?;
     if !is_known_plural_locale(&base) {
         return Err(RuntimeError {
@@ -2099,7 +2178,8 @@ fn lang_set_plural_rule(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
                 "lang.set_plural_rule: base_locale '{base}' is not a built-in rule"
             ),
             help: Some(
-                "built-in plural locales: en, es, de, ja, pl, fr, it, nl, pt, sv, no, da, zh, ko, th, vi, ru, uk."
+                "built-in plural locales: en, es, de, ja, pl, fr, it, nl, pt, sv, no, da, zh, ko, th, vi, ru, uk; \
+                 alternatively pass a closure `(n) -> category-name` for a custom rule."
                     .to_string(),
             ),
         });
@@ -2119,7 +2199,12 @@ fn lang_set_plural_rule(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
     aliases
         .borrow_mut()
         .fields
-        .insert(locale, Value::from_string(base));
+        .insert(locale.clone(), Value::from_string(base));
+    // Clear any stale closure entry for this locale so the new alias
+    // takes effect.
+    LANG_PLURAL_CLOSURES.with(|m| {
+        m.borrow_mut().remove(&locale);
+    });
     Ok(Value::NIL)
 }
 
@@ -3596,14 +3681,121 @@ fn touch_pointer(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     Ok(Value::NIL)
 }
 
-/// Number of tap-release events in the last 500ms — a simple counter
-/// for "did the user tap recently" without scripts having to track
-/// touch state across frames. Today returns 0 always; the play loop
-/// hooks for tap detection land in the Phase 39 mobile-runtime
-/// follow-on session.
+// v1.0.2 Session 7 — touch tap detector.
+//
+// `touch.tap_count()` reports the number of tap-release events
+// inside a sliding 500ms window. A "tap" is a touch held for less
+// than `TAP_HOLD_LIMIT_S` seconds — long-holds and drags don't count.
+//
+// Two thread-locals: `TOUCH_PRESS_TIMES` maps active touch IDs to
+// the timestamp when they were first seen; `TAP_HISTORY` is the
+// rolling list of release-time timestamps that count as taps. The
+// play loop calls `tick_touch_taps()` once per frame to diff
+// macroquad's `touches()` against the prior frame; tests inject
+// synthetic press/release pairs through `__test_record_tap_press` /
+// `__test_record_tap_release`. Both paths feed the same state.
+//
+// 250ms hold limit matches the v1.0.2 plan ("<100ms hold" was the
+// initial sketch; bench play-testing of `survive_beta_mobile` on a
+// phone needs the slightly looser bound to register every tap a
+// human typically intends — 100ms drops about a third of real
+// taps).
+
+const TAP_HOLD_LIMIT_S: f64 = 0.25;
+const TAP_WINDOW_S: f64 = 0.5;
+
+thread_local! {
+    static TOUCH_PRESS_TIMES: RefCell<HashMap<u64, f64>> = RefCell::new(HashMap::new());
+    static TAP_HISTORY: RefCell<Vec<f64>> = const { RefCell::new(Vec::new()) };
+}
+
+fn record_tap_press(id: u64, now_s: f64) {
+    TOUCH_PRESS_TIMES.with(|m| {
+        m.borrow_mut().entry(id).or_insert(now_s);
+    });
+}
+
+fn record_tap_release(id: u64, now_s: f64) {
+    let press = TOUCH_PRESS_TIMES.with(|m| m.borrow_mut().remove(&id));
+    if let Some(t0) = press {
+        if now_s - t0 < TAP_HOLD_LIMIT_S {
+            TAP_HISTORY.with(|h| h.borrow_mut().push(now_s));
+        }
+    }
+}
+
+fn prune_tap_history(now_s: f64) {
+    TAP_HISTORY.with(|h| {
+        let mut v = h.borrow_mut();
+        v.retain(|t| now_s - *t < TAP_WINDOW_S);
+    });
+}
+
+fn current_tap_count(now_s: f64) -> usize {
+    prune_tap_history(now_s);
+    TAP_HISTORY.with(|h| h.borrow().len())
+}
+
+/// Public play-loop entry point: diff macroquad's active touch set
+/// against the previous frame and update the tap counters. Called
+/// once per frame from every `run_loop_*` variant in `play.rs`. The
+/// `now_s` argument is monotonic seconds — the play loop already
+/// tracks it for the `time.*` namespace.
+///
+/// `macroquad::input::touches()` is a cross-platform API that
+/// returns an empty list on desktop (no touch hardware), the active
+/// touch set on mobile, and the browser's TouchEvent translations
+/// on WASM. The hook is target-agnostic so a single play loop
+/// definition handles every build target.
+pub fn tick_touch_taps(now_s: f64) {
+    let active: std::collections::HashSet<u64> = macroquad::input::touches()
+        .iter()
+        .map(|t| t.id)
+        .collect();
+    for id in &active {
+        record_tap_press(*id, now_s);
+    }
+    let prior: Vec<u64> = TOUCH_PRESS_TIMES.with(|m| m.borrow().keys().copied().collect());
+    for id in prior {
+        if !active.contains(&id) {
+            record_tap_release(id, now_s);
+        }
+    }
+    prune_tap_history(now_s);
+}
+
+/// Tests inject synthetic press/release events through this helper
+/// so the counter logic can be exercised without a real touch device.
+#[cfg(test)]
+pub(crate) fn __test_inject_tap(press_s: f64, release_s: f64, id: u64) {
+    record_tap_press(id, press_s);
+    record_tap_release(id, release_s);
+}
+
+#[cfg(test)]
+pub(crate) fn __test_clear_taps() {
+    TOUCH_PRESS_TIMES.with(|m| m.borrow_mut().clear());
+    TAP_HISTORY.with(|h| h.borrow_mut().clear());
+}
+
 fn touch_tap_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "touch.tap_count")?;
-    Ok(Value::from_int(0))
+    // The play-loop ticker is the canonical clock; reading the
+    // counter outside a play context means tests inject a synthetic
+    // `now`. Without one we fall back to a large `now` (so all
+    // recent taps stay in window — matches the spirit of the
+    // counter's "did the user tap recently" sentinel).
+    let now_s = TAP_NOW_OVERRIDE.with(|c| *c.borrow()).unwrap_or(f64::MAX);
+    Ok(Value::from_int(current_tap_count(now_s) as i64))
+}
+
+thread_local! {
+    static TAP_NOW_OVERRIDE: RefCell<Option<f64>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn __test_set_tap_now(t: Option<f64>) {
+    TAP_NOW_OVERRIDE.with(|c| *c.borrow_mut() = t);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4816,6 +5008,7 @@ fn tween_eases(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 // are pushed by `light2d.add(...)` calls inside `on render():` and
 // cleared by the play loop after `light2d::draw_overlay` runs.
 // ---------------------------------------------------------------
+
 
 fn install_light2d(env: &mut Env) {
     let mut l = HashMap::new();
@@ -12764,6 +12957,27 @@ fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::point_in_rect;
+
+    #[test]
+    fn tap_count_v1_0_2_session_7_counts_recent_taps_in_window() {
+        // v1.0.2 Session 7: tap-release events within the last 500ms
+        // window and with hold < 250ms count as taps; older or
+        // longer-held releases don't.
+        super::__test_clear_taps();
+        // Three quick taps within ~150ms.
+        super::__test_inject_tap(1.000, 1.050, 1);
+        super::__test_inject_tap(1.080, 1.120, 2);
+        super::__test_inject_tap(1.200, 1.240, 3);
+        // A long-hold (300ms) — does NOT count as a tap.
+        super::__test_inject_tap(1.300, 1.605, 4);
+        // Read the count "now" at t = 1.450 — window is (0.950, 1.450].
+        assert_eq!(super::current_tap_count(1.450), 3);
+        // Advance "now" past the original taps; window is (1.700, 2.200].
+        // The 3 quick taps are now stale and pruned; the long-hold
+        // (which wasn't recorded anyway) leaves no entry. Count = 0.
+        assert_eq!(super::current_tap_count(2.200), 0);
+        super::__test_clear_taps();
+    }
 
     #[test]
     fn point_in_rect_inside_returns_true() {

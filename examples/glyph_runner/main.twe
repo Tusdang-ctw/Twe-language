@@ -22,8 +22,11 @@
 let view_w = 640.0
 let view_h = 480.0
 let player_speed = 200.0
-let spawn_interval_start = 0.9
-let max_concurrent_enemies = 20
+# Tuned 2026-05-11: original numbers were unkillable (0.4s rune cd
+# 1-shotting every slime before it could land a contact hit). Faster
+# spawns + tougher slimes + shorter iframes + slower rune cadence.
+let spawn_interval_start = 0.35
+let max_concurrent_enemies = 40
 
 # ---------------------------------------------------------------
 # Slime — basic chase-the-player enemy. 1 HP, contact damage on
@@ -31,7 +34,8 @@ let max_concurrent_enemies = 20
 # ---------------------------------------------------------------
 entity Slime:
     var pos = (0.0, 0.0)
-    var speed = 65.0
+    var hp = 2
+    var speed = 95.0
 
     function update(dt):
         let dx = player_x - pos.x
@@ -44,8 +48,8 @@ entity Slime:
         # Contact damage with i-frames.
         if mag2 < 22.0 * 22.0:
             if player_iframes <= 0.0:
-                player_hp -= 8
-                player_iframes = 0.6
+                player_hp -= 18
+                player_iframes = 0.35
 
     function render():
         rect(
@@ -100,9 +104,11 @@ entity Rune:
             let dx = slime.pos.x - pos.x
             let dy = slime.pos.y - pos.y
             if dx * dx + dy * dy < 14.0 * 14.0:
-                despawn slime
+                slime.hp -= 1
                 despawn self
-                score += 1
+                if slime.hp <= 0:
+                    despawn slime
+                    score += 1
                 return
 
     function render():
@@ -112,17 +118,17 @@ entity Rune:
             color: color.cyan,
         )
 
-scene GlyphRunner:
-    var player_x = 320.0
-    var player_y = 240.0
-    var player_hp = 100
-    var player_iframes = 0.0
-    var score = 0
-    var rune_cd = 0.0
-    var spawn_cd = 0.6
-    var time_alive = 0.0
-    var enemies_count = 0
+var player_x = 320.0
+var player_y = 240.0
+var player_hp = 100
+var player_iframes = 0.0
+var score = 0
+var rune_cd = 0.0
+var spawn_cd = 0.6
+var time_alive = 0.0
+var enemies_count = 0
 
+scene GlyphRunner:
     initial: playing
 
     state playing:
@@ -150,7 +156,7 @@ scene GlyphRunner:
             player_iframes -= dt
 
             # ---- Enemy spawn ----
-            enemies_count = list.length(entities.of(Slime))
+            enemies_count = entities.of(Slime).length
             spawn_cd -= dt
             if spawn_cd <= 0.0:
                 if enemies_count < max_concurrent_enemies:
@@ -179,7 +185,7 @@ scene GlyphRunner:
             # ---- Rune auto-cast ----
             rune_cd -= dt
             if rune_cd <= 0.0 and enemies_count > 0:
-                rune_cd = 0.40
+                rune_cd = 0.55
                 spawn Rune at (player_x, player_y)
 
             if player_hp <= 0:

@@ -184,6 +184,61 @@ What v0.2 explicitly does NOT do:
 
 ---
 
+## What v1.0.2 implements (Path B — anchor-only block)
+
+The full §3 / §4 design above remains future work. v1.0.2 Session 1 ships a **Path B** anchor-only form of the `save SaveSlot:` block that is **pure parser sugar** over the v1.0.1 stateless schema-version primitives (`save.set_schema_version` / `save.schema_version` / `save.loaded_version`) and the Phase 22 typed `save.*` writers / readers. There are no new builtins, no new AST nodes, and no semantic change to the v1.0.1 save runtime.
+
+### Syntax (v1.0.2)
+
+```twe
+# 1. Read any existing save (user does this manually):
+save.try_read("my_game.save")
+
+# 2. Declare the current schema version + zero or more migrations:
+save SaveSlot:
+    version: 3
+
+    migration from 1:
+        save.int("level", math.max(1, save.get_int("level")))
+
+    migration from 2:
+        save.int("mana", 50)
+```
+
+### Semantics
+
+The block desugars at parse time to:
+
+```twe
+save.set_schema_version(3)
+let __save_SaveSlot_loaded = save.loaded_version()
+if __save_SaveSlot_loaded == 1:
+    save.int("level", math.max(1, save.get_int("level")))
+if __save_SaveSlot_loaded == 1 or __save_SaveSlot_loaded == 2:
+    save.int("mana", 50)
+```
+
+Rules:
+
+- `version: N` is required, must be `>= 1`, must appear exactly once.
+- Each `migration from M:` declares a body that transforms data **from** schema version `M` **to** `M+1`. Bodies use the regular `save.*` typed setters / getters; they are not given a typed `old` binding (that's the Path A deferral).
+- Migrations are validated to satisfy `1 <= M < version`; out-of-range values are parse errors.
+- Migration bodies are emitted in ascending version order regardless of source order, so source can list them either oldest-first or newest-first.
+- Migration `M` runs iff `loaded_version() ∈ {1, 2, …, M}`. Nil (no prior `read` / `try_read`) compares unequal to every integer under Twe's `Eq`, so a fresh game never runs any migration body.
+- The block's `SaveSlot` identifier is used only to mangle the cache-variable name (`__save_<Slot>_loaded`), so multiple `save Foo:` / `save Bar:` blocks in the same program don't clash.
+
+### What this deferral closure intentionally leaves out (still Path A)
+
+- **Typed field declarations** (`var hp: int = 100`). They imply save-store-backed globals + a new variable-binding mechanism in eval / VM / type checker. Phase-sized; re-enters in v1.1.
+- **`old` binding** for migration bodies. Requires historical-schema tracking per §4.
+- **Compile-time "every field is copied or defaulted" check**. Same dependency as `old`.
+- **Schema rename sugar** (`save HeroSave: was Player`).
+- **Newer-version error** at read time. Today `save.read` is permissive; the §3 step 1 check is a future runtime change.
+
+The Path B form is enough to land the structural deferral closure from v1.0.1 Session 5 and `CLAUDE.md` "What is open"; the Path A semantic additions remain on the v1.1 roadmap.
+
+---
+
 ## References
 
 - Example 7 in `docs/01-examples.md` — locked grammar.

@@ -1,0 +1,47 @@
+# v1.0.2 Session 11 — EXIT GATE.
+# Exercises every shipped sugar form from v1.0.2 in one program:
+#
+#   1. `save SaveSlot:` block + `migration from N:` clauses (Session 1)
+#   2. `state X: persistent` / `state X: pause: false` (Session 2)
+#
+# Session 3 (`entity X: lod / rollback`) was deferred to v1.1 after
+# the planned spike turned up murky semantics — see the closeout
+# note. That sugar path is intentionally absent here.
+
+# --- (1) save block ---
+# Bootstrap a v1 save on disk, re-read it, then run a v3 SaveSlot
+# with two migrations.
+save.set_schema_version(1)
+save.int("hp", 100)
+save.int("level", 0)
+save.write("v1_0_2_sugar_test.json")
+save.clear()
+save.read("v1_0_2_sugar_test.json")
+
+save HeroSlot:
+    version: 3
+    migration from 1:
+        save.int("level", 1)
+    migration from 2:
+        save.int("mana", 25)
+
+print(save.schema_version())     # 3
+print(save.get_int("level"))     # 1
+print(save.get_int("mana"))      # 25
+
+# --- (2) state persistent / pause: false sugar ---
+entity Ui:
+    initial: idle
+
+    state idle:
+        persistent
+
+    state showing:
+        pause: false
+
+    state hidden:
+        pause: true
+
+print(is_persistent_state("idle"))     # true
+print(is_persistent_state("showing"))  # true
+print(is_persistent_state("hidden"))   # false

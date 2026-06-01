@@ -69,8 +69,8 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | `tween.*` — deterministic easing primitives (replay-safe, 14 curves) | v1.0.1 |
 | `light2d.*` — additive multi-light pass + optional AABB shadow caster | v1.0.1 |
 | Audio polish — `sound.pool` / `sound.duck` / `music.layer` / `music.crossfade` | v1.0.1 |
-| Save schema versioning — `save.set_schema_version` / `loaded_version` (block syntax v1.0.2) | v1.0.1 |
-| Per-state pause opt-out — `persistent_state(name)` registry (parser sugar v1.0.2) | v1.0.1 |
+| Save schema versioning — `save.set_schema_version` / `loaded_version` (v1.0.1) + `save SaveSlot:` block sugar (v1.0.2) | v1.0.1 + v1.0.2 |
+| Per-state pause opt-out — `persistent_state(name)` registry (v1.0.1) + `state X: pause: false` / `state X: persistent` sugar (v1.0.2) | v1.0.1 + v1.0.2 |
 | Nine-slice panels (`panel(... skin: nine_slice("path", border: N))`) | v1.0.1 |
 | `camera2d.*` — `follow` / `zoom_to` / `cinematic_pan` / `bounds` | v1.0.1 |
 | LSP cross-module find-references + rename | v1.0.1 |
@@ -78,8 +78,13 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | `twec perf-snapshot` / `twec perf-diff` + CI baseline + `perf.yml` workflow | v1.0.1 |
 | Localization plurals (`lang.t_plural` with CLDR rules for 15 locales) | v1.0.1 |
 | `twec doctor` triage diagnostic (`--json` for LLM-grounded support) | v1.0.1 |
+| Custom plural rules via Twe closures (`lang.set_plural_rule(locale, fn)`) | v1.0.2 |
+| LSP cross-module rename — lexer-driven scan (no false-positives in triple-quoted strings) | v1.0.2 |
+| `twec run <dir>` auto-detects `main.twe` for multi-file projects | v1.0.2 |
+| `touch.tap_count` play-loop hook for mobile tap detection | v1.0.2 |
+| MSG_HELLO mode-mismatch handshake — rejects Lockstep ↔ Rollback peer pairings | v1.0.2 |
 
-**991 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** **Phases 1–41 codebase-closed; v1.0.1 polish release closed 2026-05-18 (all 13 feature sessions + closeout shipped — see [`docs/changes/2026-05-18-v1.0.1-closeout.md`](docs/changes/2026-05-18-v1.0.1-closeout.md)).** The full post-v1.0 round 2 roadmap landed: 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, the LLM-differentiator surface (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes), cross-platform polish, external-validation scaffolding, internet multiplayer (Steam P2P primary + STUN fallback + lobbies + reconnect), rollback netcode (snapshot ring buffer + predicted-input policies), browser-3D scaffolding (`BuildTarget::Wasm32_3D` + audit), mobile (iOS + Android) scaffolding (touch + virtual joystick + safe-area insets + signing recipe), **console targets** (`console.*` abstract input + glyphs + service-trait stubs + `PARTNER.md` partner contribution guide), **and the MMO foundation** (sharded-zones architecture RFC + `mmo.*` API stubs + workshop traits + sandboxing pre-requirements). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy, [`docs/mobile-signing.md`](docs/mobile-signing.md) for the iOS / Android shipping recipe, and [`PARTNER.md`](PARTNER.md) for licensed studios working on console ports.
+**1004 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** **Phases 1–41 codebase-closed; v1.0.1 polish release closed 2026-05-18 (all 13 feature sessions + closeout — see [`docs/changes/2026-05-18-v1.0.1-closeout.md`](docs/changes/2026-05-18-v1.0.1-closeout.md)); v1.0.2 deferral-debt patch closed 2026-05-26 (10 retained sessions + closeout — see [`docs/changes/2026-05-26-v1.0.2-closeout.md`](docs/changes/2026-05-26-v1.0.2-closeout.md)).** The full post-v1.0 round 2 roadmap landed: 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, the LLM-differentiator surface (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes), cross-platform polish, external-validation scaffolding, internet multiplayer (Steam P2P primary + STUN fallback + lobbies + reconnect), rollback netcode (snapshot ring buffer + predicted-input policies), browser-3D scaffolding (`BuildTarget::Wasm32_3D` + audit), mobile (iOS + Android) scaffolding (touch + virtual joystick + safe-area insets + signing recipe), **console targets** (`console.*` abstract input + glyphs + service-trait stubs + `PARTNER.md` partner contribution guide), **and the MMO foundation** (sharded-zones architecture RFC + `mmo.*` API stubs + workshop traits + sandboxing pre-requirements). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy, [`docs/mobile-signing.md`](docs/mobile-signing.md) for the iOS / Android shipping recipe, and [`PARTNER.md`](PARTNER.md) for licensed studios working on console ports.
 
 ## Install
 

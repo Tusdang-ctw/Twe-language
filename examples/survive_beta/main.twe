@@ -87,13 +87,15 @@ var best_time = 0.0
 # Boss spawn cadence. Counts up every wave roll; on hitting 5,
 # spawns one boss and resets. Wave 5 is the first boss wave.
 var boss_wave_counter = 0
-# v1.0.1 polish: hit feedback flows through `fx.*` (hit_flash +
-# screen_shake + damage_number); camera tracking flows through
-# `camera2d.*`; save schema versioning via `save.*`. Audio remains
-# deferred — `sound.pool` pre-declares the voice budget so the
-# slime-hit / boss-roar SFX clip-stack cleanly when wired.
+# v1.0.1 polish: hit feedback flows through `fx.*`; camera tracking
+# flows through `camera2d.*`; sound pooling pre-declares the voice
+# budget. v1.0.2 polish: save schema versioning moves from the
+# `save.set_schema_version(N)` builtin to the `save SaveSlot:` block
+# (Path B, anchor-only — `migration from N:` clauses land here when
+# the schema bumps).
 sound.pool("examples/assets/silence.wav", 4)
-save.set_schema_version(1)
+save SaveSlot:
+    version: 1
 camera2d.bounds(view_w * 0.5, view_h * 0.5, arena_w - view_w, arena_h - view_h)
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5

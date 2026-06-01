@@ -279,8 +279,14 @@ pub fn connect(addr: &str) -> Result<(), String> {
 
     // Send hello, expected_peers field is a placeholder — the host
     // sets the real value and echoes back.
+    //
+    // v1.0.2 Session 8 — append a mode byte (5th payload byte) so
+    // the host can reject a peer whose `rollback.mode()` doesn't
+    // match. Lockstep ↔ Rollback are incompatible netcode models;
+    // accepting a mismatch desyncs silently within a few ticks.
     let mut hello = build_header(MSG_HELLO, 0, 0, 0);
     hello.extend_from_slice(&[0u8; 4]); // expected_peers placeholder
+    hello.push(mode_byte_local());
     socket
         .send_to(&hello, target)
         .map_err(|e| format!("net.connect: send hello: {e}"))?;
@@ -298,9 +304,35 @@ pub fn connect(addr: &str) -> Result<(), String> {
                     if h.msg_type == MSG_HELLO {
                         let payload = &buf[HEADER_LEN..n];
                         if payload.len() >= 4 {
+                            // v1.0.2 Session 8: if the host sends a
+                            // 5th byte it's the host's mode; reject
+                            // on mismatch. Pre-v1.0.2 hosts send only
+                            // 4 bytes — assume compatible (backward
+                            // compat).
+                            if payload.len() >= 5 {
+                                let host_mode = payload[4];
+                                let local = mode_byte_local();
+                                if host_mode != local {
+                                    return Err(format!(
+                                        "net.connect: mode mismatch — host is {}, local is {}; \
+                                         change `net.set_mode()` to match before joining",
+                                        mode_byte_name(host_mode),
+                                        mode_byte_name(local),
+                                    ));
+                                }
+                            }
                             got_id = Some((h.peer_id, payload[0], h.session_id));
                             break;
                         }
+                    } else if h.msg_type == MSG_BYE {
+                        // v1.0.2 Session 8: host BYEs us right after
+                        // hello when the mode mismatches. Surface a
+                        // clearer error than "no hello-ack".
+                        return Err(format!(
+                            "net.connect: host {target} rejected the connection \
+                             (likely a netcode-mode mismatch — \
+                             check both peers call `net.set_mode(...)` the same way)"
+                        ));
                     }
                 }
             }
@@ -466,6 +498,25 @@ fn handle_packet(sess: &mut Session, src: SocketAddr, buf: &[u8]) -> bool {
     }
     match h.msg_type {
         MSG_HELLO if sess.local_peer_id == 0 => {
+            // v1.0.2 Session 8: mode-mismatch check. New clients
+            // append a mode byte at payload[4]; old clients send
+            // only 4 bytes (backward compat, mode-unaware, accept).
+            let payload = &buf[HEADER_LEN..];
+            if payload.len() >= 5 {
+                let client_mode = payload[4];
+                let host_mode = mode_byte_local();
+                if client_mode != host_mode {
+                    let bye = build_header(MSG_BYE, sess.session_id, 0, 0);
+                    let _ = sess.socket.send_to(&bye, src);
+                    eprintln!(
+                        "[twec net] rejected peer {src}: mode mismatch \
+                         (host = {}, peer = {})",
+                        mode_byte_name(host_mode),
+                        mode_byte_name(client_mode)
+                    );
+                    return false;
+                }
+            }
             // Host: assign peer id, reply with hello-ack.
             //
             // Phase 36 session 5: if the source address matches a
@@ -501,6 +552,9 @@ fn handle_packet(sess: &mut Session, src: SocketAddr, buf: &[u8]) -> bool {
             });
             let mut ack = build_header(MSG_HELLO, sess.session_id, assigned, 0);
             ack.extend_from_slice(&[sess.expected_peers, 0, 0, 0]);
+            // v1.0.2 Session 8: host echoes its mode in the ack so
+            // the client can double-check on the inbound path too.
+            ack.push(mode_byte_local());
             let _ = sess.socket.send_to(&ack, src);
             true
         }
@@ -864,6 +918,47 @@ struct Header {
     session_id: u32,
     peer_id: u8,
     tick: u32,
+}
+
+/// v1.0.2 Session 8: encode the local netcode mode as one byte for
+/// the MSG_HELLO payload. 0 = Lockstep, 1 = Rollback. Tests inject a
+/// fake mode via `__test_set_mode_override`.
+fn mode_byte_local() -> u8 {
+    if let Some(b) = mode_override() {
+        return b;
+    }
+    match crate::rollback::mode() {
+        crate::rollback::Mode::Lockstep => 0,
+        crate::rollback::Mode::Rollback => 1,
+    }
+}
+
+fn mode_byte_name(b: u8) -> &'static str {
+    match b {
+        0 => "lockstep",
+        1 => "rollback",
+        _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static MODE_OVERRIDE: std::cell::RefCell<Option<u8>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn mode_override() -> Option<u8> {
+    MODE_OVERRIDE.with(|c| *c.borrow())
+}
+
+#[cfg(not(test))]
+fn mode_override() -> Option<u8> {
+    None
+}
+
+#[cfg(test)]
+pub(crate) fn __test_set_mode_override(b: Option<u8>) {
+    MODE_OVERRIDE.with(|c| *c.borrow_mut() = b);
 }
 
 fn build_header(msg_type: u8, session_id: u32, peer_id: u8, tick: u32) -> Vec<u8> {
@@ -1293,6 +1388,97 @@ mod tests {
         assert_eq!(local_peer_id(), 0);
         assert_eq!(peer_count(), 2);
         close();
+    }
+
+    #[test]
+    fn mode_mismatch_handshake_rejects_peer_v1_0_2_session_8() {
+        // v1.0.2 Session 8: a host running in Lockstep mode must
+        // reject a hello whose 5th payload byte (the client's mode)
+        // declares Rollback, and send back a MSG_BYE so the client
+        // sees a clean rejection instead of a silent timeout.
+        super::__test_set_mode_override(Some(0)); // host = Lockstep
+        host(0, 2).unwrap();
+        let host_port = SESSION.with(|s| {
+            s.borrow()
+                .as_ref()
+                .unwrap()
+                .socket
+                .local_addr()
+                .unwrap()
+                .port()
+        });
+        let host_addr: SocketAddr = format!("127.0.0.1:{host_port}").parse().unwrap();
+
+        // Manual client claims Rollback in its hello payload.
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.set_nonblocking(true).unwrap();
+        let mut hello = build_header(MSG_HELLO, 0, 0, 0);
+        hello.extend_from_slice(&[0u8; 4]);
+        hello.push(1); // client_mode = Rollback
+        client.send_to(&hello, host_addr).unwrap();
+
+        // Drive the host poll loop; it should reject without adding
+        // the peer.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        poll();
+
+        // Host must have zero peers — the mismatched hello was
+        // rejected, not accepted.
+        let n_peers = SESSION.with(|s| s.borrow().as_ref().unwrap().peers.len());
+        assert_eq!(n_peers, 0, "mismatched-mode peer must not be added");
+
+        // Client should see a MSG_BYE from the host.
+        let mut buf = [0u8; 1500];
+        let mut saw_bye = false;
+        for _ in 0..50 {
+            match client.recv_from(&mut buf) {
+                Ok((n, _)) => {
+                    let h = parse_header(&buf[..n]).expect("rejection header");
+                    if h.msg_type == MSG_BYE {
+                        saw_bye = true;
+                        break;
+                    }
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+        assert!(saw_bye, "client must receive MSG_BYE on mode mismatch");
+
+        close();
+        super::__test_set_mode_override(None);
+    }
+
+    #[test]
+    fn matching_mode_handshake_accepts_peer_v1_0_2_session_8() {
+        // Sanity-check the happy path: when client and host both
+        // claim the same mode byte, the existing handshake works
+        // exactly as before (peer added, hello-ack delivered).
+        super::__test_set_mode_override(Some(1)); // both = Rollback
+        host(0, 2).unwrap();
+        let host_port = SESSION.with(|s| {
+            s.borrow()
+                .as_ref()
+                .unwrap()
+                .socket
+                .local_addr()
+                .unwrap()
+                .port()
+        });
+        let host_addr: SocketAddr = format!("127.0.0.1:{host_port}").parse().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.set_nonblocking(true).unwrap();
+        let mut hello = build_header(MSG_HELLO, 0, 0, 0);
+        hello.extend_from_slice(&[0u8; 4]);
+        hello.push(1);
+        client.send_to(&hello, host_addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        poll();
+
+        let n_peers = SESSION.with(|s| s.borrow().as_ref().unwrap().peers.len());
+        assert_eq!(n_peers, 1, "matching-mode peer must be added");
+        close();
+        super::__test_set_mode_override(None);
     }
 
     #[test]

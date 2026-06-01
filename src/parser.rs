@@ -32,11 +32,21 @@ pub fn parse(tokens: &[Token]) -> Result<Program, ParseError> {
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    /// v1.0.2 Session 2: state names found with `pause: false` or
+    /// `persistent` sentinels inside a state-block body, collected as
+    /// the parser walks declarations. Drained by `parse_program` after
+    /// each top-level statement to inject synthesized
+    /// `persistent_state("name")` calls.
+    pending_persistent_states: Vec<(String, u32, u32)>,
 }
 
 impl<'a> Parser<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            pending_persistent_states: Vec::new(),
+        }
     }
 
     fn peek(&self) -> &Token {
@@ -56,6 +66,15 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         while !matches!(self.peek().kind, TokenKind::Eof) {
             stmts.push(self.parse_stmt()?);
+            // v1.0.2 Session 2: any `pause: false` / `persistent`
+            // sentinels found in the just-parsed declaration's nested
+            // state blocks become synthesized
+            // `persistent_state("name")` top-level calls injected
+            // right after the declaration. Same desugaring shape as
+            // Session 1's save block.
+            for (name, line, col) in std::mem::take(&mut self.pending_persistent_states) {
+                stmts.push(make_persistent_state_stmt(&name, line, col));
+            }
             self.skip_newlines();
         }
         Ok(Program { stmts })
@@ -114,6 +133,14 @@ impl<'a> Parser<'a> {
             TokenKind::Import => return self.parse_import(),
             TokenKind::At => return self.parse_annotated_stmt(),
             _ => {}
+        }
+        // v1.0.2 Session 1 — `save SaveSlot:` block (anchor-only Path
+        // B). Contextual recognition so `save.set_schema_version(...)`
+        // and the `save.*` namespace usages keep parsing as ordinary
+        // expression statements. Trigger only when the next three
+        // tokens are `Ident("save") Ident(...) Colon`.
+        if self.is_save_block_start() {
+            return self.parse_save_block();
         }
         let expr = self.parse_expr()?;
         if let Some(op) = self.peek_assign_op() {
@@ -733,6 +760,291 @@ impl<'a> Parser<'a> {
         })
     }
 
+    // ---- v1.0.2 Session 1: save SaveSlot: block (anchor-only) ----
+
+    fn is_save_block_start(&self) -> bool {
+        if !matches!(&self.peek().kind, TokenKind::Ident(s) if s == "save") {
+            return false;
+        }
+        let t1 = self.tokens.get(self.pos + 1);
+        let t2 = self.tokens.get(self.pos + 2);
+        matches!(t1.map(|t| &t.kind), Some(TokenKind::Ident(_)))
+            && matches!(t2.map(|t| &t.kind), Some(TokenKind::Colon))
+    }
+
+    fn parse_save_block(&mut self) -> Result<Stmt, ParseError> {
+        // `save SaveSlot:` already validated by is_save_block_start.
+        let save_tok = self.bump().clone();
+        let name_tok = self.bump().clone();
+        let slot_name = match &name_tok.kind {
+            TokenKind::Ident(s) => s.clone(),
+            _ => unreachable!("guarded by is_save_block_start"),
+        };
+        self.expect(TokenKind::Colon, "expected ':' after save slot name")?;
+
+        let (version, version_line, version_col, migrations) =
+            self.parse_save_block_body(&slot_name, save_tok.line, save_tok.col)?;
+
+        // Desugar to ordinary statements; eval / VM / checker see no
+        // new AST nodes. The synthesized statements are wrapped in a
+        // single `Stmt::If { cond: Bool(true), then_body }` since
+        // `parse_stmt` returns one Stmt — using `if true:` as the
+        // do-block container avoids introducing a new AST variant.
+        let line = save_tok.line;
+        let col = save_tok.col;
+        let mut out = Vec::new();
+
+        // 1. save.set_schema_version(N)
+        out.push(Stmt::Expr(make_save_call(
+            "set_schema_version",
+            vec![Expr::Int {
+                value: version,
+                line: version_line,
+                col: version_col,
+            }],
+            line,
+            col,
+        )));
+
+        // 2. let __save_<Slot>_loaded = save.loaded_version()
+        let cache_name = format!("__save_{slot_name}_loaded");
+        out.push(Stmt::Let {
+            name: cache_name.clone(),
+            value: make_save_call("loaded_version", vec![], line, col),
+            ty: None,
+            line,
+            col,
+        });
+
+        // 3. for each migration from M (ascending), emit
+        //    if cache == 1 or cache == 2 or ... or cache == M: <body>
+        let mut sorted = migrations;
+        sorted.sort_by_key(|(m, _, _, _)| *m);
+        for (m, mline, mcol, body) in sorted {
+            if m < 1 || m >= version {
+                return Err(ParseError {
+                    line: mline,
+                    col: mcol,
+                    message: format!(
+                        "migration from {m}: must satisfy 1 <= M < version ({version})"
+                    ),
+                    help: Some(
+                        "each `migration from M:` transforms data from schema version M to M+1; \
+                         it must be below the declared `version:`"
+                            .to_string(),
+                    ),
+                });
+            }
+            let cond = (1..=m).fold(None::<Expr>, |acc, k| {
+                let eq = Expr::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(Expr::Ident {
+                        name: cache_name.clone(),
+                        line: mline,
+                        col: mcol,
+                    }),
+                    right: Box::new(Expr::Int {
+                        value: k,
+                        line: mline,
+                        col: mcol,
+                    }),
+                    line: mline,
+                    col: mcol,
+                };
+                match acc {
+                    None => Some(eq),
+                    Some(prev) => Some(Expr::Binary {
+                        op: BinOp::Or,
+                        left: Box::new(prev),
+                        right: Box::new(eq),
+                        line: mline,
+                        col: mcol,
+                    }),
+                }
+            }).expect("at least one branch by construction");
+            out.push(Stmt::If {
+                cond,
+                then_body: body,
+                elifs: Vec::new(),
+                else_body: None,
+                line: mline,
+                col: mcol,
+            });
+        }
+
+        Ok(Stmt::If {
+            cond: Expr::Bool {
+                value: true,
+                line,
+                col,
+            },
+            then_body: out,
+            elifs: Vec::new(),
+            else_body: None,
+            line,
+            col,
+        })
+    }
+
+    /// Parses the indented body of a save block. Returns
+    /// `(version, version_line, version_col, migrations)` where each
+    /// migration is `(version_from, line, col, body_stmts)`.
+    #[allow(clippy::type_complexity)]
+    fn parse_save_block_body(
+        &mut self,
+        slot_name: &str,
+        save_line: u32,
+        save_col: u32,
+    ) -> Result<(i64, u32, u32, Vec<(i64, u32, u32, Vec<Stmt>)>), ParseError> {
+        // Same Newline/Indent shape as parse_block / parse_decl_body.
+        if !matches!(self.peek().kind, TokenKind::Newline) {
+            return Err(ParseError {
+                line: save_line,
+                col: save_col,
+                message: format!("save block `save {slot_name}:` must have an indented body"),
+                help: Some(
+                    "the body must declare `version: N` and zero or more `migration from M:` clauses"
+                        .to_string(),
+                ),
+            });
+        }
+        self.bump();
+        if !matches!(self.peek().kind, TokenKind::Indent) {
+            return Err(ParseError {
+                line: save_line,
+                col: save_col,
+                message: format!("save block `save {slot_name}:` must have an indented body"),
+                help: Some("indent the `version:` and migration lines under the block header".to_string()),
+            });
+        }
+        self.bump();
+
+        let mut version: Option<(i64, u32, u32)> = None;
+        let mut migrations: Vec<(i64, u32, u32, Vec<Stmt>)> = Vec::new();
+        let mut seen_versions: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek().kind, TokenKind::Dedent | TokenKind::Eof) {
+                break;
+            }
+            let tok = self.peek().clone();
+            match &tok.kind {
+                TokenKind::Ident(s) if s == "version" => {
+                    self.bump();
+                    self.expect(TokenKind::Colon, "expected ':' after `version`")?;
+                    let v_tok = self.bump().clone();
+                    let v = match v_tok.kind {
+                        TokenKind::Int(n) => n,
+                        other => {
+                            return Err(ParseError {
+                                line: v_tok.line,
+                                col: v_tok.col,
+                                message: format!(
+                                    "expected integer literal after `version:`, got {other:?}"
+                                ),
+                                help: Some(
+                                    "schema versions are monotonically increasing positive integers"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                    };
+                    if v < 1 {
+                        return Err(ParseError {
+                            line: v_tok.line,
+                            col: v_tok.col,
+                            message: format!("version: must be >= 1, got {v}"),
+                            help: Some(
+                                "the unstamped historical layout is v1; new schemas start at 2"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    if version.is_some() {
+                        return Err(ParseError {
+                            line: tok.line,
+                            col: tok.col,
+                            message: "duplicate `version:` line in save block".to_string(),
+                            help: None,
+                        });
+                    }
+                    version = Some((v, v_tok.line, v_tok.col));
+                    self.expect_stmt_end()?;
+                }
+                TokenKind::Ident(s) if s == "migration" => {
+                    let m_line = tok.line;
+                    let m_col = tok.col;
+                    self.bump();
+                    let from_tok = self.bump().clone();
+                    if !matches!(&from_tok.kind, TokenKind::Ident(w) if w == "from") {
+                        return Err(ParseError {
+                            line: from_tok.line,
+                            col: from_tok.col,
+                            message: format!(
+                                "expected `from` after `migration`, got {:?}",
+                                from_tok.kind
+                            ),
+                            help: Some("syntax: `migration from N:`".to_string()),
+                        });
+                    }
+                    let n_tok = self.bump().clone();
+                    let n = match n_tok.kind {
+                        TokenKind::Int(n) => n,
+                        other => {
+                            return Err(ParseError {
+                                line: n_tok.line,
+                                col: n_tok.col,
+                                message: format!(
+                                    "expected integer literal after `migration from`, got {other:?}"
+                                ),
+                                help: None,
+                            });
+                        }
+                    };
+                    if !seen_versions.insert(n) {
+                        return Err(ParseError {
+                            line: n_tok.line,
+                            col: n_tok.col,
+                            message: format!("duplicate `migration from {n}:` clause"),
+                            help: None,
+                        });
+                    }
+                    self.expect(TokenKind::Colon, "expected ':' after `migration from N`")?;
+                    let body = self.parse_block()?;
+                    migrations.push((n, m_line, m_col, body));
+                }
+                _ => {
+                    return Err(ParseError {
+                        line: tok.line,
+                        col: tok.col,
+                        message: format!(
+                            "unexpected token in save block: {:?}",
+                            tok.kind
+                        ),
+                        help: Some(
+                            "save blocks (Path B) accept only `version: N` and \
+                             `migration from M:` clauses; field declarations defer to v1.1"
+                                .to_string(),
+                        ),
+                    });
+                }
+            }
+        }
+        if matches!(self.peek().kind, TokenKind::Dedent) {
+            self.bump();
+        }
+
+        let (v, vline, vcol) = version.ok_or_else(|| ParseError {
+            line: save_line,
+            col: save_col,
+            message: format!("save block `save {slot_name}:` is missing a `version:` line"),
+            help: Some("every save block must declare its current schema version, e.g. `version: 3`".to_string()),
+        })?;
+
+        Ok((v, vline, vcol, migrations))
+    }
+
     fn parse_decl(&mut self, kind: DeclKind) -> Result<Stmt, ParseError> {
         let kw = self.bump().clone();
         let name_tok = self.bump().clone();
@@ -977,7 +1289,7 @@ impl<'a> Parser<'a> {
         let kw = self.bump().clone(); // `state`
         let name = self.expect_ident("expected state name after `state`")?;
         self.expect(TokenKind::Colon, "expected ':' after state name")?;
-        let members = self.parse_state_body()?;
+        let members = self.parse_state_body(&name, kw.line, kw.col)?;
         Ok(DeclMember::State {
             name,
             members,
@@ -986,7 +1298,12 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_state_body(&mut self) -> Result<Vec<StateMember>, ParseError> {
+    fn parse_state_body(
+        &mut self,
+        state_name: &str,
+        state_line: u32,
+        state_col: u32,
+    ) -> Result<Vec<StateMember>, ParseError> {
         if !matches!(self.peek().kind, TokenKind::Newline) {
             let tok = self.peek().clone();
             return Err(ParseError {
@@ -1009,12 +1326,131 @@ impl<'a> Parser<'a> {
             if matches!(self.peek().kind, TokenKind::Dedent | TokenKind::Eof) {
                 break;
             }
+            // v1.0.2 Session 2: detect `pause: false` and `persistent`
+            // sentinels. Both flag the enclosing state for the
+            // PAUSE_EXEMPT_STATES registry; matching tokens are
+            // consumed without producing a StateMember.
+            if self.try_consume_persistent_sentinel(state_name, state_line, state_col)? {
+                continue;
+            }
             members.push(self.parse_state_inner_member()?);
         }
         if matches!(self.peek().kind, TokenKind::Dedent) {
             self.bump();
         }
         Ok(members)
+    }
+
+    /// v1.0.2 Session 2: try to consume a `pause: false` or
+    /// `persistent` sentinel line at the head of a state-block body.
+    /// Returns Ok(true) iff a sentinel was consumed; Ok(false) means
+    /// no sentinel matched and the caller should fall through to the
+    /// normal state-inner-member dispatch.
+    fn try_consume_persistent_sentinel(
+        &mut self,
+        state_name: &str,
+        state_line: u32,
+        state_col: u32,
+    ) -> Result<bool, ParseError> {
+        // `persistent` — bare identifier on its own line.
+        if let TokenKind::Ident(s) = &self.peek().kind {
+            if s == "persistent" {
+                let next = self.tokens.get(self.pos + 1);
+                let is_bare = matches!(
+                    next.map(|t| &t.kind),
+                    Some(TokenKind::Newline) | Some(TokenKind::Dedent) | Some(TokenKind::Eof)
+                );
+                if is_bare {
+                    let tok = self.bump().clone();
+                    if !self.queue_persistent_state(state_name, tok.line, tok.col) {
+                        return Err(ParseError {
+                            line: state_line,
+                            col: state_col,
+                            message: format!(
+                                "state `{state_name}` has both `pause: false` and `persistent` (or duplicates) — pick one"
+                            ),
+                            help: Some(
+                                "`persistent` is an alias for `pause: false`; declare it at most once"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    return Ok(true);
+                }
+            }
+        }
+        // `pause: false` — Ident("pause") + ':' + Bool(false).
+        if let TokenKind::Ident(s) = &self.peek().kind {
+            if s == "pause" {
+                let t1 = self.tokens.get(self.pos + 1);
+                let t2 = self.tokens.get(self.pos + 2);
+                let matches_pause_colon = matches!(t1.map(|t| &t.kind), Some(TokenKind::Colon));
+                let bool_token = t2.map(|t| &t.kind);
+                if matches_pause_colon {
+                    let pause_tok = self.peek().clone();
+                    match bool_token {
+                        // `pause: false` — strip + queue.
+                        Some(TokenKind::Ident(b)) if b == "false" => {
+                            self.bump(); // pause
+                            self.bump(); // :
+                            self.bump(); // false
+                            self.expect_stmt_end()?;
+                            if !self.queue_persistent_state(state_name, pause_tok.line, pause_tok.col) {
+                                return Err(ParseError {
+                                    line: state_line,
+                                    col: state_col,
+                                    message: format!(
+                                        "state `{state_name}` declares `pause: false` more than once"
+                                    ),
+                                    help: None,
+                                });
+                            }
+                            return Ok(true);
+                        }
+                        // `pause: true` — explicit no-op; allowed,
+                        // matches the default. Strip + don't queue.
+                        Some(TokenKind::Ident(b)) if b == "true" => {
+                            self.bump(); // pause
+                            self.bump(); // :
+                            self.bump(); // true
+                            self.expect_stmt_end()?;
+                            return Ok(true);
+                        }
+                        _ => {
+                            return Err(ParseError {
+                                line: pause_tok.line,
+                                col: pause_tok.col,
+                                message:
+                                    "state `pause:` field must be `pause: false` or `pause: true`"
+                                        .to_string(),
+                                help: Some(
+                                    "to opt this state out of the global pause, use `pause: false` or its alias `persistent`"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Queue a state name for `persistent_state(...)` injection.
+    /// Returns false iff the name is already queued (i.e. the user
+    /// declared both `pause: false` and `persistent`, or duplicated
+    /// either of them, on the same state body).
+    fn queue_persistent_state(&mut self, state_name: &str, line: u32, col: u32) -> bool {
+        if self
+            .pending_persistent_states
+            .iter()
+            .any(|(n, _, _)| n == state_name)
+        {
+            return false;
+        }
+        self.pending_persistent_states
+            .push((state_name.to_string(), line, col));
+        true
     }
 
     fn parse_state_inner_member(&mut self) -> Result<StateMember, ParseError> {
@@ -1841,6 +2277,50 @@ impl<'a> Parser<'a> {
                 })
             }
         }
+    }
+}
+
+/// v1.0.2 Session 2: builds the synthesized top-level
+/// `persistent_state("<state_name>")` call injected by
+/// `parse_program` for each state body that declared `pause: false`
+/// or `persistent`.
+fn make_persistent_state_stmt(state_name: &str, line: u32, col: u32) -> Stmt {
+    Stmt::Expr(Expr::Call {
+        callee: Box::new(Expr::Ident {
+            name: "persistent_state".to_string(),
+            line,
+            col,
+        }),
+        args: vec![Expr::Str {
+            value: state_name.to_string(),
+            line,
+            col,
+        }],
+        kwargs: Vec::new(),
+        line,
+        col,
+    })
+}
+
+/// v1.0.2 Session 1: builds a `save.<method>(args)` Expr::Call for
+/// the save-block desugaring. Lifted out of `parse_save_block` so the
+/// callsite reads close to the desugaring shape it implements.
+fn make_save_call(method: &str, args: Vec<Expr>, line: u32, col: u32) -> Expr {
+    Expr::Call {
+        callee: Box::new(Expr::Field {
+            object: Box::new(Expr::Ident {
+                name: "save".to_string(),
+                line,
+                col,
+            }),
+            name: method.to_string(),
+            line,
+            col,
+        }),
+        args,
+        kwargs: Vec::new(),
+        line,
+        col,
     }
 }
 

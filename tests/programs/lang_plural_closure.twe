@@ -1,0 +1,46 @@
+# v1.0.2 Session 4 — lang.set_plural_rule accepts a Twe closure
+# `(n: int) -> string` for the long-tail locales the CLDR built-ins
+# don't cover. Closes the v1.0.1 Session 12 honest-deferral
+# (set_plural_rule was alias-only).
+
+# The closure records each invocation in a global list so we can
+# assert it ran (and observe what category it returned).
+var trace = []
+
+lang.set_locale("haw")
+
+function haw_rule(n):
+    # Hawaiian-style: distinct one/two/other.
+    if n == 1:
+        trace.append("one")
+        return "one"
+    if n == 2:
+        trace.append("two")
+        return "two"
+    trace.append("other")
+    return "other"
+
+lang.set_plural_rule("haw", haw_rule)
+
+# Trigger plural lookups — closure should fire once per call.
+lang.t_plural("waa", 0, [])
+lang.t_plural("waa", 1, [])
+lang.t_plural("waa", 2, [])
+lang.t_plural("waa", 5, [])
+
+print(trace[0])      # "other" (n=0)
+print(trace[1])      # "one"   (n=1)
+print(trace[2])      # "two"   (n=2)
+print(trace[3])      # "other" (n=5)
+print(trace.length)  # 4
+
+# Switching the rule to a plain alias drops the closure entry.
+lang.set_plural_rule("haw", "en")
+var len_before_alias = trace.length
+lang.t_plural("waa", 2, [])
+print(trace.length - len_before_alias)  # 0 — alias path doesn't invoke the closure
+
+# Re-installing the closure takes precedence again.
+lang.set_plural_rule("haw", haw_rule)
+lang.t_plural("waa", 2, [])
+print(trace[trace.length - 1])    # "two" — closure consulted again

@@ -1640,6 +1640,11 @@ impl ApplicationHandler for App {
                     &self.keys_pressed_this_frame,
                 );
                 self.keys_pressed_this_frame.clear();
+                // v1.0.2 Session 7: tap-event diff. The 3D path can
+                // be a mobile target too (Phase 39 reference scene
+                // composes touch + virtual joystick); same hook as
+                // every `run_loop_*` in play.rs.
+                crate::stdlib::tick_touch_taps(macroquad::time::get_time());
                 // v0.2 session 3: same for mouse / mouse_held /
                 // mouse_press. Wheel + edge-press are reset here.
                 update_mouse_state(

@@ -20,6 +20,11 @@ twec_err.log
 # Save-system artifacts written by running examples locally.
 *.save
 
+# Save-system JSON written at the repo root by the save-block test
+# programs (e.g. `save.write("save_block_test.json")`). Reproducible
+# by running the suite; not source.
+/*_test.json
+
 # Scratch scripts kept at the repo root for quick iteration.
 practice.twe
 

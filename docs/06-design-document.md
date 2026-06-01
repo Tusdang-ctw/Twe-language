@@ -1205,6 +1205,82 @@ twec replay <repro-script.twe> twec-crash-<secs>-<pid>.replay
 
 The replay halts automatically at end-of-file and the script continues with live input from then on. The ring file format is the same v1 line-based replay log; it's grep-friendly + diff-friendly + zero-dependency to parse.
 
+### 7.20 Open-world spatial + terrain  *(Phase 32 — `twec play3d` data side)*
+
+Phase 32 shipped the data-side of open-world rendering: spatial queries, chunk streaming, LOD chain selection, terrain heightfield, frustum culling, and per-asset instance bucketing. The wgpu render-pipeline integration that *consumes* these structures is a follow-on dev cycle (`docs/changes/2026-05-10-phase-32-closeout.md`); the script-facing API surface below is stable today on the tree-walker and the bytecode VM (v1.0.2 Session 9 pins the VM-side parity).
+
+The full surface is 35 builtins split across two namespaces. Worked examples below come from `examples/openworld_demo.twe`.
+
+#### 7.20.1 `world.*` — spatial query, streaming, LOD, culling, instancing
+
+```twe
+# Spatial registration + query (loose-grid for dynamic objects;
+# median-split BVH for static).
+world.spatial_insert_dynamic(id, x, y, z)
+world.spatial_insert_static(id, x, y, z)
+world.spatial_remove(id)
+world.spatial_update(id, x, y, z)
+world.spatial_query_radius(cx, cz, r)       # returns list[int] of ids
+world.spatial_query_box(min_x, min_z, max_x, max_z)
+world.spatial_clear()
+
+# Per-frame visibility — frustum culling against the loose grid + BVH.
+world.cull_frustum(view_proj)               # returns the visible-id subset
+world.add_occluder(aabb)                    # honest deferral; today: no-op
+world.cull_with_occluders(view_proj, eye)   # ditto
+
+# LOD chain selection per entity class.
+world.set_lod_chain("Tree", assets, switches)  # N assets, N-1 switch distances
+world.lod_for_distance("Tree", 150.0)       # → "tree_mid.glb"
+world.lod_index_for_distance("Tree", 150.0) # → 1
+world.clear_lod()
+
+# Chunk streaming. The runtime returns load/unload lists; the script
+# does the actual I/O via `texture()` / `mesh()`.
+world.stream_radius_meters(rad)
+world.stream_update(cx, cz)                 # returns {to_load, to_unload}
+world.stream_resident_chunks()
+world.stream_clear()
+
+# Per-asset instance bucketing for indirect draws.
+world.instance_register("tree_mid.glb")
+world.instance_push("tree_mid.glb", x, y, z)
+world.instance_assets()                     # ordered list of registered keys
+world.instance_transforms(asset)            # flat list[float] xyz triples
+world.instance_clear()
+
+# Ergonomic helpers — composition shortcuts over the primitives above.
+world.entity_lod(id, class, eye_x, eye_y, eye_z)
+world.world_to_lod(class, asset)
+world.distance_xyz(ax, ay, az, bx, by, bz)
+```
+
+#### 7.20.2 `terrain.*` — chunked heightfield
+
+```twe
+terrain.set_chunk_size(64.0)                # meters per chunk side
+terrain.set_chunk_resolution(33)            # height samples per side
+terrain.set_chunk(cx, cz, heights)          # row-major list[float], len = res * res
+terrain.has_chunk(cx, cz)                   # → bool
+terrain.height_at(x, z)                     # bilinear-interpolated, or nil outside loaded chunks
+terrain.normal_at(x, z)                     # central-difference, returns (nx, ny, nz)
+terrain.clear()
+```
+
+The heightfield is XZ-only (Y is up). Worked example from `openworld_demo.twe`:
+
+```twe
+terrain.set_chunk_size(64.0)
+terrain.set_chunk_resolution(33)
+for cx in -32..=32:
+    for cz in -32..=32:
+        terrain.set_chunk(cx, cz, generate_chunk_heights(cx, cz))
+
+let ground_y = terrain.height_at(player.x, player.z)
+```
+
+Honest deferrals tracked in `docs/changes/2026-05-10-phase-32-closeout.md`: SAH-optimal BVH build, 3D loose-grid (XZ-only today), LOD smooth transitions, streaming asset cache, occlusion culling proper, 50k-prop / 500-NPC integrated bench, the wgpu render-pipeline integration itself.
+
 ---
 
 ## 8. Error model

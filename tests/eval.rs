@@ -1080,6 +1080,90 @@ fn runs_save_schema_version_phase_v1_0_1_session_5() {
 }
 
 #[test]
+fn runs_v1_0_2_sugar_exit_gate_phase_v1_0_2_session_11() {
+    // v1.0.2 Session 11 EXIT GATE: every shipped sugar form ran
+    // end-to-end in one program. Pins both Session 1 (save block +
+    // migrations) and Session 2 (state persistent / pause: false)
+    // so a regression in either parser-sugar path breaks here
+    // rather than at a release-tag smoke test.
+    let out =
+        run_program("tests/programs/v1_0_2_sugar.twe").expect("program should run");
+    let expected = "3\n\
+        1\n\
+        25\n\
+        true\n\
+        true\n\
+        false\n";
+    assert_eq!(out, expected);
+    let _ = std::fs::remove_file("v1_0_2_sugar_test.json");
+}
+
+#[test]
+fn runs_lang_plural_closure_phase_v1_0_2_session_4() {
+    // v1.0.2 session 4: lang.set_plural_rule accepts a Twe closure
+    // `(n: int) -> string` for the long-tail locales the CLDR
+    // built-ins don't cover. Closes the v1.0.1 Session 12 alias-only
+    // deferral. Side-effect trace verifies the closure fires (and
+    // does NOT fire when the locale is switched back to an alias).
+    let out =
+        run_program("tests/programs/lang_plural_closure.twe").expect("program should run");
+    let expected = "other\n\
+        one\n\
+        two\n\
+        other\n\
+        4\n\
+        0\n\
+        two\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn runs_persistent_state_sugar_phase_v1_0_2_session_2() {
+    // v1.0.2 session 2: `state X: pause: false` / `state X: persistent`
+    // parser sugar. Both forms strip the sentinel from the state body
+    // and inject `persistent_state("X")` calls right after the
+    // enclosing declaration; `pause: true` is the default and does
+    // NOT register. Pure parser sugar over the v1.0.1 registry.
+    let out =
+        run_program("tests/programs/persistent_state_sugar.twe").expect("program should run");
+    let expected = "true\n\
+        true\n\
+        false\n\
+        false\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn runs_save_block_phase_v1_0_2_session_1() {
+    // v1.0.2 session 1: `save SaveSlot:` block (Path B, anchor-only).
+    // The block is pure parser sugar over the v1.0.1 stateless
+    // schema-version primitives — no new builtins, no new AST nodes.
+    // This test bootstraps a v1 save on disk, re-reads it, then runs
+    // a v3 SaveSlot with two migrations that should fire in order.
+    let out = run_program("tests/programs/save_block.twe").expect("program should run");
+    let expected = "1\n\
+        3\n\
+        1\n\
+        50\n\
+        100\n";
+    assert_eq!(out, expected);
+    let _ = std::fs::remove_file("save_block_test.json");
+}
+
+#[test]
+fn runs_save_block_no_load_phase_v1_0_2_session_1() {
+    // v1.0.2 session 1: same block, no prior `save.read`. Each
+    // `migration from N:` condition compares `nil == K` which is
+    // always false under Eq, so no migration body runs.
+    let out =
+        run_program("tests/programs/save_block_no_load.twe").expect("program should run");
+    let expected = "nil\n\
+        3\n\
+        false\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
 fn runs_tween_phase_v1_0_1_session_2() {
     // v1.0.1 session 2: tween.* — pure deterministic easing primitives.
     // Outputs are byte-identical algebraic values (no fp drift in the

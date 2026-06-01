@@ -1832,9 +1832,47 @@ fn handle_run(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
+    // v1.0.2 Session 6: `twec run <dir>` auto-detects `main.twe` and
+    // routes through the module loader so multi-file projects work
+    // out of the box. Closes the Phase 13 closeout deferral.
+    if std::path::Path::new(&path).is_dir() {
+        return run_project_dir(&path);
+    }
     match parsed.backend {
         Backend::Tree => run_file_tree(&path, parsed.frames),
         Backend::Bytecode => run_file_bytecode(&path, parsed.frames),
+    }
+}
+
+/// v1.0.2 Session 6: run a multi-file project from a directory by
+/// resolving `<dir>/main.twe` as the entry point and loading every
+/// imported module via `crate::module`.
+fn run_project_dir(dir: &str) -> i32 {
+    let entry = std::path::Path::new(dir).join("main.twe");
+    if !entry.exists() {
+        eprintln!("error: `{dir}/main.twe` not found");
+        eprintln!(
+            "  help: `twec run <dir>` expects a `main.twe` at the project root; \
+             pass a file path directly if your entry has a different name"
+        );
+        return 2;
+    }
+    let graph = match crate::module::load_from_path(&entry, None) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("error: {}", e.message);
+            return 1;
+        }
+    };
+    match crate::module::run_with_modules(&graph) {
+        Ok(out) => {
+            print!("{out}");
+            0
+        }
+        Err(e) => {
+            eprintln!("{}: runtime error: {e}", entry.display());
+            1
+        }
     }
 }
 
