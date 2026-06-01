@@ -1,0 +1,21 @@
+# `then` sequencing (Example 10): <action> then <body>.
+# The action evaluates to a duration; `then` waits that long, then runs
+# the body. Only valid in a state on-entry body (like `wait`).
+
+function telegraph():
+    print("telegraph")
+    return 0.2s
+
+scene Demo:
+    initial: go
+
+    state go:
+        print("enter go")
+        telegraph() then
+            print("strike")
+        0.1s then
+            print("after pause")
+        -> done
+
+    state done:
+        print("enter done")

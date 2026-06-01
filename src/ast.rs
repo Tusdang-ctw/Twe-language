@@ -158,6 +158,16 @@ pub enum Stmt {
         line: u32,
         col: u32,
     },
+    /// `<action> then <body>` — run `action` (an expression that yields a
+    /// duration), wait for that duration, then run `body`. A sequencing
+    /// primitive distinct from `;` (immediate). Like `wait`, it only
+    /// suspends inside a state on-entry body. Example 10.
+    Then {
+        action: Expr,
+        body: Vec<Stmt>,
+        line: u32,
+        col: u32,
+    },
     /// `dialogue <Name>:` — top-level declaration of a dialogue
     /// routine. The body is a sequence of statements (say, choice,
     /// wait, regular code). Calling `<Name>()` runs the body. Phase
@@ -227,6 +237,7 @@ impl Stmt {
             | Stmt::Spawn { line, .. }
             | Stmt::Despawn { line, .. }
             | Stmt::Wait { line, .. }
+            | Stmt::Then { line, .. }
             | Stmt::DialogueDecl { line, .. }
             | Stmt::Say { line, .. }
             | Stmt::Choice { line, .. }

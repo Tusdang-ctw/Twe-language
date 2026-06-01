@@ -275,6 +275,19 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Stmt::Then {
+            action,
+            body,
+            line,
+            col,
+        } => {
+            s.push_str("{\"kind\":\"Then\",\"action\":");
+            write_expr(s, action);
+            s.push_str(",\"body\":");
+            write_block(s, body);
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Stmt::DialogueDecl {
             name,
             body,

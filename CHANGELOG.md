@@ -13,6 +13,11 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- `then` sequencing keyword (Example 10): `<action> then <body>` evaluates
+  the action (an expression yielding a duration), waits that long, then
+  runs the body. Reuses the `wait` fiber machinery, so — like `wait` — it
+  only suspends inside a state on-entry body. Tree-walker only (the frozen
+  bytecode VM rejects it). See `docs/06` §4.8.
 - List comprehensions (Snake NP3): `[<elem> for <var> in <iter>]` with an
   optional `if <cond>` filter. Iterates ranges / lists / tuples; the loop
   variable is scoped to the comprehension. Tree-walker only (the frozen

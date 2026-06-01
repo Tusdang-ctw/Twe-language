@@ -256,6 +256,12 @@ fn check_stmt(stmt: &Stmt, errors: &mut Vec<VisualError>) {
             line: *line,
             col: *col,
         }),
+        Stmt::Then { line, col, .. } => errors.push(VisualError {
+            message: "`then` is not allowed inside a `visual` body".to_string(),
+            help: Some("fibers don't run on the GPU".to_string()),
+            line: *line,
+            col: *col,
+        }),
         Stmt::Spawn { line, col, .. } => errors.push(VisualError {
             message: "`spawn` is not allowed inside a `visual` body".to_string(),
             help: None,
@@ -544,6 +550,7 @@ fn stmt_line(stmt: &Stmt) -> u32 {
         | Stmt::Spawn { line, .. }
         | Stmt::Despawn { line, .. }
         | Stmt::Wait { line, .. }
+        | Stmt::Then { line, .. }
         | Stmt::DialogueDecl { line, .. }
         | Stmt::Say { line, .. }
         | Stmt::Choice { line, .. }
@@ -571,6 +578,7 @@ fn stmt_col(stmt: &Stmt) -> u32 {
         | Stmt::Spawn { col, .. }
         | Stmt::Despawn { col, .. }
         | Stmt::Wait { col, .. }
+        | Stmt::Then { col, .. }
         | Stmt::DialogueDecl { col, .. }
         | Stmt::Say { col, .. }
         | Stmt::Choice { col, .. }

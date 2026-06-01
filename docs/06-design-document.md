@@ -452,6 +452,7 @@ Semantics:
 - `every <duration>:` blocks are scheduled when entering, cancelled on exit.
 - `-> <state>` transitions immediately. Code after the transition is dead.
 - Statement-level `wait` inside a state suspends without leaving the state.
+- `<action> then <body>` (Example 10) sequences a timed action: it evaluates `<action>` (an expression yielding a duration — e.g. a call like `telegraph(...)` that returns `0.5s`, or a literal `0.5s`), waits that duration, then runs `<body>`. It is `wait <action>` followed by the body, so — like `wait` — it only suspends inside a state on-entry body, and it's a tree-walker feature (the frozen bytecode VM rejects it). Distinct from `;`/newline (immediate) and from a bare `wait` (which doesn't bind a preceding action).
 - `on <predicate>:` registers an edge-triggered handler scoped to the state. The runtime evaluates the predicate each frame and fires the body on the false → true transition. The body is *not* re-fired while the predicate stays true (Phase 5 task 4 — both backends ship this).
 
 #### 4.8a Lifecycle hooks: `on enter:` / `on exit:`  *(Snake NP9)*

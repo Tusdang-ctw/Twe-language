@@ -157,6 +157,9 @@ pub enum Branch {
     IfElif(usize),
     IfElse,
     While,
+    /// Resuming the body of a `<action> then <body>` after the action's
+    /// wait has elapsed.
+    Then,
 }
 
 /// One frame on a suspended fiber's call stack. v0.2 session 2b.

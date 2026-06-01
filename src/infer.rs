@@ -416,6 +416,16 @@ impl Inferer {
                 // their types resolved.
                 let _ = self.expr_type(duration);
             }
+            Stmt::Then { action, body, .. } => {
+                // `<action> then <body>`: walk the action (its type is
+                // the wait duration) and the body for diagnostics.
+                let _ = self.expr_type(action);
+                self.push_scope();
+                for s in body {
+                    self.walk_stmt(s);
+                }
+                self.pop_scope();
+            }
             Stmt::DialogueDecl { name, body, .. } => {
                 // Treat a dialogue decl like a parameterless
                 // function: bind the name as a callable in scope,

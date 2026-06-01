@@ -143,6 +143,19 @@ impl<'a> Parser<'a> {
             return self.parse_save_block();
         }
         let expr = self.parse_expr()?;
+        // `<action> then <body>` — sequencing (Example 10). `then` binds
+        // the preceding expression as the action; the body is the block
+        // (inline or indented) that runs after the action's duration.
+        if matches!(self.peek().kind, TokenKind::Then) {
+            let kw = self.bump().clone();
+            let body = self.parse_block()?;
+            return Ok(Stmt::Then {
+                action: expr,
+                body,
+                line: kw.line,
+                col: kw.col,
+            });
+        }
         if let Some(op) = self.peek_assign_op() {
             let tok = self.bump().clone();
             let value = self.parse_expr()?;
@@ -2564,6 +2577,7 @@ fn stmt_kind_label(stmt: &Stmt) -> &'static str {
         Stmt::Spawn { .. } => "spawn",
         Stmt::Despawn { .. } => "despawn",
         Stmt::Wait { .. } => "wait",
+        Stmt::Then { .. } => "then",
         Stmt::DialogueDecl { .. } => "dialogue",
         Stmt::Say { .. } => "say",
         Stmt::Choice { .. } => "choice",

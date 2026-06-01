@@ -45,6 +45,9 @@ pub enum TokenKind {
     /// `wait <duration>` — suspends the current state-entry body for
     /// the given duration. Phase 5 task 2 (cooperative fibers).
     Wait,
+    /// `<action> then <body>` — sequencing: run the action, wait for the
+    /// duration it evaluates to, then run the body. Example 10.
+    Then,
     /// `dialogue Name:` — declares a dialogue routine. Phase 5 task 3.
     Dialogue,
     /// `say [<actor>:] "<text>"` — dialogue-line statement.
@@ -1078,6 +1081,7 @@ impl<'a> Lexer<'a> {
             "spawn" => TokenKind::Spawn,
             "despawn" => TokenKind::Despawn,
             "wait" => TokenKind::Wait,
+            "then" => TokenKind::Then,
             "dialogue" => TokenKind::Dialogue,
             "say" => TokenKind::Say,
             "choice" => TokenKind::Choice,

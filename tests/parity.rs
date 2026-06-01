@@ -111,6 +111,12 @@ const VM_UNSUPPORTED: &[(&str, &str)] = &[
          hidden loop + accumulator the frozen VM doesn't emit); tree-walker-first per the \
          2026-06-01 VM-strategy decision",
     ),
+    (
+        "then_seq.twe",
+        "compiler.rs — `<action> then <body>` sequencing is tree-walker-only (the frozen VM \
+         doesn't mirror the fiber suspend/resume path); also uses a `0.2s` quantity literal the \
+         VM rejects. Tree-walker-first per the 2026-06-01 VM-strategy decision",
+    ),
 ];
 
 /// Real tree-walker/VM divergences that are KNOWN BUGS, not agreed

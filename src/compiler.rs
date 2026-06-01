@@ -97,6 +97,7 @@ fn stmt_line(s: &Stmt) -> u32 {
         | Stmt::Spawn { line, .. }
         | Stmt::Despawn { line, .. }
         | Stmt::Wait { line, .. }
+        | Stmt::Then { line, .. }
         | Stmt::DialogueDecl { line, .. }
         | Stmt::Say { line, .. }
         | Stmt::Choice { line, .. }
@@ -505,6 +506,16 @@ impl Compiler {
             Stmt::Despawn { target, line, .. } => {
                 self.emit_expr(target)?;
                 self.frame_mut().chunk.write_op(OpCode::Despawn, *line);
+            }
+            Stmt::Then { line, col, .. } => {
+                // `then` waits + resumes a body — the same fiber path the
+                // frozen bytecode VM doesn't fully mirror. Tree-walker-only
+                // per the 2026-06-01 VM-strategy decision.
+                return Err(self.unsupported(
+                    "`<action> then <body>` sequencing (tree-walker only for now; run with the default `--vm tree`)",
+                    *line,
+                    *col,
+                ));
             }
             Stmt::Wait { duration, line, .. } => {
                 // v0.2 session 7: always emit `OP_WAIT`, regardless

@@ -1158,6 +1158,48 @@ fn run_block_resumable(
                 });
                 return Ok(FiberOutcome::Suspended);
             }
+            Stmt::Then {
+                action,
+                body,
+                line,
+                col,
+            } => {
+                if drilling {
+                    // Resuming after the action's wait elapsed — run the
+                    // body resumably (it may itself `wait` / `then`).
+                    let outcome = run_block_resumable(env, scene, body, inner_incoming, out_path)?;
+                    match outcome {
+                        FiberOutcome::Suspended => {
+                            out_path.push(PathEntry {
+                                stmt_index: idx,
+                                branch: Some(Branch::Then),
+                            });
+                            return Ok(FiberOutcome::Suspended);
+                        }
+                        FiberOutcome::Returning
+                        | FiberOutcome::Breaking
+                        | FiberOutcome::Continuing
+                        | FiberOutcome::Transitioning => {
+                            return Ok(outcome);
+                        }
+                        FiberOutcome::Completed => {
+                            idx += 1;
+                        }
+                    }
+                } else {
+                    // First hit: run the action (side effects + its
+                    // duration value), then suspend for that long — the
+                    // `wait`-equivalent, gated on the action's result.
+                    let v = eval_expr(env, action)?;
+                    let secs = quantity_to_seconds(&v, *line, *col)?;
+                    scene.borrow_mut().entry_wait_remaining = secs;
+                    out_path.push(PathEntry {
+                        stmt_index: idx,
+                        branch: Some(Branch::Then),
+                    });
+                    return Ok(FiberOutcome::Suspended);
+                }
+            }
             Stmt::If {
                 cond,
                 then_body,
@@ -1181,6 +1223,15 @@ fn run_block_resumable(
                                 line: 0,
                                 col: 0,
                                 message: "internal: corrupted resume path (while branch on if)"
+                                    .to_string(),
+                                help: None,
+                            });
+                        }
+                        Branch::Then => {
+                            return Err(RuntimeError {
+                                line: 0,
+                                col: 0,
+                                message: "internal: corrupted resume path (then branch on if)"
                                     .to_string(),
                                 help: None,
                             });
@@ -1603,6 +1654,7 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
         Stmt::Spawn { .. } => "spawn",
         Stmt::Despawn { .. } => "despawn",
         Stmt::Wait { .. } => "wait",
+        Stmt::Then { .. } => "then",
         Stmt::DialogueDecl { .. } => "dialogue",
         Stmt::Say { .. } => "say",
         Stmt::Choice { .. } => "choice",
@@ -1972,6 +2024,21 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     .to_string(),
                 help: Some(
                     "move the `wait` to the top level of a `state <name>:` body — fiber-aware contexts (functions, every, dialogue) ship in later Phase 5 sessions".to_string(),
+                ),
+            })
+        }
+        Stmt::Then { line, col, .. } => {
+            // Like `wait`, `then` only suspends inside a state on-entry
+            // body (it's `wait <action>` + body). Reaching here means it
+            // was used in a non-fiber context (every-clock, on update,
+            // function body).
+            Err(RuntimeError {
+                line: *line,
+                col: *col,
+                message: "`then` is only supported as a direct statement of a state body in v0.1"
+                    .to_string(),
+                help: Some(
+                    "`<action> then <body>` waits like `wait`; use it at the top level of a `state <name>:` body".to_string(),
                 ),
             })
         }

@@ -470,6 +470,12 @@ fn print_stmt(out: &mut String, stmt: &Stmt, depth: usize, cursor: &mut TriviaCu
             print_expr(out, duration, Prec::Lowest);
             out.push('\n');
         }
+        Stmt::Then { action, body, .. } => {
+            push_indent(out, depth);
+            print_expr(out, action, Prec::Lowest);
+            out.push_str(" then\n");
+            print_block(out, body, depth + 1, cursor);
+        }
         Stmt::DialogueDecl { name, body, .. } => {
             push_indent(out, depth);
             out.push_str("dialogue ");

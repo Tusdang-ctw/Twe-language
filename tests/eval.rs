@@ -2335,6 +2335,28 @@ fn physics2d_collision_primitives() {
 }
 
 #[test]
+fn then_sequences_after_action_duration() {
+    // Example 10: `<action> then <body>` runs the action, waits for the
+    // duration it yields, then runs the body — across fiber suspensions.
+    // telegraph() prints + returns 0.2s; then "strike"; then 0.1s wait;
+    // then "after pause"; then -> done.
+    let out =
+        run_program_frames("tests/programs/then_seq.twe", 6, 0.1).expect("program should run");
+    assert_eq!(
+        out,
+        "enter go\ntelegraph\nstrike\nafter pause\nenter done\n"
+    );
+}
+
+#[test]
+fn then_outside_state_body_errors() {
+    // Like `wait`, `then` only suspends in a state on-entry body.
+    let err = run_program_str("0.1s then\n    print(\"x\")\n")
+        .expect_err("`then` at top level should error");
+    assert!(err.contains("`then`"), "got: {err}");
+}
+
+#[test]
 fn list_comprehensions_map_filter_and_scope() {
     // Snake NP3: [<elem> for <var> in <iter> (if <cond>)?]. Covers map,
     // filter, list iteration, expression elements, and that the loop var
