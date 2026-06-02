@@ -151,6 +151,14 @@ impl Handler {
             }
             "tools/list" => Some(success_response(id, tools_list())),
             "tools/call" => Some(self.handle_tools_call(id, &params)),
+            // Grounding surface: the language guide, grammar, and curated
+            // examples as read-only context the model can pull on demand.
+            "resources/list" => Some(success_response(id, resources_list())),
+            "resources/read" => Some(self.handle_resources_read(id, &params)),
+            // User-selectable prompt templates that preload the right grounding
+            // for the common authoring tasks (scaffold, add feature, fix errors).
+            "prompts/list" => Some(success_response(id, prompts_list())),
+            "prompts/get" => Some(self.handle_prompts_get(id, &params)),
             other => {
                 if is_notification {
                     None
@@ -175,7 +183,11 @@ impl Handler {
             ("protocolVersion", Value::Str(PROTOCOL_VERSION.into())),
             (
                 "capabilities",
-                json::obj([("tools", json::obj([("listChanged", Value::Bool(false))]))]),
+                json::obj([
+                    ("tools", json::obj([("listChanged", Value::Bool(false))])),
+                    ("resources", json::obj([("listChanged", Value::Bool(false))])),
+                    ("prompts", json::obj([("listChanged", Value::Bool(false))])),
+                ]),
             ),
             (
                 "serverInfo",
@@ -184,6 +196,12 @@ impl Handler {
                     ("version", Value::Str(SERVER_VERSION.into())),
                 ]),
             ),
+            // The single most important field for a custom language: hosts
+            // inject this into the model's system prompt at connect time, so a
+            // client that knows nothing about Twe is grounded before its first
+            // turn. Without it the model writes Python-shaped guesses. The full
+            // guide + examples are available as `twe://` resources.
+            ("instructions", Value::Str(crate::primer::INSTRUCTIONS.into())),
         ]);
         success_response(id, result)
     }
@@ -193,6 +211,23 @@ impl Handler {
         let args = params.get("arguments").cloned().unwrap_or(Value::Null);
         match dispatch_tool(name, &args) {
             Ok(content) => success_response(id, wrap_content(content)),
+            Err((code, msg)) => error_response(id, code, &msg),
+        }
+    }
+
+    fn handle_resources_read(&self, id: Value, params: &Value) -> String {
+        let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+        match resource_read(uri) {
+            Ok(contents) => success_response(id, json::obj([("contents", Value::Array(vec![contents]))])),
+            Err((code, msg)) => error_response(id, code, &msg),
+        }
+    }
+
+    fn handle_prompts_get(&self, id: Value, params: &Value) -> String {
+        let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+        match prompt_get(name, &args) {
+            Ok(result) => success_response(id, result),
             Err((code, msg)) => error_response(id, code, &msg),
         }
     }
@@ -506,6 +541,207 @@ fn tool_descriptor(name: &str, description: &str, params: &[(&str, &str, bool)])
 }
 
 // ---------------------------------------------------------------------------
+// Resources — read-only grounding context the model can pull on demand.
+// ---------------------------------------------------------------------------
+
+const GUIDE_URI: &str = "twe://guide";
+const GRAMMAR_EBNF_URI: &str = "twe://grammar";
+const GRAMMAR_GBNF_URI: &str = "twe://grammar.gbnf";
+
+fn resource_descriptor(uri: &str, name: &str, description: &str, mime: &str) -> Value {
+    json::obj([
+        ("uri", Value::Str(uri.to_string())),
+        ("name", Value::Str(name.to_string())),
+        ("description", Value::Str(description.to_string())),
+        ("mimeType", Value::Str(mime.to_string())),
+    ])
+}
+
+fn resources_list() -> Value {
+    let mut resources = vec![
+        resource_descriptor(
+            GUIDE_URI,
+            "Twe language guide",
+            "The canonical Twe authoring cheatsheet: syntax, semantics, the six block keywords, events, state machines, and a full worked example. Read this before writing Twe.",
+            "text/markdown",
+        ),
+        resource_descriptor(
+            GRAMMAR_EBNF_URI,
+            "Twe grammar (EBNF)",
+            "The exact Twe grammar in EBNF — the parser contract.",
+            "text/plain",
+        ),
+        resource_descriptor(
+            GRAMMAR_GBNF_URI,
+            "Twe grammar (GBNF)",
+            "The Twe grammar in GBNF, for grammar-constrained decoding on local models.",
+            "text/plain",
+        ),
+    ];
+    for ex in crate::primer::EXAMPLES {
+        resources.push(resource_descriptor(
+            &format!("twe://examples/{}", ex.name),
+            &format!("Example: {}", ex.name),
+            ex.description,
+            "text/plain",
+        ));
+    }
+    json::obj([("resources", Value::Array(resources))])
+}
+
+/// Resolve a `twe://` URI to its `{uri, mimeType, text}` content part.
+fn resource_read(uri: &str) -> Result<Value, (i64, String)> {
+    let (mime, text) = match uri {
+        GUIDE_URI => ("text/markdown", crate::primer::guide().to_string()),
+        GRAMMAR_EBNF_URI => {
+            let fmt = crate::grammar::Format::parse("ebnf").unwrap();
+            ("text/plain", crate::grammar::export(fmt))
+        }
+        GRAMMAR_GBNF_URI => {
+            let fmt = crate::grammar::Format::parse("gbnf").unwrap();
+            ("text/plain", crate::grammar::export(fmt))
+        }
+        other => {
+            let name = other.strip_prefix("twe://examples/").ok_or((
+                -32602,
+                format!("unknown resource uri: {other}"),
+            ))?;
+            let ex = crate::primer::example(name)
+                .ok_or((-32602, format!("unknown example: {name}")))?;
+            ("text/plain", ex.source.to_string())
+        }
+    };
+    Ok(json::obj([
+        ("uri", Value::Str(uri.to_string())),
+        ("mimeType", Value::Str(mime.into())),
+        ("text", Value::Str(text)),
+    ]))
+}
+
+// ---------------------------------------------------------------------------
+// Prompts — user-selectable templates that preload the right grounding.
+// ---------------------------------------------------------------------------
+
+fn prompt_argument(name: &str, description: &str, required: bool) -> Value {
+    json::obj([
+        ("name", Value::Str(name.to_string())),
+        ("description", Value::Str(description.to_string())),
+        ("required", Value::Bool(required)),
+    ])
+}
+
+fn prompt_descriptor(name: &str, description: &str, arguments: Vec<Value>) -> Value {
+    json::obj([
+        ("name", Value::Str(name.to_string())),
+        ("description", Value::Str(description.to_string())),
+        ("arguments", Value::Array(arguments)),
+    ])
+}
+
+fn prompts_list() -> Value {
+    let prompts = vec![
+        prompt_descriptor(
+            "scaffold_game",
+            "Scaffold a complete, verified Twe program from a description.",
+            vec![prompt_argument("description", "What the game should be (genre, core mechanic, controls).", true)],
+        ),
+        prompt_descriptor(
+            "add_feature",
+            "Add or change a feature in an existing Twe file, returning a verified result.",
+            vec![
+                prompt_argument("request", "The change to make, in plain language.", true),
+                prompt_argument("source", "The current .twe source to modify.", false),
+            ],
+        ),
+        prompt_descriptor(
+            "fix_errors",
+            "Fix the verify errors in a Twe file until it passes.",
+            vec![prompt_argument("source", "The .twe source that currently fails `verify`.", true)],
+        ),
+    ];
+    json::obj([("prompts", Value::Array(prompts))])
+}
+
+/// A `prompts/get` result: a description plus the user-role messages the client
+/// drops into the conversation. Every template leads with the primer so the
+/// model is grounded even if the host did not surface the `instructions` field.
+fn prompt_get(name: &str, args: &Value) -> Result<Value, (i64, String)> {
+    let arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let (description, body) = match name {
+        "scaffold_game" => {
+            let desc = arg("description");
+            if desc.is_empty() {
+                return Err((-32602, "scaffold_game requires a `description` argument".into()));
+            }
+            (
+                "Scaffold a complete, verified Twe program.".to_string(),
+                format!(
+                    "Write a complete Twe program for this game:\n\n{desc}\n\n\
+                     Confirm every stdlib call with `stdlib_lookup`, then run `verify` and \
+                     apply its `fix` patches until it reports zero errors. Return only the \
+                     final verified `.twe` source in a ```twe code block. Consult the \
+                     `twe://guide` resource and `twe://examples/<name>` as needed."
+                ),
+            )
+        }
+        "add_feature" => {
+            let request = arg("request");
+            if request.is_empty() {
+                return Err((-32602, "add_feature requires a `request` argument".into()));
+            }
+            let source = arg("source");
+            let src_block = if source.is_empty() {
+                "Open the file the user is working on first.".to_string()
+            } else {
+                format!("Current source:\n```twe\n{source}\n```")
+            };
+            (
+                "Add a feature to an existing Twe file.".to_string(),
+                format!(
+                    "{src_block}\n\nChange requested: {request}\n\n\
+                     Make the smallest correct edit. Confirm any new stdlib call with \
+                     `stdlib_lookup`, then `verify` and fix until clean. Return the verified \
+                     full source in a ```twe code block."
+                ),
+            )
+        }
+        "fix_errors" => {
+            let source = arg("source");
+            if source.is_empty() {
+                return Err((-32602, "fix_errors requires a `source` argument".into()));
+            }
+            (
+                "Fix verify errors in a Twe file.".to_string(),
+                format!(
+                    "This Twe source fails `verify`:\n```twe\n{source}\n```\n\n\
+                     Run `verify`, apply its structured `fix` patches (or correct the syntax \
+                     against the `twe://guide`), and repeat until `verify` reports zero errors. \
+                     Return the verified full source in a ```twe code block."
+                ),
+            )
+        }
+        other => return Err((-32602, format!("unknown prompt: {other}"))),
+    };
+
+    let text = format!("{}\n\n---\n\n{body}", crate::primer::INSTRUCTIONS);
+    let message = json::obj([
+        ("role", Value::Str("user".into())),
+        (
+            "content",
+            json::obj([
+                ("type", Value::Str("text".into())),
+                ("text", Value::Str(text)),
+            ]),
+        ),
+    ]);
+    Ok(json::obj([
+        ("description", Value::Str(description)),
+        ("messages", Value::Array(vec![message])),
+    ]))
+}
+
+// ---------------------------------------------------------------------------
 // JSON-RPC helpers
 // ---------------------------------------------------------------------------
 
@@ -647,5 +883,68 @@ mod tests {
     fn notification_initialized_does_not_reply() {
         let msg = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}";
         assert!(handle_message(msg).is_none());
+    }
+
+    #[test]
+    fn initialize_advertises_instructions_and_capabilities() {
+        let reply = handle_message(&req("initialize", "{}")).unwrap();
+        assert!(reply.contains("\"instructions\""), "initialize must carry grounding instructions");
+        assert!(reply.contains("GOLDEN RULES"), "instructions should be the Twe primer");
+        assert!(reply.contains("\"resources\""), "must advertise resources capability");
+        assert!(reply.contains("\"prompts\""), "must advertise prompts capability");
+    }
+
+    #[test]
+    fn resources_list_includes_guide_grammar_and_examples() {
+        let reply = handle_message(&req("resources/list", "{}")).unwrap();
+        assert!(reply.contains("twe://guide"));
+        assert!(reply.contains("twe://grammar"));
+        assert!(reply.contains("twe://examples/snake"));
+    }
+
+    #[test]
+    fn resources_read_guide_returns_markdown_body() {
+        let body = "{\"uri\":\"twe://guide\"}";
+        let reply = handle_message(&req("resources/read", body)).unwrap();
+        assert!(reply.contains("\\\"contents\\\"") || reply.contains("\"contents\""));
+        assert!(reply.contains("Twe"), "guide body should mention Twe");
+    }
+
+    #[test]
+    fn resources_read_example_returns_source() {
+        let body = "{\"uri\":\"twe://examples/snake\"}";
+        let reply = handle_message(&req("resources/read", body)).unwrap();
+        assert!(reply.contains("scene Snake"), "snake example source expected");
+    }
+
+    #[test]
+    fn resources_read_unknown_uri_errors() {
+        let body = "{\"uri\":\"twe://nope\"}";
+        let reply = handle_message(&req("resources/read", body)).unwrap();
+        assert!(reply.contains("\"error\""));
+    }
+
+    #[test]
+    fn prompts_list_includes_templates() {
+        let reply = handle_message(&req("prompts/list", "{}")).unwrap();
+        for name in &["scaffold_game", "add_feature", "fix_errors"] {
+            assert!(reply.contains(name), "prompts/list missing {name}");
+        }
+    }
+
+    #[test]
+    fn prompts_get_scaffold_embeds_primer_and_task() {
+        let body = "{\"name\":\"scaffold_game\",\"arguments\":{\"description\":\"a pong clone\"}}";
+        let reply = handle_message(&req("prompts/get", body)).unwrap();
+        assert!(reply.contains("GOLDEN RULES"), "prompt should lead with the primer");
+        assert!(reply.contains("pong clone"), "prompt should embed the task");
+        assert!(reply.contains("\"messages\""));
+    }
+
+    #[test]
+    fn prompts_get_missing_required_arg_errors() {
+        let body = "{\"name\":\"scaffold_game\",\"arguments\":{}}";
+        let reply = handle_message(&req("prompts/get", body)).unwrap();
+        assert!(reply.contains("\"error\""));
     }
 }

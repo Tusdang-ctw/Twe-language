@@ -96,6 +96,10 @@ pub fn run() {
         // tool becomes available to any MCP client (Claude Desktop,
         // Cursor, the future Twe Studio) with no bespoke wiring.
         "mcp" => process::exit(handle_mcp(&args[2..])),
+        // LLM grounding text for out-of-process clients (e.g. Twe Studio's
+        // in-app AI prompt). `twec primer` prints the concise primer;
+        // `twec primer --full` prints the complete guide.
+        "primer" => process::exit(handle_primer(&args[2..])),
         // Phase 33 session 6: enumerate the labeled examples corpus
         // built from `@task / @inputs / @expected / @category` headers.
         "corpus" => process::exit(handle_corpus(&args[2..])),
@@ -803,6 +807,24 @@ fn handle_mcp(args: &[String]) -> i32 {
         return 2;
     }
     crate::mcp::serve_stdio()
+}
+
+/// Print the LLM grounding primer so out-of-process clients (Twe Studio's
+/// in-app AI prompt) can fold it into their system prompt — the same text the
+/// MCP server ships in its `instructions` field. `--full` prints the complete
+/// guide (the `twe://guide` resource body) instead of the concise primer.
+fn handle_primer(args: &[String]) -> i32 {
+    let full = args.iter().any(|a| a == "--full");
+    if let Some(unknown) = args.iter().find(|a| *a != "--full") {
+        eprintln!("error: unknown argument '{unknown}' (usage: twec primer [--full])");
+        return 2;
+    }
+    if full {
+        println!("{}", crate::primer::guide());
+    } else {
+        println!("{}", crate::primer::INSTRUCTIONS);
+    }
+    0
 }
 
 /// Phase 33 session 6: emit the labeled examples corpus as JSON.

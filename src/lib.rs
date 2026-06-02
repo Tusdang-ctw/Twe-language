@@ -42,6 +42,10 @@ pub mod llm_loop;
 // Phase 33 session 5: stdio MCP server. Pure Rust, reuses existing
 // json + parser + verify entry points. No new deps.
 pub mod mcp;
+// LLM grounding material (primer, full guide, curated examples). Surfaced via
+// the MCP `instructions` field + `twe://` resources, `twec primer`, and reused
+// by Twe Studio's in-app AI prompt so every model authoring Twe is grounded.
+pub mod primer;
 // Phase 33 session 6: examples-as-corpus header parser. Pure file IO.
 pub mod corpus;
 // Phase 33 session 7: replay-based LLM evaluation harness. Reuses
