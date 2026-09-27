@@ -12,6 +12,7 @@ examples/*/dist/
 
 # Phase 11 crash dumps land at the repo root by default.
 twec-crash-*.log
+twec-crash-*.replay
 
 # Local stdout/stderr captures from running twec — repo-root by habit.
 twec_out.log

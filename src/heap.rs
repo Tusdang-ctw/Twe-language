@@ -115,6 +115,24 @@ pub struct Heap {
     /// when a new mark+sweep cycle starts; published into
     /// `last_collect_ns` when the cycle completes.
     in_flight_collect_ns: u64,
+    /// web3d-M0: objects allocated while an incremental sweep is in
+    /// flight. They are kept OFF `all_objects` (unmarked) until the
+    /// sweep completes, then spliced onto its head. Two bugs this
+    /// replaces: (1) the old scheme pre-marked mid-sweep allocations
+    /// and prepended them to `all_objects`, where the cursor never
+    /// visited them — their stale `mark = true` survived into the next
+    /// cycle, so `mark_value` short-circuited and never traced their
+    /// children; (2) freeing the original head while `sweep_prev` was
+    /// null overwrote `all_objects`, unlinking every prepended object.
+    young: *mut HeapObject,
+    /// web3d-M0: GC stress mode. When set, every safepoint collects
+    /// with an unlimited sweep budget, and swept objects are poisoned
+    /// (`HeapObject::freed`) and parked on `graveyard` instead of being
+    /// freed, so any use-after-free panics deterministically. Sticky:
+    /// unlike `gc_set_threshold(0)`, it is not reset after a sweep.
+    stress: bool,
+    /// Poisoned objects kept alive under stress mode; freed on Drop.
+    graveyard: *mut HeapObject,
 }
 
 impl Heap {
@@ -129,6 +147,9 @@ impl Heap {
             sweep_budget_ns: DEFAULT_GC_BUDGET_NS,
             last_collect_ns: 0,
             in_flight_collect_ns: 0,
+            young: std::ptr::null_mut(),
+            stress: stress_from_env(),
+            graveyard: std::ptr::null_mut(),
         }
     }
 
@@ -137,26 +158,48 @@ impl Heap {
     /// Repeatedly calling this without ever calling
     /// [`collect`] leaks until the thread-local Heap drops.
     ///
-    /// Phase 29 session 2 invariant: when an incremental sweep is
-    /// in progress (`sweep_phase == Sweeping`), brand-new objects
-    /// inherit `mark = true`. Without this, a fresh allocation
-    /// landing ahead of the sweep cursor (we always prepend to
-    /// `all_objects`, so it lands right at the head) would be
-    /// scanned as unmarked and freed before the script ever
-    /// stored a reference to it. The mark is reset normally on
-    /// the next sweep cycle.
+    /// web3d-M0 invariant: while an incremental sweep is in progress
+    /// (`sweep_phase == Sweeping`), new objects go on the separate
+    /// `young` list, unmarked. The sweep cursor only walks
+    /// `all_objects`, so they can't be freed this cycle; they join
+    /// `all_objects` (still white) when the sweep completes and are
+    /// traced normally from the next cycle's roots.
     pub fn alloc(&mut self, body: HeapBody) -> *mut HeapObject {
         let body_kind = HeapBodyKind::of(&body);
+        let sweeping = self.sweep_phase == SweepPhase::Sweeping;
+        let head = if sweeping { self.young } else { self.all_objects };
         let obj = Box::new(HeapObject {
-            mark: Cell::new(self.sweep_phase == SweepPhase::Sweeping),
+            mark: Cell::new(false),
+            freed: Cell::new(false),
             body_kind,
-            next: Cell::new(self.all_objects),
+            next: Cell::new(head),
             body: RefCell::new(body),
         });
         let ptr = Box::into_raw(obj);
-        self.all_objects = ptr;
+        if sweeping {
+            self.young = ptr;
+        } else {
+            self.all_objects = ptr;
+        }
         self.bytes_allocated += std::mem::size_of::<HeapObject>();
         ptr
+    }
+
+    /// Move every object on the `young` list onto the head of
+    /// `all_objects`. Called when a sweep cycle completes.
+    fn splice_young(&mut self) {
+        if self.young.is_null() {
+            return;
+        }
+        unsafe {
+            let mut tail = self.young;
+            while !(*tail).next.get().is_null() {
+                tail = (*tail).next.get();
+            }
+            (*tail).next.set(self.all_objects);
+        }
+        self.all_objects = self.young;
+        self.young = std::ptr::null_mut();
     }
 
     /// Stop-the-world mark + sweep with a flat root slice. Wraps
@@ -197,7 +240,15 @@ impl Heap {
                     } else {
                         (*self.sweep_prev).next.set(next);
                     }
-                    let _ = Box::from_raw(cur);
+                    if self.stress {
+                        // Poison + park instead of freeing, so a later
+                        // deref panics instead of reading reused memory.
+                        (*cur).freed.set(true);
+                        (*cur).next.set(self.graveyard);
+                        self.graveyard = cur;
+                    } else {
+                        let _ = Box::from_raw(cur);
+                    }
                 }
                 self.sweep_cur = next;
 
@@ -219,6 +270,7 @@ impl Heap {
         self.sweep_phase = SweepPhase::Idle;
         self.sweep_prev = std::ptr::null_mut();
         self.sweep_cur = std::ptr::null_mut();
+        self.splice_young();
 
         // Adaptive threshold: if we freed a lot, lower the bar; if
         // not, raise it. Simple heuristic mirroring CI §26.4.
@@ -261,16 +313,21 @@ impl Drop for Heap {
     fn drop(&mut self) {
         // Free every remaining allocation. Runs at thread exit
         // (the thread-local HEAP drops then) and ensures we don't
-        // leak across test boundaries.
-        let mut cur = self.all_objects;
-        unsafe {
-            while !cur.is_null() {
-                let next = (*cur).next.get();
-                let _ = Box::from_raw(cur);
-                cur = next;
+        // leak across test boundaries. `young` and `graveyard` are
+        // separate lists (web3d-M0) and must be freed too.
+        for head in [self.all_objects, self.young, self.graveyard] {
+            let mut cur = head;
+            unsafe {
+                while !cur.is_null() {
+                    let next = (*cur).next.get();
+                    let _ = Box::from_raw(cur);
+                    cur = next;
+                }
             }
         }
         self.all_objects = std::ptr::null_mut();
+        self.young = std::ptr::null_mut();
+        self.graveyard = std::ptr::null_mut();
     }
 }
 
@@ -319,10 +376,24 @@ pub fn gc_collect(roots: &[&TaggedValue]) {
 pub fn gc_collect_with(scan: impl FnOnce()) {
     let in_flight = HEAP.with(|h| h.borrow().sweep_phase == SweepPhase::Sweeping);
     if !in_flight {
-        // Fresh cycle — scan roots before starting sweep.
+        // Fresh cycle — scan roots before starting sweep. The
+        // explicit root stack (web3d-M0) covers values the caller
+        // holds on the Rust stack across the safepoint.
         scan();
+        ROOT_STACK.with(|r| {
+            for v in r.borrow().iter() {
+                mark_value(v);
+            }
+        });
     }
-    let budget = HEAP.with(|h| h.borrow().sweep_budget_ns);
+    let budget = HEAP.with(|h| {
+        let h = h.borrow();
+        if h.stress {
+            u64::MAX
+        } else {
+            h.sweep_budget_ns
+        }
+    });
     HEAP.with(|h| {
         let _ = h.borrow_mut().sweep_step(budget);
     });
@@ -340,8 +411,79 @@ pub fn gc_collect_with(scan: impl FnOnce()) {
 pub fn gc_should_collect() -> bool {
     HEAP.with(|h| {
         let h = h.borrow();
-        h.bytes_allocated >= h.threshold || h.sweep_phase == SweepPhase::Sweeping
+        h.stress || h.bytes_allocated >= h.threshold || h.sweep_phase == SweepPhase::Sweeping
     })
+}
+
+// ---------- web3d-M0: stress mode + explicit root stack ----------
+
+fn stress_from_env() -> bool {
+    std::env::var("TWE_GC_STRESS").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Turn GC stress mode on or off for this thread's heap. Stress mode
+/// collects at every safepoint with an unlimited sweep budget and
+/// poisons swept objects instead of freeing them (see
+/// `HeapObject::freed`). Sticky until turned off. Also enabled at heap
+/// creation by `TWE_GC_STRESS=1`. Test / fuzz tooling only — memory
+/// is not reclaimed while it's on.
+pub fn gc_set_stress(on: bool) {
+    HEAP.with(|h| h.borrow_mut().stress = on);
+}
+
+/// Is stress mode on for this thread's heap?
+pub fn gc_stress() -> bool {
+    HEAP.with(|h| h.borrow().stress)
+}
+
+thread_local! {
+    /// Extra GC roots: values the interpreter holds only on the Rust
+    /// stack across a safepoint (a `for` loop's snapshot, a saved
+    /// `self`, …). Pushed through [`RootScope`], which truncates back
+    /// on drop so early returns / `?` can't leak entries.
+    static ROOT_STACK: RefCell<Vec<TaggedValue>> = const { RefCell::new(Vec::new()) };
+}
+
+/// RAII scope over the explicit root stack. Values pushed through
+/// [`RootScope::push`] stay rooted until the scope drops.
+pub struct RootScope {
+    base: usize,
+}
+
+impl RootScope {
+    pub fn new() -> Self {
+        Self {
+            base: ROOT_STACK.with(|r| r.borrow().len()),
+        }
+    }
+
+    /// Root `v` for the lifetime of this scope. Non-heap values are
+    /// ignored (nothing to keep alive).
+    pub fn push(&self, v: TaggedValue) {
+        if v.is_heap_pointer() {
+            ROOT_STACK.with(|r| r.borrow_mut().push(v));
+        }
+    }
+
+    /// Root every value in `vs` for the lifetime of this scope.
+    pub fn push_all(&self, vs: &[TaggedValue]) {
+        ROOT_STACK.with(|r| {
+            let mut r = r.borrow_mut();
+            r.extend(vs.iter().copied().filter(|v| v.is_heap_pointer()));
+        });
+    }
+}
+
+impl Default for RootScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for RootScope {
+    fn drop(&mut self) {
+        ROOT_STACK.with(|r| r.borrow_mut().truncate(self.base));
+    }
 }
 
 /// Test/bench helper: override the GC threshold so safepoints fire
@@ -413,12 +555,29 @@ pub fn mark_value(v: &TaggedValue) {
         return;
     }
     unsafe {
+        assert!(
+            !(*ptr).freed.get(),
+            "GC use-after-free: a root references a {:?} object that was already swept",
+            (*ptr).body_kind
+        );
         if (*ptr).mark.get() {
             return; // already marked — break cycles
         }
         (*ptr).mark.set(true);
         // Recursively mark nested TaggedValues in the body.
         mark_body(&(*ptr).body.borrow());
+    }
+}
+
+/// Mark a class's field defaults and walk its parent chain
+/// (web3d-M0: the parent chain was previously unmarked).
+fn mark_class(class: &crate::value::ClassDef) {
+    let mut cur = Some(class);
+    while let Some(c) = cur {
+        for v in c.field_defaults.values() {
+            mark_value(v);
+        }
+        cur = c.parent.as_deref();
     }
 }
 
@@ -439,16 +598,16 @@ fn mark_body(body: &HeapBody) {
                 mark_value(v);
             }
         }
-        HeapBody::Class(c) => {
-            for v in c.field_defaults.values() {
-                mark_value(v);
-            }
-        }
+        HeapBody::Class(c) => mark_class(c),
         HeapBody::Instance(rc) => {
             let inst = rc.borrow();
             for v in inst.fields.values() {
                 mark_value(v);
             }
+            // web3d-M0: the instance's class (and its parent chain)
+            // holds field defaults that `instantiate` copies from; an
+            // instance can outlive every Class-tagged value.
+            mark_class(&inst.class);
             // saved_returning / saved_params on suspended fiber frames
             // also carry TaggedValues — mark them so a fiber's resume
             // values don't get swept while the fiber is paused.

@@ -492,6 +492,13 @@ impl Env {
         for ent in &self.active_entities {
             mark_instance(&ent.borrow());
         }
+        // web3d-M0: imported modules are reachable only through the
+        // cache until an `import` binds them; stdlib thread-locals
+        // (save store, plural-rule closures) hold script values too.
+        for v in self.module_cache.values() {
+            crate::heap::mark_value(v);
+        }
+        crate::stdlib::scan_stdlib_roots();
     }
 }
 

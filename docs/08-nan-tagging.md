@@ -291,6 +291,8 @@ What 8h shipped:
 - Eval safepoint: `run_block` checks `gc_should_collect()` between statements and calls `gc_collect_with(|| env.scan_roots())` when the threshold is crossed.
 - VM safepoint: `dispatch` loop top checks `gc_should_collect()` between bytecode instructions and calls `gc_collect_with(|| self.scan_roots())`. The active frame's `ip` is sync'd back to `self.frames` first so root-scanning sees a consistent state.
 
+> **Amended 2026-09-27 (web3d-M0)** — see [`changes/2026-09-27-web3d-m0-gc-soundness.md`](changes/2026-09-27-web3d-m0-gc-soundness.md). The eval safepoint above was unsound: `run_block` also runs *function bodies reached mid-expression*, where half-evaluated temporaries (argument vectors, a binary operator's left operand, a `for` loop's element snapshot) live only on the Rust stack. A reproduced use-after-free corrupted the native heap (`STATUS_HEAP_CORRUPTION`). The tree-walker now collects only at call depth 0 plus a per-tick safepoint in `tick_frame`; values held across statements at depth 0 are pinned with `heap::RootScope`. The incremental sweep's mid-sweep-allocation handling was also fixed (young list). The "aggressive GC" tests below only forced the *first* collection (`gc_set_threshold` resets after each sweep); the real stress gate is now `TWE_GC_STRESS=1` + `tests/gc_stress.rs`.
+
 Stress tests (under `gc_set_threshold(0)` — force collect on every safepoint):
 
 - `snake_runs_under_aggressive_gc` — 10 ticks of `examples/snake.twe`'s state-machine + entity logic; verifies the eval-side roots wiring is complete.

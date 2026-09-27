@@ -3049,3 +3049,29 @@ sound.schedule(snd, 0.2, 1.0)
     let dispatched = twec::stdlib::sound_dispatched_count();
     assert_eq!(dispatched, 3, "expected 3 dispatches, got {dispatched}");
 }
+
+// ---------- web3d-M0: macroquad backend guard ----------
+
+#[test]
+fn two_d_draw_in_3d_render_errors_instead_of_panicking() {
+    // `text()` is a macroquad (2D) call. In `twec play3d` the render
+    // hook runs with `in_render` set but no macroquad window, which
+    // used to abort the process on macroquad's THREAD_ID assertion.
+    let src = "on render():\n    text(\"hp\", (10, 10), 16, color.white)\n";
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    eval::run_top_level(&mut env, &program).expect("top-level");
+    let err = eval::render_frame3d(&mut env).expect_err("2D draw in 3D should error");
+    assert!(err.message.contains("2D drawing call"), "got: {}", err.message);
+}
+
+#[test]
+fn touch_queries_are_inert_headless() {
+    // Headless runs have no macroquad window; touch queries report
+    // "no touches" instead of panicking (examples/pixel_pop.twe).
+    let out = run_program_str("print(touch.is_active())\nprint(touch.count())\n")
+        .expect("touch queries should run headless");
+    assert_eq!(out, "false\n0\n");
+}

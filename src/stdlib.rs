@@ -1210,6 +1210,23 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// web3d-M0: mark every script value the stdlib keeps in thread-local
+/// state (the typed save store, `lang.set_plural_rule` closures) so a
+/// collection can't sweep them. Called from `Env::scan_roots`. Any new
+/// thread-local that stores a GC `Value` must be added here.
+pub fn scan_stdlib_roots() {
+    SAVE_STORE.with(|s| {
+        for v in s.borrow().values() {
+            crate::heap::mark_value(v);
+        }
+    });
+    LANG_PLURAL_CLOSURES.with(|s| {
+        for v in s.borrow().values() {
+            crate::heap::mark_value(v);
+        }
+    });
+}
+
 /// True iff `state_name` is currently registered as exempt from the
 /// global pause flag. Consulted by `eval::tick_scene` and
 /// `eval::tick_entities` before short-circuiting on `is_paused()`.
@@ -3709,7 +3726,7 @@ fn touch_is_active(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
     arity(args, 0, "touch.is_active")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let n = macroquad::input::touches().len();
+        let n = touches().len();
         Ok(Value::from_bool(n > 0))
     }
     #[cfg(target_arch = "wasm32")]
@@ -3737,7 +3754,7 @@ fn touch_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "touch.count")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        Ok(Value::from_int(macroquad::input::touches().len() as i64))
+        Ok(Value::from_int(touches().len() as i64))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -3761,7 +3778,7 @@ fn touch_pointer(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let tlist = macroquad::input::touches();
+        let tlist = touches();
         if let Some(t) = tlist.get(i as usize) {
             let mut fields: HashMap<String, Value> = HashMap::new();
             fields.insert("x".to_string(), Value::from_float(t.position.x as f64));
@@ -3843,7 +3860,7 @@ fn current_tap_count(now_s: f64) -> usize {
 /// on WASM. The hook is target-agnostic so a single play loop
 /// definition handles every build target.
 pub fn tick_touch_taps(now_s: f64) {
-    let active: std::collections::HashSet<u64> = macroquad::input::touches()
+    let active: std::collections::HashSet<u64> = touches()
         .iter()
         .map(|t| t.id)
         .collect();
@@ -3895,7 +3912,7 @@ pub(crate) fn __test_set_tap_now(t: Option<f64>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn touch_primary() -> Option<(f32, f32)> {
-    let tlist = macroquad::input::touches();
+    let tlist = touches();
     tlist.first().map(|t| (t.position.x, t.position.y))
 }
 
@@ -5269,7 +5286,7 @@ fn joystick_builtin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let mut nearest: Option<(f64, f64, f64)> = None; // (dist, dx, dy)
     #[cfg(not(target_arch = "wasm32"))]
     {
-        for t in macroquad::input::touches() {
+        for t in touches() {
             let dx = t.position.x as f64 - cx;
             let dy = t.position.y as f64 - cy;
             let d = (dx * dx + dy * dy).sqrt();
@@ -9860,7 +9877,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 /// (with per-tile texture handles) rides Phase 9's atlas
 /// + `sprite(handle, frame:)` work.
 fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "tilemap_render")?;
+    require_render_2d(env, "tilemap_render")?;
     arity(args, 2, "tilemap_render")?;
     let map = expect_tilemap(&args[0], "tilemap_render.map")?;
     let (origin_x, origin_y) = {
@@ -10497,7 +10514,7 @@ fn install_draw(env: &mut Env) {
 }
 
 fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "sprite")?;
+    require_render_2d(env, "sprite")?;
     if args.len() != 2 && args.len() != 3 {
         return Err(RuntimeError {
             line: 0,
@@ -10724,7 +10741,7 @@ where
 /// `sprite_frame(atlas, at, frame)` — draw cell `frame` of `atlas`
 /// at world position `at` at the cell's native pixel size.
 fn draw_sprite_frame(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "sprite_frame")?;
+    require_render_2d(env, "sprite_frame")?;
     arity(args, 3, "sprite_frame")?;
     let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame")?;
     let (x, y) = xy_of(&args[1], "sprite_frame.at")?;
@@ -10749,7 +10766,7 @@ fn draw_sprite_frame(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 /// `sprite_frame_at(atlas, at, size, frame)` — draw cell `frame` of
 /// `atlas` at world position `at`, scaled to `size`.
 fn draw_sprite_frame_at(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "sprite_frame_at")?;
+    require_render_2d(env, "sprite_frame_at")?;
     arity(args, 4, "sprite_frame_at")?;
     let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame_at")?;
     let (x, y) = xy_of(&args[1], "sprite_frame_at.at")?;
@@ -10799,6 +10816,55 @@ fn as_i64(v: &Value, op: &str) -> Result<i64, RuntimeError> {
         message: format!("{op} expected an integer, got {}", other.type_name()),
         help: None,
     })
+}
+
+thread_local! {
+    /// web3d-M0: true only while a macroquad window loop is running
+    /// (the 2D `twec play` family in `play.rs`). macroquad asserts on a
+    /// thread-local it initialises inside `Window::from_config`; calling
+    /// any of its draw/input APIs outside that loop — `twec run`, the
+    /// test harness, `twec play3d` (winit + wgpu) — aborted the process.
+    static MACROQUAD_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark the macroquad backend as live (or not) on this thread. Called
+/// at the start of each macroquad loop in `play.rs`.
+pub fn set_macroquad_live(live: bool) {
+    MACROQUAD_LIVE.with(|c| c.set(live));
+}
+
+fn macroquad_live() -> bool {
+    MACROQUAD_LIVE.with(|c| c.get())
+}
+
+/// Current touch points, or none when no macroquad window exists
+/// (headless runs report "no touches" instead of crashing).
+fn touches() -> Vec<macroquad::input::Touch> {
+    if macroquad_live() {
+        macroquad::input::touches()
+    } else {
+        Vec::new()
+    }
+}
+
+/// `require_render` plus a backend check for the 2D drawing builtins,
+/// which draw through macroquad. In `twec play3d` (or headless) they
+/// now raise a clear error instead of panicking inside macroquad.
+fn require_render_2d(env: &Env, name: &str) -> Result<(), RuntimeError> {
+    require_render(env, name)?;
+    if !macroquad_live() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{name}() is a 2D drawing call and needs the 2D runtime (`twec play`)"),
+            help: Some(
+                "3D scenes (`twec play3d`) can't use 2D drawing or UI widgets yet; \
+                 an in-3D HUD layer is planned (web3d-M3)"
+                    .to_string(),
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
@@ -10891,7 +10957,7 @@ fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
 }
 
 fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "rect")?;
+    require_render_2d(env, "rect")?;
     arity(args, 3, "rect")?;
     let (x, y) = xy_of(&args[0], "rect.at")?;
     let (w, h) = xy_of(&args[1], "rect.size")?;
@@ -10901,7 +10967,7 @@ fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "circle")?;
+    require_render_2d(env, "circle")?;
     arity(args, 3, "circle")?;
     let (x, y) = xy_of(&args[0], "circle.at")?;
     let radius = number(&args[1], "circle.radius")? as f32;
@@ -10911,7 +10977,7 @@ fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "circle_outline")?;
+    require_render_2d(env, "circle_outline")?;
     arity(args, 4, "circle_outline")?;
     let (x, y) = xy_of(&args[0], "circle_outline.at")?;
     let radius = number(&args[1], "circle_outline.radius")? as f32;
@@ -10922,7 +10988,7 @@ fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
 }
 
 fn draw_rect_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "rect_outline")?;
+    require_render_2d(env, "rect_outline")?;
     arity(args, 4, "rect_outline")?;
     let (x, y) = xy_of(&args[0], "rect_outline.at")?;
     let (w, h) = xy_of(&args[1], "rect_outline.size")?;
@@ -10935,7 +11001,7 @@ fn draw_rect_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 }
 
 fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "line")?;
+    require_render_2d(env, "line")?;
     arity(args, 4, "line")?;
     let (x1, y1) = xy_of(&args[0], "line.from")?;
     let (x2, y2) = xy_of(&args[1], "line.to")?;
@@ -11032,7 +11098,7 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 }
 
 fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "text")?;
+    require_render_2d(env, "text")?;
     arity(args, 4, "text")?;
     let content = {
         let __t = &args[0];
@@ -11055,7 +11121,7 @@ fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// but renders with a custom TTF/OTF loaded via `load_font`. Phase 9
 /// session 4.
 fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "text_with_font")?;
+    require_render_2d(env, "text_with_font")?;
     arity(args, 5, "text_with_font")?;
     let content = {
         let t = &args[0];
@@ -11109,7 +11175,7 @@ fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
 /// border are baked in for v1; theming knobs (custom colors, fonts,
 /// padding) are deferred until the session-1 surface meets a real game.
 fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "button")?;
+    require_render_2d(env, "button")?;
     arity(args, 3, "button")?;
     let (x, y) = xy_of(&args[0], "button.at")?;
     let (w, h) = xy_of(&args[1], "button.size")?;
@@ -11180,7 +11246,7 @@ pub(crate) fn point_in_rect(px: f64, py: f64, rx: f64, ry: f64, rw: f64, rh: f64
 /// shape as `button` so the two compose visually under any future
 /// layout primitive.
 fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "label")?;
+    require_render_2d(env, "label")?;
     arity(args, 3, "label")?;
     let (x, y) = xy_of(&args[0], "label.at")?;
     let (w, h) = xy_of(&args[1], "label.size")?;
@@ -11211,7 +11277,7 @@ fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// [0, 1] silently rather than erroring, since `progress_bar(value: hp / max_hp)`
 /// drifting slightly out of range due to float rounding shouldn't crash.
 fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "progress_bar")?;
+    require_render_2d(env, "progress_bar")?;
     arity(args, 3, "progress_bar")?;
     let (x, y) = xy_of(&args[0], "progress_bar.at")?;
     let (w, h) = xy_of(&args[1], "progress_bar.size")?;
@@ -11245,7 +11311,7 @@ fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 /// passes through unchanged (so the widget is *driven* by the script's
 /// `var` and stays in sync after, say, a "reset" button).
 fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "slider")?;
+    require_render_2d(env, "slider")?;
     arity(args, 5, "slider")?;
     let (x, y) = xy_of(&args[0], "slider.at")?;
     let (w, h) = xy_of(&args[1], "slider.size")?;
@@ -11315,7 +11381,7 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// when value is true — keeps the visual recognizable without bringing
 /// in glyph rendering.
 fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "checkbox")?;
+    require_render_2d(env, "checkbox")?;
     arity(args, 3, "checkbox")?;
     let (x, y) = xy_of(&args[0], "checkbox.at")?;
     let (w, h) = xy_of(&args[1], "checkbox.size")?;
@@ -11379,7 +11445,7 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// outside or pick the same option to close. Returns the new selected
 /// index. Stateful via `UI_STATE.open_dropdown` keyed by the rect.
 fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "dropdown")?;
+    require_render_2d(env, "dropdown")?;
     arity(args, 4, "dropdown")?;
     let (x, y) = xy_of(&args[0], "dropdown.at")?;
     let (w, h) = xy_of(&args[1], "dropdown.size")?;
@@ -11527,7 +11593,7 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// and `Backspace` removes the last character. Returns the updated
 /// string each frame.
 fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "text_input")?;
+    require_render_2d(env, "text_input")?;
     arity(args, 3, "text_input")?;
     let (x, y) = xy_of(&args[0], "text_input.at")?;
     let (w, h) = xy_of(&args[1], "text_input.size")?;
@@ -11655,7 +11721,7 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
 /// with `key_held(name)` / `key_pressed(name)` so games can persist
 /// bindings via `settings` and read them back at runtime.
 fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "key_input")?;
+    require_render_2d(env, "key_input")?;
     arity(args, 3, "key_input")?;
     let (x, y) = xy_of(&args[0], "key_input.at")?;
     let (w, h) = xy_of(&args[1], "key_input.size")?;
@@ -11771,7 +11837,7 @@ fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 /// panels, dialog boxes, info cards). Slightly darker than the
 /// page background, with a thin neutral border. No state.
 fn draw_panel(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "panel")?;
+    require_render_2d(env, "panel")?;
     arity(args, 2, "panel")?;
     let (x, y) = xy_of(&args[0], "panel.at")?;
     let (w, h) = xy_of(&args[1], "panel.size")?;
@@ -11833,7 +11899,7 @@ fn nine_slice_handle(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
 /// both axes. Falls back to a transparent fill if `w` or `h` are
 /// smaller than `2 * border` (the corners would overlap).
 fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render(env, "panel_skinned")?;
+    require_render_2d(env, "panel_skinned")?;
     arity(args, 3, "panel_skinned")?;
     let (x, y) = xy_of(&args[0], "panel_skinned.at")?;
     let (w, h) = xy_of(&args[1], "panel_skinned.size")?;

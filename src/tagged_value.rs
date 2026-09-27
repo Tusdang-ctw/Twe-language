@@ -206,6 +206,13 @@ pub struct HeapObject {
     /// each cycle. The mark phase sets it `true` (black). The
     /// sweep phase resets `true` → `false` and frees `false`s.
     pub mark: std::cell::Cell<bool>,
+    /// web3d-M0: poison bit. Only ever set under GC stress mode
+    /// (`TWE_GC_STRESS=1` / `heap::gc_set_stress(true)`), where the
+    /// sweep parks unreachable objects in a graveyard instead of
+    /// freeing them. Any later deref through `with_heap_object`
+    /// panics with a clear use-after-free message rather than
+    /// silently reading reused memory.
+    pub freed: std::cell::Cell<bool>,
     /// Cached body discriminant — used by `is_obj_body_kind`
     /// without a `with_obj_body` borrow, and by `Heap::collect`
     /// when scanning for nested pointers.
@@ -862,7 +869,17 @@ impl TaggedValue {
         // GC sweep frees only objects that finish a cycle white;
         // by construction, anything we hold a TaggedValue to is
         // either reachable or safely past the relevant safepoint.
-        unsafe { f(&*ptr) }
+        let obj = unsafe { &*ptr };
+        // web3d-M0: under GC stress mode swept objects are poisoned
+        // rather than freed, so a missing root surfaces here as a
+        // deterministic panic instead of silent memory reuse.
+        assert!(
+            !obj.freed.get(),
+            "GC use-after-free: {:?} object was swept while still referenced \
+             (a TaggedValue lived on the Rust stack across a safepoint)",
+            obj.body_kind
+        );
+        f(obj)
     }
 
     /// Raw pointer to the heap object. Public for `crate::heap`'s

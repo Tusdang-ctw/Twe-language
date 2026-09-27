@@ -112,6 +112,11 @@ const VM_UNSUPPORTED: &[(&str, &str)] = &[
          2026-06-01 VM-strategy decision",
     ),
     (
+        "gc_comprehension_uaf.twe",
+        "compiler.rs — iterates list comprehensions, which are tree-walker-only (see \
+         list_comp.twe); this is a web3d-M0 tree-walker GC regression program",
+    ),
+    (
         "then_seq.twe",
         "compiler.rs — `<action> then <body>` sequencing is tree-walker-only (the frozen VM \
          doesn't mirror the fiber suspend/resume path); also uses a `0.2s` quantity literal the \

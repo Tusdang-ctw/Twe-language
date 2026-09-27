@@ -319,6 +319,9 @@ pub fn launch_wasm() -> i32 {
 
 #[cfg(target_arch = "wasm32")]
 async fn run_loop_wasm() {
+    // web3d-M0: macroquad is initialised from here on (see
+    // `stdlib::set_macroquad_live`).
+    crate::stdlib::set_macroquad_live(true);
     const LABEL: &str = "main.twe";
     // Fetch the game source from the web server (same origin as the
     // HTML page). macroquad's load_file uses XMLHttpRequest / fetch
@@ -461,6 +464,9 @@ fn window_conf() -> Conf {
 }
 
 async fn run_loop(path: String) {
+    // web3d-M0: macroquad is initialised from here on (see
+    // `stdlib::set_macroquad_live`).
+    crate::stdlib::set_macroquad_live(true);
     // Phase 15 session 3: try to initialise the Steam client once
     // before the first tick. No-op in non-steam builds.
     crate::steam::init();
@@ -1073,6 +1079,9 @@ fn build_camera2d(cx: f64, cy: f64, zoom: f64) -> Camera2D {
 }
 
 async fn run_loop_bytecode(path: String) {
+    // web3d-M0: macroquad is initialised from here on (see
+    // `stdlib::set_macroquad_live`).
+    crate::stdlib::set_macroquad_live(true);
     let path_ref = path.clone();
     let mut vm = match initialize_bytecode(&path_ref) {
         Ok(v) => v,
@@ -1182,6 +1191,9 @@ async fn run_loop_bytecode(path: String) {
 // `--vm` toggle in the embedded boot path if a bundled game wants
 // the bytecode backend explicitly.
 async fn run_loop_embedded(source: String) {
+    // web3d-M0: macroquad is initialised from here on (see
+    // `stdlib::set_macroquad_live`).
+    crate::stdlib::set_macroquad_live(true);
     const LABEL: &str = "<embedded>main.twe";
     let mut env = match initialize_from_source(&source, LABEL) {
         Ok(e) => e,

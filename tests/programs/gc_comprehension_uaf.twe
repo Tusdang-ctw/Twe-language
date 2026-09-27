@@ -1,0 +1,51 @@
+# web3d-M0 regression: iterating a temporary list (here a list
+# comprehension) must keep every element alive while the loop body
+# allocates enough to trigger collections. Before the fix, the
+# `for` loop's snapshot lived only on the Rust stack; a safepoint
+# inside the body swept the elements and later reads saw reused
+# memory ("list index 1 out of bounds (length 1)").
+#
+# The same shape is exercised inside a function, through a class
+# field default, and through a state transition that swaps `self`.
+
+var total = 0
+var bad = 0
+var idx = 0
+for it in [[k, [k, k * 2]] for k in 0..<200]:
+    var j = 0
+    while j < 50:
+        let junk = [j, [j, j], [j]]
+        j += 1
+    if it[0] != idx:
+        bad += 1
+    if it[1][1] != idx * 2:
+        bad += 1
+    total += it[1][1]
+    idx += 1
+print(total)
+print(bad)
+
+function sum_pairs(n):
+    var acc = 0
+    for p in [[i, i + 1] for i in 0..<n]:
+        let junk = [[p[0]], [p[1]]]
+        acc += p[0] + p[1]
+    return acc
+
+print(sum_pairs(100))
+
+entity Base:
+    var tags = ["base", "entity"]
+
+entity Child extends Base:
+    var extra = [1, 2, 3]
+
+spawn Child at (0, 0)
+var built = 0
+for n in 0..<100:
+    let junk = [n, [n]]
+    built += 1
+for c in entities.of(Child):
+    print(c.tags[1])
+    print(c.extra[2])
+print(built)

@@ -68,6 +68,11 @@ pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeErro
 /// applied to `env`.
 pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     let _profile = crate::profile::scope("tick");
+    // web3d-M0: guaranteed per-tick safepoint. Nothing lives on the
+    // Rust stack here, and entity `update` methods (call depth ≥ 1)
+    // never collect, so without this a game whose work is all in
+    // entity methods would only collect at scene-level statements.
+    safepoint(env);
     update_time_ambient(env, dt);
     // v1.0.1 session 6: when paused, the top-level `on update()` is
     // never persistent — it isn't bound to any state, so the global
@@ -569,6 +574,7 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
         }
     };
     let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+    let _self_root = root_saved_self(prev_self);
     for body in bodies {
         run_block(env, &body)?;
         if env.returning.is_some() {
@@ -623,6 +629,7 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
         };
         if let Some(body) = body {
             let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+            let _self_root = root_saved_self(prev_self);
             run_block(env, &body)?;
             env.self_value = prev_self;
         }
@@ -677,6 +684,7 @@ fn tick_scene(env: &mut Env, scene: &Rc<RefCell<Instance>>, dt: f64) -> Result<(
         return Ok(());
     }
     let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+    let _self_root = root_saved_self(prev_self);
     // Phase 5 fibers / v0.2 sessions 2a + 2b: if the state's
     // fiber is suspended on a `wait`, count down by `dt` and
     // either keep waiting (skip the rest of this state's
@@ -876,6 +884,7 @@ fn enter_state(
             .and_then(|s| s.on_exit.clone());
         if let Some(body) = exit_body {
             let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+            let _self_root = root_saved_self(prev_self);
             run_block(env, &body)?;
             env.transitioning = None;
             env.self_value = prev_self;
@@ -897,6 +906,7 @@ fn enter_state(
     // Resolve each every-clock interval (in seconds) by evaluating the
     // interval expression with self bound to the scene instance.
     let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+    let _self_root = root_saved_self(prev_self);
     let mut intervals = Vec::with_capacity(state.every_clocks.len());
     for clock in &state.every_clocks {
         let v = eval_expr(env, &clock.interval)?;
@@ -1720,16 +1730,40 @@ fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeErr
     }
 }
 
+/// Root the `self` value a scene-level runner swapped out, until the
+/// returned scope drops. web3d-M0: a transition's on-entry body runs
+/// statements (safepoints) at depth 0 while the previous `self`
+/// wrapper lives only on the Rust stack; restoring a swept wrapper
+/// afterwards left `self` dangling.
+fn root_saved_self(prev: Option<Value>) -> crate::heap::RootScope {
+    let roots = crate::heap::RootScope::new();
+    if let Some(v) = prev {
+        roots.push(v);
+    }
+    roots
+}
+
+/// Collect if the heap is over threshold (or in stress mode). Only
+/// call where no unrooted `TaggedValue` lives on the Rust stack.
+fn safepoint(env: &mut Env) {
+    if crate::heap::gc_should_collect() {
+        crate::heap::gc_collect_with(|| env.scan_roots());
+    }
+}
+
 fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
     for stmt in stmts {
-        // v0.2 Phase 8.5 session 8h: GC safepoint between statements.
-        // Threshold-gated; non-allocating runs pay only the cheap
-        // `bytes_allocated >= threshold` thread-local check. Statement
-        // boundaries are safe because every TaggedValue is rooted in
-        // env.bindings, env.self_value/returning, or an instance's
-        // fields between statements (no Rust-stack-only intermediate
-        // values like there would be mid-expression).
-        if crate::heap::gc_should_collect() {
+        // GC safepoint between statements — but only at call depth 0.
+        // web3d-M0: a function body reached from inside an expression
+        // (`f(a, g())`, `x + h()`, a comprehension element) runs with
+        // the caller's half-evaluated temporaries (arg vectors, the
+        // left operand, …) living only on the Rust stack, so
+        // collecting there freed live values. At depth 0 the only
+        // Rust-stack values across a statement are the few the
+        // interpreter roots explicitly via `heap::RootScope` (`for`
+        // snapshots, a swapped-out `self`). Game code still collects
+        // once per tick via `safepoint` in `tick_frame`.
+        if env.call_depth == 0 && crate::heap::gc_should_collect() {
             crate::heap::gc_collect_with(|| env.scan_roots());
         }
         eval_stmt(env, stmt)?;
@@ -3224,6 +3258,16 @@ fn run_for(
 ) -> Result<(), RuntimeError> {
     let iter_val = eval_expr(env, iter)?;
     let saved = env.get(var);
+    // web3d-M0: the iterable, its element snapshot, and the shadowed
+    // loop variable live only on the Rust stack while the body runs
+    // statements (safepoints). Root them for the loop's duration — the
+    // snapshot elements individually, since the body may remove them
+    // from the underlying list.
+    let roots = crate::heap::RootScope::new();
+    roots.push(iter_val);
+    if let Some(v) = saved {
+        roots.push(v);
+    }
     let result = if iter_val.is_range() {
         let (start, end, exclusive) = iter_val.as_range();
         let limit = if exclusive { end } else { end + 1 };
@@ -3231,10 +3275,12 @@ fn run_for(
     } else if iter_val.is_list() {
         let rc = iter_val.as_list();
         let snapshot: Vec<Value> = rc.borrow().clone();
+        roots.push_all(&snapshot);
         run_for_iter(env, var, body, snapshot.into_iter())
     } else if iter_val.is_tuple() {
         let elems = iter_val.as_tuple();
         let snapshot: Vec<Value> = elems.iter().cloned().collect();
+        roots.push_all(&snapshot);
         run_for_iter(env, var, body, snapshot.into_iter())
     } else {
         let other = iter_val;
