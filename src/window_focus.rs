@@ -146,10 +146,7 @@ fn x11_is_focused() -> Option<bool> {
         .ok()?
         .reply()
         .ok()?;
-    let active_win = active_reply
-        .value32()?
-        .next()
-        .filter(|w| *w != 0)?;
+    let active_win = active_reply.value32()?.next().filter(|w| *w != 0)?;
 
     // `_NET_WM_PID` on that window holds the owning process id as a
     // cardinal[1]. If unset (some apps don't set it), we can't
@@ -166,11 +163,7 @@ fn x11_is_focused() -> Option<bool> {
 
 #[cfg(any(
     target_arch = "wasm32",
-    all(
-        not(windows),
-        not(target_os = "macos"),
-        not(unix),
-    ),
+    all(not(windows), not(target_os = "macos"), not(unix),),
 ))]
 fn is_focused_impl() -> bool {
     // wasm32 + unknown targets: pause-on-blur is either handled by

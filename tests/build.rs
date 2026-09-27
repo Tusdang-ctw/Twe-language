@@ -1024,7 +1024,11 @@ fn script_loaders_resolve_assets_that_exist_only_in_the_bundle() {
     let tokens = twec::lexer::lex("load(\"assets/not_anywhere.png\")\n").expect("lex");
     let program = twec::parser::parse(&tokens).expect("parse");
     let err = twec::eval::run(&program).expect_err("missing asset should error");
-    assert!(err.message.contains("cannot find asset"), "got: {}", err.message);
+    assert!(
+        err.message.contains("cannot find asset"),
+        "got: {}",
+        err.message
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

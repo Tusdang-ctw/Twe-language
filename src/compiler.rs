@@ -1814,7 +1814,9 @@ impl Compiler {
                 // doesn't yet mirror the tree-walker's enter_state exit
                 // hook. Tree-walker-first per the 2026-06-01 VM-strategy
                 // decision; rejected here with a clear pointer.
-                StateMember::OnExit { line: el, col: ec, .. } => {
+                StateMember::OnExit {
+                    line: el, col: ec, ..
+                } => {
                     return Err(self.unsupported(
                         "`on exit:` state hook (tree-walker only for now; run with the default `--vm tree`)",
                         *el,

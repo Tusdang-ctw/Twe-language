@@ -104,9 +104,21 @@ impl Frustum {
             // i.e. the deepest point along the plane normal. For
             // each axis, choose min[axis] if normal is negative,
             // max[axis] if positive.
-            let px = if plane[0] >= 0.0 { aabb.max[0] } else { aabb.min[0] };
-            let py = if plane[1] >= 0.0 { aabb.max[1] } else { aabb.min[1] };
-            let pz = if plane[2] >= 0.0 { aabb.max[2] } else { aabb.min[2] };
+            let px = if plane[0] >= 0.0 {
+                aabb.max[0]
+            } else {
+                aabb.min[0]
+            };
+            let py = if plane[1] >= 0.0 {
+                aabb.max[1]
+            } else {
+                aabb.min[1]
+            };
+            let pz = if plane[2] >= 0.0 {
+                aabb.max[2]
+            } else {
+                aabb.min[2]
+            };
             if plane[0] * px + plane[1] * py + plane[2] * pz + plane[3] < 0.0 {
                 return true;
             }
@@ -150,7 +162,12 @@ fn sub(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 /// wgpu clip space `[-1, 1] × [-1, 1] × [0, 1]`. Used by tests +
 /// scripts that want to construct a frustum without going through
 /// a real camera.
-pub fn perspective_row_major(fov_y_radians: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
+pub fn perspective_row_major(
+    fov_y_radians: f32,
+    aspect: f32,
+    near: f32,
+    far: f32,
+) -> [[f32; 4]; 4] {
     let f = 1.0 / (fov_y_radians * 0.5).tan();
     [
         [f / aspect, 0.0, 0.0, 0.0],

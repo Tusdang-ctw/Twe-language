@@ -28,7 +28,11 @@ fn every_shipped_suite_loads_cleanly() {
             continue;
         }
         let suite = load_suite(&p).unwrap_or_else(|e| panic!("load_suite({:?}): {e}", p));
-        assert!(!suite.expected.is_empty(), "{} expected.txt is empty", suite.name);
+        assert!(
+            !suite.expected.is_empty(),
+            "{} expected.txt is empty",
+            suite.name
+        );
         count += 1;
     }
     assert!(count >= 2, "expected at least 2 suites, found {count}");

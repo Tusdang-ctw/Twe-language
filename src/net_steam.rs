@@ -222,7 +222,11 @@ pub fn send_to_internal(internal_peer_id: u8, payload: &[u8], channel: u32) -> R
         let Some(sess) = slot.as_mut() else {
             return Err("net (steam): no active session".to_string());
         };
-        let Some(peer) = sess.peers.iter().find(|p| p.internal_id == internal_peer_id) else {
+        let Some(peer) = sess
+            .peers
+            .iter()
+            .find(|p| p.internal_id == internal_peer_id)
+        else {
             // Peer not yet in table — queue the packet so a later
             // poll() that adds the peer can flush it. This handles
             // the connect-side window between hello and hello-ack.
@@ -302,7 +306,11 @@ pub fn poll() -> usize {
 /// queue. Returns None if empty. The lockstep runner in `net.rs`
 /// drains this queue after each `poll()`.
 pub fn next_incoming() -> Option<(u8, Vec<u8>, u32)> {
-    SESSION.with(|s| s.borrow_mut().as_mut().and_then(|sess| sess.pending_incoming.pop_front()))
+    SESSION.with(|s| {
+        s.borrow_mut()
+            .as_mut()
+            .and_then(|sess| sess.pending_incoming.pop_front())
+    })
 }
 
 /// Close the Steam-side session. Idempotent.
@@ -324,7 +332,12 @@ pub fn session_state() -> Option<(u8, u8)> {
 /// Number of peers the host has accepted (excluding self). Used by
 /// `session_ready` on both paths.
 pub fn accepted_peer_count() -> usize {
-    SESSION.with(|s| s.borrow().as_ref().map(|sess| sess.peers.len()).unwrap_or(0))
+    SESSION.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|sess| sess.peers.len())
+            .unwrap_or(0)
+    })
 }
 
 /// Install a peer entry. Called by the lobby + handshake handlers
@@ -479,8 +492,8 @@ pub fn join_lobby(lobby_raw: u64) -> Result<bool, String> {
     }
     #[cfg(feature = "steam-net")]
     {
-        let join_ok = crate::steam::lobby_join(lobby_raw)
-            .map_err(|e| format!("net.join_lobby: {e}"))?;
+        let join_ok =
+            crate::steam::lobby_join(lobby_raw).map_err(|e| format!("net.join_lobby: {e}"))?;
         if !join_ok {
             return Ok(false);
         }
@@ -549,7 +562,10 @@ mod tests {
         // is_available() must be false and host_p2p must error
         // accordingly. The error message is the user-facing line that
         // tells operators what to do — assert it stays informative.
-        assert!(!is_available(), "no-feature build must not advertise Steam P2P");
+        assert!(
+            !is_available(),
+            "no-feature build must not advertise Steam P2P"
+        );
         let err = host_p2p(2).expect_err("host_p2p must reject when Steam is unavailable");
         assert!(
             err.contains("--features steam-net") || err.contains("Steam client not running"),

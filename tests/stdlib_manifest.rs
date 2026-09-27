@@ -60,7 +60,9 @@ fn default_manifest_excludes_experimental_namespaces() {
     // must not be advertised to models in the default build.
     for spec in &manifest() {
         assert!(
-            !EXPERIMENTAL_NAMESPACES.iter().any(|ns| spec.name.starts_with(ns)),
+            !EXPERIMENTAL_NAMESPACES
+                .iter()
+                .any(|ns| spec.name.starts_with(ns)),
             "`{}` is an experimental builtin but appears in the default manifest",
             spec.name
         );

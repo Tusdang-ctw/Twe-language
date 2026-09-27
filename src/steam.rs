@@ -185,9 +185,8 @@ pub fn p2p_send(remote_steam_id_raw: u64, channel: u32, payload: &[u8]) -> Resul
         return Err("Steam client not initialised".to_string());
     };
     let messages = client.networking_messages();
-    let identity = NetworkingIdentity::new_steam_id(steamworks::SteamId::from_raw(
-        remote_steam_id_raw,
-    ));
+    let identity =
+        NetworkingIdentity::new_steam_id(steamworks::SteamId::from_raw(remote_steam_id_raw));
     let flags = match channel {
         // CHANNEL_INPUT — reliable + ordered; lockstep depends on
         // every input frame arriving exactly once in order.
@@ -207,10 +206,7 @@ pub fn p2p_send(remote_steam_id_raw: u64, channel: u32, payload: &[u8]) -> Resul
 ///
 /// Each tuple is `(remote_steam_id_raw, channel, payload)`.
 #[cfg(feature = "steam-net")]
-pub fn p2p_receive(
-    channels: &[u32],
-    max_per_channel: usize,
-) -> Vec<(u64, u32, Vec<u8>)> {
+pub fn p2p_receive(channels: &[u32], max_per_channel: usize) -> Vec<(u64, u32, Vec<u8>)> {
     let Some(Some(client)) = STEAM.get() else {
         return Vec::new();
     };
@@ -221,11 +217,7 @@ pub fn p2p_receive(
         for msg in received {
             // `msg.identity_peer().steam_id()` returns Option<SteamId>
             // — peer identification is by SteamID on the messages API.
-            let steam_id_raw = msg
-                .identity_peer()
-                .steam_id()
-                .map(|s| s.raw())
-                .unwrap_or(0);
+            let steam_id_raw = msg.identity_peer().steam_id().map(|s| s.raw()).unwrap_or(0);
             out.push((steam_id_raw, ch, msg.data().to_vec()));
         }
     }
@@ -281,14 +273,15 @@ pub fn lobby_set_name(lobby_raw: u64, name: &str) -> Result<(), String> {
         return Err("Steam client not initialised".to_string());
     };
     let lobby = steamworks::LobbyId::from_raw(lobby_raw);
-    client
-        .matchmaking()
-        .set_lobby_data(lobby, "name", name);
+    client.matchmaking().set_lobby_data(lobby, "name", name);
     Ok(())
 }
 
 #[cfg(feature = "steam-net")]
-pub fn lobby_request_list(query: &str, max: usize) -> Result<Vec<crate::net_steam::LobbyInfo>, String> {
+pub fn lobby_request_list(
+    query: &str,
+    max: usize,
+) -> Result<Vec<crate::net_steam::LobbyInfo>, String> {
     use std::sync::mpsc;
     use std::time::Duration;
     let Some(Some(client)) = STEAM.get() else {

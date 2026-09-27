@@ -845,11 +845,7 @@ pub fn install(env: &mut Env) {
     // pause: false`) is the canonical surface and defers to v1.0.2.
     env.set(
         "persistent_state".to_string(),
-        Value::from_builtin(
-            "persistent_state",
-            &["state_name"],
-            persistent_state_set,
-        ),
+        Value::from_builtin("persistent_state", &["state_name"], persistent_state_set),
     );
     env.set(
         "clear_persistent_state".to_string(),
@@ -861,11 +857,7 @@ pub fn install(env: &mut Env) {
     );
     env.set(
         "clear_persistent_states".to_string(),
-        Value::from_builtin(
-            "clear_persistent_states",
-            &[],
-            persistent_state_clear_all,
-        ),
+        Value::from_builtin("clear_persistent_states", &[], persistent_state_clear_all),
     );
     env.set(
         "is_persistent_state".to_string(),
@@ -1362,10 +1354,7 @@ fn persistent_state_set(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
 /// v1.0.1 session 6: remove a state name from the persistent set.
 /// `persistent_state` is idempotent on add; `clear_persistent_state`
 /// removes one entry. To drop everything, call `clear_persistent_states()`.
-fn persistent_state_clear_one(
-    _env: &mut Env,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
+fn persistent_state_clear_one(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "clear_persistent_state")?;
     let name = string_arg(&args[0], "clear_persistent_state", "state_name")?;
     let removed = PAUSE_EXEMPT_STATES.with(|s| s.borrow_mut().remove(&name));
@@ -1373,10 +1362,7 @@ fn persistent_state_clear_one(
 }
 
 /// v1.0.1 session 6: drop every registered persistent state.
-fn persistent_state_clear_all(
-    _env: &mut Env,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
+fn persistent_state_clear_all(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "clear_persistent_states")?;
     clear_persistent_states_internal();
     Ok(Value::NIL)
@@ -1491,9 +1477,7 @@ fn os_data_dir(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "os.data_dir(app): app name `{app}` must not contain path separators"
-            ),
+            message: format!("os.data_dir(app): app name `{app}` must not contain path separators"),
             help: Some("pass a single folder name like `\"MyGame\"`".to_string()),
         });
     }
@@ -1546,7 +1530,9 @@ fn platform_data_dir(app: &str) -> std::path::PathBuf {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
             .unwrap_or_else(|| PathBuf::from("."))
             .join(app)
     }
@@ -2227,10 +2213,7 @@ fn call_value_with_args(
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "{site}: expected a function value, got {}",
-                f.type_name()
-            ),
+            message: format!("{site}: expected a function value, got {}", f.type_name()),
             help: None,
         });
     }
@@ -2849,14 +2832,13 @@ fn sound_schedule(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             line: 0,
             col: 0,
             message: format!("sound.schedule expects a non-negative finite `when`, got {when}"),
-            help: Some("`when` is absolute simulation seconds; use `sound.now() + offset` for relative".to_string()),
+            help: Some(
+                "`when` is absolute simulation seconds; use `sound.now() + offset` for relative"
+                    .to_string(),
+            ),
         });
     }
-    let entry = ScheduledSound {
-        when,
-        path,
-        volume,
-    };
+    let entry = ScheduledSound { when, path, volume };
     SCHEDULED_SOUNDS.with(|s| {
         let mut q = s.borrow_mut();
         // Insertion sort — typical schedule depth is small (a handful
@@ -3303,11 +3285,7 @@ fn install_net(env: &mut Env) {
     // "rebuild with --features steam-net" error.
     n.insert(
         "create_lobby".to_string(),
-        Value::from_builtin(
-            "net.create_lobby",
-            &["name", "max_peers"],
-            net_create_lobby,
-        ),
+        Value::from_builtin("net.create_lobby", &["name", "max_peers"], net_create_lobby),
     );
     n.insert(
         "find_lobbies".to_string(),
@@ -3690,9 +3668,7 @@ fn net_rendezvous_exchange(_env: &mut Env, args: &[Value]) -> Result<Value, Runt
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "net.rendezvous_exchange: timeout_ms must be > 0 (got {timeout_ms})"
-            ),
+            message: format!("net.rendezvous_exchange: timeout_ms must be > 0 (got {timeout_ms})"),
             help: None,
         });
     }
@@ -3811,13 +3787,17 @@ fn touch_is_active(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
 /// pixels. Returns 0.0 if no touch is active.
 fn touch_x(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "touch.x")?;
-    Ok(Value::from_float(touch_primary().map(|(x, _)| x).unwrap_or(0.0) as f64))
+    Ok(Value::from_float(
+        touch_primary().map(|(x, _)| x).unwrap_or(0.0) as f64,
+    ))
 }
 
 /// Y-coordinate of the primary (first active) touch.
 fn touch_y(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "touch.y")?;
-    Ok(Value::from_float(touch_primary().map(|(_, y)| y).unwrap_or(0.0) as f64))
+    Ok(Value::from_float(
+        touch_primary().map(|(_, y)| y).unwrap_or(0.0) as f64,
+    ))
 }
 
 /// Number of currently-active touches (1 for a single tap, 2 for
@@ -3932,10 +3912,7 @@ fn current_tap_count(now_s: f64) -> usize {
 /// on WASM. The hook is target-agnostic so a single play loop
 /// definition handles every build target.
 pub fn tick_touch_taps(now_s: f64) {
-    let active: std::collections::HashSet<u64> = touches()
-        .iter()
-        .map(|t| t.id)
-        .collect();
+    let active: std::collections::HashSet<u64> = touches().iter().map(|t| t.id).collect();
     for id in &active {
         record_tap_press(*id, now_s);
     }
@@ -4019,11 +3996,7 @@ fn install_fx(env: &mut Env) {
     );
     f.insert(
         "screen_shake".to_string(),
-        Value::from_builtin(
-            "fx.screen_shake",
-            &["amount", "duration"],
-            fx_screen_shake,
-        ),
+        Value::from_builtin("fx.screen_shake", &["amount", "duration"], fx_screen_shake),
     );
     f.insert(
         "hit_stop".to_string(),
@@ -4043,11 +4016,7 @@ fn install_fx(env: &mut Env) {
     );
     f.insert(
         "death_burst".to_string(),
-        Value::from_builtin(
-            "fx.death_burst",
-            &["at", "count", "color"],
-            fx_death_burst,
-        ),
+        Value::from_builtin("fx.death_burst", &["at", "count", "color"], fx_death_burst),
     );
     f.insert(
         "pickup_pop".to_string(),
@@ -4063,11 +4032,7 @@ fn install_fx(env: &mut Env) {
     );
     f.insert(
         "blood_splat".to_string(),
-        Value::from_builtin(
-            "fx.blood_splat",
-            &["at", "dir", "color"],
-            fx_blood_splat,
-        ),
+        Value::from_builtin("fx.blood_splat", &["at", "dir", "color"], fx_blood_splat),
     );
     f.insert(
         "muzzle_flash".to_string(),
@@ -4419,7 +4384,6 @@ fn tween_eases(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 // cleared by the play loop after `light2d::draw_overlay` runs.
 // ---------------------------------------------------------------
 
-
 fn install_light2d(env: &mut Env) {
     let mut l = HashMap::new();
     l.insert(
@@ -4485,7 +4449,9 @@ fn light2d_cast_shadows(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
                 "light2d.cast_shadows expects a list of (x, y, w, h) tuples, got {}",
                 v.type_name()
             ),
-            help: Some("e.g. `light2d.cast_shadows([(0, 0, 32, 32), (32, 0, 32, 32)])`".to_string()),
+            help: Some(
+                "e.g. `light2d.cast_shadows([(0, 0, 32, 32), (32, 0, 32, 32)])`".to_string(),
+            ),
         });
     }
     let list = v.as_list();
@@ -4547,11 +4513,7 @@ fn light2d_clear(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 fn install_joystick_widget(env: &mut Env) {
     env.set(
         "joystick".to_string(),
-        Value::from_builtin(
-            "joystick",
-            &["at", "size", "deadzone"],
-            joystick_builtin,
-        ),
+        Value::from_builtin("joystick", &["at", "size", "deadzone"], joystick_builtin),
     );
 }
 
@@ -4736,10 +4698,7 @@ fn tuple2_f64(v: &Value, fn_name: &str, arg_name: &str) -> Result<(f64, f64), Ru
         let list = v.as_list();
         let l = list.borrow();
         if l.len() == 2 {
-            return Ok((
-                as_f64(&l[0], fn_name)?,
-                as_f64(&l[1], fn_name)?,
-            ));
+            return Ok((as_f64(&l[0], fn_name)?, as_f64(&l[1], fn_name)?));
         }
     }
     Err(RuntimeError {
@@ -4841,7 +4800,11 @@ fn install_physics2d(env: &mut Env) {
     );
     p.insert(
         "grid_query".to_string(),
-        Value::from_builtin("physics2d.grid_query", &["grid", "box"], physics2d_grid_query),
+        Value::from_builtin(
+            "physics2d.grid_query",
+            &["grid", "box"],
+            physics2d_grid_query,
+        ),
     );
     p.insert(
         "grid_near".to_string(),
@@ -4906,7 +4869,10 @@ fn box4_of(v: &Value, what: &str) -> Result<(f32, f32, f32, f32), RuntimeError> 
     Err(RuntimeError {
         line: 0,
         col: 0,
-        message: format!("{what} expects a box `(x, y, w, h)`, got {}", (*v).type_name()),
+        message: format!(
+            "{what} expects a box `(x, y, w, h)`, got {}",
+            (*v).type_name()
+        ),
         help: Some("a 2D box is `(x, y, w, h)` with `(x, y)` the top-left corner".to_string()),
     })
 }
@@ -5140,7 +5106,10 @@ struct P2dGrid {
 
 impl P2dGrid {
     fn cell_coord(&self, x: f32, y: f32) -> (i32, i32) {
-        ((x / self.cell).floor() as i32, (y / self.cell).floor() as i32)
+        (
+            (x / self.cell).floor() as i32,
+            (y / self.cell).floor() as i32,
+        )
     }
     fn insert(&mut self, id: i64, b: (f32, f32, f32, f32)) {
         let (x, y, w, h) = b;
@@ -5405,9 +5374,7 @@ fn physics2d_collide(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "physics2d.collide: masses must be positive (got m1={m1}, m2={m2})"
-            ),
+            message: format!("physics2d.collide: masses must be positive (got m1={m1}, m2={m2})"),
             help: Some("use a large mass to approximate an immovable body".to_string()),
         });
     }
@@ -5506,7 +5473,9 @@ fn net_set_mode(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 #[cfg(not(target_arch = "wasm32"))]
 fn net_mode(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "net.mode")?;
-    Ok(Value::from_string(crate::rollback::mode().as_str().to_string()))
+    Ok(Value::from_string(
+        crate::rollback::mode().as_str().to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------
@@ -5549,20 +5518,17 @@ fn net_try_reconnect(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "net.try_reconnect: timeout_ms must be >= 0 (got {timeout_ms})"
-            ),
+            message: format!("net.try_reconnect: timeout_ms must be >= 0 (got {timeout_ms})"),
             help: None,
         });
     }
-    let ok = crate::net::try_reconnect(peer_id as u8, timeout_ms as u64).map_err(|m| {
-        RuntimeError {
+    let ok =
+        crate::net::try_reconnect(peer_id as u8, timeout_ms as u64).map_err(|m| RuntimeError {
             line: 0,
             col: 0,
             message: m,
             help: None,
-        }
-    })?;
+        })?;
     Ok(Value::from_bool(ok))
 }
 
@@ -5584,9 +5550,7 @@ fn net_disconnect_timeout(_env: &mut Env, args: &[Value]) -> Result<Value, Runti
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "net.disconnect_timeout: seconds must be 1..=600 (got {seconds})"
-            ),
+            message: format!("net.disconnect_timeout: seconds must be 1..=600 (got {seconds})"),
             help: None,
         });
     }
@@ -5613,14 +5577,13 @@ fn net_create_lobby(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
             help: None,
         });
     }
-    let lobby_id = crate::net_steam::create_lobby(&name, max_peers as u32).map_err(|m| {
-        RuntimeError {
+    let lobby_id =
+        crate::net_steam::create_lobby(&name, max_peers as u32).map_err(|m| RuntimeError {
             line: 0,
             col: 0,
             message: m,
             help: None,
-        }
-    })?;
+        })?;
     Ok(Value::from_int(lobby_id as i64))
 }
 
@@ -6630,19 +6593,14 @@ fn apply_save_from_value(value: Value) {
     });
 }
 
-fn save_set_schema_version_impl(
-    _env: &mut Env,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
+fn save_set_schema_version_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "save.set_schema_version")?;
     let v = number(&args[0], "save.set_schema_version.version")? as i64;
     if v < 1 {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "save.set_schema_version: version must be >= 1, got {v}"
-            ),
+            message: format!("save.set_schema_version: version must be >= 1, got {v}"),
             help: Some(
                 "schema versions are monotonically increasing integers; \
                  the unstamped historical layout is v1"
@@ -6654,19 +6612,13 @@ fn save_set_schema_version_impl(
     Ok(Value::NIL)
 }
 
-fn save_schema_version_impl(
-    _env: &mut Env,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
+fn save_schema_version_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "save.schema_version")?;
     let v = SAVE_SCHEMA_VERSION.with(|cell| *cell.borrow());
     Ok(Value::from_int(v))
 }
 
-fn save_loaded_version_impl(
-    _env: &mut Env,
-    args: &[Value],
-) -> Result<Value, RuntimeError> {
+fn save_loaded_version_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "save.loaded_version")?;
     let v = SAVE_LOADED_VERSION.with(|cell| *cell.borrow());
     Ok(match v {
@@ -8479,11 +8431,7 @@ fn install_draw(env: &mut Env) {
     );
     env.set(
         "panel_skinned".to_string(),
-        Value::from_builtin(
-            "panel_skinned",
-            &["at", "size", "skin"],
-            draw_panel_skinned,
-        ),
+        Value::from_builtin("panel_skinned", &["at", "size", "skin"], draw_panel_skinned),
     );
     env.set(
         "stack".to_string(),
@@ -8895,7 +8843,9 @@ fn require_render_2d(env: &Env, name: &str) -> Result<(), RuntimeError> {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("{name}() is a 2D drawing call and needs the 2D runtime (`twec play`)"),
+            message: format!(
+                "{name}() is a 2D drawing call and needs the 2D runtime (`twec play`)"
+            ),
             help: Some(
                 "3D scenes (`twec play3d`) can't use 2D drawing or UI widgets yet; \
                  an in-3D HUD layer is planned (web3d-M3)"
@@ -9905,10 +9855,11 @@ fn nine_slice_handle(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "nine_slice: border must be > 0 pixels (got {border})"
+            message: format!("nine_slice: border must be > 0 pixels (got {border})"),
+            help: Some(
+                "border is the corner / edge width — e.g. `nine_slice(\"ui/panel.png\", 12)`"
+                    .to_string(),
             ),
-            help: Some("border is the corner / edge width — e.g. `nine_slice(\"ui/panel.png\", 12)`".to_string()),
         });
     }
     if crate::bundle::read_asset_bytes(&path).is_err() {
@@ -9951,9 +9902,7 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
                 "panel_skinned: expected a nine_slice skin handle, got {}",
                 skin.type_name()
             ),
-            help: Some(
-                "construct one with `nine_slice(\"ui/panel.png\", 12)`".to_string(),
-            ),
+            help: Some("construct one with `nine_slice(\"ui/panel.png\", 12)`".to_string()),
         });
     }
     let (path, border) = {
@@ -9961,7 +9910,13 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         let o = rc.borrow();
         let path = o
             .get_field("path")
-            .and_then(|v| if v.is_str() { Some(v.as_string()) } else { None })
+            .and_then(|v| {
+                if v.is_str() {
+                    Some(v.as_string())
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| RuntimeError {
                 line: 0,
                 col: 0,
@@ -10017,15 +9972,24 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         //          src_x_offset, src_y_offset, src_w, src_h).
         type NineSliceCell = (f32, f32, f32, f32, f32, f32, f32, f32);
         let cells: [NineSliceCell; 9] = [
-            (0.0,        0.0,        b,            b,            0.0,       0.0,       b,            b),
-            (b,          0.0,        inner_dst_w,  b,            b,         0.0,       inner_src_w,  b),
-            (wf - b,     0.0,        b,            b,            tw - b,    0.0,       b,            b),
-            (0.0,        b,          b,            inner_dst_h,  0.0,       b,         b,            inner_src_h),
-            (b,          b,          inner_dst_w,  inner_dst_h,  b,         b,         inner_src_w,  inner_src_h),
-            (wf - b,     b,          b,            inner_dst_h,  tw - b,    b,         b,            inner_src_h),
-            (0.0,        hf - b,     b,            b,            0.0,       th - b,    b,            b),
-            (b,          hf - b,     inner_dst_w,  b,            b,         th - b,    inner_src_w,  b),
-            (wf - b,     hf - b,     b,            b,            tw - b,    th - b,    b,            b),
+            (0.0, 0.0, b, b, 0.0, 0.0, b, b),
+            (b, 0.0, inner_dst_w, b, b, 0.0, inner_src_w, b),
+            (wf - b, 0.0, b, b, tw - b, 0.0, b, b),
+            (0.0, b, b, inner_dst_h, 0.0, b, b, inner_src_h),
+            (
+                b,
+                b,
+                inner_dst_w,
+                inner_dst_h,
+                b,
+                b,
+                inner_src_w,
+                inner_src_h,
+            ),
+            (wf - b, b, b, inner_dst_h, tw - b, b, b, inner_src_h),
+            (0.0, hf - b, b, b, 0.0, th - b, b, b),
+            (b, hf - b, inner_dst_w, b, b, th - b, inner_src_w, b),
+            (wf - b, hf - b, b, b, tw - b, th - b, b, b),
         ];
         for (dx, dy, dw, dh, sx, sy, sw, sh) in cells {
             macroquad::texture::draw_texture_ex(
@@ -10834,10 +10798,7 @@ pub fn camera2d_tick(env: &mut Env, dt: f64) {
             if let Some((px, py)) = pan_out {
                 o.insert_field(
                     "pos".to_string(),
-                    Value::from_tuple(Rc::new(vec![
-                        Value::from_float(px),
-                        Value::from_float(py),
-                    ])),
+                    Value::from_tuple(Rc::new(vec![Value::from_float(px), Value::from_float(py)])),
                 );
             }
         }
@@ -10890,11 +10851,7 @@ fn install_camera2d(env: &mut Env) {
     );
     c.insert(
         "zoom_to".to_string(),
-        Value::from_builtin(
-            "camera2d.zoom_to",
-            &["value", "duration"],
-            camera2d_zoom_to,
-        ),
+        Value::from_builtin("camera2d.zoom_to", &["value", "duration"], camera2d_zoom_to),
     );
     c.insert(
         "cinematic_pan".to_string(),
@@ -10906,11 +10863,7 @@ fn install_camera2d(env: &mut Env) {
     );
     c.insert(
         "bounds".to_string(),
-        Value::from_builtin(
-            "camera2d.bounds",
-            &["x", "y", "w", "h"],
-            camera2d_bounds,
-        ),
+        Value::from_builtin("camera2d.bounds", &["x", "y", "w", "h"], camera2d_bounds),
     );
     c.insert(
         "clear_bounds".to_string(),
@@ -11084,9 +11037,7 @@ fn camera2d_bounds(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!(
-                "camera2d.bounds: width and height must be >= 0 (got w={w}, h={h})"
-            ),
+            message: format!("camera2d.bounds: width and height must be >= 0 (got w={w}, h={h})"),
             help: None,
         });
     }
@@ -12001,12 +11952,11 @@ fn derive_category(name: &str) -> String {
     }
     match name {
         // Drawing primitives.
-        "rect" | "circle" | "circle_outline" | "line" | "text"
-        | "text_with_font" | "sprite" | "sprite_frame" | "sprite_frame_at" => "draw".into(),
+        "rect" | "circle" | "circle_outline" | "line" | "text" | "text_with_font" | "sprite"
+        | "sprite_frame" | "sprite_frame_at" => "draw".into(),
         // Immediate-mode UI widgets and layout helpers.
-        "button" | "label" | "progress_bar" | "slider" | "checkbox"
-        | "dropdown" | "text_input" | "key_input" | "panel" | "stack"
-        | "flex" | "grid" | "scroll" => "ui".into(),
+        "button" | "label" | "progress_bar" | "slider" | "checkbox" | "dropdown" | "text_input"
+        | "key_input" | "panel" | "stack" | "flex" | "grid" | "scroll" => "ui".into(),
         // Asset loaders.
         "load" | "load_atlas" | "load_font" => "asset".into(),
         // Storage primitives (Phase 8 session 4 bottom layer).
@@ -12020,8 +11970,12 @@ fn derive_category(name: &str) -> String {
         // 3D atoms.
         "vec3" | "cube" | "sphere" | "texture" | "mesh" => "render3d".into(),
         // Tilemap helpers exposed at the top level.
-        "tilemap" | "tilemap_render" | "tilemap_at" | "tilemap_solid_at"
-        | "tilemap_solid_aabb" | "tilemap_aabb_touches" => "tilemap".into(),
+        "tilemap"
+        | "tilemap_render"
+        | "tilemap_at"
+        | "tilemap_solid_at"
+        | "tilemap_solid_aabb"
+        | "tilemap_aabb_touches" => "tilemap".into(),
         // Plain `print` and the math-module shorthands re-exported
         // at the top level.
         "print" => "io".into(),
@@ -12111,7 +12065,11 @@ mod manifest_tests {
     fn manifest_is_sorted_and_deduped() {
         let m = manifest();
         for win in m.windows(2) {
-            assert!(win[0].name < win[1].name, "manifest not sorted at {:?}", win);
+            assert!(
+                win[0].name < win[1].name,
+                "manifest not sorted at {:?}",
+                win
+            );
         }
     }
 
@@ -12120,8 +12078,7 @@ mod manifest_tests {
         // Sanity check: a sampling of builtins from each category
         // must show up. If install() drops one, this catches it.
         let m = manifest();
-        let names: std::collections::HashSet<&str> =
-            m.iter().map(|s| s.name.as_str()).collect();
+        let names: std::collections::HashSet<&str> = m.iter().map(|s| s.name.as_str()).collect();
         for expected in &[
             "print",
             "rect",

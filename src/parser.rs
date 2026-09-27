@@ -848,33 +848,35 @@ impl<'a> Parser<'a> {
                     ),
                 });
             }
-            let cond = (1..=m).fold(None::<Expr>, |acc, k| {
-                let eq = Expr::Binary {
-                    op: BinOp::Eq,
-                    left: Box::new(Expr::Ident {
-                        name: cache_name.clone(),
+            let cond = (1..=m)
+                .fold(None::<Expr>, |acc, k| {
+                    let eq = Expr::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(Expr::Ident {
+                            name: cache_name.clone(),
+                            line: mline,
+                            col: mcol,
+                        }),
+                        right: Box::new(Expr::Int {
+                            value: k,
+                            line: mline,
+                            col: mcol,
+                        }),
                         line: mline,
                         col: mcol,
-                    }),
-                    right: Box::new(Expr::Int {
-                        value: k,
-                        line: mline,
-                        col: mcol,
-                    }),
-                    line: mline,
-                    col: mcol,
-                };
-                match acc {
-                    None => Some(eq),
-                    Some(prev) => Some(Expr::Binary {
-                        op: BinOp::Or,
-                        left: Box::new(prev),
-                        right: Box::new(eq),
-                        line: mline,
-                        col: mcol,
-                    }),
-                }
-            }).expect("at least one branch by construction");
+                    };
+                    match acc {
+                        None => Some(eq),
+                        Some(prev) => Some(Expr::Binary {
+                            op: BinOp::Or,
+                            left: Box::new(prev),
+                            right: Box::new(eq),
+                            line: mline,
+                            col: mcol,
+                        }),
+                    }
+                })
+                .expect("at least one branch by construction");
             out.push(Stmt::If {
                 cond,
                 then_body: body,
@@ -927,7 +929,9 @@ impl<'a> Parser<'a> {
                 line: save_line,
                 col: save_col,
                 message: format!("save block `save {slot_name}:` must have an indented body"),
-                help: Some("indent the `version:` and migration lines under the block header".to_string()),
+                help: Some(
+                    "indent the `version:` and migration lines under the block header".to_string(),
+                ),
             });
         }
         self.bump();
@@ -1031,10 +1035,7 @@ impl<'a> Parser<'a> {
                     return Err(ParseError {
                         line: tok.line,
                         col: tok.col,
-                        message: format!(
-                            "unexpected token in save block: {:?}",
-                            tok.kind
-                        ),
+                        message: format!("unexpected token in save block: {:?}", tok.kind),
                         help: Some(
                             "save blocks (Path B) accept only `version: N` and \
                              `migration from M:` clauses; field declarations defer to v1.1"
@@ -1052,7 +1053,10 @@ impl<'a> Parser<'a> {
             line: save_line,
             col: save_col,
             message: format!("save block `save {slot_name}:` is missing a `version:` line"),
-            help: Some("every save block must declare its current schema version, e.g. `version: 3`".to_string()),
+            help: Some(
+                "every save block must declare its current schema version, e.g. `version: 3`"
+                    .to_string(),
+            ),
         })?;
 
         Ok((v, vline, vcol, migrations))
@@ -1408,7 +1412,11 @@ impl<'a> Parser<'a> {
                             self.bump(); // :
                             self.bump(); // false
                             self.expect_stmt_end()?;
-                            if !self.queue_persistent_state(state_name, pause_tok.line, pause_tok.col) {
+                            if !self.queue_persistent_state(
+                                state_name,
+                                pause_tok.line,
+                                pause_tok.col,
+                            ) {
                                 return Err(ParseError {
                                     line: state_line,
                                     col: state_col,
@@ -2232,8 +2240,12 @@ impl<'a> Parser<'a> {
             // expression distinguishes it from a plain list literal.
             if matches!(self.peek().kind, TokenKind::For) {
                 self.bump(); // `for`
-                let var = self.expect_ident("expected a loop variable after `for` in a list comprehension")?;
-                self.expect(TokenKind::In, "expected `in` after the comprehension variable")?;
+                let var = self
+                    .expect_ident("expected a loop variable after `for` in a list comprehension")?;
+                self.expect(
+                    TokenKind::In,
+                    "expected `in` after the comprehension variable",
+                )?;
                 let iterable = self.parse_expr()?;
                 let condition = if matches!(self.peek().kind, TokenKind::If) {
                     self.bump(); // `if`

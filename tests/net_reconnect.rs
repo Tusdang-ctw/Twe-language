@@ -59,11 +59,10 @@ fn host_detects_client_disconnect_after_timeout() {
     // spawned host thread hasn't bound its socket yet.
     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
     client.set_nonblocking(true).unwrap();
-    let host_addr: std::net::SocketAddr =
-        format!("127.0.0.1:{port}").parse().unwrap();
+    let host_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let mut hello = vec![
         b'T', b'W', 1, // magic + version
-        0,  // MSG_HELLO
+        0, // MSG_HELLO
         0, 0, 0, 0, // session_id (placeholder)
         0, // peer_id
         0, 0, 0, // reserved

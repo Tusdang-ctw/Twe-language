@@ -336,10 +336,7 @@ mod tests {
         // Layer current_weight starts at 0; needs a tick to ramp up.
         tick(1.0);
         let v = duck_scale("sfx", 1.0);
-        assert!(
-            (v - 0.3).abs() < 1e-6,
-            "expected duck to 0.3, got {v}"
-        );
+        assert!((v - 0.3).abs() < 1e-6, "expected duck to 0.3, got {v}");
     }
 
     #[test]

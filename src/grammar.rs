@@ -53,117 +53,282 @@ pub struct Rule {
 /// drift in the most common direction (parser knows something the
 /// grammar doesn't).
 pub const RULES: &[Rule] = &[
-    Rule { name: "program", body: "stmt*" },
-
+    Rule {
+        name: "program",
+        body: "stmt*",
+    },
     // --- statements ---
-    Rule { name: "stmt", body: "let_stmt | var_stmt | if_stmt | on_stmt | decl_stmt \
+    Rule {
+        name: "stmt",
+        body: "let_stmt | var_stmt | if_stmt | on_stmt | decl_stmt \
                                 | function_stmt | return_stmt | while_stmt | for_stmt \
                                 | break_stmt | continue_stmt | spawn_stmt | despawn_stmt \
                                 | wait_stmt | dialogue_stmt | say_stmt | choice_stmt \
-                                | import_stmt | annotated_stmt | transition_stmt | expr_stmt" },
-
-    Rule { name: "let_stmt", body: "'let' IDENT type_annotation? '=' expr NEWLINE" },
-    Rule { name: "var_stmt", body: "'var' IDENT type_annotation? '=' expr NEWLINE" },
-
-    Rule { name: "if_stmt",
-           body: "'if' expr ':' block elif_clause* else_clause?" },
-    Rule { name: "elif_clause", body: "'elif' expr ':' block" },
-    Rule { name: "else_clause", body: "'else' ':' block" },
-
-    Rule { name: "on_stmt",
-           body: "'on' on_event NEWLINE block" },
-    Rule { name: "on_event",
-           body: "IDENT '(' params? ')' \
-                | IDENT '.' IDENT '(' params? ')'" },
-
-    Rule { name: "decl_stmt",
-           body: "decl_kind IDENT extends_clause? ':' decl_body" },
-    Rule { name: "decl_kind",
-           body: "'entity' | 'item' | 'modifier' | 'inventory' | 'scene' \
-                | 'particles' | 'visual'" },
-    Rule { name: "extends_clause", body: "'extends' IDENT" },
-    Rule { name: "decl_body", body: "INDENT decl_member+ DEDENT" },
-    Rule { name: "decl_member",
-           body: "field_decl | function_stmt | state_block | initial_decl" },
-    Rule { name: "field_decl",
-           body: "('let' | 'var') IDENT type_annotation? '=' expr NEWLINE" },
-    Rule { name: "state_block",
-           body: "'state' IDENT ':' INDENT state_member+ DEDENT" },
-    Rule { name: "state_member",
-           body: "on_stmt | every_clock | function_stmt" },
-    Rule { name: "every_clock", body: "'every' expr ':' block" },
-    Rule { name: "initial_decl", body: "'initial' ':' IDENT NEWLINE" },
-
-    Rule { name: "function_stmt",
-           body: "'function' IDENT '(' params? ')' return_annotation? ':' block" },
-    Rule { name: "return_stmt", body: "'return' expr? NEWLINE" },
-
-    Rule { name: "while_stmt", body: "'while' expr ':' block" },
-    Rule { name: "for_stmt", body: "'for' IDENT 'in' expr ':' block" },
-    Rule { name: "break_stmt", body: "'break' NEWLINE" },
-    Rule { name: "continue_stmt", body: "'continue' NEWLINE" },
-
-    Rule { name: "spawn_stmt", body: "'spawn' IDENT ('at' expr)? NEWLINE" },
-    Rule { name: "despawn_stmt", body: "'despawn' expr NEWLINE" },
-    Rule { name: "wait_stmt", body: "'wait' expr NEWLINE" },
-    Rule { name: "transition_stmt", body: "'-' '>' IDENT NEWLINE" },
-
-    Rule { name: "dialogue_stmt", body: "'dialogue' IDENT ':' INDENT dialogue_member+ DEDENT" },
-    Rule { name: "dialogue_member", body: "actor_decl | say_stmt | choice_stmt" },
-    Rule { name: "actor_decl", body: "'actor' IDENT '=' expr NEWLINE" },
-    Rule { name: "say_stmt", body: "'say' (IDENT ':')? expr NEWLINE" },
-    Rule { name: "choice_stmt",
-           body: "'choice' ':' INDENT choice_branch+ DEDENT" },
-    Rule { name: "choice_branch", body: "STRING ':' (block | expr NEWLINE)" },
-
-    Rule { name: "import_stmt", body: "'import' STRING ('as' IDENT)? NEWLINE" },
-
-    Rule { name: "annotated_stmt", body: "'@' IDENT ('(' arg_list? ')')? NEWLINE+ stmt" },
-
-    Rule { name: "expr_stmt", body: "expr (assign_op expr)? NEWLINE" },
-    Rule { name: "assign_op", body: "'=' | '+=' | '-=' | '*=' | '/='" },
-
-    Rule { name: "block", body: "INDENT stmt+ DEDENT" },
-    Rule { name: "params", body: "param (',' param)*" },
-    Rule { name: "param", body: "IDENT type_annotation?" },
-    Rule { name: "type_annotation", body: "':' type_expr" },
-    Rule { name: "return_annotation", body: "'->' type_expr" },
-    Rule { name: "type_expr", body: "IDENT ('|' IDENT)* '?'?" },
-
+                                | import_stmt | annotated_stmt | transition_stmt | expr_stmt",
+    },
+    Rule {
+        name: "let_stmt",
+        body: "'let' IDENT type_annotation? '=' expr NEWLINE",
+    },
+    Rule {
+        name: "var_stmt",
+        body: "'var' IDENT type_annotation? '=' expr NEWLINE",
+    },
+    Rule {
+        name: "if_stmt",
+        body: "'if' expr ':' block elif_clause* else_clause?",
+    },
+    Rule {
+        name: "elif_clause",
+        body: "'elif' expr ':' block",
+    },
+    Rule {
+        name: "else_clause",
+        body: "'else' ':' block",
+    },
+    Rule {
+        name: "on_stmt",
+        body: "'on' on_event NEWLINE block",
+    },
+    Rule {
+        name: "on_event",
+        body: "IDENT '(' params? ')' \
+                | IDENT '.' IDENT '(' params? ')'",
+    },
+    Rule {
+        name: "decl_stmt",
+        body: "decl_kind IDENT extends_clause? ':' decl_body",
+    },
+    Rule {
+        name: "decl_kind",
+        body: "'entity' | 'item' | 'modifier' | 'inventory' | 'scene' \
+                | 'particles' | 'visual'",
+    },
+    Rule {
+        name: "extends_clause",
+        body: "'extends' IDENT",
+    },
+    Rule {
+        name: "decl_body",
+        body: "INDENT decl_member+ DEDENT",
+    },
+    Rule {
+        name: "decl_member",
+        body: "field_decl | function_stmt | state_block | initial_decl",
+    },
+    Rule {
+        name: "field_decl",
+        body: "('let' | 'var') IDENT type_annotation? '=' expr NEWLINE",
+    },
+    Rule {
+        name: "state_block",
+        body: "'state' IDENT ':' INDENT state_member+ DEDENT",
+    },
+    Rule {
+        name: "state_member",
+        body: "on_stmt | every_clock | function_stmt",
+    },
+    Rule {
+        name: "every_clock",
+        body: "'every' expr ':' block",
+    },
+    Rule {
+        name: "initial_decl",
+        body: "'initial' ':' IDENT NEWLINE",
+    },
+    Rule {
+        name: "function_stmt",
+        body: "'function' IDENT '(' params? ')' return_annotation? ':' block",
+    },
+    Rule {
+        name: "return_stmt",
+        body: "'return' expr? NEWLINE",
+    },
+    Rule {
+        name: "while_stmt",
+        body: "'while' expr ':' block",
+    },
+    Rule {
+        name: "for_stmt",
+        body: "'for' IDENT 'in' expr ':' block",
+    },
+    Rule {
+        name: "break_stmt",
+        body: "'break' NEWLINE",
+    },
+    Rule {
+        name: "continue_stmt",
+        body: "'continue' NEWLINE",
+    },
+    Rule {
+        name: "spawn_stmt",
+        body: "'spawn' IDENT ('at' expr)? NEWLINE",
+    },
+    Rule {
+        name: "despawn_stmt",
+        body: "'despawn' expr NEWLINE",
+    },
+    Rule {
+        name: "wait_stmt",
+        body: "'wait' expr NEWLINE",
+    },
+    Rule {
+        name: "transition_stmt",
+        body: "'-' '>' IDENT NEWLINE",
+    },
+    Rule {
+        name: "dialogue_stmt",
+        body: "'dialogue' IDENT ':' INDENT dialogue_member+ DEDENT",
+    },
+    Rule {
+        name: "dialogue_member",
+        body: "actor_decl | say_stmt | choice_stmt",
+    },
+    Rule {
+        name: "actor_decl",
+        body: "'actor' IDENT '=' expr NEWLINE",
+    },
+    Rule {
+        name: "say_stmt",
+        body: "'say' (IDENT ':')? expr NEWLINE",
+    },
+    Rule {
+        name: "choice_stmt",
+        body: "'choice' ':' INDENT choice_branch+ DEDENT",
+    },
+    Rule {
+        name: "choice_branch",
+        body: "STRING ':' (block | expr NEWLINE)",
+    },
+    Rule {
+        name: "import_stmt",
+        body: "'import' STRING ('as' IDENT)? NEWLINE",
+    },
+    Rule {
+        name: "annotated_stmt",
+        body: "'@' IDENT ('(' arg_list? ')')? NEWLINE+ stmt",
+    },
+    Rule {
+        name: "expr_stmt",
+        body: "expr (assign_op expr)? NEWLINE",
+    },
+    Rule {
+        name: "assign_op",
+        body: "'=' | '+=' | '-=' | '*=' | '/='",
+    },
+    Rule {
+        name: "block",
+        body: "INDENT stmt+ DEDENT",
+    },
+    Rule {
+        name: "params",
+        body: "param (',' param)*",
+    },
+    Rule {
+        name: "param",
+        body: "IDENT type_annotation?",
+    },
+    Rule {
+        name: "type_annotation",
+        body: "':' type_expr",
+    },
+    Rule {
+        name: "return_annotation",
+        body: "'->' type_expr",
+    },
+    Rule {
+        name: "type_expr",
+        body: "IDENT ('|' IDENT)* '?'?",
+    },
     // --- expressions, lowest precedence first ---
-    Rule { name: "expr", body: "or_expr" },
-    Rule { name: "or_expr", body: "and_expr ('or' and_expr)*" },
-    Rule { name: "and_expr", body: "not_expr ('and' not_expr)*" },
-    Rule { name: "not_expr", body: "'not' not_expr | compare_expr" },
-    Rule { name: "compare_expr",
-           body: "sum_expr (compare_op sum_expr)*" },
-    Rule { name: "compare_op",
-           body: "'==' | '!=' | '<' | '<=' | '>' | '>='" },
-    Rule { name: "sum_expr", body: "term_expr (('+' | '-') term_expr)*" },
-    Rule { name: "term_expr", body: "factor_expr (('*' | '/' | '%') factor_expr)*" },
-    Rule { name: "factor_expr", body: "('-' | '+') factor_expr | postfix_expr" },
-    Rule { name: "postfix_expr",
-           body: "primary_expr postfix_op*" },
-    Rule { name: "postfix_op",
-           body: "'.' IDENT \
+    Rule {
+        name: "expr",
+        body: "or_expr",
+    },
+    Rule {
+        name: "or_expr",
+        body: "and_expr ('or' and_expr)*",
+    },
+    Rule {
+        name: "and_expr",
+        body: "not_expr ('and' not_expr)*",
+    },
+    Rule {
+        name: "not_expr",
+        body: "'not' not_expr | compare_expr",
+    },
+    Rule {
+        name: "compare_expr",
+        body: "sum_expr (compare_op sum_expr)*",
+    },
+    Rule {
+        name: "compare_op",
+        body: "'==' | '!=' | '<' | '<=' | '>' | '>='",
+    },
+    Rule {
+        name: "sum_expr",
+        body: "term_expr (('+' | '-') term_expr)*",
+    },
+    Rule {
+        name: "term_expr",
+        body: "factor_expr (('*' | '/' | '%') factor_expr)*",
+    },
+    Rule {
+        name: "factor_expr",
+        body: "('-' | '+') factor_expr | postfix_expr",
+    },
+    Rule {
+        name: "postfix_expr",
+        body: "primary_expr postfix_op*",
+    },
+    Rule {
+        name: "postfix_op",
+        body: "'.' IDENT \
                 | '(' arg_list? ')' \
-                | '[' expr ']'" },
-    Rule { name: "primary_expr",
-           body: "literal | IDENT | 'self' | tuple_expr | list_expr \
-                | range_expr | if_expr | '(' expr ')'" },
-    Rule { name: "if_expr", body: "'if' expr ':' expr 'else' ':' expr" },
-    Rule { name: "tuple_expr", body: "'(' expr (',' expr)+ ')'" },
-    Rule { name: "list_expr", body: "'[' (expr (',' expr)*)? ']'" },
-    Rule { name: "range_expr", body: "INT '..' '='? INT" },
-
-    Rule { name: "arg_list", body: "arg (',' arg)*" },
-    Rule { name: "arg", body: "IDENT ':' expr | expr" },
-
+                | '[' expr ']'",
+    },
+    Rule {
+        name: "primary_expr",
+        body: "literal | IDENT | 'self' | tuple_expr | list_expr \
+                | range_expr | if_expr | '(' expr ')'",
+    },
+    Rule {
+        name: "if_expr",
+        body: "'if' expr ':' expr 'else' ':' expr",
+    },
+    Rule {
+        name: "tuple_expr",
+        body: "'(' expr (',' expr)+ ')'",
+    },
+    Rule {
+        name: "list_expr",
+        body: "'[' (expr (',' expr)*)? ']'",
+    },
+    Rule {
+        name: "range_expr",
+        body: "INT '..' '='? INT",
+    },
+    Rule {
+        name: "arg_list",
+        body: "arg (',' arg)*",
+    },
+    Rule {
+        name: "arg",
+        body: "IDENT ':' expr | expr",
+    },
     // --- atoms ---
-    Rule { name: "literal",
-           body: "INT | FLOAT | STRING | 'true' | 'false' | 'nil' | quantity_lit | percent_lit" },
-    Rule { name: "quantity_lit", body: "(INT | FLOAT) UNIT" },
-    Rule { name: "percent_lit", body: "(INT | FLOAT) '%'" },
+    Rule {
+        name: "literal",
+        body: "INT | FLOAT | STRING | 'true' | 'false' | 'nil' | quantity_lit | percent_lit",
+    },
+    Rule {
+        name: "quantity_lit",
+        body: "(INT | FLOAT) UNIT",
+    },
+    Rule {
+        name: "percent_lit",
+        body: "(INT | FLOAT) '%'",
+    },
 ];
 
 /// All keywords recognized by the lexer. Mirrors `src/lexer.rs:1010-1046`;
@@ -171,19 +336,50 @@ pub const RULES: &[Rule] = &[
 /// Also enumerated as terminals in the JSON / GBNF outputs so a constrained
 /// decoder knows the legal keyword vocabulary.
 pub const KEYWORDS: &[&str] = &[
-    "let", "var", "on", "if", "elif", "else",
-    "and", "or", "not",
-    "entity", "item", "modifier", "inventory", "scene", "particles", "visual",
-    "state", "every", "extends", "self",
-    "function", "return", "while", "for", "in", "break", "continue",
-    "spawn", "despawn", "wait",
-    "dialogue", "say", "choice", "actor",
+    "let",
+    "var",
+    "on",
+    "if",
+    "elif",
+    "else",
+    "and",
+    "or",
+    "not",
+    "entity",
+    "item",
+    "modifier",
+    "inventory",
+    "scene",
+    "particles",
+    "visual",
+    "state",
+    "every",
+    "extends",
+    "self",
+    "function",
+    "return",
+    "while",
+    "for",
+    "in",
+    "break",
+    "continue",
+    "spawn",
+    "despawn",
+    "wait",
+    "dialogue",
+    "say",
+    "choice",
+    "actor",
     "import",
     // Literal-position keywords that aren't TokenKind variants but appear
     // in the grammar (recognised as Ident at lex time, contextual-keyword
     // checked in the parser).
-    "true", "false", "nil",
-    "as", "at", "initial",
+    "true",
+    "false",
+    "nil",
+    "as",
+    "at",
+    "initial",
 ];
 
 /// Output format for the grammar export.
@@ -411,7 +607,9 @@ fn render_gbnf(rules: &[Rule]) -> String {
     out.push_str("int         ::= [0-9]+\n");
     out.push_str("float       ::= [0-9]+ \".\" [0-9]+\n");
     out.push_str("string      ::= \"\\\"\" ([^\"\\\\\\n] | \"\\\\\" .)* \"\\\"\"\n");
-    out.push_str("unit        ::= \"s\" | \"ms\" | \"min\" | \"h\" | \"m\" | \"cm\" | \"mm\" | \"km\"\n");
+    out.push_str(
+        "unit        ::= \"s\" | \"ms\" | \"min\" | \"h\" | \"m\" | \"cm\" | \"mm\" | \"km\"\n",
+    );
     out.push_str("              | \"px\" | \"kg\" | \"g\" | \"mg\" | \"deg\" | \"rad\"\n");
     out.push_str("newline     ::= \"\\n\"\n");
     out.push_str("# Twe is layout-sensitive; INDENT / DEDENT are produced by the lexer.\n");
@@ -424,7 +622,9 @@ fn render_gbnf(rules: &[Rule]) -> String {
     out.push_str("# productions above.\n");
     out.push_str("# ");
     for (i, kw) in KEYWORDS.iter().enumerate() {
-        if i > 0 { out.push(' '); }
+        if i > 0 {
+            out.push(' ');
+        }
         out.push_str(kw);
     }
     out.push('\n');
@@ -486,7 +686,9 @@ fn render_json(rules: &[Rule]) -> String {
     out.push_str(",\"start\":\"program\"");
     out.push_str(",\"keywords\":[");
     for (i, kw) in KEYWORDS.iter().enumerate() {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         json_str(&mut out, kw);
     }
     out.push(']');
@@ -494,17 +696,23 @@ fn render_json(rules: &[Rule]) -> String {
     out.push_str(json_token_classes());
     out.push_str(",\"productions\":[");
     for (i, rule) in rules.iter().enumerate() {
-        if i > 0 { out.push(','); }
+        if i > 0 {
+            out.push(',');
+        }
         out.push('{');
         out.push_str("\"name\":");
         json_str(&mut out, rule.name);
         out.push_str(",\"alternatives\":[");
         let alts = parse_rule(rule.body);
         for (j, seq) in alts.iter().enumerate() {
-            if j > 0 { out.push(','); }
+            if j > 0 {
+                out.push(',');
+            }
             out.push('[');
             for (k, item) in seq.iter().enumerate() {
-                if k > 0 { out.push(','); }
+                if k > 0 {
+                    out.push(',');
+                }
                 json_item(&mut out, item);
             }
             out.push(']');
@@ -551,10 +759,14 @@ fn json_item(out: &mut String, item: &Item) {
         Item::Group(alts) => {
             out.push_str("{\"kind\":\"group\",\"alternatives\":[");
             for (i, seq) in alts.iter().enumerate() {
-                if i > 0 { out.push(','); }
+                if i > 0 {
+                    out.push(',');
+                }
                 out.push('[');
                 for (j, it) in seq.iter().enumerate() {
-                    if j > 0 { out.push(','); }
+                    if j > 0 {
+                        out.push(',');
+                    }
                     json_item(out, it);
                 }
                 out.push(']');

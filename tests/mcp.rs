@@ -72,7 +72,10 @@ fn tools_list_describes_every_canonical_tool() {
     // Every tool descriptor must carry a non-empty description and
     // a JSON-Schema-shaped inputSchema.
     for tool in tools {
-        let desc = tool.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = tool
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         assert!(!desc.is_empty(), "tool missing description: {tool:?}");
         let schema = tool.get("inputSchema").expect("tool missing inputSchema");
         assert_eq!(
@@ -132,7 +135,9 @@ fn verify_apply_patch_round_trip_closes_the_loop() {
         .and_then(|v| v.as_array())
         .unwrap();
     assert!(!diags.is_empty(), "expected at least one diagnostic");
-    let fix = diags[0].get("fix").expect("first diagnostic must carry fix");
+    let fix = diags[0]
+        .get("fix")
+        .expect("first diagnostic must carry fix");
     let edits = fix.get("edits").and_then(|v| v.as_array()).unwrap();
     assert!(!edits.is_empty());
     let edits_text = json::to_string(&twec::json::Value::Array(edits.clone()));
@@ -165,7 +170,8 @@ fn verify_apply_patch_round_trip_closes_the_loop() {
 
 #[test]
 fn stdlib_lookup_returns_null_for_unknown_name() {
-    let body = "{\"name\":\"stdlib_lookup\",\"arguments\":{\"name\":\"definitely_not_a_real_builtin\"}}";
+    let body =
+        "{\"name\":\"stdlib_lookup\",\"arguments\":{\"name\":\"definitely_not_a_real_builtin\"}}";
     let reply = rpc("tools/call", j(body));
     let inner = unwrap_text_payload(&reply);
     // Wrapped null payload comes through as the string `null`.

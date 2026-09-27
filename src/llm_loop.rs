@@ -397,7 +397,8 @@ mod tests {
 
     #[test]
     fn extract_handles_twe_fenced_block() {
-        let reply = "Sure, here's the program:\n\n```twe\nlet x = 1\nlet y = 2\n```\n\nHope that helps!";
+        let reply =
+            "Sure, here's the program:\n\n```twe\nlet x = 1\nlet y = 2\n```\n\nHope that helps!";
         assert_eq!(extract_twe_source(reply), "let x = 1\nlet y = 2");
     }
 

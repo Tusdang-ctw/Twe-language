@@ -87,8 +87,23 @@ fn console_controller(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     let mut fields: HashMap<String, Value> = HashMap::new();
     if i == 0 {
         // Read from Phase 9's gamepad ambient.
-        let (a, b, x, y, lb, rb, lt_button, rt_button, start, select, dup, ddown, dleft, dright,
-             connected) = read_gamepad_buttons(env);
+        let (
+            a,
+            b,
+            x,
+            y,
+            lb,
+            rb,
+            lt_button,
+            rt_button,
+            start,
+            select,
+            dup,
+            ddown,
+            dleft,
+            dright,
+            connected,
+        ) = read_gamepad_buttons(env);
         let (lx, ly, rx, ry, lt_axis, rt_axis) = read_gamepad_axes(env);
         fields.insert("connected".to_string(), Value::from_bool(connected));
         fields.insert("a".to_string(), Value::from_bool(a));
@@ -220,8 +235,8 @@ fn read_gamepad_buttons(env: &Env) -> GamepadButtonState {
         Some(v) if v.is_object() => *v,
         _ => {
             return (
-                false, false, false, false, false, false, false, false, false, false, false,
-                false, false, false, false,
+                false, false, false, false, false, false, false, false, false, false, false, false,
+                false, false, false,
             )
         }
     };
@@ -477,10 +492,7 @@ fn cloud_save_save(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     {
         let _ = crate::steam::cloud_save(
             env,
-            &[
-                Value::from_string(slot),
-                Value::from_string(payload),
-            ],
+            &[Value::from_string(slot), Value::from_string(payload)],
         );
     }
     // No cloud backend in the browser build.
@@ -577,11 +589,7 @@ pub(super) fn install_mmo(env: &mut Env) {
     );
     m.insert(
         "broadcast".to_string(),
-        Value::from_builtin(
-            "mmo.broadcast",
-            &["channel", "payload"],
-            mmo_broadcast,
-        ),
+        Value::from_builtin("mmo.broadcast", &["channel", "payload"], mmo_broadcast),
     );
     m.insert(
         "next_event".to_string(),
@@ -659,7 +667,8 @@ fn mmo_broadcast(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     // Sender id is "local" today; future runtime fills in the real
     // SteamID / SessionID of the sending peer.
     MMO_EVENTS.with(|q| {
-        q.borrow_mut().push_back(("local".to_string(), channel, payload));
+        q.borrow_mut()
+            .push_back(("local".to_string(), channel, payload));
     });
     Ok(Value::NIL)
 }
@@ -698,9 +707,8 @@ fn mmo_entities_near(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     let r = as_f64(&args[3], "mmo.entities_near")?;
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let ids = crate::spatial::with_world(|w| {
-            w.query_radius(x as f32, y as f32, z as f32, r as f32)
-        });
+        let ids =
+            crate::spatial::with_world(|w| w.query_radius(x as f32, y as f32, z as f32, r as f32));
         let items: Vec<Value> = ids
             .into_iter()
             .map(|id| Value::from_int(id as i64))
@@ -718,11 +726,7 @@ fn mmo_entities_near(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
 /// this on shard handoff.
 fn mmo_shard_id(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "mmo.shard_id")?;
-    let id = MMO_SHARD_ID.with(|s| {
-        s.borrow()
-            .clone()
-            .unwrap_or_else(|| "default".to_string())
-    });
+    let id = MMO_SHARD_ID.with(|s| s.borrow().clone().unwrap_or_else(|| "default".to_string()));
     Ok(Value::from_string(id))
 }
 
@@ -759,11 +763,7 @@ pub(super) fn install_workshop(env: &mut Env) {
     );
     w.insert(
         "list_subscribed".to_string(),
-        Value::from_builtin(
-            "workshop.list_subscribed",
-            &[],
-            workshop_list_subscribed,
-        ),
+        Value::from_builtin("workshop.list_subscribed", &[], workshop_list_subscribed),
     );
     w.insert(
         "install".to_string(),
@@ -796,7 +796,6 @@ fn workshop_install(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     Ok(Value::from_bool(false))
 }
 
-
 // ---------------------------------------------------------------
 // Phase 37: rollback netcode builtins.
 // ---------------------------------------------------------------
@@ -811,11 +810,7 @@ pub(super) fn install_rollback(env: &mut Env) {
     let mut r = HashMap::new();
     r.insert(
         "snapshot".to_string(),
-        Value::from_builtin(
-            "rollback.snapshot",
-            &["name", "value"],
-            rollback_snapshot,
-        ),
+        Value::from_builtin("rollback.snapshot", &["name", "value"], rollback_snapshot),
     );
     r.insert(
         "restore".to_string(),
@@ -823,11 +818,7 @@ pub(super) fn install_rollback(env: &mut Env) {
     );
     r.insert(
         "advance_tick".to_string(),
-        Value::from_builtin(
-            "rollback.advance_tick",
-            &["tick"],
-            rollback_advance_tick,
-        ),
+        Value::from_builtin("rollback.advance_tick", &["tick"], rollback_advance_tick),
     );
     r.insert(
         "current_tick".to_string(),
@@ -835,11 +826,7 @@ pub(super) fn install_rollback(env: &mut Env) {
     );
     r.insert(
         "discard_after".to_string(),
-        Value::from_builtin(
-            "rollback.discard_after",
-            &["tick"],
-            rollback_discard_after,
-        ),
+        Value::from_builtin("rollback.discard_after", &["tick"], rollback_discard_after),
     );
     r.insert(
         "set_input_prediction".to_string(),
@@ -851,19 +838,11 @@ pub(super) fn install_rollback(env: &mut Env) {
     );
     r.insert(
         "input_prediction".to_string(),
-        Value::from_builtin(
-            "rollback.input_prediction",
-            &[],
-            rollback_input_prediction,
-        ),
+        Value::from_builtin("rollback.input_prediction", &[], rollback_input_prediction),
     );
     r.insert(
         "set_smoothing".to_string(),
-        Value::from_builtin(
-            "rollback.set_smoothing",
-            &["on"],
-            rollback_set_smoothing,
-        ),
+        Value::from_builtin("rollback.set_smoothing", &["on"], rollback_set_smoothing),
     );
     r.insert(
         "smoothing".to_string(),
@@ -893,7 +872,6 @@ pub(super) fn install_rollback(env: &mut Env) {
         }))),
     );
 }
-
 
 #[cfg(not(target_arch = "wasm32"))]
 fn rollback_snapshot(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -1032,16 +1010,12 @@ fn rollback_stats(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         "last_correction_frames".to_string(),
         Value::from_int(s.last_correction_frames as i64),
     );
-    fields.insert(
-        "ring_len".to_string(),
-        Value::from_int(s.ring_len as i64),
-    );
+    fields.insert("ring_len".to_string(), Value::from_int(s.ring_len as i64));
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
         fields,
         kind: "rollback_stats",
     }))))
 }
-
 
 /// Phase 32: `world.*` namespace — spatial partitioning + chunked
 /// streaming for open-world 3D. Sessions 2 and 3 ship the spatial
@@ -1086,7 +1060,11 @@ pub(super) fn install_world(env: &mut Env) {
     );
     w.insert(
         "spatial_build_static".to_string(),
-        Value::from_builtin("world.spatial_build_static", &[], world_spatial_build_static),
+        Value::from_builtin(
+            "world.spatial_build_static",
+            &[],
+            world_spatial_build_static,
+        ),
     );
     w.insert(
         "spatial_query_radius".to_string(),
@@ -1107,11 +1085,7 @@ pub(super) fn install_world(env: &mut Env) {
     // ---- Phase 32 session 3: chunked streaming ----
     w.insert(
         "set_chunk_size".to_string(),
-        Value::from_builtin(
-            "world.set_chunk_size",
-            &["meters"],
-            world_set_chunk_size,
-        ),
+        Value::from_builtin("world.set_chunk_size", &["meters"], world_set_chunk_size),
     );
     w.insert(
         "set_stream_radius".to_string(),
@@ -1226,11 +1200,7 @@ pub(super) fn install_world(env: &mut Env) {
     );
     w.insert(
         "instance_count".to_string(),
-        Value::from_builtin(
-            "world.instance_count",
-            &["asset"],
-            world_instance_count,
-        ),
+        Value::from_builtin("world.instance_count", &["asset"], world_instance_count),
     );
     w.insert(
         "instance_total".to_string(),

@@ -289,7 +289,10 @@ impl Inferer {
                 if let Some(ann) = ret {
                     self.try_unify(&ret_var, ann, *line, *col, "return annotation");
                 }
-                self.bind(name.clone(), Type::func(param_vars.clone(), ret_var.clone()));
+                self.bind(
+                    name.clone(),
+                    Type::func(param_vars.clone(), ret_var.clone()),
+                );
                 presig.insert(name.clone(), (param_vars, ret_var));
             }
         }
@@ -1452,7 +1455,11 @@ mod tests {
              let l = Line()\n\
              print(mag(l))",
         );
-        assert_eq!(errors.len(), 1, "expected exactly one error, got: {errors:?}");
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
         assert!(
             errors[0].message.contains("call argument"),
             "expected a call-argument mismatch, got: {errors:?}"
@@ -1481,13 +1488,15 @@ mod tests {
         // Principle 3: `+` / `-` on incompatible units is a strict error.
         let errs = strict_errors("# strict\nlet x = 5m + 3s");
         assert!(
-            errs.iter().any(|e| e.message.contains("dimensional mismatch")),
+            errs.iter()
+                .any(|e| e.message.contains("dimensional mismatch")),
             "expected a dimensional mismatch, got: {errs:?}"
         );
         // Subtraction too.
         let errs = strict_errors("# strict\nlet x = 5m - 3s");
         assert!(
-            errs.iter().any(|e| e.message.contains("dimensional mismatch")),
+            errs.iter()
+                .any(|e| e.message.contains("dimensional mismatch")),
             "expected a dimensional mismatch, got: {errs:?}"
         );
     }

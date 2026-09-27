@@ -242,10 +242,7 @@ impl StreamingState {
             self.unloading.insert(*c);
             self.loaded.remove(c);
         }
-        StreamingStep {
-            to_load,
-            to_unload,
-        }
+        StreamingStep { to_load, to_unload }
     }
 }
 

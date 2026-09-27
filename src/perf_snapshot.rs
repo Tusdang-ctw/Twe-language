@@ -65,10 +65,7 @@ impl PerfSnapshot {
     pub fn to_json(&self) -> String {
         let mut bench_obj: BTreeMap<String, Value> = BTreeMap::new();
         for (k, v) in &self.benches {
-            bench_obj.insert(
-                k.clone(),
-                obj([("median_ns", Value::Float(v.median_ns))]),
-            );
+            bench_obj.insert(k.clone(), obj([("median_ns", Value::Float(v.median_ns))]));
         }
         let body = obj([
             ("twec_version", Value::Str(self.twec_version.clone())),
@@ -85,10 +82,10 @@ impl PerfSnapshot {
             .and_then(|x| x.as_str())
             .ok_or("perf snapshot: missing `twec_version`")?
             .to_string();
-        let captured_at_unix = v
-            .get("captured_at_unix")
-            .and_then(|x| x.as_i64())
-            .ok_or("perf snapshot: missing `captured_at_unix`")? as u64;
+        let captured_at_unix =
+            v.get("captured_at_unix")
+                .and_then(|x| x.as_i64())
+                .ok_or("perf snapshot: missing `captured_at_unix`")? as u64;
         let benches_v = v.get("benches").ok_or("perf snapshot: missing `benches`")?;
         let benches_map = match benches_v {
             Value::Object(m) => m,
@@ -296,7 +293,11 @@ impl DiffResult {
             out.push_str("):\n");
             // Sort by descending pct so regressions surface first.
             let mut sorted = self.rows.clone();
-            sorted.sort_by(|a, b| b.pct.partial_cmp(&a.pct).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| {
+                b.pct
+                    .partial_cmp(&a.pct)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             for r in &sorted {
                 let tag = if r.pct > threshold_pct {
                     "REGRESS"
@@ -358,10 +359,7 @@ mod tests {
     fn snap(entries: &[(&str, f64)]) -> PerfSnapshot {
         let mut benches = BTreeMap::new();
         for (k, v) in entries {
-            benches.insert(
-                (*k).to_string(),
-                BenchEntry { median_ns: *v },
-            );
+            benches.insert((*k).to_string(), BenchEntry { median_ns: *v });
         }
         PerfSnapshot {
             twec_version: "test".into(),
@@ -376,7 +374,10 @@ mod tests {
         let current = snap(&[("sum_loop/bytecode", 110.0)]); // +10%
         let d = diff(&baseline, &current);
         assert!(d.regressed(5.0), "10% regression should trip 5% threshold");
-        assert!(!d.regressed(15.0), "10% regression should NOT trip 15% threshold");
+        assert!(
+            !d.regressed(15.0),
+            "10% regression should NOT trip 15% threshold"
+        );
     }
 
     #[test]
@@ -391,10 +392,7 @@ mod tests {
 
     #[test]
     fn snapshot_json_round_trips() {
-        let original = snap(&[
-            ("a/bytecode", 100.5),
-            ("b/tree", 200.0),
-        ]);
+        let original = snap(&[("a/bytecode", 100.5), ("b/tree", 200.0)]);
         let body = original.to_json();
         let parsed = PerfSnapshot::from_json(&body).expect("parse");
         assert_eq!(parsed.benches.len(), 2);
@@ -404,14 +402,8 @@ mod tests {
 
     #[test]
     fn diff_reports_only_in_baseline_or_current() {
-        let baseline = snap(&[
-            ("a", 100.0),
-            ("shared", 200.0),
-        ]);
-        let current = snap(&[
-            ("shared", 210.0),
-            ("c", 50.0),
-        ]);
+        let baseline = snap(&[("a", 100.0), ("shared", 200.0)]);
+        let current = snap(&[("shared", 210.0), ("c", 50.0)]);
         let d = diff(&baseline, &current);
         assert_eq!(d.only_baseline, vec!["a".to_string()]);
         assert_eq!(d.only_current, vec!["c".to_string()]);
@@ -421,11 +413,7 @@ mod tests {
 
     #[test]
     fn format_human_marks_regress_and_faster() {
-        let baseline = snap(&[
-            ("regressed", 100.0),
-            ("improved", 100.0),
-            ("noise", 100.0),
-        ]);
+        let baseline = snap(&[("regressed", 100.0), ("improved", 100.0), ("noise", 100.0)]);
         let current = snap(&[
             ("regressed", 200.0), // +100%
             ("improved", 50.0),   // -50%

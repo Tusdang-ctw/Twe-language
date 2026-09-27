@@ -19,17 +19,24 @@
 use twec::corpus::{scan_corpus, to_json, CorpusEntry};
 
 const ALLOWED_CATEGORIES: &[&str] = &[
-    "2d", "3d", "ui", "audio", "input", "net", "visual", "tilemap", "save",
-    "dialogue", "lifecycle", "core",
+    "2d",
+    "3d",
+    "ui",
+    "audio",
+    "input",
+    "net",
+    "visual",
+    "tilemap",
+    "save",
+    "dialogue",
+    "lifecycle",
+    "core",
     // Phase 39 mobile-specific examples (touch + safe-area + joystick).
     "mobile",
 ];
 
 const ALLOWED_DIFFICULTIES: &[&str] = &[
-    "trivial",
-    "small",
-    "medium",
-    "large",
+    "trivial", "small", "medium", "large",
     // Phase 36 + 37 introduced multi-system multiplayer examples that
     // are a tier above `large` in cognitive load (lockstep determinism
     // + rollback + lobbies).
@@ -47,10 +54,7 @@ fn every_example_has_complete_header() {
     let mut incomplete: Vec<(String, Vec<&'static str>)> = Vec::new();
     for e in &entries {
         if !e.is_complete() {
-            incomplete.push((
-                e.path.display().to_string(),
-                e.missing_fields(),
-            ));
+            incomplete.push((e.path.display().to_string(), e.missing_fields()));
         }
     }
     assert!(
@@ -63,8 +67,7 @@ fn every_example_has_complete_header() {
 #[test]
 fn no_duplicate_tasks() {
     let entries = scan_corpus(std::path::Path::new("examples"));
-    let mut seen: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for e in &entries {
         if let Some(t) = &e.task {
             if let Some(prev) = seen.insert(t.clone(), e.path.display().to_string()) {
@@ -81,8 +84,7 @@ fn no_duplicate_tasks() {
 #[test]
 fn every_category_is_in_vocabulary() {
     let entries = scan_corpus(std::path::Path::new("examples"));
-    let allowed: std::collections::HashSet<&str> =
-        ALLOWED_CATEGORIES.iter().copied().collect();
+    let allowed: std::collections::HashSet<&str> = ALLOWED_CATEGORIES.iter().copied().collect();
     let mut bad: Vec<(String, String)> = Vec::new();
     for e in &entries {
         if let Some(c) = &e.category {
@@ -101,8 +103,7 @@ fn every_category_is_in_vocabulary() {
 #[test]
 fn every_difficulty_is_in_vocabulary() {
     let entries = scan_corpus(std::path::Path::new("examples"));
-    let allowed: std::collections::HashSet<&str> =
-        ALLOWED_DIFFICULTIES.iter().copied().collect();
+    let allowed: std::collections::HashSet<&str> = ALLOWED_DIFFICULTIES.iter().copied().collect();
     let mut bad: Vec<(String, String)> = Vec::new();
     for e in &entries {
         if let Some(d) = &e.difficulty {

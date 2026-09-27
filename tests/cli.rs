@@ -396,7 +396,10 @@ fn run_vm_bytecode_matches_tree_on_world_terrain_v1_0_2_session_9() {
     // pins that path so a regression that drops the install chain
     // (or shadows one of the namespace Objects with a VM-tagged
     // empty one) breaks here.
-    let tree = run_cli(&["run", "tests/programs/experimental/world_terrain_vm_mirror.twe"]);
+    let tree = run_cli(&[
+        "run",
+        "tests/programs/experimental/world_terrain_vm_mirror.twe",
+    ]);
     let bc = run_cli(&[
         "run",
         "--vm",
@@ -456,8 +459,5 @@ fn doctor_subcommand_emits_json_report() {
     assert!(stdout.contains("\"twec_version\":"), "stdout: {stdout}");
     assert!(stdout.contains("\"os\":"), "stdout: {stdout}");
     assert!(stdout.contains("\"features\":{"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("\"recent_crashes\":["),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("\"recent_crashes\":["), "stdout: {stdout}");
 }

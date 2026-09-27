@@ -119,8 +119,8 @@ impl MutationRule for IdentifierTypoRule {
     fn apply(&self, source: &str) -> Vec<MutationCandidate> {
         let mut out = Vec::new();
         let names = collect_let_names(source);
-        let needs_strict_prefix = !crate::infer::detect_strict(source)
-            && !crate::verify::detect_verified(source);
+        let needs_strict_prefix =
+            !crate::infer::detect_strict(source) && !crate::verify::detect_verified(source);
         for name in names {
             // Need at least 4 chars so did_you_mean's short-name
             // distance limit (1) accepts our 1-char typo as a
@@ -176,7 +176,10 @@ fn collect_let_names(source: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     for line in source.lines() {
         let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix("let ").or_else(|| trimmed.strip_prefix("var ")) else {
+        let Some(rest) = trimmed
+            .strip_prefix("let ")
+            .or_else(|| trimmed.strip_prefix("var "))
+        else {
             continue;
         };
         let rest = rest.trim_start();
@@ -346,10 +349,7 @@ impl MutationRule for LiteralTypeRule {
             };
             let rhs = after_colon[eq_pos + 1..].trim();
             // Accept a bare positive integer literal on the rhs.
-            let lit: String = rhs
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
+            let lit: String = rhs.chars().take_while(|c| c.is_ascii_digit()).collect();
             if lit.is_empty() {
                 continue;
             }
@@ -417,10 +417,7 @@ pub fn run(root: &Path, out_dir: &Path, rule_set: RuleSet) -> MutationReport {
     let mut writer = match std::fs::File::create(&out_path) {
         Ok(f) => std::io::BufWriter::new(f),
         Err(e) => {
-            eprintln!(
-                "[twec mutate] cannot create `{}`: {e}",
-                out_path.display()
-            );
+            eprintln!("[twec mutate] cannot create `{}`: {e}", out_path.display());
             return MutationReport {
                 source_files: 0,
                 triples_emitted: 0,
@@ -441,10 +438,8 @@ pub fn run(root: &Path, out_dir: &Path, rule_set: RuleSet) -> MutationReport {
         };
         for rule in &rules {
             for cand in rule.apply(&source) {
-                let report = verify_program_with_path(
-                    &cand.mutated,
-                    Some(&path.display().to_string()),
-                );
+                let report =
+                    verify_program_with_path(&cand.mutated, Some(&path.display().to_string()));
                 if report.ok() {
                     // Mutation didn't actually break the program —
                     // skip; the corpus only carries (broken, fixed)
@@ -453,9 +448,7 @@ pub fn run(root: &Path, out_dir: &Path, rule_set: RuleSet) -> MutationReport {
                 }
                 use std::io::Write;
                 let line = build_triple_jsonl(&path.display().to_string(), &source, &cand, &report);
-                if writer.write_all(line.as_bytes()).is_ok()
-                    && writer.write_all(b"\n").is_ok()
-                {
+                if writer.write_all(line.as_bytes()).is_ok() && writer.write_all(b"\n").is_ok() {
                     triples += 1;
                 }
             }

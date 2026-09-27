@@ -65,7 +65,10 @@ scene Counter:
     );
     // Sanity: the program actually ran 1000 frames.
     let lines = a.lines().count();
-    assert_eq!(lines, 1000, "expected 1000 lines of counter output, got {lines}");
+    assert_eq!(
+        lines, 1000,
+        "expected 1000 lines of counter output, got {lines}"
+    );
 }
 
 #[test]
@@ -148,10 +151,7 @@ scene S:
         replay::start_recording(path_str).expect("start_recording");
         for i in 0..5 {
             // Synthesize: even frame holds `up`, odd frame holds `down`.
-            inject_held_keys(
-                &mut env,
-                if i % 2 == 0 { &["up"] } else { &["down"] },
-            );
+            inject_held_keys(&mut env, if i % 2 == 0 { &["up"] } else { &["down"] });
             replay::tick(&mut env);
             eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
         }

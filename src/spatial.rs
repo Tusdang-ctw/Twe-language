@@ -325,12 +325,7 @@ impl Bvh {
         let query = Aabb::from_center_radius(x, y, z, r);
         let mut hits = Vec::new();
         if !self.leaves.is_empty() {
-            self.traverse_sphere(
-                self.root,
-                &query,
-                SphereQuery { x, y, z, r },
-                &mut hits,
-            );
+            self.traverse_sphere(self.root, &query, SphereQuery { x, y, z, r }, &mut hits);
         }
         hits.sort_unstable();
         hits.dedup();
@@ -371,12 +366,7 @@ impl Bvh {
         }
     }
 
-    fn traverse_frustum(
-        &self,
-        node: usize,
-        frustum: &crate::cull::Frustum,
-        out: &mut Vec<u64>,
-    ) {
+    fn traverse_frustum(&self, node: usize, frustum: &crate::cull::Frustum, out: &mut Vec<u64>) {
         match &self.nodes[node] {
             BvhNode::Leaf { bounds, leaf_index } => {
                 if frustum.may_contain(bounds) {

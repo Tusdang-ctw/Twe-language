@@ -987,8 +987,7 @@ fn runs_camera2d_phase_v1_0_1_session_8() {
     // Animation tick (cinematic_pan, zoom_to non-zero duration)
     // requires the play loop's camera2d_tick(env, dt); covered by
     // Rust-side has_camera2d_zoom_anim / has_camera2d_pan_anim.
-    let out =
-        run_program("tests/programs/camera2d.twe").expect("program should run");
+    let out = run_program("tests/programs/camera2d.twe").expect("program should run");
     let expected = "(0.0, 0.0)\n\
         1.0\n\
         (0.0, 0.0)\n\
@@ -1014,8 +1013,7 @@ fn runs_persistent_state_phase_v1_0_1_session_6() {
     // closes the functional gap with the stdlib registry consulted
     // by `eval::tick_frame` / `tick_entities` to skip non-persistent
     // states under the global pause flag.
-    let out =
-        run_program("tests/programs/persistent_state.twe").expect("program should run");
+    let out = run_program("tests/programs/persistent_state.twe").expect("program should run");
     let expected = "false\n\
         true\n\
         true\n\
@@ -1039,8 +1037,7 @@ fn runs_save_schema_version_phase_v1_0_1_session_5() {
     // surfacing via `save.loaded_version()` on read. The block-syntax
     // form (`save SaveSlot:` + `migration from N:`) defers to v1.0.2;
     // this MVP covers the call-and-go API path.
-    let out =
-        run_program("tests/programs/save_schema_version.twe").expect("program should run");
+    let out = run_program("tests/programs/save_schema_version.twe").expect("program should run");
     let expected = "1\n\
         3\n\
         nil\n\
@@ -1062,8 +1059,7 @@ fn runs_v1_0_2_sugar_exit_gate_phase_v1_0_2_session_11() {
     // migrations) and Session 2 (state persistent / pause: false)
     // so a regression in either parser-sugar path breaks here
     // rather than at a release-tag smoke test.
-    let out =
-        run_program("tests/programs/v1_0_2_sugar.twe").expect("program should run");
+    let out = run_program("tests/programs/v1_0_2_sugar.twe").expect("program should run");
     let expected = "3\n\
         1\n\
         25\n\
@@ -1081,8 +1077,7 @@ fn runs_lang_plural_closure_phase_v1_0_2_session_4() {
     // built-ins don't cover. Closes the v1.0.1 Session 12 alias-only
     // deferral. Side-effect trace verifies the closure fires (and
     // does NOT fire when the locale is switched back to an alias).
-    let out =
-        run_program("tests/programs/lang_plural_closure.twe").expect("program should run");
+    let out = run_program("tests/programs/lang_plural_closure.twe").expect("program should run");
     let expected = "other\n\
         one\n\
         two\n\
@@ -1100,8 +1095,7 @@ fn runs_persistent_state_sugar_phase_v1_0_2_session_2() {
     // and inject `persistent_state("X")` calls right after the
     // enclosing declaration; `pause: true` is the default and does
     // NOT register. Pure parser sugar over the v1.0.1 registry.
-    let out =
-        run_program("tests/programs/persistent_state_sugar.twe").expect("program should run");
+    let out = run_program("tests/programs/persistent_state_sugar.twe").expect("program should run");
     let expected = "true\n\
         true\n\
         false\n\
@@ -1131,8 +1125,7 @@ fn runs_save_block_no_load_phase_v1_0_2_session_1() {
     // v1.0.2 session 1: same block, no prior `save.read`. Each
     // `migration from N:` condition compares `nil == K` which is
     // always false under Eq, so no migration body runs.
-    let out =
-        run_program("tests/programs/save_block_no_load.twe").expect("program should run");
+    let out = run_program("tests/programs/save_block_no_load.twe").expect("program should run");
     let expected = "nil\n\
         3\n\
         false\n";
@@ -2283,8 +2276,8 @@ fn os_data_dir_rejects_path_separators() {
 
 #[test]
 fn os_data_dir_rejects_empty_name() {
-    let err = run_program_str("print(os.data_dir(\"\"))\n")
-        .expect_err("empty app name must be rejected");
+    let err =
+        run_program_str("print(os.data_dir(\"\"))\n").expect_err("empty app name must be rejected");
     assert!(err.contains("non-empty"), "got: {err}");
 }
 
@@ -2364,8 +2357,8 @@ fn state_enter_exit_hooks_fire_in_order() {
     // Snake NP9: `on enter:` folds into the on-entry body (so the bare
     // "body a" and "enter a" both print on entry), and `on exit:` runs
     // when a state is left, before the next state's entry.
-    let out = run_program_frames("tests/programs/state_hooks.twe", 4, 0.1)
-        .expect("program should run");
+    let out =
+        run_program_frames("tests/programs/state_hooks.twe", 4, 0.1).expect("program should run");
     assert_eq!(
         out,
         "body a\nenter a\ntick a\nexit a\nenter b\nexit b\nenter done\n"
@@ -2388,8 +2381,7 @@ fn physics2d_broadphase_and_move_and_slide() {
     // Broad-phase spatial grid (build/query/near/free) + dynamic
     // move_and_slide (swept collision response with sliding). Pins
     // correctness; the parity harness confirms the VM agrees.
-    let out =
-        run_program("tests/programs/physics2d_dynamics.twe").expect("program should run");
+    let out = run_program("tests/programs/physics2d_dynamics.twe").expect("program should run");
     let expected = "[0, 2]\n\
         [0, 2]\n\
         [3]\n\
@@ -2408,8 +2400,7 @@ fn physics2d_rigidbody_impulse_response() {
     // Rigid-body-lite: bounce (reflect off static surface w/ restitution)
     // and collide (mass-weighted two-body impulse). Pins correctness; the
     // parity harness confirms the VM agrees.
-    let out =
-        run_program("tests/programs/physics2d_rigidbody.twe").expect("program should run");
+    let out = run_program("tests/programs/physics2d_rigidbody.twe").expect("program should run");
     let expected = "(3.0, -8.0)\n\
         (3.0, -10.0)\n\
         (-5.0, 0.0)\n\
@@ -2427,10 +2418,9 @@ fn physics2d_rigidbody_impulse_response() {
 
 #[test]
 fn physics2d_collide_rejects_nonpositive_mass() {
-    let err = run_program_str(
-        "print(physics2d.collide((0, 0), (1, 0), 0, (5, 0), (-1, 0), 1, 1))\n",
-    )
-    .expect_err("zero mass should error");
+    let err =
+        run_program_str("print(physics2d.collide((0, 0), (1, 0), 0, (5, 0), (-1, 0), 1, 1))\n")
+            .expect_err("zero mass should error");
     assert!(err.contains("masses must be positive"), "got: {err}");
 }
 
@@ -3040,7 +3030,11 @@ fn two_d_draw_in_3d_render_errors_instead_of_panicking() {
     twec::stdlib::install(&mut env);
     eval::run_top_level(&mut env, &program).expect("top-level");
     let err = eval::render_frame3d(&mut env).expect_err("2D draw in 3D should error");
-    assert!(err.message.contains("2D drawing call"), "got: {}", err.message);
+    assert!(
+        err.message.contains("2D drawing call"),
+        "got: {}",
+        err.message
+    );
 }
 
 #[test]
@@ -3061,7 +3055,10 @@ fn quit_and_quit_on_escape_are_callable_and_type_checked() {
     let out = run_program_str("quit_on_escape(false)\nquit()\nprint(\"ok\")\n")
         .expect("quit builtins should run headless");
     assert_eq!(out, "ok\n");
-    assert!(twec::stdlib::take_quit_request(), "quit() should request exit");
+    assert!(
+        twec::stdlib::take_quit_request(),
+        "quit() should request exit"
+    );
     assert!(!twec::stdlib::quit_on_escape());
     let err = run_program_str("quit_on_escape(1)\n").expect_err("non-bool should error");
     assert!(err.contains("quit_on_escape expects a bool"), "got: {err}");

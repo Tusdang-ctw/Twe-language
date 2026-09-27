@@ -24,9 +24,18 @@ use twec::lexer::{lex, TokenKind};
 #[test]
 fn gbnf_format_is_well_formed() {
     let s = grammar::export(Format::Gbnf);
-    assert!(s.contains("root ::= program"), "GBNF must declare root rule");
-    assert!(s.contains("ident       ::="), "GBNF must define ident token class");
-    assert!(s.contains("string      ::="), "GBNF must define string token class");
+    assert!(
+        s.contains("root ::= program"),
+        "GBNF must declare root rule"
+    );
+    assert!(
+        s.contains("ident       ::="),
+        "GBNF must define ident token class"
+    );
+    assert!(
+        s.contains("string      ::="),
+        "GBNF must define string token class"
+    );
     // Every keyword must appear as a quoted terminal.
     for kw in KEYWORDS {
         assert!(

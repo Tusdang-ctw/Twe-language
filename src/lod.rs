@@ -86,7 +86,9 @@ impl LodChain {
         }
         for d in &switch_distances {
             if *d < 0.0 {
-                return Err(format!("LOD switch distance must be non-negative (got {d})"));
+                return Err(format!(
+                    "LOD switch distance must be non-negative (got {d})"
+                ));
             }
         }
         Ok(LodChain {
@@ -102,10 +104,10 @@ impl LodChain {
         // 4-element typical chains a linear scan is the same speed,
         // but the search reads as the intent ("find first switch
         // greater than distance, that's the index").
-        match self
-            .switch_distances
-            .binary_search_by(|d| d.partial_cmp(&distance).unwrap_or(std::cmp::Ordering::Equal))
-        {
+        match self.switch_distances.binary_search_by(|d| {
+            d.partial_cmp(&distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
             // Distance equals a switch boundary → use the higher-index
             // (less-detailed) LOD. The convention picks "≤" for the
             // less-detailed side so an entity sitting exactly at 25m
@@ -174,11 +176,7 @@ mod tests {
 
     #[test]
     fn rejects_negative_switches() {
-        assert!(LodChain::new(
-            vec!["a".to_string(), "b".to_string()],
-            vec![-1.0],
-        )
-        .is_err());
+        assert!(LodChain::new(vec!["a".to_string(), "b".to_string()], vec![-1.0],).is_err());
     }
 
     #[test]

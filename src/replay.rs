@@ -475,13 +475,14 @@ mod tests {
         let path = std::env::temp_dir().join("twe-replay-rt-test.log");
         let path = path.to_str().unwrap();
         // Manually build a log file matching the format.
-        let body = format!(
-            "{HEADER}\nleft,space|space|123.5|45.0|left|left\n||320|240||\n"
-        );
+        let body = format!("{HEADER}\nleft,space|space|123.5|45.0|left|left\n||320|240||\n");
         std::fs::write(path, body).unwrap();
         let frames = parse_log(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].keys_held, vec!["left".to_string(), "space".to_string()]);
+        assert_eq!(
+            frames[0].keys_held,
+            vec!["left".to_string(), "space".to_string()]
+        );
         assert_eq!(frames[0].keys_pressed, vec!["space".to_string()]);
         assert_eq!(frames[0].mouse_x, 123.5);
         assert_eq!(frames[1].keys_held.len(), 0);
@@ -513,10 +514,8 @@ mod tests {
             };
             RING.with(|r| r.borrow_mut().push(f));
         }
-        let path = std::env::temp_dir().join(format!(
-            "twec-ring-dump-{}.replay",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("twec-ring-dump-{}.replay", std::process::id()));
         let written = dump_ring_to(&path).expect("dump");
         assert_eq!(written, RING_CAPACITY);
         // First line of body should be the OLDEST surviving frame,
@@ -544,10 +543,8 @@ mod tests {
             };
             RING.with(|r| r.borrow_mut().push(f));
         }
-        let path = std::env::temp_dir().join(format!(
-            "twec-ring-roundtrip-{}.replay",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("twec-ring-roundtrip-{}.replay", std::process::id()));
         dump_ring_to(&path).expect("dump");
         let body = std::fs::read_to_string(&path).unwrap();
         let frames = parse_log(&body).expect("parse");

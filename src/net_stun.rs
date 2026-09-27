@@ -151,7 +151,9 @@ fn parse_binding_response(buf: &[u8], expected_txn: &[u8; 12]) -> Result<SocketA
     }
     let msg_type = u16::from_be_bytes([buf[0], buf[1]]);
     if msg_type != MSG_BINDING_SUCCESS {
-        return Err(format!("STUN: not a binding-success (got msg_type={msg_type:#x})"));
+        return Err(format!(
+            "STUN: not a binding-success (got msg_type={msg_type:#x})"
+        ));
     }
     let attrs_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
     let cookie = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
@@ -265,7 +267,9 @@ pub fn rendezvous_exchange(
     timeout_ms: u64,
 ) -> Result<SocketAddr, String> {
     if lobby_name.is_empty() || lobby_name.contains(' ') || lobby_name.contains('\n') {
-        return Err("rendezvous: lobby_name must be non-empty and contain no spaces/newlines".to_string());
+        return Err(
+            "rendezvous: lobby_name must be non-empty and contain no spaces/newlines".to_string(),
+        );
     }
     let started = Instant::now();
     let timeout = Duration::from_millis(timeout_ms);

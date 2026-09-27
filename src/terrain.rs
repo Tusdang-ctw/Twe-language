@@ -258,7 +258,10 @@ mod tests {
             n[1]
         );
         assert!(n[0] < 0.0, "x-component should be negative for +x ramp");
-        assert!(n[2].abs() < 1e-3, "z-component should be ~0 for x-only ramp");
+        assert!(
+            n[2].abs() < 1e-3,
+            "z-component should be ~0 for x-only ramp"
+        );
     }
 
     #[test]

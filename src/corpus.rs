@@ -150,10 +150,7 @@ fn visit(root: &Path, dir: &Path, out: &mut Vec<CorpusEntry>) {
         } else if path.extension().is_some_and(|e| e == "twe") {
             if let Ok(source) = std::fs::read_to_string(&path) {
                 let mut e = parse_header(&source);
-                e.path = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_path_buf();
+                e.path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
                 out.push(e);
             }
         }

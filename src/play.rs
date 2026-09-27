@@ -362,9 +362,7 @@ async fn run_loop_wasm() {
         if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
             accumulator += frame_dt;
             let mut substeps: u32 = 0;
-            while accumulator >= crate::eval::PHYSICS_DT
-                && substeps < crate::eval::MAX_SUBSTEPS
-            {
+            while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
                 // v1.0.1 session 1: `fx.hit_stop` skips simulation
                 // substeps without draining wall-clock time. Decrement
                 // the accumulator and counter, but don't advance the
@@ -555,9 +553,7 @@ async fn run_loop(path: String) {
         if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
             accumulator += frame_dt;
             let mut substeps: u32 = 0;
-            while accumulator >= crate::eval::PHYSICS_DT
-                && substeps < crate::eval::MAX_SUBSTEPS
-            {
+            while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
                 if crate::fx::consume_hit_stop_tick() {
                     accumulator -= crate::eval::PHYSICS_DT;
                     substeps += 1;
@@ -1249,9 +1245,7 @@ async fn run_loop_embedded(source: String) {
         if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
             accumulator += frame_dt;
             let mut substeps: u32 = 0;
-            while accumulator >= crate::eval::PHYSICS_DT
-                && substeps < crate::eval::MAX_SUBSTEPS
-            {
+            while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
                 if crate::fx::consume_hit_stop_tick() {
                     accumulator -= crate::eval::PHYSICS_DT;
                     substeps += 1;

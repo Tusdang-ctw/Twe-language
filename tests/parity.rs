@@ -256,7 +256,10 @@ fn bytecode_matches_tree_on_all_programs() {
         }
     }
 
-    eprintln!("parity: {checked} comparisons across {} programs, {skipped} skipped", program_paths().len() - skipped);
+    eprintln!(
+        "parity: {checked} comparisons across {} programs, {skipped} skipped",
+        program_paths().len() - skipped
+    );
 
     assert!(
         failures.is_empty(),

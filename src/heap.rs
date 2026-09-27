@@ -167,7 +167,11 @@ impl Heap {
     pub fn alloc(&mut self, body: HeapBody) -> *mut HeapObject {
         let body_kind = HeapBodyKind::of(&body);
         let sweeping = self.sweep_phase == SweepPhase::Sweeping;
-        let head = if sweeping { self.young } else { self.all_objects };
+        let head = if sweeping {
+            self.young
+        } else {
+            self.all_objects
+        };
         let obj = Box::new(HeapObject {
             mark: Cell::new(false),
             freed: Cell::new(false),

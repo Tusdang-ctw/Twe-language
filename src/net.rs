@@ -445,12 +445,7 @@ pub fn send_input(tick: u32, frame: Frame) {
             let start = tick.saturating_sub(sess.redundant_history);
             for t in start..=tick {
                 if let Some(f) = sess.local_inputs.get(&t) {
-                    let mut pkt = build_header(
-                        MSG_INPUT,
-                        sess.session_id,
-                        sess.local_peer_id,
-                        t,
-                    );
+                    let mut pkt = build_header(MSG_INPUT, sess.session_id, sess.local_peer_id, t);
                     pkt.extend_from_slice(f.encode_line().as_bytes());
                     let _ = sess.socket.send_to(&pkt, peer.addr);
                 }
@@ -677,8 +672,7 @@ pub fn send_state_hash(tick: u32, hash: u64) {
         let mut slot = s.borrow_mut();
         let Some(sess) = slot.as_mut() else { return };
         sess.last_local_hash = hash;
-        sess.peer_hashes
-            .insert(sess.local_peer_id, (tick, hash));
+        sess.peer_hashes.insert(sess.local_peer_id, (tick, hash));
         let mut pkt = build_header(MSG_HASH, sess.session_id, sess.local_peer_id, tick);
         pkt.extend_from_slice(&hash.to_le_bytes());
         for peer in &sess.peers {
@@ -782,7 +776,12 @@ pub fn peer_disconnected() -> bool {
 /// Returns the internal peer id of the most recently popped
 /// disconnect, or -1 if none. Set by `peer_disconnected`.
 pub fn last_disconnected_peer() -> i32 {
-    SESSION.with(|s| s.borrow().as_ref().map(|x| x.last_disconnected).unwrap_or(-1))
+    SESSION.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|x| x.last_disconnected)
+            .unwrap_or(-1)
+    })
 }
 
 /// Best-effort re-handshake with a previously dropped peer. Sends a
@@ -864,10 +863,7 @@ pub fn host_migrate_if_host_lost() -> bool {
             return false;
         }
         // Has peer 0 (host) been disconnected?
-        let host_lost = sess
-            .disconnected_queue
-            .iter()
-            .any(|(id, _, _)| *id == 0)
+        let host_lost = sess.disconnected_queue.iter().any(|(id, _, _)| *id == 0)
             || sess.disconnected_addrs.contains_key(&0);
         if !host_lost {
             return false;
@@ -1557,7 +1553,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         poll();
 
-        assert!(tick_ready(0), "host should be tick-ready after exchanging inputs");
+        assert!(
+            tick_ready(0),
+            "host should be tick-ready after exchanging inputs"
+        );
         let inputs = take_inputs(0).expect("take_inputs");
         assert_eq!(inputs.len(), 2);
         // Find the peer-1 frame and confirm its 'up' came through.

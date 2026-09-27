@@ -254,7 +254,7 @@ mod tests {
         let a = shake(2.0, 0.3, 8.0);
         let b = shake(2.0, 0.3, 8.0);
         approx(a, b); // pure function — same args, same result
-        // Different seeds produce different values.
+                      // Different seeds produce different values.
         let c = shake(0.0, 0.3, 8.0);
         assert!((a - c).abs() > 1e-9);
     }

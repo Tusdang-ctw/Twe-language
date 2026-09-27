@@ -317,8 +317,8 @@ struct CameraUniform {
 // web3d-M0: `PointLightU`, `LightsUniform` and `AnimSnapshot` live in
 // `crate::render3d_types` (always compiled) so the script-side state in
 // `stdlib` builds on wasm32 too; re-exported here for existing paths.
-pub use crate::render3d_types::{LightsUniform, PointLightU};
 pub(crate) use crate::render3d_types::AnimSnapshot;
+pub use crate::render3d_types::{LightsUniform, PointLightU};
 
 /// Phase 28 session 2: cascaded shadow maps. Three concentric
 /// orthographic projections from the sun direction, each rendered
@@ -1645,8 +1645,7 @@ impl ApplicationHandler for App {
                 // composing the frame. `step_simulation_3d` runs
                 // physics3d::step + eval::tick_frame at PHYSICS_DT;
                 // `render` does GPU work only.
-                let frame_dt_clamped =
-                    (frame_dt as f64).min(crate::eval::MAX_FRAME_DT);
+                let frame_dt_clamped = (frame_dt as f64).min(crate::eval::MAX_FRAME_DT);
                 self.sim_accumulator += frame_dt_clamped;
                 let mut substeps: u32 = 0;
                 while self.sim_accumulator >= crate::eval::PHYSICS_DT
@@ -2570,12 +2569,8 @@ fn upload_texture_with_mips(
         for level in 1..mip_level_count {
             let mw = (width >> level).max(1);
             let mh = (height >> level).max(1);
-            let mip = image::imageops::resize(
-                &source,
-                mw,
-                mh,
-                image::imageops::FilterType::Triangle,
-            );
+            let mip =
+                image::imageops::resize(&source, mw, mh, image::imageops::FilterType::Triangle);
             queue.write_texture(
                 wgpu::ImageCopyTexture {
                     texture: &texture,
@@ -3638,7 +3633,9 @@ fn load_and_upload_mesh(
     path: &str,
 ) -> Result<GpuMesh, String> {
     let loaded = load_glb(path)?;
-    Ok(upload_loaded_glb(device, queue, layout, sampler, joints_bgl, loaded))
+    Ok(upload_loaded_glb(
+        device, queue, layout, sampler, joints_bgl, loaded,
+    ))
 }
 
 // ---------- Per-frame render ----------
@@ -4051,10 +4048,8 @@ fn render(state: &mut RenderState, env: &mut Env) -> Result<(), String> {
                     continue;
                 }
                 spass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                spass.set_index_buffer(
-                    state.cube_index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint16,
-                );
+                spass
+                    .set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
             }
             // Spheres

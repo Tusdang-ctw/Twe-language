@@ -1093,10 +1093,7 @@ fn build_wasm_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
             let _ = fs::create_dir_all(p);
         }
         if let Err(e) = fs::copy(&asset.abs, &dest) {
-            eprintln!(
-                "error: cannot copy asset '{}': {e}",
-                asset.abs.display()
-            );
+            eprintln!("error: cannot copy asset '{}': {e}", asset.abs.display());
             return 1;
         }
     }
@@ -1108,10 +1105,7 @@ fn build_wasm_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
                 eprintln!("error: cannot write mq_js_bundle.js: {e}");
                 return 1;
             }
-            eprintln!(
-                "[twec build] mq_js_bundle.js  ({} bytes)",
-                js.len()
-            );
+            eprintln!("[twec build] mq_js_bundle.js  ({} bytes)", js.len());
         }
         None => {
             eprintln!(
@@ -1158,10 +1152,7 @@ fn build_wasm_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
         .join("twec.wasm");
 
     if let Err(e) = fs::copy(&wasm_src, web_dir.join("game.wasm")) {
-        eprintln!(
-            "error: cannot copy '{}': {e}",
-            wasm_src.display()
-        );
+        eprintln!("error: cannot copy '{}': {e}", wasm_src.display());
         return 1;
     }
 
@@ -1655,18 +1646,14 @@ fn build_linux_server(
         );
         return 1;
     }
-    let bundle_bytes = match encode_bundle_to_vec(
-        project,
-        resolved.compress,
-        args.target,
-        args.config,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
+    let bundle_bytes =
+        match encode_bundle_to_vec(project, resolved.compress, args.target, args.config) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
     let bundle_path = server_dir.join(format!("{exec_name}.twebundle"));
     if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
         eprintln!("error: cannot write '{}': {e}", bundle_path.display());
@@ -1759,10 +1746,7 @@ fn build_wasm3d_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
             let _ = fs::create_dir_all(p);
         }
         if let Err(e) = fs::copy(&asset.abs, &dest) {
-            eprintln!(
-                "error: cannot copy asset '{}': {e}",
-                asset.abs.display()
-            );
+            eprintln!("error: cannot copy asset '{}': {e}", asset.abs.display());
             return 1;
         }
     }
@@ -1836,18 +1820,14 @@ fn build_ios_layout(
         eprintln!("error: cannot create '{}': {e}", dist_dir.display());
         return 1;
     }
-    let bundle_bytes = match encode_bundle_to_vec(
-        project,
-        resolved.compress,
-        args.target,
-        args.config,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
+    let bundle_bytes =
+        match encode_bundle_to_vec(project, resolved.compress, args.target, args.config) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
     let app_dir = dist_dir.join("Payload").join(format!("{exec_name}.app"));
     let bundle_path = app_dir.join(format!("{exec_name}.twebundle"));
     if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
@@ -1949,18 +1929,14 @@ fn build_android_layout(
         eprintln!("error: cannot create '{}': {e}", assets_dir.display());
         return 1;
     }
-    let bundle_bytes = match encode_bundle_to_vec(
-        project,
-        resolved.compress,
-        args.target,
-        args.config,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
+    let bundle_bytes =
+        match encode_bundle_to_vec(project, resolved.compress, args.target, args.config) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
     let bundle_path = assets_dir.join(format!("{exec_name}.twebundle"));
     if let Err(e) = fs::write(&bundle_path, &bundle_bytes) {
         eprintln!("error: cannot write '{}': {e}", bundle_path.display());

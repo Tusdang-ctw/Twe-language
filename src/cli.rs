@@ -114,17 +114,13 @@ pub fn run() {
         // writes a canonical, hashable JSON document; `twec api-diff
         // <old> <new>` compares two snapshots and exits non-zero if
         // any surface has changed.
-        "api-snapshot" | "api_snapshot" => {
-            process::exit(handle_api_snapshot(&args[2..]))
-        }
+        "api-snapshot" | "api_snapshot" => process::exit(handle_api_snapshot(&args[2..])),
         "api-diff" | "api_diff" => process::exit(handle_api_diff(&args[2..])),
         // v1.0.1 session 11: perf-bench snapshot + diff. Scrapes
         // `target/criterion/` from `cargo bench` into a canonical JSON
         // document, and exits non-zero when a tracked bench regresses
         // beyond the threshold (default 5%).
-        "perf-snapshot" | "perf_snapshot" => {
-            process::exit(handle_perf_snapshot(&args[2..]))
-        }
+        "perf-snapshot" | "perf_snapshot" => process::exit(handle_perf_snapshot(&args[2..])),
         "perf-diff" | "perf_diff" => process::exit(handle_perf_diff(&args[2..])),
         // v1.0.1 session 13: `twec doctor [--json] [-o PATH]` —
         // single-page environment + crash-history report for triage.
@@ -1111,8 +1107,7 @@ fn handle_mutate(args: &[String]) -> i32 {
         eprintln!("error: cannot create `{}`: {e}", out_p.display());
         return 1;
     }
-    let report =
-        crate::mutator::run(&root_p, &out_p, crate::mutator::RuleSet::parse(&rules));
+    let report = crate::mutator::run(&root_p, &out_p, crate::mutator::RuleSet::parse(&rules));
     println!("{}", report.summary());
     if report.triples_emitted == 0 {
         1

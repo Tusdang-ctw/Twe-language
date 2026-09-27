@@ -185,7 +185,10 @@ impl Handler {
                 "capabilities",
                 json::obj([
                     ("tools", json::obj([("listChanged", Value::Bool(false))])),
-                    ("resources", json::obj([("listChanged", Value::Bool(false))])),
+                    (
+                        "resources",
+                        json::obj([("listChanged", Value::Bool(false))]),
+                    ),
                     ("prompts", json::obj([("listChanged", Value::Bool(false))])),
                 ]),
             ),
@@ -201,7 +204,10 @@ impl Handler {
             // client that knows nothing about Twe is grounded before its first
             // turn. Without it the model writes Python-shaped guesses. The full
             // guide + examples are available as `twe://` resources.
-            ("instructions", Value::Str(crate::primer::INSTRUCTIONS.into())),
+            (
+                "instructions",
+                Value::Str(crate::primer::INSTRUCTIONS.into()),
+            ),
         ]);
         success_response(id, result)
     }
@@ -218,7 +224,9 @@ impl Handler {
     fn handle_resources_read(&self, id: Value, params: &Value) -> String {
         let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
         match resource_read(uri) {
-            Ok(contents) => success_response(id, json::obj([("contents", Value::Array(vec![contents]))])),
+            Ok(contents) => {
+                success_response(id, json::obj([("contents", Value::Array(vec![contents]))]))
+            }
             Err((code, msg)) => error_response(id, code, &msg),
         }
     }
@@ -298,11 +306,9 @@ fn tool_verify(args: &Value) -> Result<Value, (i64, String)> {
         })
         .unwrap_or(false);
     let options = crate::verify::VerifyOptions { warn_deprecated };
-    let report =
-        crate::verify::verify_program_with_options(&source, path.as_deref(), &options);
+    let report = crate::verify::verify_program_with_options(&source, path.as_deref(), &options);
     let report_text = report.to_json();
-    json::parse(&report_text)
-        .map_err(|e| (-32603, format!("verify report invalid json: {e}")))
+    json::parse(&report_text).map_err(|e| (-32603, format!("verify report invalid json: {e}")))
 }
 
 fn tool_format(args: &Value) -> Result<Value, (i64, String)> {
@@ -602,12 +608,11 @@ fn resource_read(uri: &str) -> Result<Value, (i64, String)> {
             ("text/plain", crate::grammar::export(fmt))
         }
         other => {
-            let name = other.strip_prefix("twe://examples/").ok_or((
-                -32602,
-                format!("unknown resource uri: {other}"),
-            ))?;
-            let ex = crate::primer::example(name)
-                .ok_or((-32602, format!("unknown example: {name}")))?;
+            let name = other
+                .strip_prefix("twe://examples/")
+                .ok_or((-32602, format!("unknown resource uri: {other}")))?;
+            let ex =
+                crate::primer::example(name).ok_or((-32602, format!("unknown example: {name}")))?;
             ("text/plain", ex.source.to_string())
         }
     };
@@ -643,7 +648,11 @@ fn prompts_list() -> Value {
         prompt_descriptor(
             "scaffold_game",
             "Scaffold a complete, verified Twe program from a description.",
-            vec![prompt_argument("description", "What the game should be (genre, core mechanic, controls).", true)],
+            vec![prompt_argument(
+                "description",
+                "What the game should be (genre, core mechanic, controls).",
+                true,
+            )],
         ),
         prompt_descriptor(
             "add_feature",
@@ -656,7 +665,11 @@ fn prompts_list() -> Value {
         prompt_descriptor(
             "fix_errors",
             "Fix the verify errors in a Twe file until it passes.",
-            vec![prompt_argument("source", "The .twe source that currently fails `verify`.", true)],
+            vec![prompt_argument(
+                "source",
+                "The .twe source that currently fails `verify`.",
+                true,
+            )],
         ),
     ];
     json::obj([("prompts", Value::Array(prompts))])
@@ -666,13 +679,21 @@ fn prompts_list() -> Value {
 /// drops into the conversation. Every template leads with the primer so the
 /// model is grounded even if the host did not surface the `instructions` field.
 fn prompt_get(name: &str, args: &Value) -> Result<Value, (i64, String)> {
-    let arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let arg = |k: &str| {
+        args.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
 
     let (description, body) = match name {
         "scaffold_game" => {
             let desc = arg("description");
             if desc.is_empty() {
-                return Err((-32602, "scaffold_game requires a `description` argument".into()));
+                return Err((
+                    -32602,
+                    "scaffold_game requires a `description` argument".into(),
+                ));
             }
             (
                 "Scaffold a complete, verified Twe program.".to_string(),
@@ -790,7 +811,9 @@ fn required_string(args: &Value, name: &str) -> Result<String, (i64, String)> {
 }
 
 fn optional_string(args: &Value, name: &str) -> Option<String> {
-    args.get(name).and_then(|v| v.as_str()).map(|s| s.to_string())
+    args.get(name)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -848,7 +871,8 @@ mod tests {
 
     #[test]
     fn tools_call_verify_round_trips() {
-        let body = "{\"name\":\"verify\",\"arguments\":{\"source\":\"# verified\\nlet x: int = 42\\n\"}}";
+        let body =
+            "{\"name\":\"verify\",\"arguments\":{\"source\":\"# verified\\nlet x: int = 42\\n\"}}";
         let reply = handle_message(&req("tools/call", body)).unwrap();
         // The verify JSON v2 is wrapped in the tools/call content
         // envelope as a stringified text part — every quote inside
@@ -888,10 +912,22 @@ mod tests {
     #[test]
     fn initialize_advertises_instructions_and_capabilities() {
         let reply = handle_message(&req("initialize", "{}")).unwrap();
-        assert!(reply.contains("\"instructions\""), "initialize must carry grounding instructions");
-        assert!(reply.contains("GOLDEN RULES"), "instructions should be the Twe primer");
-        assert!(reply.contains("\"resources\""), "must advertise resources capability");
-        assert!(reply.contains("\"prompts\""), "must advertise prompts capability");
+        assert!(
+            reply.contains("\"instructions\""),
+            "initialize must carry grounding instructions"
+        );
+        assert!(
+            reply.contains("GOLDEN RULES"),
+            "instructions should be the Twe primer"
+        );
+        assert!(
+            reply.contains("\"resources\""),
+            "must advertise resources capability"
+        );
+        assert!(
+            reply.contains("\"prompts\""),
+            "must advertise prompts capability"
+        );
     }
 
     #[test]
@@ -914,7 +950,10 @@ mod tests {
     fn resources_read_example_returns_source() {
         let body = "{\"uri\":\"twe://examples/snake\"}";
         let reply = handle_message(&req("resources/read", body)).unwrap();
-        assert!(reply.contains("scene Snake"), "snake example source expected");
+        assert!(
+            reply.contains("scene Snake"),
+            "snake example source expected"
+        );
     }
 
     #[test]
@@ -936,7 +975,10 @@ mod tests {
     fn prompts_get_scaffold_embeds_primer_and_task() {
         let body = "{\"name\":\"scaffold_game\",\"arguments\":{\"description\":\"a pong clone\"}}";
         let reply = handle_message(&req("prompts/get", body)).unwrap();
-        assert!(reply.contains("GOLDEN RULES"), "prompt should lead with the primer");
+        assert!(
+            reply.contains("GOLDEN RULES"),
+            "prompt should lead with the primer"
+        );
         assert!(reply.contains("pong clone"), "prompt should embed the task");
         assert!(reply.contains("\"messages\""));
     }

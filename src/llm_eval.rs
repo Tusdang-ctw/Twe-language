@@ -116,7 +116,10 @@ pub fn load_suite(suite_dir: &Path) -> Result<Suite, String> {
         .map(|s| s.to_string())
         .ok_or_else(|| format!("eval suite path has no name: {}", suite_dir.display()))?;
     if !suite_dir.is_dir() {
-        return Err(format!("eval suite directory missing: {}", suite_dir.display()));
+        return Err(format!(
+            "eval suite directory missing: {}",
+            suite_dir.display()
+        ));
     }
     let expected_path = suite_dir.join("expected.txt");
     let expected = std::fs::read_to_string(&expected_path).map_err(|e| {

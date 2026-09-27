@@ -49,11 +49,40 @@ use crate::stdlib::manifest;
 /// the lexer without being added here, the next `api-diff` will
 /// flag the drift.
 const KEYWORDS: &[&str] = &[
-    "actor", "and", "break", "choice", "continue", "despawn",
-    "dialogue", "elif", "else", "entity", "every", "extends", "for",
-    "function", "if", "import", "in", "inventory", "item", "let",
-    "modifier", "not", "on", "or", "particles", "return", "say",
-    "scene", "self", "spawn", "state", "var", "visual", "wait",
+    "actor",
+    "and",
+    "break",
+    "choice",
+    "continue",
+    "despawn",
+    "dialogue",
+    "elif",
+    "else",
+    "entity",
+    "every",
+    "extends",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "inventory",
+    "item",
+    "let",
+    "modifier",
+    "not",
+    "on",
+    "or",
+    "particles",
+    "return",
+    "say",
+    "scene",
+    "self",
+    "spawn",
+    "state",
+    "var",
+    "visual",
+    "wait",
     "while",
 ];
 
@@ -239,19 +268,16 @@ pub fn diff(old_json: &str, new_json: &str) -> ApiDiff {
     // Tool versions
     for (name, new_v) in &new.tool_versions {
         match old.tool_versions.iter().find(|(n, _)| n == name) {
-            None => d
-                .tool_version_changes
-                .push((name.clone(), 0, *new_v)),
-            Some((_, old_v)) if old_v != new_v => d
-                .tool_version_changes
-                .push((name.clone(), *old_v, *new_v)),
+            None => d.tool_version_changes.push((name.clone(), 0, *new_v)),
+            Some((_, old_v)) if old_v != new_v => {
+                d.tool_version_changes.push((name.clone(), *old_v, *new_v))
+            }
             _ => {}
         }
     }
     for (name, old_v) in &old.tool_versions {
         if !new.tool_versions.iter().any(|(n, _)| n == name) {
-            d.tool_version_changes
-                .push((name.clone(), *old_v, 0));
+            d.tool_version_changes.push((name.clone(), *old_v, 0));
         }
     }
 

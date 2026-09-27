@@ -404,7 +404,12 @@ fn walk_holes_expr(e: &Expr, out: &mut Vec<VerifyDiagnostic>) {
                 fix: None,
             });
         }
-        Expr::Call { callee, args, kwargs, .. } => {
+        Expr::Call {
+            callee,
+            args,
+            kwargs,
+            ..
+        } => {
             walk_holes_expr(callee, out);
             for a in args {
                 walk_holes_expr(a, out);

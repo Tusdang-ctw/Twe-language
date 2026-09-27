@@ -54,7 +54,11 @@ fn hole_triggers_verify_warning_with_kind_hole() {
 fn multiple_holes_each_get_their_own_warning() {
     let src = "let x = ???\nlet y = ???\nprint(???)\n";
     let report = verify_program(src);
-    let count = report.diagnostics.iter().filter(|d| d.kind == "hole").count();
+    let count = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.kind == "hole")
+        .count();
     assert_eq!(count, 3);
 }
 

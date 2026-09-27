@@ -78,10 +78,7 @@ impl InstanceBuckets {
     }
 
     pub fn transforms(&self, asset: &str) -> Vec<[f32; 16]> {
-        self.buckets
-            .get(asset)
-            .cloned()
-            .unwrap_or_default()
+        self.buckets.get(asset).cloned().unwrap_or_default()
     }
 
     /// Sum of instance counts across all buckets. Useful for the

@@ -20,7 +20,10 @@ fn schema_version_is_v2() {
     let report = verify_program("# verified\nlet x = 1\n");
     let json = report.to_json();
     assert!(json.contains("\"tool\":\"twec-verify\""));
-    assert!(json.contains("\"version\":2"), "schema must be v2, got: {json}");
+    assert!(
+        json.contains("\"version\":2"),
+        "schema must be v2, got: {json}"
+    );
 }
 
 #[test]
@@ -78,7 +81,10 @@ fn did_you_mean_emits_structured_fix() {
 
     assert_eq!(fix.edits.len(), 1, "expected one edit");
     let edit = &fix.edits[0];
-    assert_eq!(edit.replace, "apple", "replacement should be the suggested name");
+    assert_eq!(
+        edit.replace, "apple",
+        "replacement should be the suggested name"
+    );
     assert_eq!(edit.len, "aple".len() as u32, "len should match the typo");
     assert!(
         fix.rationale.contains("did_you_mean"),

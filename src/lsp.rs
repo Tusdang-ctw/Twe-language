@@ -388,11 +388,9 @@ impl Server {
         let tokens = lexer::lex(text).ok()?;
         let program = parser::parse(&tokens).ok()?;
         for (import_uri, _alias, _line) in self.imports_of(uri, &program) {
-            let imported_text = self
-                .documents
-                .get(&import_uri)
-                .cloned()
-                .or_else(|| uri_to_path(&import_uri).and_then(|p| std::fs::read_to_string(p).ok()))?;
+            let imported_text = self.documents.get(&import_uri).cloned().or_else(|| {
+                uri_to_path(&import_uri).and_then(|p| std::fs::read_to_string(p).ok())
+            })?;
             let imported_tokens = lexer::lex(&imported_text).ok()?;
             let imported_program = parser::parse(&imported_tokens).ok()?;
             if let Some(sym) = collect_symbols(&imported_program)
@@ -409,11 +407,7 @@ impl Server {
     /// URI relative to `from_uri`'s directory. Returns (uri, alias,
     /// import-line) so the caller can prefer same-name top-level
     /// hits in the directly imported file before fallback searches.
-    fn imports_of(
-        &self,
-        from_uri: &str,
-        program: &Program,
-    ) -> Vec<(String, Option<String>, u32)> {
+    fn imports_of(&self, from_uri: &str, program: &Program) -> Vec<(String, Option<String>, u32)> {
         let mut out = Vec::new();
         let from_dir = uri_to_path(from_uri).and_then(|p| p.parent().map(|d| d.to_path_buf()));
         let Some(dir) = from_dir else {
@@ -463,7 +457,11 @@ impl Server {
                 // skip the cursor's own position when `include_decl`
                 // is false. That handles the common case (the user
                 // is at the declaration and wants only call sites).
-                if !include_decl && doc_uri.as_str() == uri && l == line && covers(c, &name, character) {
+                if !include_decl
+                    && doc_uri.as_str() == uri
+                    && l == line
+                    && covers(c, &name, character)
+                {
                     continue;
                 }
                 locations.push(location(doc_uri, l, c, &name));
@@ -531,7 +529,10 @@ impl Server {
                     ]);
                     let end = obj([
                         ("line", Value::Int(l as i64)),
-                        ("character", Value::Int(c as i64 + old_name.chars().count() as i64)),
+                        (
+                            "character",
+                            Value::Int(c as i64 + old_name.chars().count() as i64),
+                        ),
                     ]);
                     obj([
                         ("range", obj([("start", start), ("end", end)])),
@@ -564,8 +565,8 @@ impl Server {
         let needle = name.as_bytes();
         while i + needle.len() <= bytes.len() {
             let prev_ok = i == 0 || !is_id_continue_byte(bytes[i - 1]);
-            let next_ok = i + needle.len() == bytes.len()
-                || !is_id_continue_byte(bytes[i + needle.len()]);
+            let next_ok =
+                i + needle.len() == bytes.len() || !is_id_continue_byte(bytes[i + needle.len()]);
             if prev_ok
                 && next_ok
                 && &bytes[i..i + needle.len()] == needle
