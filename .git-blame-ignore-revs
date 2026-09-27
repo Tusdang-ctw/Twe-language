@@ -1,0 +1,5 @@
+# Mechanical reformatting commits, skipped by `git blame`
+# (enable locally: git config blame.ignoreRevsFile .git-blame-ignore-revs).
+
+# web3d-m0: cargo fmt --all (formatting only)
+08d27e3e9ca88202634e8a6ff2adb0cf54630dbb
