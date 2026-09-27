@@ -4,6 +4,18 @@
 >
 > All time estimates assume a single primary developer working ~15 hours per week with AI assistance and the reading list completed. Adjust upward for less time, broader scope, or unfinished prerequisites.
 
+> **Active line since 2026-09-27: `web3d-M0 … M6`.** The Web3D pivot reopened the v1.0 thesis: v1.0 is now a top-down 3D "survivors" game running in Chrome (WebGPU) and natively from one Rust + wgpu kernel. Milestones, exit criteria and scope are canonical in [`changes/2026-09-27-web3d-pivot.md`](changes/2026-09-27-web3d-pivot.md), with one closeout note per milestone in `docs/changes/`. The phase history below (Phases 0–41) is kept as the record of how Twe got here. Several later phases shipped as scaffolding that is now behind `--features experimental`.
+>
+> | Milestone | Status |
+> |---|---|
+> | M0 — truth + foundation safety | **closed 2026-09-27** ([closeout](changes/2026-09-27-web3d-m0-closeout.md)) |
+> | M1 — lexical scoping + interpreter speed | next |
+> | M2 — workspace + kernel + WebGPU | planned |
+> | M3 — SoA entities, `look:`, materials, HUD | planned |
+> | M4 — `survive3d` slice + Studio viewport | planned |
+> | M5 — measured LLM benchmark (parallel, from week 10) | planned |
+> | M6 — one engine (retire macroquad) | planned |
+
 ---
 
 ## Guiding principle

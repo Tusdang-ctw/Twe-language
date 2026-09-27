@@ -45,6 +45,13 @@ jobs:
       - name: Test
         run: cargo test --release
 
+      # web3d-M0: seeded differential GC fuzzer at the milestone's
+      # exit-criterion scale (the default `cargo test` run does 200).
+      - name: GC fuzz (1000 seeds)
+        env:
+          TWE_GC_FUZZ_SEEDS: "1000"
+        run: cargo test --release --test gc_fuzz
+
       - name: Clippy
         run: cargo clippy --release --all-targets -- -D warnings
 

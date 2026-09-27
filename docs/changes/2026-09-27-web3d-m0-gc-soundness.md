@@ -119,5 +119,9 @@ this case is tracked for M0 follow-up.
   VM is frozen and opt-in (`--vm bytecode`); per the pivot plan it is
   gated behind `experimental` and removed at M1 exit, so it is not
   being fixed. Don't ship games on `--vm bytecode`.
-- The nightly mutator fuzz and the heap cap from the M0 plan are still
-  to do.
+- ~~Fuzzing~~ — shipped as `tests/gc_fuzz.rs`, a seeded generator of
+  valid allocation-heavy programs (not the mutator, whose output is
+  deliberately broken programs). 1000 seeds clean; runs in CI.
+- The heap cap is folded into M1: slot-based frames let safepoints move
+  back inside functions, which removes the need for it. See
+  [`2026-09-27-web3d-m0-closeout.md`](2026-09-27-web3d-m0-closeout.md).
