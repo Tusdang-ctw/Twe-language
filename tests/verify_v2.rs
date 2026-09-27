@@ -177,3 +177,35 @@ fn json_diagnostic_with_fix_is_well_formed() {
     assert!(json.contains("\"rationale\":"), "got: {json}");
     assert!(json.contains("\"edits\":["), "got: {json}");
 }
+
+// ---------- web3d-M1: lexical scope errors ----------
+
+#[test]
+fn verify_reports_scope_errors_that_run_would_reject() {
+    // `twec run` rejects these before executing, so verify must flag
+    // them too — an LLM must never get a clean verify for a program
+    // that won't run.
+    let report = verify_program(
+        "function g():\n    return y\nfunction h(y):\n    return g()\nprint(h(99))\n",
+    );
+    assert!(!report.ok());
+    let d = &report.diagnostics[0];
+    assert_eq!(d.kind, "scope-error.frame-leak");
+    assert_eq!((d.line, d.col), (2, 12));
+
+    let report = verify_program("function f():\n    total = 3\n");
+    assert_eq!(report.diagnostics[0].kind, "scope-error.assign-undeclared");
+}
+
+#[test]
+fn verify_suggests_a_rename_for_an_undefined_name_inside_a_function() {
+    let report = verify_program("let speed = 3\nfunction f():\n    return sped * 2\nprint(f())\n");
+    let d = &report.diagnostics[0];
+    assert_eq!(d.kind, "name-error.unknown");
+    let fix = d.fix.as_ref().expect("did-you-mean fix");
+    assert_eq!(fix.edits[0].replace, "speed");
+    assert_eq!(
+        (fix.edits[0].line, fix.edits[0].col, fix.edits[0].len),
+        (3, 12, 4)
+    );
+}

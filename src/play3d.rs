@@ -210,15 +210,23 @@ fn initialize(path: &str) -> Result<Env, ()> {
             return Err(());
         }
     };
-    let mut env = Env::new();
-    stdlib::install(&mut env);
-    if let Err(e) = eval::run_top_level(&mut env, &program) {
-        eprintln!("{path}:{}:{}: {}", e.line, e.col, e.message);
-        if let Some(help) = &e.help {
-            eprintln!("  help: {help}");
+    // web3d-M1: scripts that import modules go through the module loader.
+    let mut env = if crate::module::has_imports(&program) {
+        crate::module::prepare_entry(std::path::Path::new(path), &src).map_err(|msg| {
+            eprintln!("{msg}");
+        })?
+    } else {
+        let mut env = Env::new();
+        stdlib::install(&mut env);
+        if let Err(e) = eval::run_top_level(&mut env, &program) {
+            eprintln!("{path}:{}:{}: {}", e.line, e.col, e.message);
+            if let Some(help) = &e.help {
+                eprintln!("  help: {help}");
+            }
+            return Err(());
         }
-        return Err(());
-    }
+        env
+    };
     if !env.out.is_empty() {
         // Drain any startup `print` output to stdout so the user
         // sees it before the window opens.

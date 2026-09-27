@@ -581,6 +581,12 @@ fn mark_class(class: &crate::value::ClassDef) {
         for v in c.field_defaults.values() {
             mark_value(v);
         }
+        // web3d-M1: methods keep their defining module alive.
+        for m in c.methods.values() {
+            if let Some(h) = &m.home {
+                mark_value(h);
+            }
+        }
         cur = c.parent.as_deref();
     }
 }
@@ -616,21 +622,7 @@ fn mark_body(body: &HeapBody) {
             // also carry TaggedValues — mark them so a fiber's resume
             // values don't get swept while the fiber is paused.
             for frame in &inst.fiber_frames {
-                if let crate::value::FrameKind::Function {
-                    saved_returning,
-                    saved_params,
-                    ..
-                } = &frame.kind
-                {
-                    if let Some(v) = saved_returning {
-                        mark_value(v);
-                    }
-                    for (_name, slot) in saved_params {
-                        if let Some(v) = slot {
-                            mark_value(v);
-                        }
-                    }
-                }
+                crate::value::mark_fiber_frame(frame);
             }
         }
         HeapBody::BcClass(c) => {
@@ -672,7 +664,13 @@ fn mark_body(body: &HeapBody) {
         // Tree-walker FunctionDef bodies are AST statements (literals
         // stored as `ast::Lit`, not `TaggedValue`); nothing to scan.
         // Builtin captures are pure function pointers + names.
-        HeapBody::Function(_) | HeapBody::Builtin { .. } => {}
+        // web3d-M1: a function keeps its home module alive.
+        HeapBody::Function(def) => {
+            if let Some(h) = &def.home {
+                mark_value(h);
+            }
+        }
+        HeapBody::Builtin { .. } => {}
         // Leaf bodies — no nested TaggedValues to scan.
         HeapBody::String(_)
         | HeapBody::BoxedInt(_)

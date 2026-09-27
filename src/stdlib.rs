@@ -1324,7 +1324,7 @@ fn quit_on_escape_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
             col: 0,
             message: format!("quit_on_escape expects a bool, got {}", (*v).type_name()),
             help: Some(
-                "call `quit_on_escape(false)` when the game uses Escape itself (e.g. to open a                  pause menu), and `quit()` from its Quit button"
+                "call `quit_on_escape(false)` when the game uses Escape itself (e.g. to open a pause menu), and `quit()` from its Quit button"
                     .to_string(),
             ),
         });

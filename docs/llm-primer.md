@@ -26,6 +26,7 @@ is **not Python** — the rules below differ in ways that matter.
 
 - **Never invent stdlib functions.** Call `stdlib_lookup` / `stdlib_list` (or read the stdlib manifest) to confirm a name and its parameters exist. Twe has ~360 builtins across ~50 categories; guessing names is the #1 error.
 - **Always `verify` before you claim done.** Run the `verify` tool on your output; if it returns errors, apply the structured `fix` patches and re-verify. Verified-clean source is the contract.
+- **Scoping is lexical.** Each function / method / event-handler body has its own locals; a body can't read another body's locals or a caller's parameters — pass values as arguments or declare shared state as a top-level `var`. A name declared in an `if` / `for` / `while` block isn't visible after it. `x = …` only updates an existing binding (declare with `var x = …` first), and re-declaring a visible name (e.g. `let hp` inside an entity that has an `hp` field) is an error. `verify` reports all of these.
 - **Drawing only inside `on render():`.** Calling `rect`/`circle`/`text`/`sprite` outside a render handler is a runtime error. Do state mutation in `every` / `on update(dt)`.
 - **State transitions (`-> name`) are only legal inside a `state` block.** Code after a `->` is dead.
 - **Keyword arguments must follow all positional args** and use `name: value` (e.g. `rect(at: (10,20), size: (100,50), color: color.red)`).

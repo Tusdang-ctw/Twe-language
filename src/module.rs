@@ -422,20 +422,36 @@ pub fn build_module_value(
     env: &crate::value::Env,
     stdlib_names: &std::collections::HashSet<String>,
 ) -> crate::tagged_value::TaggedValue {
+    let v = empty_module_value();
+    fill_module_value(&v, env, stdlib_names);
+    v
+}
+
+/// An empty `kind: "module"` object, filled by [`fill_module_value`]
+/// once the module's top level has run.
+pub fn empty_module_value() -> crate::tagged_value::TaggedValue {
     use std::cell::RefCell;
     use std::rc::Rc;
-    let mut fields: std::collections::HashMap<String, crate::tagged_value::TaggedValue> =
-        std::collections::HashMap::new();
+    crate::tagged_value::TaggedValue::from_object(Rc::new(RefCell::new(crate::value::Object {
+        fields: std::collections::HashMap::new(),
+        kind: "module",
+    })))
+}
+
+/// Copy a module env's own (non-stdlib) globals into `module`.
+pub fn fill_module_value(
+    module: &crate::tagged_value::TaggedValue,
+    env: &crate::value::Env,
+    stdlib_names: &std::collections::HashSet<String>,
+) {
+    let rc = module.as_object();
+    let mut obj = rc.borrow_mut();
     for (name, value) in env.iter_bindings() {
         if stdlib_names.contains(&name) {
             continue;
         }
-        fields.insert(name, value);
+        obj.fields.insert(name, value);
     }
-    crate::tagged_value::TaggedValue::from_object(Rc::new(RefCell::new(crate::value::Object {
-        fields,
-        kind: "module",
-    })))
 }
 
 /// Compute the binding name for an import: explicit `as Alias`
@@ -458,6 +474,34 @@ pub fn import_binding_name(path: &str, alias: Option<&str>) -> String {
 /// not shared — that's a feature, not a bug: a module's `let
 /// counter = 0` is private to that module's file.
 pub fn run_with_modules(graph: &ModuleGraph) -> Result<String, crate::value::RuntimeError> {
+    Ok(entry_env(graph)?.out)
+}
+
+/// Does `program` import anything? Programs without imports skip the
+/// module loader entirely.
+pub fn has_imports(program: &crate::ast::Program) -> bool {
+    program
+        .stmts
+        .iter()
+        .any(|s| matches!(s, crate::ast::Stmt::Import { .. }))
+}
+
+/// web3d-M1: load the entry script at `path` (whose source is `src`)
+/// with its imports, evaluate every dependency and the entry's top
+/// level, and return the env ready to tick. Used by `twec run` (file
+/// or directory, with `--frames`), `twec play` and `twec play3d`, so
+/// `import` works the same everywhere — before, only `twec run <dir>`
+/// loaded modules, and it never ticked frames. Errors come back
+/// formatted for the terminal.
+pub fn prepare_entry(path: &Path, src: &str) -> Result<crate::value::Env, String> {
+    let graph = load_from_path(path, Some(src)).map_err(|e| format!("error: {}", e.message))?;
+    entry_env(&graph).map_err(|e| format!("{}: runtime error: {e}", path.display()))
+}
+
+/// Evaluate every dependency of `graph` in topological order (each in
+/// its own env, as a module object), then run the entry's top level
+/// in a fresh env that can import them. Returns that env.
+pub fn entry_env(graph: &ModuleGraph) -> Result<crate::value::Env, crate::value::RuntimeError> {
     let order = topo_order(graph);
     let mut module_cache: std::collections::HashMap<String, crate::tagged_value::TaggedValue> =
         std::collections::HashMap::new();
@@ -471,8 +515,14 @@ pub fn run_with_modules(graph: &ModuleGraph) -> Result<String, crate::value::Run
         // module's own `import` statement can resolve its deps.
         sub_env.module_cache = module_cache.clone();
         sub_env.current_source = Some(module.canonical_path.clone());
+        // web3d-M1: the module object exists *before* its top level
+        // runs, so the functions and methods it defines record it as
+        // their `home` — called from an importer, they resolve free
+        // names in this module's globals, not the importer's.
+        let module_value = empty_module_value();
+        sub_env.current_module = Some(module_value);
         crate::eval::run_top_level(&mut sub_env, &module.program)?;
-        let module_value = build_module_value(&sub_env, &stdlib_names);
+        fill_module_value(&module_value, &sub_env, &stdlib_names);
         module_cache.insert(key.clone(), module_value);
     }
 
@@ -481,7 +531,7 @@ pub fn run_with_modules(graph: &ModuleGraph) -> Result<String, crate::value::Run
     env.module_cache = module_cache;
     env.current_source = Some(graph.entry.canonical_path.clone());
     crate::eval::run_top_level(&mut env, &graph.entry.program)?;
-    Ok(env.out)
+    Ok(env)
 }
 
 fn display_path(p: &Path) -> String {
@@ -663,6 +713,50 @@ mod tests {
         let g = load_from_path(&dir.join("main.twe"), None).unwrap();
         let out = run_with_modules(&g).expect("run");
         assert!(out.contains("15"), "expected 15 in output: {out:?}");
+    }
+
+    #[test]
+    fn module_functions_resolve_names_in_their_own_module() {
+        // web3d-M1: a module function called from the importer sees
+        // its own module's globals and sibling functions — never the
+        // importer's. Under the old dynamic scoping `helper` and `scale`
+        // were looked up in main's env and the call failed.
+        let dir = tmp("lexical_home");
+        write(
+            &dir,
+            "main.twe",
+            "import \"calc\"
+let scale = 100
+print(calc.triple(5))
+print(calc.bump())
+print(calc.bump())
+",
+        );
+        write(
+            &dir,
+            "calc.twe",
+            "let scale = 3
+var count = 0
+function helper(x):
+    return x + 1
+function triple(x):
+    return helper(x) * scale
+function bump():
+    count += 1
+    return count
+",
+        );
+        let g = load_from_path(&dir.join("main.twe"), None).unwrap();
+        let out = run_with_modules(&g).expect("run");
+        // (5 + 1) * 3 with the module's `scale`, not main's 100; the
+        // module's own `count` is updated in place across calls.
+        assert_eq!(
+            out,
+            "18
+1
+2
+"
+        );
     }
 
     #[test]

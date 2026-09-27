@@ -1467,6 +1467,17 @@ fn initialize(path: &str) -> Result<Env, ()> {
             return Err(());
         }
     };
+    // web3d-M1: a script that imports modules goes through the module
+    // loader (it used to leave every import unbound in `twec play`).
+    let imports = crate::lexer::lex(&src)
+        .ok()
+        .and_then(|t| crate::parser::parse(&t).ok())
+        .is_some_and(|p| crate::module::has_imports(&p));
+    if imports {
+        return crate::module::prepare_entry(Path::new(path), &src).map_err(|msg| {
+            eprintln!("{msg}");
+        });
+    }
     initialize_from_source(&src, path)
 }
 

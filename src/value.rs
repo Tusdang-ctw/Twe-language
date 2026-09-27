@@ -18,6 +18,11 @@ pub struct FunctionDef {
     pub name: String,
     pub params: Vec<String>,
     pub body: Vec<crate::ast::Stmt>,
+    /// web3d-M1: the module object this function was defined in
+    /// (`None` for the entry program). A call from another module
+    /// resolves the body's free names in *this* module's globals —
+    /// lexical scoping across modules.
+    pub home: Option<TaggedValue>,
 }
 
 #[derive(Debug)]
@@ -35,6 +40,65 @@ pub struct ClassDef {
 pub struct MethodDef {
     pub params: Vec<String>,
     pub body: Vec<crate::ast::Stmt>,
+    /// web3d-M1: defining module, as for [`FunctionDef::home`].
+    pub home: Option<TaggedValue>,
+}
+
+/// web3d-M1: one activation of a function, method, or event-handler
+/// body — its local variables (parameters first) plus the module whose
+/// globals its free names resolve in. Block visibility is checked
+/// statically by `crate::resolve`, so a frame is one flat list; it is
+/// a `Vec` because frames are small and linear lookup beats hashing.
+#[derive(Debug, Clone, Default)]
+pub struct LocalFrame {
+    pub locals: Vec<(String, TaggedValue)>,
+    /// Module object whose fields are this frame's globals, when the
+    /// body was defined in a module other than the running one.
+    pub home: Option<TaggedValue>,
+}
+
+impl LocalFrame {
+    pub fn get(&self, name: &str) -> Option<TaggedValue> {
+        self.locals
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| *v)
+    }
+
+    /// Set an existing local; returns false if `name` isn't one.
+    pub fn assign(&mut self, name: &str, v: TaggedValue) -> bool {
+        match self.locals.iter_mut().rev().find(|(n, _)| n == name) {
+            Some(slot) => {
+                slot.1 = v;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove the innermost local named `name`, if any.
+    pub fn remove(&mut self, name: &str) {
+        if let Some(i) = self.locals.iter().rposition(|(n, _)| n == name) {
+            self.locals.remove(i);
+        }
+    }
+
+    /// Declare (or re-declare) a local.
+    pub fn declare(&mut self, name: &str, v: TaggedValue) {
+        if !self.assign(name, v) {
+            self.locals.push((name.to_string(), v));
+        }
+    }
+
+    fn mark(&self) {
+        for (_, v) in &self.locals {
+            crate::heap::mark_value(v);
+        }
+        if let Some(h) = &self.home {
+            crate::heap::mark_value(h);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -173,6 +237,9 @@ pub enum Branch {
 pub struct Frame {
     pub kind: FrameKind,
     pub resume_path: Vec<PathEntry>,
+    /// web3d-M1: the body's local variables, parked here while the
+    /// fiber is suspended and pushed back onto `Env::frames` on resume.
+    pub locals: LocalFrame,
 }
 
 /// What body the frame is rooted in. `StateEntry` is fetched at
@@ -186,8 +253,9 @@ pub struct Frame {
 /// - `saved_returning`: the value of `env.returning` at the time
 ///   of the call (almost always `None`). Restored on completion
 ///   so a parent function's return channel isn't corrupted.
-/// - `saved_params`: the previous bindings the function's
-///   parameter names shadowed. Restored on completion.
+///
+/// (web3d-M1 removed `saved_params`: parameters are frame locals now,
+/// saved with the rest of the frame in `Frame::locals`.)
 ///
 /// v0.2 session 2b targets function-position `Stmt::Expr` calls
 /// only; method dispatch and call-as-expression (`let x = f()`)
@@ -198,7 +266,6 @@ pub enum FrameKind {
     Function {
         def: Rc<crate::value::FunctionDef>,
         saved_returning: Option<TaggedValue>,
-        saved_params: Vec<(String, Option<TaggedValue>)>,
     },
 }
 
@@ -275,6 +342,13 @@ pub struct Env {
     pub in_render: bool,
     pub loop_depth: u32,
     pub call_depth: u32,
+    /// web3d-M1: active function / method / handler frames, innermost
+    /// last. Empty while running top-level statements.
+    pub frames: Vec<LocalFrame>,
+    /// web3d-M1: the module object being initialised when this env runs
+    /// a module's top level (`None` for the entry program). A function
+    /// whose `home` is this module resolves globals in this env.
+    pub current_module: Option<TaggedValue>,
     /// 3D draw queue accumulated across one frame's `on render():`
     /// body. `cube(at:, color:, size:)` and friends push here; the
     /// `play3d` render loop drains and consumes after the body
@@ -369,6 +443,8 @@ impl Env {
             in_render: false,
             loop_depth: 0,
             call_depth: 0,
+            frames: Vec::new(),
+            current_module: None,
             render_queue3d: Vec::new(),
             mesh_paths: Vec::new(),
             texture_paths: Vec::new(),
@@ -498,6 +574,13 @@ impl Env {
         for v in self.module_cache.values() {
             crate::heap::mark_value(v);
         }
+        // web3d-M1: locals of every active function / handler frame.
+        for f in &self.frames {
+            f.mark();
+        }
+        if let Some(m) = &self.current_module {
+            crate::heap::mark_value(m);
+        }
         crate::stdlib::scan_stdlib_roots();
     }
 }
@@ -512,21 +595,20 @@ pub fn mark_instance(inst: &Instance) {
         crate::heap::mark_value(v);
     }
     for frame in &inst.fiber_frames {
-        if let FrameKind::Function {
-            saved_returning,
-            saved_params,
-            ..
-        } = &frame.kind
-        {
-            if let Some(v) = saved_returning {
-                crate::heap::mark_value(v);
-            }
-            for (_, slot) in saved_params {
-                if let Some(v) = slot {
-                    crate::heap::mark_value(v);
-                }
-            }
-        }
+        mark_fiber_frame(frame);
+    }
+}
+
+/// Mark the values a suspended fiber frame keeps alive: its parked
+/// locals (web3d-M1) and, for a function frame, the saved return slot.
+pub fn mark_fiber_frame(frame: &Frame) {
+    frame.locals.mark();
+    if let FrameKind::Function {
+        saved_returning: Some(v),
+        ..
+    } = &frame.kind
+    {
+        crate::heap::mark_value(v);
     }
 }
 

@@ -351,23 +351,29 @@ Twe has eager evaluation. Expressions are evaluated left to right. Function argu
 
 - **`let`** declares an immutable binding.
 - **`var`** declares a mutable binding.
-- Scopes are block-scoped. A name introduced in a block goes out of scope at the end of that block.
-- Shadowing within a block is a compile-time error. Shadowing across nested blocks is allowed.
-- Top-level `let` and `var` are module-scoped.
-- A `global` keyword exists for explicit globals (used sparingly, mainly for engine-provided ambient values like `time`, `key`, `scene`).
+- **Scoping is lexical** *(enforced since web3d-M1, 2026-09-28 — before that the tree-walker resolved names dynamically; see [`changes/2026-09-28-web3d-m1-lexical-scoping.md`](changes/2026-09-28-web3d-m1-lexical-scoping.md))*:
+  - Every **function, method, dialogue and event-handler body** (`on update`, `on render`, `every`, `on <predicate>`, `on key_press`, a state's entry / exit body, `on Class.death`) has its own locals. Parameters and `let` / `var` inside it vanish when it returns. A body never sees another body's locals — a callee cannot read its caller's parameters.
+  - **Blocks** (`if` / `elif` / `else`, `while`, `for`, `then`, `choice` branches, list comprehensions) nest: a name declared in a block is not visible after the block ends.
+  - **Top-level** `let` / `var`, functions, declarations and imports are the module's globals, visible everywhere in the file regardless of order.
+  - Inside an `entity` / `scene` / … declaration, its **fields and methods** (and its parents') are visible by bare name, after locals.
+  - Lookup order inside a body: locals → `self` fields → module globals → builtins.
+- `name = value` **updates an existing binding**; assigning an undeclared name is an error (`let` / `var` introduce names).
+- **Re-declaring a visible name** with `let` / `var` — an earlier local of the same body, a field of the enclosing entity inside its methods, or a global from a top-level block — is an error. *(Stricter than this section's original draft, which allowed shadowing across nested blocks: shadowing a field with a local is how `hp -= 1` silently misses the entity. Principle 3.)* `for` and comprehension variables may shadow; the shadowed binding is restored when the loop ends.
+- Scope errors are reported **before the program runs** (and by `twec verify`), not when a branch finally executes.
+- Engine-provided ambient values (`time`, `key`, `key_press`, `mouse_held`, `gamepad`, …) are builtins installed by the stdlib. *(The `global` keyword this section once described was never implemented.)*
 
 ### 4.3 Functions
 
-Functions are first-class values. They close over their enclosing scope. They have exactly one return value (which may be a tuple).
+Functions are first-class values with exactly one return value (which may be a tuple). A function sees its own parameters and locals plus its module's globals (§4.2); it does **not** capture the locals of an enclosing function.
 
 ```twe
 function add(a: int, b: int) -> int:
     return a + b
 
-let inc = fn(x: int) -> int: x + 1   # lambda
-
-let result = add(2, inc(3))   # 6
+let result = add(2, add(1, 2))   # 5
 ```
+
+*Not implemented: lambdas (`fn(x) -> …`) and closures. Nothing in the examples requires them; they would re-enter with a design note if one does.*
 
 ### 4.4 Method dispatch
 
@@ -1459,6 +1465,8 @@ Twe does **not** have try/catch in v0.1. The `match` form is the only way to han
 ### 9.1 File = module
 
 Each `.twe` file is a module. The module's name is its filename (without extension). All top-level declarations are exported by default; prefix with `_` to mark as private (`function _internal_helper(...): ...`).
+
+A module's functions and methods resolve free names in **their own module's** globals, even when called from another file: `calc.triple(5)` from `main.twe` uses `calc.twe`'s `helper` and `scale`, not `main.twe`'s *(web3d-M1; before, they resolved in the importer and failed)*. `import` works identically under `twec run <file>`, `twec run <dir>`, `twec play` and `twec play3d`.
 
 ### 9.2 Imports
 

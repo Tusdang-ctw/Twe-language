@@ -312,6 +312,18 @@ pub fn verify_program_with_options(
         let mut deprecation_warnings = collect_deprecated_uses(&program);
         diagnostics.append(&mut deprecation_warnings);
     }
+    // web3d-M1: lexical scope errors. `twec run` rejects these before
+    // executing, so verify must report them too — otherwise an LLM gets
+    // a clean verify for a program that won't run. Deduplicated against
+    // what inference already reported at the same position.
+    for d in collect_scope_issues(&program) {
+        if !diagnostics
+            .iter()
+            .any(|x| x.line == d.line && x.col == d.col)
+        {
+            diagnostics.push(d);
+        }
+    }
     // Phase 33 session 9: collect typed-hole warnings unconditionally.
     // Holes are an authoring affordance — verify always reports them
     // so the LLM (or human) sees what's left to fill in. The warning
@@ -325,6 +337,69 @@ pub fn verify_program_with_options(
         verified,
         diagnostics,
     }
+}
+
+/// web3d-M1: one Error diagnostic per lexical scope issue
+/// (`crate::resolve`). Undefined names use the existing
+/// `name-error.unknown` kind and carry a did-you-mean rename fix when a
+/// close match exists; the rest are `scope-error.<kind>`.
+fn collect_scope_issues(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> {
+    let known = crate::resolve::known_globals();
+    let issues = crate::resolve::check(program, &known);
+    if issues.is_empty() {
+        return Vec::new();
+    }
+    // Candidates for did-you-mean: builtins plus the program's own
+    // top-level names.
+    let mut candidates: Vec<String> = known.into_iter().collect();
+    for stmt in &program.stmts {
+        match stmt {
+            Stmt::Let { name, .. }
+            | Stmt::FunctionDecl { name, .. }
+            | Stmt::DialogueDecl { name, .. }
+            | Stmt::Decl { name, .. } => candidates.push(name.clone()),
+            _ => {}
+        }
+    }
+    candidates.sort();
+    issues
+        .into_iter()
+        .map(|i| {
+            let err = crate::resolve::issue_error(&i);
+            let (kind, help, fix) = if i.kind == crate::resolve::IssueKind::Undeclared {
+                match crate::value::did_you_mean(&i.name, candidates.iter()) {
+                    Some(sug) => (
+                        "name-error.unknown".to_string(),
+                        Some(format!("did you mean `{sug}`?")),
+                        Some(Fix {
+                            rationale: format!(
+                                "rename `{}` to `{sug}` (suggested by did_you_mean)",
+                                i.name
+                            ),
+                            edits: vec![Edit {
+                                line: i.line,
+                                col: i.col,
+                                len: i.name.len() as u32,
+                                replace: sug.to_string(),
+                            }],
+                        }),
+                    ),
+                    None => ("name-error.unknown".to_string(), err.help, None),
+                }
+            } else {
+                (format!("scope-error.{}", i.kind.as_str()), err.help, None)
+            };
+            VerifyDiagnostic {
+                kind,
+                severity: Severity::Error,
+                line: i.line,
+                col: i.col,
+                message: err.message,
+                help,
+                fix,
+            }
+        })
+        .collect()
 }
 
 /// Phase 33 session 9: walk `program` and emit a Warning diagnostic

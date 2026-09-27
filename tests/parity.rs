@@ -112,6 +112,11 @@ const VM_UNSUPPORTED: &[(&str, &str)] = &[
          2026-06-01 VM-strategy decision",
     ),
     (
+        "lexical_scope.twe",
+        "compiler.rs — uses a list comprehension (tree-walker-only, see list_comp.twe); \
+         this is the web3d-M1 lexical-scoping program",
+    ),
+    (
         "gc_comprehension_uaf.twe",
         "compiler.rs — iterates list comprehensions, which are tree-walker-only (see \
          list_comp.twe); this is a web3d-M0 tree-walker GC regression program",

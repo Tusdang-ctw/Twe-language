@@ -56,6 +56,10 @@ pub fn run_with_frames(program: &Program, frames: u32, dt: f64) -> Result<String
 /// has any declared scenes / functions / globals bound. Callers use
 /// `tick_frame` / `render_frame` to drive the interactive loop.
 pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeError> {
+    // web3d-M1: names resolve lexically; scope errors (undefined names,
+    // another function's locals, assignment to undeclared names) are
+    // reported before anything runs, not when a branch finally executes.
+    crate::resolve::check_before_run(program, env)?;
     run_block(env, &program.stmts)?;
     if env.returning.take().is_some() {
         // Top-level `return` is silently dropped.
@@ -82,8 +86,11 @@ pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     let paused = crate::stdlib::is_paused();
     if !paused {
         if let Some(handler) = env.on_update.clone() {
-            env.set(handler.param.clone(), Value::from_float(dt));
-            run_block(env, &handler.body)?;
+            run_frame_body(
+                env,
+                vec![(handler.param.clone(), Value::from_float(dt))],
+                &handler.body,
+            )?;
             if env.returning.take().is_some() {
                 return Ok(());
             }
@@ -193,17 +200,14 @@ fn prune_despawned(env: &mut Env) {
 }
 
 /// Bind the handler's `param` to the dying entity and run the body.
-/// Mirrors the OnUpdate calling convention (env-level binding rather
-/// than a pushed scope — there's no scope mechanism on Env yet, so
-/// the param survives in env after the handler runs; consistent with
-/// how `dt` is left behind by `OnUpdate`).
+/// The param is a local of the handler's frame (web3d-M1; it used to
+/// be left behind as a global).
 fn run_death_handler(
     env: &mut Env,
     handler: &crate::value::OnDeathHandler,
     entity: Value,
 ) -> Result<(), RuntimeError> {
-    env.set(handler.param.clone(), entity);
-    run_block(env, &handler.body)
+    run_frame_body(env, vec![(handler.param.clone(), entity)], &handler.body)
 }
 
 /// On `spawn EmitterClass at pos`, create the particle list as a hidden
@@ -576,7 +580,7 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
     let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
     let _self_root = root_saved_self(prev_self);
     for body in bodies {
-        run_block(env, &body)?;
+        run_frame_body(env, Vec::new(), &body)?;
         if env.returning.is_some() {
             break;
         }
@@ -603,7 +607,7 @@ pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
     };
     let prev_render = env.in_render;
     env.in_render = true;
-    let result = run_block(env, &body);
+    let result = run_frame_body(env, Vec::new(), &body);
     env.in_render = prev_render;
     // A `return` in the top-level on_render body just stops the
     // current frame's draw composition; clear the flag so
@@ -630,7 +634,7 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
         if let Some(body) = body {
             let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
             let _self_root = root_saved_self(prev_self);
-            run_block(env, &body)?;
+            run_frame_body(env, Vec::new(), &body)?;
             env.self_value = prev_self;
         }
         // Apply state transitions raised during on_render — modal
@@ -732,8 +736,11 @@ fn tick_scene(env: &mut Env, scene: &Rc<RefCell<Instance>>, dt: f64) -> Result<(
             .and_then(|state| state.on_update.clone())
     };
     if let Some(handler) = state_on_update {
-        env.set(handler.param.clone(), Value::from_float(dt));
-        run_block(env, &handler.body)?;
+        run_frame_body(
+            env,
+            vec![(handler.param.clone(), Value::from_float(dt))],
+            &handler.body,
+        )?;
         if env.returning.is_some() {
             env.self_value = prev_self;
             return Ok(());
@@ -778,7 +785,7 @@ fn tick_scene(env: &mut Env, scene: &Rc<RefCell<Instance>>, dt: f64) -> Result<(
             scene.borrow_mut().predicate_last_values[idx] = now_true;
         }
         if now_true && !prev {
-            run_block(env, body)?;
+            run_frame_body(env, Vec::new(), body)?;
             if env.returning.is_some() {
                 env.self_value = prev_self;
                 return Ok(());
@@ -815,7 +822,7 @@ fn tick_scene(env: &mut Env, scene: &Rc<RefCell<Instance>>, dt: f64) -> Result<(
             }
             scene.borrow_mut().every_timers[clock_idx] -= interval;
             fires += 1;
-            run_block(env, &body)?;
+            run_frame_body(env, Vec::new(), &body)?;
             if env.returning.is_some() {
                 break 'clocks;
             }
@@ -885,7 +892,7 @@ fn enter_state(
         if let Some(body) = exit_body {
             let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
             let _self_root = root_saved_self(prev_self);
-            run_block(env, &body)?;
+            run_frame_body(env, Vec::new(), &body)?;
             env.transitioning = None;
             env.self_value = prev_self;
         }
@@ -993,14 +1000,21 @@ fn run_state_entry(
     scene.borrow_mut().fiber_frames.push(Frame {
         kind: FrameKind::StateEntry,
         resume_path: Vec::new(),
+        locals: crate::value::LocalFrame::default(),
     });
     let our_idx = scene.borrow().fiber_frames.len() - 1;
     let mut out_path: Vec<PathEntry> = Vec::new();
-    let outcome = run_block_resumable(env, scene, stmts, &[], &mut out_path)?;
+    // web3d-M1: the entry body runs in its own frame.
+    env.frames.push(crate::value::LocalFrame::default());
+    let result = run_block_resumable(env, scene, stmts, &[], &mut out_path);
+    let entry_frame = env.frames.pop().unwrap_or_default();
+    let outcome = result?;
     let mut inst = scene.borrow_mut();
     if matches!(outcome, FiberOutcome::Suspended) {
         out_path.reverse();
         inst.fiber_frames[our_idx].resume_path = out_path;
+        // Park the entry body's locals until the fiber resumes.
+        inst.fiber_frames[our_idx].locals = entry_frame;
     } else {
         // Body finished. Inner frames should already be drained
         // (every push from a function call was paired with a
@@ -1029,8 +1043,10 @@ fn resume_fiber(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<(), Runt
         };
         // Snapshot what we need to drive the body. Frame stays
         // in place at `top_idx` while running.
-        let (body, resume_path, is_function) = {
-            let inst = scene.borrow();
+        let (body, resume_path, is_function, parked) = {
+            let mut inst = scene.borrow_mut();
+            // web3d-M1: take the frame's parked locals to run with.
+            let parked = std::mem::take(&mut inst.fiber_frames[top_idx].locals);
             let f = &inst.fiber_frames[top_idx];
             let body = match &f.kind {
                 FrameKind::StateEntry => inst
@@ -1042,14 +1058,16 @@ fn resume_fiber(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<(), Runt
                 FrameKind::Function { def, .. } => def.body.clone(),
             };
             let is_function = matches!(f.kind, FrameKind::Function { .. });
-            (body, f.resume_path.clone(), is_function)
+            (body, f.resume_path.clone(), is_function, parked)
         };
 
         if is_function {
             env.call_depth += 1;
         }
+        env.frames.push(parked);
         let mut out_path: Vec<PathEntry> = Vec::new();
         let result = run_block_resumable(env, scene, &body, &resume_path, &mut out_path);
+        let live = env.frames.pop().unwrap_or_default();
         if is_function {
             env.call_depth -= 1;
         }
@@ -1058,9 +1076,12 @@ fn resume_fiber(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<(), Runt
         if matches!(outcome, FiberOutcome::Suspended) {
             // Re-suspended. Inner frames may have been pushed
             // above us during the run; our frame is still at
-            // `top_idx`. Update its resume_path in place.
+            // `top_idx`. Update its resume_path in place and park
+            // its locals again.
             out_path.reverse();
-            scene.borrow_mut().fiber_frames[top_idx].resume_path = out_path;
+            let mut inst = scene.borrow_mut();
+            inst.fiber_frames[top_idx].resume_path = out_path;
+            inst.fiber_frames[top_idx].locals = live;
             return Ok(());
         }
 
@@ -1072,12 +1093,10 @@ fn resume_fiber(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<(), Runt
             debug_assert_eq!(inst.fiber_frames.len(), top_idx + 1);
             inst.fiber_frames.pop().expect("frame was at top_idx")
         };
-        // Restore saved env state for function frames whose body
-        // is now done.
+        // Restore the caller's return slot for a function frame whose
+        // body is now done. Its locals were dropped with `live`.
         if let FrameKind::Function {
-            saved_returning,
-            saved_params,
-            ..
+            saved_returning, ..
         } = frame.kind
         {
             // Discard the function's return value (Stmt::Expr
@@ -1085,12 +1104,6 @@ fn resume_fiber(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<(), Runt
             // back into call-as-expression sites).
             let _ = env.returning.take();
             env.returning = saved_returning;
-            for (name, prev) in saved_params {
-                match prev {
-                    Some(v) => env.set(name, v),
-                    None => env.remove(&name),
-                }
-            }
         }
         match outcome {
             FiberOutcome::Returning => continue,
@@ -1477,7 +1490,9 @@ fn is_top_level_user_call(env: &Env, expr: &Expr) -> bool {
             }
         }
     }
-    env.get(name).as_ref().is_some_and(|t| t.is_function())
+    lookup_name(env, name)
+        .as_ref()
+        .is_some_and(|t| t.is_function())
 }
 
 /// Run a `Stmt::Expr(Call)` whose callee is a user function,
@@ -1510,7 +1525,7 @@ fn run_user_call_resumable(
         _ => unreachable!("guarded by is_top_level_user_call"),
     };
     let def: Rc<FunctionDef> = {
-        let __opt = env.get(&name);
+        let __opt = lookup_name(env, &name);
         if let Some(__t) = (__opt).as_ref() {
             if __t.is_function() {
                 let d = __t.as_function();
@@ -1551,11 +1566,6 @@ fn run_user_call_resumable(
     };
 
     let saved_returning = env.returning.take();
-    let saved_params: Vec<(String, Option<Value>)> =
-        def.params.iter().map(|p| (p.clone(), env.get(p))).collect();
-    for (param, arg) in def.params.iter().zip(bound.iter()) {
-        env.set(param.clone(), *arg);
-    }
 
     // Push the function frame upfront. Saved env state lives on
     // the frame so it can be restored on completion (whether
@@ -1566,46 +1576,47 @@ fn run_user_call_resumable(
         kind: FrameKind::Function {
             def: def.clone(),
             saved_returning,
-            saved_params,
         },
         resume_path: Vec::new(),
+        locals: crate::value::LocalFrame::default(),
     });
     let our_idx = scene.borrow().fiber_frames.len() - 1;
 
+    // web3d-M1: parameters are locals of the call's own frame.
+    let locals: Vec<(String, Value)> = def.params.iter().cloned().zip(bound).collect();
+    env.frames.push(crate::value::LocalFrame {
+        locals,
+        home: frame_home(env, &def.home),
+    });
     env.call_depth += 1;
     let mut inner_out: Vec<PathEntry> = Vec::new();
     let result = run_block_resumable(env, scene, &def.body, &[], &mut inner_out);
     env.call_depth -= 1;
+    let live = env.frames.pop().unwrap_or_default();
     let outcome = match result {
         Ok(o) => o,
         Err(e) => {
-            // Pop our frame on error and restore env state from
-            // it so the caller sees a sane scope chain.
+            // Pop our fiber frame on error and restore the caller's
+            // return slot.
             let frame = scene.borrow_mut().fiber_frames.remove(our_idx);
             if let FrameKind::Function {
-                saved_returning,
-                saved_params,
-                ..
+                saved_returning, ..
             } = frame.kind
             {
                 env.returning = saved_returning;
-                for (n, prev) in saved_params {
-                    match prev {
-                        Some(v) => env.set(n, v),
-                        None => env.remove(&n),
-                    }
-                }
             }
             return Err(e);
         }
     };
 
     if matches!(outcome, FiberOutcome::Suspended) {
-        // Update our frame's resume_path in place. Inner frames
-        // pushed by deeper calls (if any) sit above us at higher
-        // indices and stay there.
+        // Update our frame's resume_path in place and park the call's
+        // locals. Inner frames pushed by deeper calls (if any) sit
+        // above us at higher indices and stay there.
         inner_out.reverse();
-        scene.borrow_mut().fiber_frames[our_idx].resume_path = inner_out;
+        let mut inst = scene.borrow_mut();
+        inst.fiber_frames[our_idx].resume_path = inner_out;
+        inst.fiber_frames[our_idx].locals = live;
         return Ok(FiberOutcome::Suspended);
     }
 
@@ -1618,18 +1629,10 @@ fn run_user_call_resumable(
     };
     let _ = env.returning.take(); // discard return value (Stmt::Expr position)
     if let FrameKind::Function {
-        saved_returning,
-        saved_params,
-        ..
+        saved_returning, ..
     } = frame.kind
     {
         env.returning = saved_returning;
-        for (n, prev) in saved_params {
-            match prev {
-                Some(v) => env.set(n, v),
-                None => env.remove(&n),
-            }
-        }
     }
 
     match outcome {
@@ -1678,6 +1681,32 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
 /// `self.ticks`. Without this, scene fields would only be reachable via
 /// explicit `self.x` syntax — verbose and unusual.
 fn lookup_name(env: &Env, name: &str) -> Option<Value> {
+    // web3d-M1: the innermost frame's locals come first.
+    let home = match env.frames.last() {
+        Some(f) => {
+            if let Some(v) = f.get(name) {
+                return Some(v);
+            }
+            f.home
+        }
+        None => None,
+    };
+    if let Some(v) = lookup_self_field(env, name) {
+        return Some(v);
+    }
+    // A function defined in another module resolves its free names in
+    // that module's globals.
+    if let Some(h) = home {
+        if h.is_object() {
+            if let Some(v) = h.as_object().borrow().fields.get(name) {
+                return Some(*v);
+            }
+        }
+    }
+    env.get(name)
+}
+
+fn lookup_self_field(env: &Env, name: &str) -> Option<Value> {
     if let Some(t) = env.self_value.as_ref() {
         if t.is_instance() {
             let rc = t.as_instance();
@@ -1687,7 +1716,7 @@ fn lookup_name(env: &Env, name: &str) -> Option<Value> {
             }
         }
     }
-    env.get(name)
+    None
 }
 
 fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
@@ -1743,6 +1772,131 @@ fn root_saved_self(prev: Option<Value>) -> crate::heap::RootScope {
     roots
 }
 
+// ---------- web3d-M1: lexical frames ----------
+//
+// Every function, method and event-handler body runs in its own
+// `LocalFrame` on `env.frames`: parameters and `let` / `var` bindings
+// live there and vanish when the body ends. Name lookup inside a body
+// is: frame locals → `self` fields → the defining module's globals (for
+// a function called from another module) → env globals. Top-level
+// statements run with no frame and bind globals. Block visibility is
+// enforced statically by `crate::resolve` before a program runs.
+
+/// Run `body` in a fresh frame holding `locals`. The frame is popped
+/// whether the body succeeds or errors.
+fn run_frame_body(
+    env: &mut Env,
+    locals: Vec<(String, Value)>,
+    body: &[Stmt],
+) -> Result<(), RuntimeError> {
+    env.frames
+        .push(crate::value::LocalFrame { locals, home: None });
+    let result = run_block(env, body);
+    env.frames.pop();
+    result
+}
+
+/// The frame `home` for a body defined in module `home`: that module,
+/// unless it is the module this env is currently initialising (whose
+/// globals *are* the env's globals).
+fn frame_home(env: &Env, home: &Option<Value>) -> Option<Value> {
+    match home {
+        Some(h) => {
+            let running = env
+                .current_module
+                .as_ref()
+                .is_some_and(|m| m.heap_ptr() == h.heap_ptr());
+            if running {
+                None
+            } else {
+                Some(*h)
+            }
+        }
+        None => None,
+    }
+}
+
+/// Bind `name` in the innermost frame, or as a global at top level.
+fn declare_name(env: &mut Env, name: &str, v: Value) {
+    match env.frames.last_mut() {
+        Some(f) => f.declare(name, v),
+        None => env.set(name.to_string(), v),
+    }
+}
+
+/// Assign to an *existing* binding — local, `self` field, the frame's
+/// home-module global, or env global, in that order. Returns false when
+/// `name` isn't bound anywhere (assigning an undeclared name is an
+/// error; `let` / `var` introduce names).
+fn assign_name(env: &mut Env, name: &str, v: Value) -> bool {
+    let home = match env.frames.last_mut() {
+        Some(f) => {
+            if f.assign(name, v) {
+                return true;
+            }
+            f.home
+        }
+        None => None,
+    };
+    if let Some(t) = env.self_value.as_ref() {
+        if t.is_instance() {
+            let rc = t.as_instance();
+            let mut inst = rc.borrow_mut();
+            if inst.fields.contains_key(name) {
+                inst.insert_field(name.to_string(), v);
+                return true;
+            }
+        }
+    }
+    if let Some(h) = home {
+        if h.is_object() {
+            let rc = h.as_object();
+            let mut obj = rc.borrow_mut();
+            if obj.fields.contains_key(name) {
+                obj.fields.insert(name.to_string(), v);
+                return true;
+            }
+        }
+    }
+    if env.contains(name) {
+        env.set(name.to_string(), v);
+        return true;
+    }
+    false
+}
+
+/// A `for` / comprehension variable shadows any binding of the same
+/// name in the current scope (frame locals, or globals at top level)
+/// for the loop's duration. Returns the shadowed value to restore.
+fn loop_var_save(env: &Env, var: &str) -> Option<Value> {
+    match env.frames.last() {
+        Some(f) => f.get(var),
+        None => env.get(var),
+    }
+}
+
+/// Undo `loop_var_save`: put the shadowed binding back, or drop the
+/// loop variable if nothing was shadowed.
+fn loop_var_restore(env: &mut Env, var: &str, saved: Option<Value>) {
+    match (env.frames.last_mut(), saved) {
+        (Some(f), Some(v)) => f.declare(var, v),
+        (Some(f), None) => f.remove(var),
+        (None, Some(v)) => env.set(var.to_string(), v),
+        (None, None) => env.remove(var),
+    }
+}
+
+fn undeclared_assign_error(name: &str, line: u32, col: u32) -> RuntimeError {
+    RuntimeError {
+        line,
+        col,
+        message: format!("assignment to undeclared name '{name}'"),
+        help: Some(format!(
+            "declare it first with `var {name} = ...` (at top level for a global)"
+        )),
+    }
+}
+
 /// Collect if the heap is over threshold (or in stress mode). Only
 /// call where no unrooted `TaggedValue` lives on the Rust stack.
 fn safepoint(env: &mut Env) {
@@ -1779,7 +1933,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
     match stmt {
         Stmt::Let { name, value, .. } => {
             let v = eval_expr(env, value)?;
-            env.set(name.clone(), v);
+            declare_name(env, name, v);
             Ok(())
         }
         Stmt::Assign {
@@ -1819,14 +1973,13 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             // mode (Phase 6 session 2) uses the annotations
             // statically in `infer.rs`.
             let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-            env.set(
-                name.clone(),
-                Value::from_function(Rc::new(FunctionDef {
-                    name: name.clone(),
-                    params: param_names,
-                    body: body.clone(),
-                })),
-            );
+            let f = Value::from_function(Rc::new(FunctionDef {
+                name: name.clone(),
+                params: param_names,
+                body: body.clone(),
+                home: env.current_module,
+            }));
+            declare_name(env, name, f);
             Ok(())
         }
         Stmt::Return { value, line, col } => {
@@ -1907,7 +2060,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             line,
             col,
         } => {
-            let class_val = env.get(class).ok_or_else(|| RuntimeError {
+            let class_val = lookup_name(env, class).ok_or_else(|| RuntimeError {
                 line: *line,
                 col: *col,
                 message: format!("class '{class}' is not defined"),
@@ -1977,8 +2130,9 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 name: name.clone(),
                 params: Vec::new(),
                 body: body.clone(),
+                home: env.current_module,
             }));
-            env.set(name.clone(), dialogue);
+            declare_name(env, name, dialogue);
             Ok(())
         }
         Stmt::Say {
@@ -2171,42 +2325,27 @@ fn eval_assign(
     let new_value = eval_expr(env, value)?;
     match target {
         AssignTarget::Name(name) => {
-            if matches!(op, AssignOp::Set) {
-                // Mutate the instance field if `name` is one (scope chain),
-                // else fall back to env. New `let` bindings are introduced
-                // by Stmt::Let, not by plain `name = value`.
-                if let Some(__t) = (env.self_value).as_ref() {
-                    if __t.is_instance() {
-                        let rc = __t.as_instance();
-                        let mut inst = rc.borrow_mut();
-                        if inst.fields.contains_key(name) {
-                            inst.insert_field(name.clone(), new_value);
-                            return Ok(());
-                        }
-                    }
-                }
-                env.set(name.clone(), new_value);
-                return Ok(());
+            // web3d-M1: `name = value` updates an existing binding —
+            // local, `self` field, module global, or global (see
+            // `assign_name`). New names come only from `let` / `var`;
+            // assigning an undeclared name used to create a global
+            // silently.
+            let final_value = if matches!(op, AssignOp::Set) {
+                new_value
+            } else {
+                let current = lookup_name(env, name).ok_or_else(|| RuntimeError {
+                    line,
+                    col,
+                    message: format!("name '{name}' is not defined"),
+                    help: Some(format!("declare it with `let {name} = ...` before use")),
+                })?;
+                compound(op, &current, &new_value, line, col)?
+            };
+            if assign_name(env, name, final_value) {
+                Ok(())
+            } else {
+                Err(undeclared_assign_error(name, line, col))
             }
-            let current = lookup_name(env, name).ok_or_else(|| RuntimeError {
-                line,
-                col,
-                message: format!("name '{name}' is not defined"),
-                help: Some(format!("declare it with `let {name} = ...` before use")),
-            })?;
-            let combined = compound(op, &current, &new_value, line, col)?;
-            if let Some(__t) = (env.self_value).as_ref() {
-                if __t.is_instance() {
-                    let rc = __t.as_instance();
-                    let mut inst = rc.borrow_mut();
-                    if inst.fields.contains_key(name) {
-                        inst.insert_field(name.clone(), combined);
-                        return Ok(());
-                    }
-                }
-            }
-            env.set(name.clone(), combined);
-            Ok(())
         }
         AssignTarget::Field { object, name } => {
             let obj_val = eval_expr(env, object)?;
@@ -2409,11 +2548,11 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             let items = iterable_snapshot(&iter_val, *line, *col)?;
             // Shadow the loop variable for the duration of the
             // comprehension, then restore it (matches `run_for`).
-            let saved = env.get(var);
+            let saved = loop_var_save(env, var);
             let mut out = Vec::new();
             let mut result = Ok(());
             for item in items {
-                env.set(var.clone(), item);
+                declare_name(env, var, item);
                 if let Some(cond) = condition {
                     match eval_expr(env, cond) {
                         Ok(c) => {
@@ -2435,10 +2574,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
                     }
                 }
             }
-            match saved {
-                Some(v) => env.set(var.clone(), v),
-                None => env.remove(var),
-            }
+            loop_var_restore(env, var, saved);
             result?;
             Ok(Value::from_list(Rc::new(RefCell::new(out))))
         }
@@ -3082,24 +3218,20 @@ pub(crate) fn call_function(
             col,
         )?
     };
-    let args = &bound;
+    // web3d-M1: parameters are locals of a fresh frame; free names
+    // resolve lexically (never in the caller's frame).
     let saved_returning = env.returning.take();
-    let saved_params: Vec<(String, Option<Value>)> =
-        def.params.iter().map(|p| (p.clone(), env.get(p))).collect();
-    for (param, arg) in def.params.iter().zip(args.iter()) {
-        env.set(param.clone(), *arg);
-    }
+    let locals: Vec<(String, Value)> = def.params.iter().cloned().zip(bound).collect();
+    env.frames.push(crate::value::LocalFrame {
+        locals,
+        home: frame_home(env, &def.home),
+    });
     env.call_depth += 1;
     let body_result = run_block(env, &def.body);
     env.call_depth -= 1;
+    env.frames.pop();
     let return_value = env.returning.take().unwrap_or(Value::NIL);
     env.returning = saved_returning;
-    for (name, prev) in saved_params {
-        match prev {
-            Some(v) => env.set(name, v),
-            None => env.remove(&name),
-        }
-    }
     body_result?;
     Ok(return_value)
 }
@@ -3174,29 +3306,20 @@ fn call_method(
             col,
         )?
     };
-    let args = &bound;
     let saved_self = env.self_value.replace(recv);
     let saved_returning = env.returning.take();
-    let saved_params: Vec<(String, Option<Value>)> = method
-        .params
-        .iter()
-        .map(|p| (p.clone(), env.get(p)))
-        .collect();
-    for (param, arg) in method.params.iter().zip(args.iter()) {
-        env.set(param.clone(), *arg);
-    }
+    let locals: Vec<(String, Value)> = method.params.iter().cloned().zip(bound).collect();
+    env.frames.push(crate::value::LocalFrame {
+        locals,
+        home: frame_home(env, &method.home),
+    });
     env.call_depth += 1;
     let body_result = run_block(env, &method.body);
     env.call_depth -= 1;
+    env.frames.pop();
     let return_value = env.returning.take().unwrap_or(Value::NIL);
     env.returning = saved_returning;
     env.self_value = saved_self;
-    for (name, prev) in saved_params {
-        match prev {
-            Some(v) => env.set(name, v),
-            None => env.remove(&name),
-        }
-    }
     body_result?;
     Ok(return_value)
 }
@@ -3257,7 +3380,7 @@ fn run_for(
     col: u32,
 ) -> Result<(), RuntimeError> {
     let iter_val = eval_expr(env, iter)?;
-    let saved = env.get(var);
+    let saved = loop_var_save(env, var);
     // web3d-M0: the iterable, its element snapshot, and the shadowed
     // loop variable live only on the Rust stack while the body runs
     // statements (safepoints). Root them for the loop's duration — the
@@ -3294,10 +3417,7 @@ fn run_for(
             help: None,
         })
     };
-    match saved {
-        Some(v) => env.set(var.to_string(), v),
-        None => env.remove(var),
-    }
+    loop_var_restore(env, var, saved);
     result
 }
 
@@ -3308,7 +3428,7 @@ fn run_for_iter<I: Iterator<Item = Value>>(
     items: I,
 ) -> Result<(), RuntimeError> {
     for item in items {
-        env.set(var.to_string(), item);
+        declare_name(env, var, item);
         run_block(env, body)?;
         if env.returning.is_some() {
             break;
@@ -3335,7 +3455,7 @@ fn eval_decl(
 ) -> Result<(), RuntimeError> {
     let parent_class = if let Some(p) = parent {
         {
-            let __opt = env.get(p);
+            let __opt = lookup_name(env, p);
             if let Some(__t) = (__opt).as_ref() {
                 if __t.is_class() {
                     let c = __t.as_class();
@@ -3395,6 +3515,7 @@ fn eval_decl(
                     Rc::new(MethodDef {
                         params: param_names,
                         body: body.clone(),
+                        home: env.current_module,
                     }),
                 );
             }

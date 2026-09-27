@@ -7,7 +7,8 @@
 //!
 //! Before this test, the multi-file projects were never executed by CI.
 //! Writing it found four of them broken (`survive_demo`,
-//! `survive_beta_mobile`, and the two module demos below), plus latent
+//! `survive_beta_mobile`, and both module demos — `import` only worked
+//! through `twec run <dir>`, which never ticked frames), plus latent
 //! undefined-name bugs in single-file examples found by the lexical
 //! resolver (`src/resolve.rs`).
 //!
@@ -20,20 +21,7 @@ use std::process::Command;
 /// Examples known to fail, each with the error text they must still
 /// produce. If one starts passing, the test fails and asks for the
 /// entry to be removed, so this list can only shrink.
-const EXPECTED_FAILURES: &[(&str, &str, &str)] = &[
-    (
-        "modular_audio_demo",
-        "name 'volume' is not defined",
-        "dynamic scoping: a module function resolves free names in the importer's env; \
-         fixed by web3d-M1 lexical scoping",
-    ),
-    (
-        "modular_math_demo",
-        "name 'vec2' is not defined",
-        "dynamic scoping: a module function resolves free names in the importer's env; \
-         fixed by web3d-M1 lexical scoping",
-    ),
-];
+const EXPECTED_FAILURES: &[(&str, &str, &str)] = &[];
 
 /// (display name, working dir, script path relative to that dir)
 fn examples() -> Vec<(String, PathBuf, String)> {

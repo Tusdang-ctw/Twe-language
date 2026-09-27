@@ -1881,7 +1881,7 @@ fn handle_run(args: &[String]) -> i32 {
     // routes through the module loader so multi-file projects work
     // out of the box. Closes the Phase 13 closeout deferral.
     if std::path::Path::new(&path).is_dir() {
-        return run_project_dir(&path);
+        return run_project_dir(&path, parsed.frames);
     }
     match parsed.backend {
         Backend::Tree => run_file_tree(&path, parsed.frames),
@@ -1892,33 +1892,17 @@ fn handle_run(args: &[String]) -> i32 {
 /// v1.0.2 Session 6: run a multi-file project from a directory by
 /// resolving `<dir>/main.twe` as the entry point and loading every
 /// imported module via `crate::module`.
-fn run_project_dir(dir: &str) -> i32 {
+fn run_project_dir(dir: &str, frames: u32) -> i32 {
     let entry = std::path::Path::new(dir).join("main.twe");
     if !entry.exists() {
         eprintln!("error: `{dir}/main.twe` not found");
         eprintln!(
-            "  help: `twec run <dir>` expects a `main.twe` at the project root; \
-             pass a file path directly if your entry has a different name"
+            "  help: `twec run <dir>` expects a `main.twe` at the project root; pass a file path directly if your entry has a different name"
         );
         return 2;
     }
-    let graph = match crate::module::load_from_path(&entry, None) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("error: {}", e.message);
-            return 1;
-        }
-    };
-    match crate::module::run_with_modules(&graph) {
-        Ok(out) => {
-            print!("{out}");
-            0
-        }
-        Err(e) => {
-            eprintln!("{}: runtime error: {e}", entry.display());
-            1
-        }
-    }
+    // web3d-M1: same path as running the file — modules load, frames tick.
+    run_file_tree(&entry.to_string_lossy(), frames)
 }
 
 fn run_file_tree(path: &str, frames: u32) -> i32 {
@@ -1943,7 +1927,26 @@ fn run_file_tree(path: &str, frames: u32) -> i32 {
             return 1;
         }
     };
-    let result = if frames > 0 {
+    // web3d-M1: programs that `import` go through the module loader —
+    // before, only `twec run <dir>` loaded modules (without ticking
+    // frames), so an imported module was silently unbound here.
+    let result = if crate::module::has_imports(&program) {
+        match crate::module::prepare_entry(std::path::Path::new(path), &src) {
+            Ok(mut env) => (|| {
+                for _ in 0..frames {
+                    crate::eval::tick_frame(&mut env, 1.0 / 60.0)?;
+                    if env.returning.take().is_some() {
+                        break;
+                    }
+                }
+                Ok(env.out)
+            })(),
+            Err(msg) => {
+                eprintln!("{msg}");
+                return 1;
+            }
+        }
+    } else if frames > 0 {
         crate::eval::run_with_frames(&program, frames, 1.0 / 60.0)
     } else {
         crate::eval::run(&program)

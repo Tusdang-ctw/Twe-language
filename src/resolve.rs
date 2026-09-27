@@ -49,6 +49,13 @@ pub enum IssueKind {
     /// Read, but declared nowhere and not a known builtin — a typo, or
     /// a name only the runtime injects that [`known_globals`] misses.
     Undeclared,
+    /// `let` / `var` re-declaring a name that is already visible here:
+    /// an earlier local in the same function or handler, a field of the
+    /// enclosing entity (inside its methods), or — in top-level blocks —
+    /// a global. Shadowing is how `hp -= 1` ends up changing a copy
+    /// instead of the field. (`for` and comprehension variables may
+    /// shadow: they are restored when the loop ends.)
+    Redeclared,
 }
 
 impl IssueKind {
@@ -58,6 +65,7 @@ impl IssueKind {
             IssueKind::BlockEscape => "block-escape",
             IssueKind::AssignUndeclared => "assign-undeclared",
             IssueKind::Undeclared => "undeclared",
+            IssueKind::Redeclared => "redeclared",
         }
     }
 }
@@ -71,18 +79,83 @@ pub struct ScopeIssue {
 }
 
 /// Names visible in every program without a declaration: everything
-/// `stdlib::install` binds, plus the ambients the runtime refreshes
-/// each tick (`time`, input state, …), found empirically by installing
-/// the stdlib into a fresh env and running one headless tick.
+/// `stdlib::install` binds — including the ambients the runtime
+/// refreshes each tick (`time`, `key`, `mouse_held`, …), which install
+/// creates up front.
+///
+/// Builds a throwaway env, so it must never reach a GC safepoint: the
+/// heap is per-thread and a collection scans only the env it was
+/// started from, which would sweep the *real* env's objects. (An
+/// earlier version ticked the env once — adding no names, and tripping
+/// exactly that under `TWE_GC_STRESS`.)
 pub fn known_globals() -> HashSet<String> {
     let mut env = crate::value::Env::new();
     crate::stdlib::install(&mut env);
-    let _ = crate::eval::tick_frame(&mut env, 0.0);
     let mut names: HashSet<String> = env.iter_bindings().map(|(k, _)| k.to_string()).collect();
     // Injected by `net.advance_tick` (lockstep netcode) only once a
     // session is running.
     names.insert("peer".to_string());
     names
+}
+
+thread_local! {
+    /// [`known_globals`] is built by installing the stdlib into a fresh
+    /// env and ticking it once — too costly per program, so it's cached.
+    static KNOWN_GLOBALS: HashSet<String> = known_globals();
+}
+
+/// web3d-M1: check `program` before it runs, resolving names against
+/// the stdlib / runtime ambients plus everything already bound in the
+/// env that will run it. Returns the first problem as a runtime error
+/// with a fix suggestion.
+pub fn check_before_run(
+    program: &Program,
+    env: &crate::value::Env,
+) -> Result<(), crate::value::RuntimeError> {
+    let issues = KNOWN_GLOBALS.with(|known| {
+        let mut names = known.clone();
+        names.extend(env.iter_bindings().map(|(k, _)| k));
+        check(program, &names)
+    });
+    match issues.into_iter().next() {
+        None => Ok(()),
+        Some(i) => Err(issue_error(&i)),
+    }
+}
+
+/// The user-facing error for a scope issue.
+pub fn issue_error(i: &ScopeIssue) -> crate::value::RuntimeError {
+    let n = &i.name;
+    let (message, help) = match i.kind {
+        IssueKind::Undeclared => (
+            format!("name '{n}' is not defined"),
+            format!("declare it with `let {n} = ...` before use"),
+        ),
+        IssueKind::FrameLeak => (
+            format!("name '{n}' is not visible here — it is a local of another function or handler"),
+            format!(
+                "pass `{n}` in as a parameter or return it, or declare it at the top level of the file to share it"
+            ),
+        ),
+        IssueKind::BlockEscape => (
+            format!("name '{n}' is not visible here — it was declared inside a block that has ended"),
+            format!("declare it before the block (`var {n} = ...`) and assign it inside"),
+        ),
+        IssueKind::AssignUndeclared => (
+            format!("assignment to undeclared name '{n}'"),
+            format!("declare it first with `var {n} = ...` (at top level for a global)"),
+        ),
+        IssueKind::Redeclared => (
+            format!("'{n}' is already declared here"),
+            format!("use `{n} = ...` to assign it, or pick a new name"),
+        ),
+    };
+    crate::value::RuntimeError {
+        line: i.line,
+        col: i.col,
+        message,
+        help: Some(help),
+    }
 }
 
 /// Resolve every identifier in `program` lexically; return the uses
@@ -122,6 +195,8 @@ struct Resolver<'a> {
     /// Every local declaration: name → frames declaring it.
     declared: HashMap<String, HashSet<u32>>,
     unresolved: Vec<Use>,
+    /// Issues known at the point they occur (not reclassified later).
+    direct: Vec<ScopeIssue>,
 }
 
 impl<'a> Resolver<'a> {
@@ -171,6 +246,7 @@ impl<'a> Resolver<'a> {
             next_frame: 1,
             declared: HashMap::new(),
             unresolved: Vec::new(),
+            direct: Vec::new(),
         }
     }
 
@@ -214,6 +290,29 @@ impl<'a> Resolver<'a> {
             .entry(name.to_string())
             .or_default()
             .insert(frame);
+    }
+
+    /// Declare a `let` / `var` binding, reporting a
+    /// [`IssueKind::Redeclared`] if the name is already visible here.
+    fn declare_checked(&mut self, name: &str, line: u32, col: u32) {
+        let frame = self.frame();
+        let local = self
+            .scopes
+            .iter()
+            .rev()
+            .take_while(|s| s.frame == frame)
+            .any(|s| s.names.contains(name));
+        let field = frame != 0 && self.class_ctx.last().is_some_and(|m| m.contains(name));
+        let global_in_top_block = frame == 0 && self.globals.contains(name);
+        if local || field || global_in_top_block {
+            self.direct.push(ScopeIssue {
+                kind: IssueKind::Redeclared,
+                name: name.to_string(),
+                line,
+                col,
+            });
+        }
+        self.declare(name);
     }
 
     /// All members (fields + methods) of `class` and its parents.
@@ -268,6 +367,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn finish(self) -> Vec<ScopeIssue> {
+        let direct = self.direct;
         let mut out: Vec<ScopeIssue> = self
             .unresolved
             .into_iter()
@@ -286,6 +386,7 @@ impl<'a> Resolver<'a> {
                 }
             })
             .collect();
+        out.extend(direct);
         out.sort_by_key(|i| (i.line, i.col));
         out
     }
@@ -322,9 +423,15 @@ impl<'a> Resolver<'a> {
 
     fn stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let {
+                name,
+                value,
+                line,
+                col,
+                ..
+            } => {
                 self.expr(value);
-                self.declare(name);
+                self.declare_checked(name, *line, *col);
             }
             Stmt::Assign {
                 target,
@@ -641,6 +748,54 @@ mod tests {
             got,
             vec![(IssueKind::AssignUndeclared, "total".to_string())]
         );
+    }
+
+    #[test]
+    fn redeclaring_a_visible_name_is_reported() {
+        let param = issues(
+            "function f(x):
+    if x:
+        let x = 2
+    return x
+",
+        );
+        assert_eq!(param, vec![(IssueKind::Redeclared, "x".to_string())]);
+        // Loop / comprehension variables may shadow (restored after).
+        assert!(issues(
+            "function f(x):
+    for x in [1, 2]:
+        print(x)
+    return x
+"
+        )
+        .is_empty());
+        let field = issues(
+            "entity Mob:
+    var hp = 3
+    function hurt():
+        let hp = 1
+",
+        );
+        assert_eq!(field, vec![(IssueKind::Redeclared, "hp".to_string())]);
+        // Sequential loops reuse a name after the first loop's block ended.
+        assert!(issues(
+            "function f():
+    for i in 0..2:
+        print(i)
+    for i in 0..2:
+        print(i)
+"
+        )
+        .is_empty());
+        // A function local may share a global's name.
+        assert!(issues(
+            "var n = 1
+function f():
+    let n = 2
+    return n
+"
+        )
+        .is_empty());
     }
 
     #[test]

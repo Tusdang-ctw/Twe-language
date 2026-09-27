@@ -1,0 +1,63 @@
+# web3d-M1: lexical scoping. Pins the behaviour the resolver + frame
+# runtime guarantee; see docs/06 §4 "Scope" and
+# docs/changes/2026-09-28-web3d-m1-lexical-scoping.md.
+
+var total = 0
+
+# A function's locals and parameters are its own.
+function add_twice(n):
+    let doubled = n * 2
+    total += doubled
+    return doubled
+
+print(add_twice(3))
+print(add_twice(4))
+print(total)
+
+# A callee never sees its caller's parameters or locals: `n` inside
+# `describe` is describe's own parameter, not add_twice's.
+function describe(n):
+    return "n={n}"
+
+function outer(n):
+    let label = describe(n + 1)
+    return label
+
+print(outer(10))
+
+# A loop variable shadows a parameter only for the loop's duration.
+function last_after_loop(x):
+    for x in [1, 2, 3]:
+        total += x
+    return x
+
+print(last_after_loop(99))
+print(total)
+
+# Comprehension variables are scoped to the comprehension.
+let k = 7
+print([k * 2 for k in 0..3])
+print(k)
+
+# Recursion: each call has its own frame.
+function fact(n):
+    if n <= 1:
+        return 1
+    let rest = fact(n - 1)
+    return n * rest
+
+print(fact(6))
+
+# Entity methods see fields and their own locals.
+entity Counter:
+    var hits = 0
+    function hit(times):
+        let step = 1
+        for i in 0..<times:
+            hits += step
+        return hits
+
+spawn Counter at (0, 0)
+for c in entities.of(Counter):
+    print(c.hit(3))
+    print(c.hit(2))

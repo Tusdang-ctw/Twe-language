@@ -27,6 +27,15 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **Lexical scoping (breaking; web3d-M1,
+  `docs/changes/2026-09-28-web3d-m1-lexical-scoping.md`).** Function /
+  method / handler bodies have their own locals; a callee can't see its
+  caller's parameters; locals don't leak after a call; a name declared in a
+  block isn't visible after it; module functions resolve names in their own
+  module. Assigning an undeclared name and re-declaring a visible name with
+  `let` / `var` are errors. Scope errors are reported before a program runs
+  and by `twec verify`. No program in the examples or test corpus depended
+  on the old dynamic behaviour.
 - **Scaffolding namespaces are now behind `--features experimental`**
   (web3d-M0; `docs/changes/2026-09-27-web3d-pivot.md`): `console.*`,
   `achievements.*`, `cloud_save.*`, `friends.*`, `mmo.*`, `workshop.*`,
@@ -52,6 +61,11 @@ removal would be load-bearing.
   mode and `tests/gc_stress.rs` gate this.
 - The pause flag (`pause()`, `auto_pause_when_idle`, `auto_pause_on_blur`) is
   per interpreter thread instead of process-wide.
+- **`import` works in `twec run <file>`, `twec play` and `twec play3d`.**
+  Only `twec run <dir>` loaded modules — and it never ticked frames — so
+  every other way of running a script left imports unbound (the Phase 13
+  module demos failed as soon as an `on update` touched an imported
+  module). All of them now share one loader (`module::prepare_entry`).
 - **Project-relative asset paths work from any directory.** `twec run` /
   `play` / `play3d` / `play_visual` register the script's directory as the
   asset root; a `load("assets/hero.png")` that isn't found relative to the
@@ -63,8 +77,8 @@ removal would be load-bearing.
   nonexistent `list.length` / `rgb` / `nil` / `str` / `draw_*` calls in
   `pong_net_internet`, `rhythm_demo`, `survive_beta_mobile` and
   `survive_demo`, and a seconds-plus-float unit error in `atlas_demo`.
-  `modular_audio_demo` / `modular_math_demo` still fail because of dynamic
-  scoping; lexical scoping (web3d-M1) fixes them.
+  Both module demos (`modular_audio_demo`, `modular_math_demo`) failed too:
+  see the `import` entry below.
 - **Shipped builds load their bundled assets.** `load`, `load_atlas` and
   `sound.load` checked the loose filesystem before the bundle, so a bundled
   `.exe` on a machine without the `assets/` folder failed on assets it

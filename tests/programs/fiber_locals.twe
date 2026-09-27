@@ -1,0 +1,24 @@
+# web3d-M1: locals survive `wait`. A state's entry body and a function
+# called from it each keep their own frame across suspension — the
+# frame is parked on the fiber and restored on resume.
+
+function greet(name):
+    let line = "hello {name}"
+    wait 0.05s
+    print(line)
+    print(name)
+
+scene Intro:
+    initial: opening
+
+    state opening:
+        let msg = "entry local kept"
+        let n = 3
+        wait 0.05s
+        print(msg)
+        greet("player")
+        print(n + 1)
+        -> done
+
+    state done:
+        print("done")

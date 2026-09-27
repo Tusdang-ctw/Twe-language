@@ -530,6 +530,7 @@ mod tests {
             name: "f".to_string(),
             params: vec![],
             body: vec![],
+            home: None,
         };
         let v = Value::from_function(Rc::new(def));
         let err = encode(&v).expect_err("functions must not save");

@@ -1721,7 +1721,8 @@ fn audio_builtins_reject_non_sound_handles() {
 #[test]
 fn save_to_refuses_a_function_value() {
     let src = r#"
-function greet(): nil
+function greet():
+    print("hi")
 save_to("ignored.json", greet)
 "#;
     let err = run_program_str(src).expect_err("functions can't save");
@@ -3062,4 +3063,63 @@ fn quit_and_quit_on_escape_are_callable_and_type_checked() {
     assert!(!twec::stdlib::quit_on_escape());
     let err = run_program_str("quit_on_escape(1)\n").expect_err("non-bool should error");
     assert!(err.contains("quit_on_escape expects a bool"), "got: {err}");
+}
+
+// ---------- web3d-M1: lexical scoping ----------
+
+#[test]
+fn lexical_scope_program() {
+    let out = run_program("tests/programs/lexical_scope.twe").expect("program should run");
+    assert_eq!(out, "6\n8\n14\nn=11\n99\n20\n[0, 2, 4, 6]\n7\n720\n3\n5\n");
+}
+
+#[test]
+fn locals_survive_wait_in_state_entry_and_functions() {
+    let out = run_program_frames("tests/programs/fiber_locals.twe", 12, 1.0 / 60.0)
+        .expect("program should run");
+    assert_eq!(out, "entry local kept\nhello player\nplayer\n4\ndone\n");
+}
+
+#[test]
+fn reading_another_functions_local_is_a_scope_error() {
+    // Under dynamic scoping this printed 99 (the callee saw the
+    // caller's parameter) or 5 (a local leaked after return).
+    let err = run_program_str(
+        "function g():\n    return y\nfunction h(y):\n    return g()\nprint(h(99))\n",
+    )
+    .expect_err("callee must not see caller's params");
+    assert!(err.contains("name 'y' is not visible here"), "got: {err}");
+
+    let err =
+        run_program_str("function f():\n    let tmp = 5\n    return tmp\nprint(f())\nprint(tmp)\n")
+            .expect_err("locals don't leak");
+    assert!(err.contains("name 'tmp' is not visible here"), "got: {err}");
+}
+
+#[test]
+fn scope_errors_are_reported_before_anything_runs() {
+    // The undefined name is in a branch that never executes; it still
+    // fails up front instead of printing "start" first.
+    let err = run_program_str("print(\"start\")\nif false:\n    print(nope)\n")
+        .expect_err("undefined names fail before running");
+    assert!(err.contains("name 'nope' is not defined"), "got: {err}");
+}
+
+#[test]
+fn assigning_an_undeclared_name_is_an_error() {
+    let err =
+        run_program_str("function f():\n    total = 3\nf()\n").expect_err("no implicit globals");
+    assert!(
+        err.contains("assignment to undeclared name 'total'"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn redeclaring_a_visible_name_is_an_error() {
+    let err = run_program_str(
+        "entity Mob:\n    var hp = 3\n    function hurt():\n        let hp = 1\n        hp -= 1\n",
+    )
+    .expect_err("a local may not shadow a field");
+    assert!(err.contains("'hp' is already declared here"), "got: {err}");
 }
