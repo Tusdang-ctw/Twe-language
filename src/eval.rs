@@ -88,7 +88,7 @@ pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
         if let Some(handler) = env.on_update.clone() {
             run_frame_body(
                 env,
-                vec![(handler.param.clone(), Value::from_float(dt))],
+                vec![(Rc::from(handler.param.as_str()), Value::from_float(dt))],
                 &handler.body,
             )?;
             if env.returning.take().is_some() {
@@ -155,7 +155,7 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
         };
         call_method(
             env,
-            Value::from_instance(entity),
+            instance_value(&entity),
             &method,
             &[Value::from_float(dt)],
             &[],
@@ -207,7 +207,11 @@ fn run_death_handler(
     handler: &crate::value::OnDeathHandler,
     entity: Value,
 ) -> Result<(), RuntimeError> {
-    run_frame_body(env, vec![(handler.param.clone(), entity)], &handler.body)
+    run_frame_body(
+        env,
+        vec![(Rc::from(handler.param.as_str()), entity)],
+        &handler.body,
+    )
 }
 
 /// On `spawn EmitterClass at pos`, create the particle list as a hidden
@@ -577,7 +581,7 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
             None => return Ok(()),
         }
     };
-    let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+    let prev_self = env.self_value.replace(instance_value(scene));
     let _self_root = root_saved_self(prev_self);
     for body in bodies {
         run_frame_body(env, Vec::new(), &body)?;
@@ -632,7 +636,7 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
                 .and_then(|state| state.on_render.clone())
         };
         if let Some(body) = body {
-            let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+            let prev_self = env.self_value.replace(instance_value(&scene));
             let _self_root = root_saved_self(prev_self);
             run_frame_body(env, Vec::new(), &body)?;
             env.self_value = prev_self;
@@ -687,7 +691,7 @@ fn tick_scene(env: &mut Env, scene: &Rc<RefCell<Instance>>, dt: f64) -> Result<(
     if state_name.is_none() {
         return Ok(());
     }
-    let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+    let prev_self = env.self_value.replace(instance_value(scene));
     let _self_root = root_saved_self(prev_self);
     // Phase 5 fibers / v0.2 sessions 2a + 2b: if the state's
     // fiber is suspended on a `wait`, count down by `dt` and
@@ -738,7 +742,7 @@ fn tick_scene(env: &mut Env, scene: &Rc<RefCell<Instance>>, dt: f64) -> Result<(
     if let Some(handler) = state_on_update {
         run_frame_body(
             env,
-            vec![(handler.param.clone(), Value::from_float(dt))],
+            vec![(Rc::from(handler.param.as_str()), Value::from_float(dt))],
             &handler.body,
         )?;
         if env.returning.is_some() {
@@ -890,7 +894,7 @@ fn enter_state(
             .get(&old_name)
             .and_then(|s| s.on_exit.clone());
         if let Some(body) = exit_body {
-            let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+            let prev_self = env.self_value.replace(instance_value(scene));
             let _self_root = root_saved_self(prev_self);
             run_frame_body(env, Vec::new(), &body)?;
             env.transitioning = None;
@@ -912,7 +916,7 @@ fn enter_state(
     }
     // Resolve each every-clock interval (in seconds) by evaluating the
     // interval expression with self bound to the scene instance.
-    let prev_self = env.self_value.replace(Value::from_instance(scene.clone()));
+    let prev_self = env.self_value.replace(instance_value(scene));
     let _self_root = root_saved_self(prev_self);
     let mut intervals = Vec::with_capacity(state.every_clocks.len());
     for clock in &state.every_clocks {
@@ -1561,7 +1565,7 @@ fn run_user_call_resumable(
         }
         arg_vals
     } else {
-        let param_refs: Vec<&str> = def.params.iter().map(|s| s.as_str()).collect();
+        let param_refs: Vec<&str> = def.params.iter().map(|s| &**s).collect();
         bind_kwargs(&param_refs, &def.name, arg_vals, kwarg_vals, line, col)?
     };
 
@@ -1583,11 +1587,8 @@ fn run_user_call_resumable(
     let our_idx = scene.borrow().fiber_frames.len() - 1;
 
     // web3d-M1: parameters are locals of the call's own frame.
-    let locals: Vec<(String, Value)> = def.params.iter().cloned().zip(bound).collect();
-    env.frames.push(crate::value::LocalFrame {
-        locals,
-        home: frame_home(env, &def.home),
-    });
+    let home = frame_home(env, &def.home);
+    push_call_frame(env, &def.params, &bound, home);
     env.call_depth += 1;
     let mut inner_out: Vec<PathEntry> = Vec::new();
     let result = run_block_resumable(env, scene, &def.body, &[], &mut inner_out);
@@ -1707,16 +1708,10 @@ fn lookup_name(env: &Env, name: &str) -> Option<Value> {
 }
 
 fn lookup_self_field(env: &Env, name: &str) -> Option<Value> {
-    if let Some(t) = env.self_value.as_ref() {
-        if t.is_instance() {
-            let rc = t.as_instance();
-            let v_opt = rc.borrow().get_field(name);
-            if let Some(v) = v_opt {
-                return Some(v);
-            }
-        }
+    match env.self_value.as_ref() {
+        Some(t) if t.is_instance() => t.with_instance(|inst| inst.borrow().get_field(name)),
+        _ => None,
     }
-    None
 }
 
 fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
@@ -1786,14 +1781,32 @@ fn root_saved_self(prev: Option<Value>) -> crate::heap::RootScope {
 /// whether the body succeeds or errors.
 fn run_frame_body(
     env: &mut Env,
-    locals: Vec<(String, Value)>,
+    locals: Vec<(Rc<str>, Value)>,
     body: &[Stmt],
 ) -> Result<(), RuntimeError> {
     env.frames
         .push(crate::value::LocalFrame { locals, home: None });
     let result = run_block(env, body);
-    env.frames.pop();
+    pop_frame(env);
     result
+}
+
+/// Push a frame binding `params` to `args` (lengths already checked),
+/// reusing a pooled locals vector when one is available.
+fn push_call_frame(env: &mut Env, params: &[Rc<str>], args: &[Value], home: Option<Value>) {
+    let mut locals = env.frame_pool.pop().unwrap_or_default();
+    locals.extend(params.iter().cloned().zip(args.iter().copied()));
+    env.frames.push(crate::value::LocalFrame { locals, home });
+}
+
+/// Pop the innermost frame and return its locals vector to the pool.
+fn pop_frame(env: &mut Env) {
+    if let Some(mut f) = env.frames.pop() {
+        f.locals.clear();
+        if env.frame_pool.len() < 64 {
+            env.frame_pool.push(f.locals);
+        }
+    }
 }
 
 /// The frame `home` for a body defined in module `home`: that module,
@@ -1820,7 +1833,13 @@ fn frame_home(env: &Env, home: &Option<Value>) -> Option<Value> {
 fn declare_name(env: &mut Env, name: &str, v: Value) {
     match env.frames.last_mut() {
         Some(f) => f.declare(name, v),
-        None => env.set(name.to_string(), v),
+        // Re-binding (e.g. a top-level loop variable each iteration)
+        // updates in place instead of allocating a new key.
+        None => {
+            if !env.assign_existing(name, v) {
+                env.set(name.to_string(), v);
+            }
+        }
     }
 }
 
@@ -1839,13 +1858,9 @@ fn assign_name(env: &mut Env, name: &str, v: Value) -> bool {
         None => None,
     };
     if let Some(t) = env.self_value.as_ref() {
-        if t.is_instance() {
-            let rc = t.as_instance();
-            let mut inst = rc.borrow_mut();
-            if inst.fields.contains_key(name) {
-                inst.insert_field(name.to_string(), v);
-                return true;
-            }
+        if t.is_instance() && t.with_instance(|inst| inst.borrow_mut().set_existing_field(name, v))
+        {
+            return true;
         }
     }
     if let Some(h) = home {
@@ -1858,11 +1873,7 @@ fn assign_name(env: &mut Env, name: &str, v: Value) -> bool {
             }
         }
     }
-    if env.contains(name) {
-        env.set(name.to_string(), v);
-        return true;
-    }
-    false
+    env.assign_existing(name, v)
 }
 
 /// A `for` / comprehension variable shadows any binding of the same
@@ -1895,6 +1906,17 @@ fn undeclared_assign_error(name: &str, line: u32, col: u32) -> RuntimeError {
             "declare it first with `var {name} = ...` (at top level for a global)"
         )),
     }
+}
+
+/// The instance's GC value, allocated once and cached on the instance
+/// (see `Instance::cached_value`).
+fn instance_value(rc: &Rc<RefCell<Instance>>) -> Value {
+    if let Some(v) = rc.borrow().cached_value {
+        return v;
+    }
+    let v = Value::from_instance(rc.clone());
+    rc.borrow_mut().cached_value = Some(v);
+    v
 }
 
 /// Collect if the heap is over threshold (or in stress mode). Only
@@ -1972,7 +1994,8 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             // tree-walker still binds bare-name params. Strict
             // mode (Phase 6 session 2) uses the annotations
             // statically in `infer.rs`.
-            let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            let param_names: Vec<Rc<str>> =
+                params.iter().map(|p| Rc::from(p.name.as_str())).collect();
             let f = Value::from_function(Rc::new(FunctionDef {
                 name: name.clone(),
                 params: param_names,
@@ -3208,7 +3231,7 @@ pub(crate) fn call_function(
         }
         args.to_vec()
     } else {
-        let param_refs: Vec<&str> = def.params.iter().map(|s| s.as_str()).collect();
+        let param_refs: Vec<&str> = def.params.iter().map(|s| &**s).collect();
         bind_kwargs(
             &param_refs,
             &def.name,
@@ -3221,15 +3244,12 @@ pub(crate) fn call_function(
     // web3d-M1: parameters are locals of a fresh frame; free names
     // resolve lexically (never in the caller's frame).
     let saved_returning = env.returning.take();
-    let locals: Vec<(String, Value)> = def.params.iter().cloned().zip(bound).collect();
-    env.frames.push(crate::value::LocalFrame {
-        locals,
-        home: frame_home(env, &def.home),
-    });
+    let home = frame_home(env, &def.home);
+    push_call_frame(env, &def.params, &bound, home);
     env.call_depth += 1;
     let body_result = run_block(env, &def.body);
     env.call_depth -= 1;
-    env.frames.pop();
+    pop_frame(env);
     let return_value = env.returning.take().unwrap_or(Value::NIL);
     env.returning = saved_returning;
     body_result?;
@@ -3237,7 +3257,7 @@ pub(crate) fn call_function(
 }
 
 fn instantiate(class: Rc<ClassDef>) -> Value {
-    let mut fields: HashMap<String, TaggedValue> = HashMap::new();
+    let mut fields: crate::value::NameMap<TaggedValue> = crate::value::NameMap::default();
     // Walk the parent chain, oldest first, so child overrides win.
     let mut chain: Vec<Rc<ClassDef>> = Vec::new();
     let mut cur = Some(class.clone());
@@ -3250,7 +3270,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
             fields.insert(k.clone(), *v);
         }
     }
-    Value::from_instance(Rc::new(RefCell::new(Instance {
+    let rc = Rc::new(RefCell::new(Instance {
         class,
         fields,
         current_state: None,
@@ -3261,7 +3281,10 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
         fiber_frames: Vec::new(),
         entry_wait_remaining: 0.0,
         predicate_last_values: Vec::new(),
-    })))
+        cached_value: None,
+    }));
+    // Seed the cached wrapper so later per-frame calls reuse it.
+    instance_value(&rc)
 }
 
 fn find_method(class: &ClassDef, name: &str) -> Option<Rc<MethodDef>> {
@@ -3296,7 +3319,7 @@ fn call_method(
         }
         args.to_vec()
     } else {
-        let param_refs: Vec<&str> = method.params.iter().map(|s| s.as_str()).collect();
+        let param_refs: Vec<&str> = method.params.iter().map(|s| &**s).collect();
         bind_kwargs(
             &param_refs,
             "method",
@@ -3308,15 +3331,12 @@ fn call_method(
     };
     let saved_self = env.self_value.replace(recv);
     let saved_returning = env.returning.take();
-    let locals: Vec<(String, Value)> = method.params.iter().cloned().zip(bound).collect();
-    env.frames.push(crate::value::LocalFrame {
-        locals,
-        home: frame_home(env, &method.home),
-    });
+    let home = frame_home(env, &method.home);
+    push_call_frame(env, &method.params, &bound, home);
     env.call_depth += 1;
     let body_result = run_block(env, &method.body);
     env.call_depth -= 1;
-    env.frames.pop();
+    pop_frame(env);
     let return_value = env.returning.take().unwrap_or(Value::NIL);
     env.returning = saved_returning;
     env.self_value = saved_self;
@@ -3488,7 +3508,7 @@ fn eval_decl(
     };
 
     let mut field_defaults = HashMap::new();
-    let mut methods = HashMap::new();
+    let mut methods = crate::value::NameMap::default();
     let mut states = HashMap::new();
     let mut initial_state: Option<String> = None;
     for member in members {
@@ -3509,7 +3529,8 @@ fn eval_decl(
                 // tree-walker still binds bare-name params. Strict
                 // mode (Phase 6 session 4) consumes the annotations
                 // statically in `infer.rs`.
-                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                let param_names: Vec<Rc<str>> =
+                    params.iter().map(|p| Rc::from(p.name.as_str())).collect();
                 methods.insert(
                     mname.clone(),
                     Rc::new(MethodDef {

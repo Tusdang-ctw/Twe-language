@@ -151,6 +151,21 @@ impl Heap {
             stress: stress_from_env(),
             graveyard: std::ptr::null_mut(),
         }
+        .with_pending_refreshed()
+    }
+
+    fn with_pending_refreshed(self) -> Self {
+        self.refresh_pending();
+        self
+    }
+
+    /// web3d-M1: recompute `COLLECT_PENDING` from the heap's state.
+    /// Called wherever an input to [`gc_should_collect`] changes.
+    fn refresh_pending(&self) {
+        let pending = self.stress
+            || self.bytes_allocated >= self.threshold
+            || self.sweep_phase == SweepPhase::Sweeping;
+        COLLECT_PENDING.with(|c| c.set(pending));
     }
 
     /// Allocate a heap object holding `body`. Returns a raw
@@ -186,6 +201,9 @@ impl Heap {
             self.all_objects = ptr;
         }
         self.bytes_allocated += std::mem::size_of::<HeapObject>();
+        if self.bytes_allocated >= self.threshold {
+            COLLECT_PENDING.with(|c| c.set(true));
+        }
         ptr
     }
 
@@ -227,6 +245,7 @@ impl Heap {
             self.sweep_prev = std::ptr::null_mut();
             self.sweep_cur = self.all_objects;
             self.sweep_phase = SweepPhase::Sweeping;
+            COLLECT_PENDING.with(|c| c.set(true));
         }
 
         let start = std::time::Instant::now();
@@ -280,6 +299,7 @@ impl Heap {
         // not, raise it. Simple heuristic mirroring CI §26.4.
         self.bytes_allocated = self.live_byte_count();
         self.threshold = (self.bytes_allocated * 2).max(INITIAL_GC_THRESHOLD);
+        self.refresh_pending();
         true
     }
 
@@ -413,10 +433,16 @@ pub fn gc_collect_with(scan: impl FnOnce()) {
 /// the cycle completes.
 #[inline]
 pub fn gc_should_collect() -> bool {
-    HEAP.with(|h| {
-        let h = h.borrow();
-        h.stress || h.bytes_allocated >= h.threshold || h.sweep_phase == SweepPhase::Sweeping
-    })
+    // web3d-M1: a single thread-local flag, kept in sync by the heap
+    // (`Heap::refresh_pending`), instead of borrowing the whole heap on
+    // every statement boundary.
+    COLLECT_PENDING.with(|c| c.get())
+}
+
+thread_local! {
+    /// True when the next safepoint should collect: stress mode, the
+    /// allocation threshold crossed, or a sweep in flight.
+    static COLLECT_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
 // ---------- web3d-M0: stress mode + explicit root stack ----------
@@ -432,7 +458,11 @@ fn stress_from_env() -> bool {
 /// creation by `TWE_GC_STRESS=1`. Test / fuzz tooling only — memory
 /// is not reclaimed while it's on.
 pub fn gc_set_stress(on: bool) {
-    HEAP.with(|h| h.borrow_mut().stress = on);
+    HEAP.with(|h| {
+        let mut h = h.borrow_mut();
+        h.stress = on;
+        h.refresh_pending();
+    });
 }
 
 /// Is stress mode on for this thread's heap?
@@ -493,7 +523,11 @@ impl Drop for RootScope {
 /// Test/bench helper: override the GC threshold so safepoints fire
 /// sooner. Production code should not use this.
 pub fn gc_set_threshold(threshold: usize) {
-    HEAP.with(|h| h.borrow_mut().threshold = threshold);
+    HEAP.with(|h| {
+        let mut h = h.borrow_mut();
+        h.threshold = threshold;
+        h.refresh_pending();
+    });
 }
 
 /// Phase 29 session 2: configure the per-safepoint sweep budget in
@@ -612,6 +646,11 @@ fn mark_body(body: &HeapBody) {
         HeapBody::Instance(rc) => {
             let inst = rc.borrow();
             for v in inst.fields.values() {
+                mark_value(v);
+            }
+            // web3d-M1: the instance's cached wrapper (see
+            // `Instance::cached_value`).
+            if let Some(v) = &inst.cached_value {
                 mark_value(v);
             }
             // web3d-M0: the instance's class (and its parent chain)

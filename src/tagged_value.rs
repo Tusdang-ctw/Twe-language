@@ -813,6 +813,16 @@ impl TaggedValue {
         })
     }
 
+    /// web3d-M1: borrow the instance behind an instance-tagged value
+    /// without cloning its `Rc` (no refcount traffic) — for the hot
+    /// bare-name field reads / writes inside methods.
+    pub fn with_instance<R>(&self, f: impl FnOnce(&RefCell<crate::value::Instance>) -> R) -> R {
+        self.with_obj_body(|b| match b {
+            HeapBody::Instance(rc) => f(rc),
+            other => panic!("with_instance: not an instance: {other:?}"),
+        })
+    }
+
     pub fn as_function(&self) -> Rc<crate::value::FunctionDef> {
         self.with_obj_body(|b| match b {
             HeapBody::Function(rc) => rc.clone(),

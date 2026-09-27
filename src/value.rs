@@ -13,10 +13,50 @@ use crate::tagged_value::TaggedValue;
 /// were deleted at the end of 8f.
 pub type Value = TaggedValue;
 
+/// web3d-M1: FxHash — the fast, non-cryptographic hash rustc uses
+/// internally (the rustc-hash algorithm; ~15 lines, so no dependency).
+/// Name lookups are the interpreter's hottest operation and their keys
+/// are identifiers from the script, not attacker-chosen, so std's
+/// DoS-resistant SipHash only costs time here.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+const FX_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let w = u64::from_le_bytes(c.try_into().expect("8-byte chunk"));
+            self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(FX_SEED);
+        }
+        for &b in chunks.remainder() {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(FX_SEED);
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.0 = (self.0.rotate_left(5) ^ u64::from(i)).wrapping_mul(FX_SEED);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A `String`-keyed map using [`FxHasher`] — for env globals and
+/// instance fields, the lookups on every variable access.
+pub type NameMap<V> = HashMap<String, V, std::hash::BuildHasherDefault<FxHasher>>;
+
 #[derive(Debug)]
 pub struct FunctionDef {
     pub name: String,
-    pub params: Vec<String>,
+    /// `Rc<str>` so binding a call's parameters is a refcount bump,
+    /// not a string copy (web3d-M1).
+    pub params: Vec<Rc<str>>,
     pub body: Vec<crate::ast::Stmt>,
     /// web3d-M1: the module object this function was defined in
     /// (`None` for the entry program). A call from another module
@@ -31,14 +71,14 @@ pub struct ClassDef {
     pub name: String,
     pub parent: Option<Rc<ClassDef>>,
     pub field_defaults: HashMap<String, TaggedValue>,
-    pub methods: HashMap<String, Rc<MethodDef>>,
+    pub methods: NameMap<Rc<MethodDef>>,
     pub states: HashMap<String, Rc<StateDef>>,
     pub initial_state: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct MethodDef {
-    pub params: Vec<String>,
+    pub params: Vec<Rc<str>>,
     pub body: Vec<crate::ast::Stmt>,
     /// web3d-M1: defining module, as for [`FunctionDef::home`].
     pub home: Option<TaggedValue>,
@@ -51,7 +91,7 @@ pub struct MethodDef {
 /// a `Vec` because frames are small and linear lookup beats hashing.
 #[derive(Debug, Clone, Default)]
 pub struct LocalFrame {
-    pub locals: Vec<(String, TaggedValue)>,
+    pub locals: Vec<(Rc<str>, TaggedValue)>,
     /// Module object whose fields are this frame's globals, when the
     /// body was defined in a module other than the running one.
     pub home: Option<TaggedValue>,
@@ -62,13 +102,13 @@ impl LocalFrame {
         self.locals
             .iter()
             .rev()
-            .find(|(n, _)| n == name)
+            .find(|(n, _)| &**n == name)
             .map(|(_, v)| *v)
     }
 
     /// Set an existing local; returns false if `name` isn't one.
     pub fn assign(&mut self, name: &str, v: TaggedValue) -> bool {
-        match self.locals.iter_mut().rev().find(|(n, _)| n == name) {
+        match self.locals.iter_mut().rev().find(|(n, _)| &**n == name) {
             Some(slot) => {
                 slot.1 = v;
                 true
@@ -79,7 +119,7 @@ impl LocalFrame {
 
     /// Remove the innermost local named `name`, if any.
     pub fn remove(&mut self, name: &str) {
-        if let Some(i) = self.locals.iter().rposition(|(n, _)| n == name) {
+        if let Some(i) = self.locals.iter().rposition(|(n, _)| &**n == name) {
             self.locals.remove(i);
         }
     }
@@ -87,7 +127,7 @@ impl LocalFrame {
     /// Declare (or re-declare) a local.
     pub fn declare(&mut self, name: &str, v: TaggedValue) {
         if !self.assign(name, v) {
-            self.locals.push((name.to_string(), v));
+            self.locals.push((Rc::from(name), v));
         }
     }
 
@@ -142,7 +182,7 @@ pub struct Instance {
     /// `to_legacy()` / `from_legacy()` at the boundary; the
     /// interior pattern matches still operate on legacy `Value`
     /// until 8f.
-    pub fields: HashMap<String, TaggedValue>,
+    pub fields: NameMap<TaggedValue>,
     pub current_state: Option<String>,
     /// Accumulated seconds since each clock last fired, parallel-indexed
     /// to `current_state`'s `every_clocks`.
@@ -179,6 +219,13 @@ pub struct Instance {
     /// each predicate so the runtime can detect false → true
     /// transitions (edge-triggered firing). Reset on state entry.
     pub predicate_last_values: Vec<bool>,
+    /// web3d-M1: this instance's GC wrapper, created once and reused so
+    /// per-frame calls (`update`, scene handlers) don't allocate a new
+    /// heap object each time. A raw (non-owning) pointer: the GC traces
+    /// it only through the instance (`mark_instance` / `mark_body`), so
+    /// once nothing reaches the instance the wrapper is swept, and its
+    /// `Rc` drop frees the instance — no cycle leak.
+    pub cached_value: Option<TaggedValue>,
 }
 
 impl Instance {
@@ -190,6 +237,18 @@ impl Instance {
 
     pub fn insert_field(&mut self, name: impl Into<String>, value: TaggedValue) {
         self.fields.insert(name.into(), value);
+    }
+
+    /// web3d-M1: overwrite an existing field in place — no key
+    /// allocation, unlike `insert_field`. Returns false if absent.
+    pub fn set_existing_field(&mut self, name: &str, value: TaggedValue) -> bool {
+        match self.fields.get_mut(name) {
+            Some(slot) => {
+                *slot = value;
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -319,7 +378,7 @@ pub struct Env {
     /// `TaggedValue`. The `get` / `set` / `iter_bindings` API
     /// converts at the boundary so external callers (eval,
     /// stdlib) keep working on legacy `Value` until 8e/8f.
-    bindings: HashMap<String, TaggedValue>,
+    bindings: NameMap<TaggedValue>,
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
     /// Top-level `on render():` handler — runs once per rendered
@@ -345,6 +404,9 @@ pub struct Env {
     /// web3d-M1: active function / method / handler frames, innermost
     /// last. Empty while running top-level statements.
     pub frames: Vec<LocalFrame>,
+    /// web3d-M1: cleared locals vectors from finished frames, reused by
+    /// the next call so a call doesn't allocate its frame.
+    pub frame_pool: Vec<Vec<(Rc<str>, TaggedValue)>>,
     /// web3d-M1: the module object being initialised when this env runs
     /// a module's top level (`None` for the entry program). A function
     /// whose `home` is this module resolves globals in this env.
@@ -428,7 +490,7 @@ pub struct OnDeathHandler {
 impl Env {
     pub fn new() -> Self {
         Self {
-            bindings: HashMap::new(),
+            bindings: NameMap::default(),
             out: String::new(),
             on_update: None,
             top_on_render: None,
@@ -444,6 +506,7 @@ impl Env {
             loop_depth: 0,
             call_depth: 0,
             frames: Vec::new(),
+            frame_pool: Vec::new(),
             current_module: None,
             render_queue3d: Vec::new(),
             mesh_paths: Vec::new(),
@@ -531,6 +594,18 @@ impl Env {
         self.bindings.insert(name, value);
     }
 
+    /// web3d-M1: update an existing global in place (no key
+    /// allocation); returns false if `name` isn't bound.
+    pub fn assign_existing(&mut self, name: &str, value: TaggedValue) -> bool {
+        match self.bindings.get_mut(name) {
+            Some(slot) => {
+                *slot = value;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.bindings.contains_key(name)
     }
@@ -592,6 +667,9 @@ impl Env {
 /// roots an instance directly. v0.2 Phase 8.5 session 8h.
 pub fn mark_instance(inst: &Instance) {
     for v in inst.fields.values() {
+        crate::heap::mark_value(v);
+    }
+    if let Some(v) = &inst.cached_value {
         crate::heap::mark_value(v);
     }
     for frame in &inst.fiber_frames {
