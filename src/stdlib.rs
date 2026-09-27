@@ -4694,6 +4694,15 @@ fn safe_area_rect(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
 }
 
 fn tuple2_f64(v: &Value, fn_name: &str, arg_name: &str) -> Result<(f64, f64), RuntimeError> {
+    // web3d-M1: accept the documented `(x, y)` tuple form. This helper
+    // only accepted lists, so `joystick(at: (x, y), …)` — the form the
+    // docs and examples/survive_beta_mobile use — always errored.
+    if v.is_tuple() {
+        let t = v.as_tuple();
+        if t.len() == 2 {
+            return Ok((as_f64(&t[0], fn_name)?, as_f64(&t[1], fn_name)?));
+        }
+    }
     if v.is_list() {
         let list = v.as_list();
         let l = list.borrow();

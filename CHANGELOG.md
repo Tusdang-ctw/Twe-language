@@ -52,6 +52,19 @@ removal would be load-bearing.
   mode and `tests/gc_stress.rs` gate this.
 - The pause flag (`pause()`, `auto_pause_when_idle`, `auto_pause_on_blur`) is
   per interpreter thread instead of process-wide.
+- **Project-relative asset paths work from any directory.** `twec run` /
+  `play` / `play3d` / `play_visual` register the script's directory as the
+  asset root; a `load("assets/hero.png")` that isn't found relative to the
+  working directory is looked up there — the same key a shipped bundle uses.
+- `joystick(at: (x, y), …)` accepted only lists, so the documented tuple
+  form always errored.
+- Broken examples, found by the new lexical resolver and the new
+  every-example CI test (web3d-M1): undefined speaker in `rpg_demo`, the
+  nonexistent `list.length` / `rgb` / `nil` / `str` / `draw_*` calls in
+  `pong_net_internet`, `rhythm_demo`, `survive_beta_mobile` and
+  `survive_demo`, and a seconds-plus-float unit error in `atlas_demo`.
+  `modular_audio_demo` / `modular_math_demo` still fail because of dynamic
+  scoping; lexical scoping (web3d-M1) fixes them.
 - **Shipped builds load their bundled assets.** `load`, `load_atlas` and
   `sound.load` checked the loose filesystem before the bundle, so a bundled
   `.exe` on a machine without the `assets/` folder failed on assets it

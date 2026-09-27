@@ -14,7 +14,7 @@
 
 let walk = load_atlas("examples/assets/hero.png", (1, 1))
 
-var t = 0s
+var t = 0.0   # seconds; `dt` is a plain float
 on update(dt):
     t = t + dt
 

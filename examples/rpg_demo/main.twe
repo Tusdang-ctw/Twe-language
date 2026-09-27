@@ -42,6 +42,9 @@ var chest_open     = settings.get("player.chest_open")
 # Dialogue scripts
 # ---------------------------------------------------------------
 
+# The speaker for the guard dialogues (`say Guard: ...`).
+actor Guard = "Guard"
+
 dialogue GuardGreet:
     say Guard: "Hold it. This wing is restricted."
     choice:

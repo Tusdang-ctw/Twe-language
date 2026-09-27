@@ -72,6 +72,12 @@ pub fn run() {
         print_version();
         return;
     }
+    if matches!(
+        args[1].as_str(),
+        "run" | "play" | "play3d" | "play_visual" | "profile"
+    ) {
+        register_asset_root(&args[2..]);
+    }
     match args[1].as_str() {
         "run" => process::exit(handle_run(&args[2..])),
         "play" => process::exit(handle_play(&args[2..])),
@@ -1837,6 +1843,28 @@ fn handle_profile(args: &[String]) -> i32 {
     }
     eprintln!("[twec] trace written: {trace_path}");
     0
+}
+
+/// web3d-M1: register the script's directory as the asset root, so a
+/// project-relative `load("assets/hero.png")` resolves no matter which
+/// directory `twec` was launched from (see `bundle::set_asset_root`).
+/// The script is the first argument naming an existing `.twe` file or
+/// project directory.
+fn register_asset_root(args: &[String]) {
+    for a in args {
+        let p = std::path::Path::new(a);
+        let dir = if p.is_dir() {
+            Some(p.to_path_buf())
+        } else if p.is_file() && p.extension().is_some_and(|e| e == "twe") {
+            p.parent().map(|d| d.to_path_buf())
+        } else {
+            None
+        };
+        if let Some(d) = dir {
+            crate::bundle::set_asset_root(Some(d));
+            return;
+        }
+    }
 }
 
 fn handle_run(args: &[String]) -> i32 {

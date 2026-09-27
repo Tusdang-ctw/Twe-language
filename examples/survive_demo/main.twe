@@ -15,7 +15,7 @@
 # minimum that still shows off the build pipeline shipping a
 # loadable asset alongside main.twe — that's the EXIT-GATE evidence.
 
-let hero = sprite.load("assets/hero.png")
+let hero = load("assets/hero.png")
 
 var player_x = 320.0
 var player_y = 240.0
@@ -38,6 +38,6 @@ scene SurviveDemo:
                 player_y += 220.0 * dt
 
         on render():
-            draw_color(0.08, 0.08, 0.12, 1.0)
-            draw_text("Survive Demo  —  t=" + str(elapsed), 16, 24)
-            draw_sprite(hero, player_x, player_y)
+            rect(at: (0, 0), size: (640, 480), color: (0.08, 0.08, 0.12))
+            text("Survive Demo  —  t={elapsed}", (16, 24), 16, color.white)
+            sprite(hero, (player_x, player_y))

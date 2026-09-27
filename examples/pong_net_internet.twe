@@ -93,11 +93,11 @@ scene PongNetInternet:
                 if key_press.j:
                     if net.steam_p2p_available():
                         found_lobbies = net.find_lobbies(lobby_name)
-                        status_line = "Found {list.length(found_lobbies)} lobbies. Press 1..9 to join."
+                        status_line = "Found {found_lobbies.length} lobbies. Press 1..9 to join."
                     else:
                         status_line = "Steam not available — use U for STUN fallback"
                 # Number keys join a found Steam lobby.
-                if list.length(found_lobbies) > 0:
+                if found_lobbies.length > 0:
                     if key_press.one:
                         let ok = net.join_lobby(found_lobbies[0].id)
                         if not ok:

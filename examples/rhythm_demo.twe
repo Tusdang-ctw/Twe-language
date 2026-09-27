@@ -56,7 +56,7 @@ scene Rhythm:
             -> playing
 
         on render():
-            rect(at: (0, 0), size: (view_w, view_h), color: rgb(0.05, 0.05, 0.10))
+            rect(at: (0, 0), size: (view_w, view_h), color: (0.05, 0.05, 0.10))
             text("RHYTHM", at: (260, 180), color: color.white)
             text("press SPACE to start", at: (220, 230), color: color.gray)
 
@@ -105,7 +105,7 @@ scene Rhythm:
             rect(
                 at: (0, 0),
                 size: (view_w, view_h),
-                color: rgb(bg_brightness, bg_brightness, bg_brightness * 1.4),
+                color: (bg_brightness, bg_brightness, bg_brightness * 1.4),
             )
 
             text("BEATS  {beat_index}/{total_beats}", at: (20, 30), color: color.white)

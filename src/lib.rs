@@ -73,6 +73,7 @@ pub mod perf_snapshot;
 pub mod doctor;
 pub mod render3d_types;
 pub mod replay;
+pub mod resolve;
 pub mod save;
 pub mod stdlib;
 pub mod steam;

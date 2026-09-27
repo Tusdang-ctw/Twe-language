@@ -96,9 +96,9 @@ scene SurviveBetaMobile:
             # every active touch position.
             var i = 0
             while i < ptr_count:
+                # `i < ptr_count`, so `touch.pointer(i)` is always a touch.
                 let p = touch.pointer(i)
-                if p != nil:
-                    circle_outline(at: (p.x, p.y), radius: 24, color: color.yellow)
+                circle_outline(at: (p.x, p.y), radius: 24, color: color.yellow)
                 i += 1
 
             # Safe-area-aware HUD. On desktop every inset is 0; on

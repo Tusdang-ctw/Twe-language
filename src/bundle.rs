@@ -578,6 +578,38 @@ pub fn has_active_bundle() -> bool {
 /// synchronous filesystem — assets are fetched over HTTP by the
 /// loaders — so existence can't be checked up front and this returns
 /// `true`, deferring the error to the load itself.
+// web3d-M1: asset paths in examples and games were written two ways —
+// working-directory-relative (`examples/assets/hero.png`) and
+// project-relative (`assets/hero.png`, which is what a shipped bundle's
+// keys are). Only one could work from any given working directory, and a
+// shipped game launched from a shortcut resolved loose assets against
+// the wrong directory. The CLI now registers the entry script's
+// directory as the *asset root*; filesystem lookups try the working
+// directory first (unchanged behaviour), then the asset root.
+static ASSET_ROOT: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// Register the directory that project-relative asset paths resolve
+/// against — the entry script's directory. `None` clears it.
+pub fn set_asset_root(dir: Option<std::path::PathBuf>) {
+    if let Ok(mut g) = ASSET_ROOT.lock() {
+        *g = dir;
+    }
+}
+
+/// Where a filesystem asset actually lives: `path` itself (relative to
+/// the working directory, or absolute), else `path` under the asset
+/// root. `None` when neither exists.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_fs_path(path: &str) -> Option<std::path::PathBuf> {
+    let direct = std::path::Path::new(path);
+    if direct.exists() {
+        return Some(direct.to_path_buf());
+    }
+    let root = ASSET_ROOT.lock().ok()?.clone()?;
+    let joined = root.join(path);
+    joined.exists().then_some(joined)
+}
+
 pub fn asset_exists(path: &str) -> bool {
     let in_bundle = ACTIVE_BUNDLE
         .lock()
@@ -588,7 +620,7 @@ pub fn asset_exists(path: &str) -> bool {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::fs::metadata(path).is_ok()
+        resolve_fs_path(path).is_some()
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -617,7 +649,11 @@ pub fn read_asset_bytes(path: &str) -> io::Result<Vec<u8>> {
     // back to macroquad's async API.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::fs::read(path)
+        match resolve_fs_path(path) {
+            Some(p) => std::fs::read(p),
+            // Report the path as written, with the usual NotFound kind.
+            None => std::fs::read(path),
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
