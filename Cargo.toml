@@ -36,6 +36,12 @@ toml = "0.8"
 # Windows). Only compiled when `--features steam` is passed —
 # default builds have zero Steam overhead.
 [features]
+# web3d-M0: scaffolding namespaces (console / platform services / mmo /
+# workshop / rollback / world / terrain) — author-facing APIs whose
+# runtimes are stubs or bookkeeping the renderer never consumes. Kept
+# out of the default build, the stdlib manifest and the LLM primer per
+# docs/changes/2026-09-27-web3d-pivot.md. No extra dependencies.
+experimental = []
 steam = ["dep:steamworks"]
 # Phase 36 session 2: Steam P2P transport for net.* multiplayer.
 # Implies `steam` (we need the Steam client + AppID gate). When this

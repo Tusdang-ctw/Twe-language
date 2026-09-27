@@ -28,11 +28,54 @@ fn every_category_has_at_least_one_builtin() {
     for spec in &m {
         *by_cat.entry(spec.category.as_str()).or_default() += 1;
     }
+    // web3d-M0: `world` left this list when the Phase 32 bookkeeping
+    // namespaces moved behind `--features experimental`.
     for cat in &[
-        "math", "draw", "ui", "world", "physics", "color", "random", "save", "net",
+        "math", "draw", "ui", "physics", "color", "random", "save", "net",
     ] {
         let n = by_cat.get(cat).copied().unwrap_or(0);
         assert!(n > 0, "category `{cat}` has zero entries");
+    }
+}
+
+/// Namespaces that ship only with `--features experimental`
+/// (docs/changes/2026-09-27-web3d-pivot.md).
+const EXPERIMENTAL_NAMESPACES: &[&str] = &[
+    "console.",
+    "achievements.",
+    "cloud_save.",
+    "friends.",
+    "mmo.",
+    "workshop.",
+    "rollback.",
+    "world.",
+    "terrain.",
+];
+
+#[cfg(not(feature = "experimental"))]
+#[test]
+fn default_manifest_excludes_experimental_namespaces() {
+    // web3d-M0: the manifest is the LLM grounding contract. Scaffolding
+    // namespaces (stub runtimes, bookkeeping the renderer never reads)
+    // must not be advertised to models in the default build.
+    for spec in &manifest() {
+        assert!(
+            !EXPERIMENTAL_NAMESPACES.iter().any(|ns| spec.name.starts_with(ns)),
+            "`{}` is an experimental builtin but appears in the default manifest",
+            spec.name
+        );
+    }
+}
+
+#[cfg(feature = "experimental")]
+#[test]
+fn experimental_manifest_includes_gated_namespaces() {
+    let m = manifest();
+    for ns in EXPERIMENTAL_NAMESPACES {
+        assert!(
+            m.iter().any(|s| s.name.starts_with(ns)),
+            "`--features experimental` should install `{ns}*`"
+        );
     }
 }
 

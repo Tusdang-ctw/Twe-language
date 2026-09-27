@@ -1271,9 +1271,11 @@ The replay halts automatically at end-of-file and the script continues with live
 
 ### 7.20 Open-world spatial + terrain  *(Phase 32 — `twec play3d` data side)*
 
+> **Experimental since 2026-09-27 (web3d-M0).** `world.*` and `terrain.*` install only with `cargo build --features experimental`; the renderer never consumed these structures. Their pure-Rust data structures (`spatial`, `cull`, `lod`, `instance`) move into the `twe-kernel` crate in web3d-M2, and spatial queries return to the default surface as `entities.near(...)` in M3. See [`changes/2026-09-27-web3d-pivot.md`](changes/2026-09-27-web3d-pivot.md).
+
 Phase 32 shipped the data-side of open-world rendering: spatial queries, chunk streaming, LOD chain selection, terrain heightfield, frustum culling, and per-asset instance bucketing. The wgpu render-pipeline integration that *consumes* these structures is a follow-on dev cycle (`docs/changes/2026-05-10-phase-32-closeout.md`); the script-facing API surface below is stable today on the tree-walker and the bytecode VM (v1.0.2 Session 9 pins the VM-side parity).
 
-The full surface is 35 builtins split across two namespaces. Worked examples below come from `examples/openworld_demo.twe`.
+The full surface is 35 builtins split across two namespaces. Worked examples below come from `examples/experimental/openworld_demo.twe`.
 
 #### 7.20.1 `world.*` — spatial query, streaming, LOD, culling, instancing
 

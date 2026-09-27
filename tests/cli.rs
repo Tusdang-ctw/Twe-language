@@ -384,6 +384,8 @@ fn doctor_subcommand_emits_text_report() {
     assert!(stdout.contains("crash dir"), "stdout: {stdout}");
 }
 
+// web3d-M0: `world.*` / `terrain.*` ship only with `--features experimental`.
+#[cfg(feature = "experimental")]
 #[test]
 fn run_vm_bytecode_matches_tree_on_world_terrain_v1_0_2_session_9() {
     // v1.0.2 Session 9: the 35 builtins in `world.*` and `terrain.*`
@@ -394,12 +396,12 @@ fn run_vm_bytecode_matches_tree_on_world_terrain_v1_0_2_session_9() {
     // pins that path so a regression that drops the install chain
     // (or shadows one of the namespace Objects with a VM-tagged
     // empty one) breaks here.
-    let tree = run_cli(&["run", "tests/programs/world_terrain_vm_mirror.twe"]);
+    let tree = run_cli(&["run", "tests/programs/experimental/world_terrain_vm_mirror.twe"]);
     let bc = run_cli(&[
         "run",
         "--vm",
         "bytecode",
-        "tests/programs/world_terrain_vm_mirror.twe",
+        "tests/programs/experimental/world_terrain_vm_mirror.twe",
     ]);
     assert_eq!(tree, bc);
     // Sanity floor: both must report at least one expected output

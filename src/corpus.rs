@@ -143,6 +143,9 @@ fn visit(root: &Path, dir: &Path, out: &mut Vec<CorpusEntry>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if skip_experimental_dir(&path) {
+                continue;
+            }
             visit(root, &path, out);
         } else if path.extension().is_some_and(|e| e == "twe") {
             if let Ok(source) = std::fs::read_to_string(&path) {
@@ -155,6 +158,14 @@ fn visit(root: &Path, dir: &Path, out: &mut Vec<CorpusEntry>) {
             }
         }
     }
+}
+
+/// web3d-M0: programs under an `experimental/` directory exercise the
+/// `--features experimental` namespaces (docs/changes/2026-09-27-web3d-pivot.md).
+/// A default build keeps them out of the LLM corpus — the corpus must
+/// not teach models APIs the default runtime doesn't install.
+pub fn skip_experimental_dir(dir: &Path) -> bool {
+    !cfg!(feature = "experimental") && dir.file_name().is_some_and(|n| n == "experimental")
 }
 
 /// Render a corpus list as JSON. Hand-rolled to match the no-serde

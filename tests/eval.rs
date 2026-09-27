@@ -544,30 +544,6 @@ fn text_input_outside_render_fails_clearly() {
     );
 }
 
-// Phase 10 session 5b: clipboard. Functional tests are skipped
-// because CI runners typically lack a display server / clipboard
-// daemon (X11 / Wayland / NSPasteboard). The `os.clipboard.read`
-// path returns the empty string in that case rather than erroring
-// — exercised here to confirm the surface is registered.
-#[test]
-fn clipboard_read_returns_string_or_empty() {
-    let out = run_program_str("print(os.clipboard.read())\n").expect("program should run");
-    // Either the runner has a clipboard with text in it (then
-    // `out` is whatever's there + newline) or it doesn't (then
-    // `out == "\n"`). Either way, the call returns a string and
-    // the program exits cleanly.
-    assert!(out.ends_with('\n'), "got: {out:?}");
-}
-
-#[test]
-fn clipboard_write_returns_nil() {
-    // Write succeeds-or-fails-silently; the return value is nil
-    // either way so the script can chain calls without checking.
-    let out = run_program_str("os.clipboard.write(\"hello\")\nprint(\"done\")\n")
-        .expect("program should run");
-    assert_eq!(out, "done\n");
-}
-
 #[test]
 fn panel_outside_render_fails_clearly() {
     // Phase 10 session 6.

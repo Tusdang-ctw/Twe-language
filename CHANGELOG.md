@@ -21,7 +21,32 @@ removal would be load-bearing.
   default non-strict tier stays silent (no false positives). See `docs/06`
   §5.5.
 
+### Changed
+- **Scaffolding namespaces are now behind `--features experimental`**
+  (web3d-M0; `docs/changes/2026-09-27-web3d-pivot.md`): `console.*`,
+  `achievements.*`, `cloud_save.*`, `friends.*`, `mmo.*`, `workshop.*`,
+  `rollback.*`, `world.*` and `terrain.*`. Their runtimes were stubs or
+  bookkeeping the renderer never consumed. They no longer appear in the
+  default build, `twec stdlib --json`, or the LLM corpus. Scripts using them
+  get an "undefined name" error unless built with
+  `cargo build --features experimental`. Their demos moved to
+  `examples/experimental/`. `net.*` (lockstep, lobbies, reconnect,
+  `net.set_mode`) is unchanged.
+- 2D drawing and UI builtins (`rect`, `text`, `button`, …) called outside the
+  2D runtime (`twec play3d`, or headless) now raise
+  `… is a 2D drawing call and needs the 2D runtime` instead of crashing the
+  process. Touch queries report no touches headless.
+
 ### Fixed
+- **GC use-after-free** (web3d-M0; `docs/changes/2026-09-27-web3d-m0-gc-soundness.md`):
+  a `for` loop over a temporary list (e.g. a list comprehension) could
+  corrupt the heap and crash (`STATUS_HEAP_CORRUPTION`) once the body
+  allocated enough to trigger a collection. Collections no longer run over
+  unrooted temporaries. The incremental sweep, module cache, stdlib stores
+  and class parent chains are now handled correctly. New `TWE_GC_STRESS=1`
+  mode and `tests/gc_stress.rs` gate this.
+- The pause flag (`pause()`, `auto_pause_when_idle`, `auto_pause_on_blur`) is
+  per interpreter thread instead of process-wide.
 - Strict-mode arithmetic no longer reports a false `type mismatch` when an
   operand is of **unknown type** (e.g. an element of an untyped iterable,
   `for x in items: s = s + x`). The mismatch now fires only when *both*

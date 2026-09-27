@@ -18,6 +18,8 @@ with the platform-holder you're interested in (links below).
 
 ## The partition
 
+> **Note (2026-09-27):** the `console.*`, `achievements.*`, `cloud_save.*` and `friends.*` abstractions below now compile only with `cargo build --features experimental` (see `docs/changes/2026-09-27-web3d-pivot.md`). Partner forks should enable that feature.
+
 | Lives in **public `twec`** | Lives in **your private fork** |
 |---|---|
 | `console.controller(i)` abstract input layer | gilrs-replacement bindings to the platform input API |
@@ -25,7 +27,7 @@ with the platform-holder you're interested in (links below).
 | `achievements.*` / `cloud_save.*` / `friends.*` trait stubs | Platform-specific implementations (NSO / Trophy / GamerScore) |
 | Generic graphics abstractions (wgpu's HAL) | First-party graphics API backends (NVN / GNM / GDK D3D12) |
 | `cargo build` working with no SDK present | Code-signing pipelines, cert generation |
-| `examples/console_demo.twe` (no SDK calls) | Real shipping games using your platform SDK |
+| `examples/experimental/console_demo.twe` (no SDK calls) | Real shipping games using your platform SDK |
 
 **The rule:** every file in the public repo must compile + run
 without any platform SDK present. PRs adding SDK code get rejected.

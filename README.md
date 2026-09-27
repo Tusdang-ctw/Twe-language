@@ -58,7 +58,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | Frustum culling, dynamic instance buffer | post-v1.0 |
 | `twec grammar` — GBNF / JSON-Schema / EBNF export for constrained LLM decoding | post-v1.0 |
 | `twec verify` — JSON v2 with structured machine-applicable `fix` patches | post-v1.0 |
-| `twec stdlib --json` — manifest of all 235 builtins (LLM grounding surface) | post-v1.0 |
+| `twec stdlib --json` — manifest of every installed builtin (286 in the default build; LLM grounding surface) | post-v1.0 |
 | `twec llm-loop` — provider-agnostic prompt → generate → verify self-correction loop | post-v1.0 |
 | `twec mcp` — stdio JSON-RPC MCP server (Claude Desktop, Cursor, future Studio) | post-v1.0 |
 | `twec corpus` — labelled `@task` / `@expected` / `@category` examples manifest | post-v1.0 |
@@ -84,7 +84,11 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | `touch.tap_count` play-loop hook for mobile tap detection | v1.0.2 |
 | MSG_HELLO mode-mismatch handshake — rejects Lockstep ↔ Rollback peer pairings | v1.0.2 |
 
-**1004 tests pass. `cargo clippy --release --all-targets -- -D warnings` clean.** **Phases 1–41 codebase-closed; v1.0.1 polish release closed 2026-05-18 (all 13 feature sessions + closeout — see [`docs/changes/2026-05-18-v1.0.1-closeout.md`](docs/changes/2026-05-18-v1.0.1-closeout.md)); v1.0.2 deferral-debt patch closed 2026-05-26 (10 retained sessions + closeout — see [`docs/changes/2026-05-26-v1.0.2-closeout.md`](docs/changes/2026-05-26-v1.0.2-closeout.md)).** The full post-v1.0 round 2 roadmap landed: 2D Steam-class, 3D action-RPG, lockstep LAN multiplayer, WASM 2D, open-world infrastructure, the LLM-differentiator surface (grammar export + structured-fix verify + stdlib manifest + llm-loop + MCP + corpus + eval + mutate + typed holes), cross-platform polish, external-validation scaffolding, internet multiplayer (Steam P2P primary + STUN fallback + lobbies + reconnect), rollback netcode (snapshot ring buffer + predicted-input policies), browser-3D scaffolding (`BuildTarget::Wasm32_3D` + audit), mobile (iOS + Android) scaffolding (touch + virtual joystick + safe-area insets + signing recipe), **console targets** (`console.*` abstract input + glyphs + service-trait stubs + `PARTNER.md` partner contribution guide), **and the MMO foundation** (sharded-zones architecture RFC + `mmo.*` API stubs + workshop traits + sandboxing pre-requirements). See [`LLMsPlan.md`](LLMsPlan.md) for the LLM-authoring strategy, [`docs/mobile-signing.md`](docs/mobile-signing.md) for the iOS / Android shipping recipe, and [`PARTNER.md`](PARTNER.md) for licensed studios working on console ports.
+**Status (2026-09-27).** About 1,040 tests pass, and `cargo clippy --release --all-targets -- -D warnings` is clean. The 2D runtime, the wgpu 3D renderer (glTF, skinning, shadows, HDR), rapier physics, LAN lockstep netcode, the Windows 2D build pipeline, and the LLM tooling above are real and tested.
+
+**Direction: Web3D pivot.** Twe is being reworked into a browser-first 3D language + engine: one Rust + wgpu kernel running on WebGPU and natively, with a top-down 3D "survivors" game as the v1.0 vertical slice. See [`docs/changes/2026-09-27-web3d-pivot.md`](docs/changes/2026-09-27-web3d-pivot.md) for the plan, milestones, and exit criteria. Browser 3D does **not** work yet (the web build today is 2D only).
+
+**Experimental (not in the default build).** Several later phases shipped author-facing APIs whose runtimes are stubs: `console.*`, `achievements.*` / `cloud_save.*` / `friends.*`, `mmo.*`, `workshop.*`, `rollback.*` (a snapshot ring, no rewind engine), and `world.*` / `terrain.*` (spatial / streaming / LOD bookkeeping the renderer doesn't consume). They compile only with `cargo build --features experimental`; their demos live in `examples/experimental/`. iOS / Android / console / linux-server build targets write directory layouts only. The phase history is in [`CHANGELOG.md`](CHANGELOG.md) and `docs/changes/`.
 
 ## Install
 
@@ -159,11 +163,9 @@ twec build examples/survive_beta
 | `examples/modular_math_demo/` | Multi-file modules |
 | `examples/pong_net.twe` | LAN lockstep multiplayer over UDP |
 | `examples/pong_net_internet.twe` | Internet multiplayer — Steam Lobbies or STUN+rendezvous fallback |
-| `examples/fighter_demo.twe` | Rollback netcode — 2-player fighting game with `rollback.snapshot` |
-| `examples/crystal_hunter_web.twe` | Browser-3D placeholder using `assets.platform()` branching |
+| `examples/crystal_hunter_web.twe` | Placeholder for browser 3D (`assets.platform()` branching); browser 3D isn't implemented yet |
 | `examples/survive_beta_mobile/` | Mobile touch controls — virtual joystick + safe-area-aware HUD |
-| `examples/console_demo.twe` | Console controller + per-style glyph rendering (`console.*`) |
-| `examples/mmo_demo/` | MMO API single-player demo — `mmo.*` replication + persist + broadcast |
+| `examples/experimental/` | Demos of the experimental namespaces (`rollback`, `console`, `mmo`, `world`) — need `--features experimental` |
 | … and more | Audio, camera, gamepad, fonts, mouse, save, layout, physics |
 
 ## Language in 60 seconds

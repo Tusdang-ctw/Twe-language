@@ -478,6 +478,9 @@ fn visit_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
+            if crate::corpus::skip_experimental_dir(&p) {
+                continue;
+            }
             visit_files(&p, out);
         } else if p.extension().is_some_and(|e| e == "twe") {
             out.push(p);
