@@ -23,6 +23,11 @@
 #
 # Press Esc (or click the Pause / Resume button) to toggle.
 
+# Escape opens this game's pause menu, so take it over from the
+# engine's default "Escape closes the window"; the menu's Quit button
+# calls `quit()` instead.
+quit_on_escape(false)
+
 settings.set_default("audio.master", 0.8)
 settings.set_default("audio.music", 0.6)
 settings.set_default("audio.sfx", 0.7)
@@ -154,6 +159,7 @@ on render():
             settings.save("examples/pause_menu.save")
         if button(at: g2.at, size: g2.size, label: lang.t("menu.quit")):
             settings.save("examples/pause_menu.save")
+            quit()
             label(
                 at: (160, 444),
                 size: (320, 24),

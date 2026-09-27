@@ -13,6 +13,11 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **`quit()` and `quit_on_escape(flag)`** (web3d-M0; `docs/06` §7.14a). Games
+  can now exit from their own menus, and can take Escape over for a pause
+  menu. Previously Escape was hard-wired to close the window (so a script's
+  Escape handler never ran) and there was no way to quit from script.
+  `examples/pause_menu_demo.twe` and `examples/survive_beta` use both.
 - **Dimensional checking in strict mode** (Principle 3, "dimensional units
   enforced"): `+` / `-` between quantities with incompatible units now
   raises in strict mode / `twec verify` — `5m + 3s` reports `dimensional
@@ -47,6 +52,15 @@ removal would be load-bearing.
   mode and `tests/gc_stress.rs` gate this.
 - The pause flag (`pause()`, `auto_pause_when_idle`, `auto_pause_on_blur`) is
   per interpreter thread instead of process-wide.
+- **Shipped builds load their bundled assets.** `load`, `load_atlas` and
+  `sound.load` checked the loose filesystem before the bundle, so a bundled
+  `.exe` on a machine without the `assets/` folder failed on assets it
+  carried. They now resolve through the bundle first (`bundle::asset_exists`).
+  On the web target the check defers to the async loaders instead of always
+  failing.
+- **Steam initialises in shipped builds.** The embedded (bundled-exe) play
+  loop skipped `steam::init()`, so achievements and cloud saves silently did
+  nothing in a Steam build.
 - Strict-mode arithmetic no longer reports a false `type mismatch` when an
   operand is of **unknown type** (e.g. an element of an untyped iterable,
   `for x in items: s = s + x`). The mismatch now fires only when *both*

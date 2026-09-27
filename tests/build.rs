@@ -990,3 +990,41 @@ fn read_asset_bytes_falls_through_when_no_bundle_set() {
     assert_eq!(bytes, b"FROM_DISK");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn script_loaders_resolve_assets_that_exist_only_in_the_bundle() {
+    // web3d-M0: `load` / `sound.load` checked `std::fs::metadata`
+    // before consulting the bundle, so a shipped exe on a machine
+    // without the loose `assets/` folder failed on assets it carried.
+    let _guard = BUNDLE_TEST_LOCK.lock().expect("test lock poisoned");
+    clear_active_bundle();
+
+    let dir = temp_project("bundle_only_assets");
+    fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::write(dir.join("assets/hero_bundled.png"), b"\x89PNG bundled").unwrap();
+    fs::write(dir.join("assets/hit_bundled.wav"), b"RIFF bundled").unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let bundle_path = dir.join("out.twebundle");
+    write_bundle(&project, &bundle_path).expect("write");
+    // The shipped machine has no loose assets — only the bundle.
+    fs::remove_dir_all(dir.join("assets")).unwrap();
+    set_active_bundle(BundleReader::open(&bundle_path).expect("open"));
+
+    let src = "let hero = load(\"assets/hero_bundled.png\")\n\
+               let hit = sound.load(\"assets/hit_bundled.wav\")\n\
+               print(\"loaded\")\n";
+    let tokens = twec::lexer::lex(src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let result = twec::eval::run(&program);
+    clear_active_bundle();
+    assert_eq!(result.expect("bundle-only assets should load"), "loaded\n");
+
+    // Still a clear error when the asset is in neither place.
+    let tokens = twec::lexer::lex("load(\"assets/not_anywhere.png\")\n").expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let err = twec::eval::run(&program).expect_err("missing asset should error");
+    assert!(err.message.contains("cannot find asset"), "got: {}", err.message);
+
+    let _ = fs::remove_dir_all(&dir);
+}

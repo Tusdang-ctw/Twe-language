@@ -1553,8 +1553,12 @@ impl ApplicationHandler for App {
                     }
                 }
                 // Esc closes the window — same convention as the
-                // macroquad path.
-                if matches!(code, KeyCode::Escape) && key_state == ElementState::Pressed {
+                // macroquad path, including the `quit_on_escape(false)`
+                // opt-out (web3d-M0).
+                if matches!(code, KeyCode::Escape)
+                    && key_state == ElementState::Pressed
+                    && crate::stdlib::quit_on_escape()
+                {
                     event_loop.exit();
                 }
             }
@@ -1695,6 +1699,12 @@ impl ApplicationHandler for App {
                 }
                 if let Err(e) = render(state, &mut self.env) {
                     eprintln!("render error: {e}");
+                }
+                // web3d-M0: a script's `quit()` ends the game after
+                // this frame, same as the 2D loops.
+                if crate::stdlib::take_quit_request() {
+                    event_loop.exit();
+                    return;
                 }
                 state.window.request_redraw();
             }

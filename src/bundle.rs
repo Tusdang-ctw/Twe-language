@@ -565,6 +565,32 @@ pub fn has_active_bundle() -> bool {
     ACTIVE_BUNDLE.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
+/// Does `path` resolve to an asset — in the active bundle, or on the
+/// filesystem? Used by the `load` / `load_atlas` / `sound.load`
+/// existence checks (web3d-M0: they used `std::fs::metadata` directly,
+/// so a shipped bundle exe on a machine without the loose `assets/`
+/// folder failed to load assets it carried). On wasm32 there's no
+/// synchronous filesystem — assets are fetched over HTTP by the
+/// loaders — so existence can't be checked up front and this returns
+/// `true`, deferring the error to the load itself.
+pub fn asset_exists(path: &str) -> bool {
+    let in_bundle = ACTIVE_BUNDLE
+        .lock()
+        .map(|g| g.as_ref().is_some_and(|r| r.has(path)))
+        .unwrap_or(false);
+    if in_bundle {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::metadata(path).is_ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        true
+    }
+}
+
 /// Resolve a path, trying the active bundle first and then the
 /// filesystem. The fallback preserves behavior for scripts run via
 /// `twec play` / `twec run` outside a bundle, and for paths the

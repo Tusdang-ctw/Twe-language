@@ -21,6 +21,10 @@
 # level-up, more weapons / enemies, boss, polish, build-pipeline
 # integration follow.
 
+# Escape opens the pause menu (see the running state), so the engine's
+# default "Escape closes the window" is turned off.
+quit_on_escape(false)
+
 settings.set_default("keys.right", "right")
 settings.set_default("keys.right_alt", "d")
 settings.set_default("keys.left", "left")

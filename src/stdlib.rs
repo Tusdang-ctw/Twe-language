@@ -819,6 +819,20 @@ pub fn install(env: &mut Env) {
         "is_paused".to_string(),
         Value::from_builtin("is_paused", &[], pause_get),
     );
+    // web3d-M0: `quit()` ends the game after the current frame (a menu's
+    // Quit button); `quit_on_escape(false)` hands Escape to the script
+    // (a pause menu) instead of closing the window. Defaults are reset
+    // here so a hot reload starts from them.
+    QUIT_REQUESTED.with(|c| c.set(false));
+    QUIT_ON_ESCAPE.with(|c| c.set(true));
+    env.set(
+        "quit".to_string(),
+        Value::from_builtin("quit", &[], quit_impl),
+    );
+    env.set(
+        "quit_on_escape".to_string(),
+        Value::from_builtin("quit_on_escape", &["enabled"], quit_on_escape_impl),
+    );
     // v1.0.1 session 6: persistent-state registry. Scripts call
     // `persistent_state("pause_menu")` once at startup to opt the
     // pause menu's state out of the global pause flag; everything
@@ -1278,6 +1292,47 @@ fn pause_set(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         });
     }
     PAUSED.with(|c| c.set(v.as_bool()));
+    Ok(Value::NIL)
+}
+
+thread_local! {
+    /// web3d-M0: set by `quit()`; the play loops exit after the frame.
+    static QUIT_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// web3d-M0: whether Escape closes the game (default true).
+    static QUIT_ON_ESCAPE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Play-loop read: has the script called `quit()`? Consumes the request.
+pub fn take_quit_request() -> bool {
+    QUIT_REQUESTED.with(|c| c.replace(false))
+}
+
+/// Play-loop read: should Escape close the game?
+pub fn quit_on_escape() -> bool {
+    QUIT_ON_ESCAPE.with(|c| c.get())
+}
+
+fn quit_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 0, "quit")?;
+    QUIT_REQUESTED.with(|c| c.set(true));
+    Ok(Value::NIL)
+}
+
+fn quit_on_escape_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "quit_on_escape")?;
+    let v = &args[0];
+    if !v.is_bool() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("quit_on_escape expects a bool, got {}", (*v).type_name()),
+            help: Some(
+                "call `quit_on_escape(false)` when the game uses Escape itself (e.g. to open a                  pause menu), and `quit()` from its Quit button"
+                    .to_string(),
+            ),
+        });
+    }
+    QUIT_ON_ESCAPE.with(|c| c.set(v.as_bool()));
     Ok(Value::NIL)
 }
 
@@ -2498,13 +2553,13 @@ fn sound_load(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             });
         }
     };
-    if std::fs::metadata(&path).is_err() {
+    if !crate::bundle::asset_exists(&path) {
         return Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("sound.load: cannot find asset '{path}'"),
             help: Some(
-                "the path is relative to the working directory; check spelling and case"
+                "the path is relative to the working directory (or the game bundle, in a shipped build); check spelling and case"
                     .to_string(),
             ),
         });
@@ -5839,13 +5894,13 @@ fn load_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             });
         }
     };
-    if std::fs::metadata(&path).is_err() {
+    if !crate::bundle::asset_exists(&path) {
         return Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("load: cannot find asset '{path}'"),
             help: Some(
-                "the path is relative to the working directory; check spelling and case"
+                "the path is relative to the working directory (or the game bundle, in a shipped build); check spelling and case"
                     .to_string(),
             ),
         });
@@ -5885,13 +5940,13 @@ fn load_atlas_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
             });
         }
     };
-    if std::fs::metadata(&path).is_err() {
+    if !crate::bundle::asset_exists(&path) {
         return Err(RuntimeError {
             line: 0,
             col: 0,
             message: format!("load_atlas: cannot find asset '{path}'"),
             help: Some(
-                "the path is relative to the working directory; check spelling and case"
+                "the path is relative to the working directory (or the game bundle, in a shipped build); check spelling and case"
                     .to_string(),
             ),
         });
@@ -5960,7 +6015,7 @@ fn load_font_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
                 col: 0,
                 message: format!("load_font: cannot find asset '{path}'"),
                 help: Some(
-                    "the path is relative to the working directory; check spelling and case"
+                    "the path is relative to the working directory (or the game bundle, in a shipped build); check spelling and case"
                         .to_string(),
                 ),
             });
@@ -9854,7 +9909,7 @@ fn nine_slice_handle(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
             col: 0,
             message: format!("nine_slice: cannot find asset '{path}'"),
             help: Some(
-                "the path is relative to the working directory; check spelling and case"
+                "the path is relative to the working directory (or the game bundle, in a shipped build); check spelling and case"
                     .to_string(),
             ),
         });
@@ -11936,7 +11991,9 @@ fn derive_category(name: &str) -> String {
         "save_to" | "load_from" => "storage".into(),
         // Input / lifecycle.
         "key_held" | "key_pressed" => "input".into(),
-        "pause" | "is_paused" | "auto_pause_on_blur" => "lifecycle".into(),
+        "pause" | "is_paused" | "auto_pause_on_blur" | "quit" | "quit_on_escape" => {
+            "lifecycle".into()
+        }
         "screenshot" => "tooling".into(),
         // 3D atoms.
         "vec3" | "cube" | "sphere" | "texture" | "mesh" => "render3d".into(),

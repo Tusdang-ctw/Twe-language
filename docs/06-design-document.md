@@ -1173,6 +1173,15 @@ auto_pause_when_idle(30.0)   # pause after 30s with no input
 auto_pause_on_blur(true)     # pause when window loses focus (Windows; macOS/Linux stubbed)
 ```
 
+#### 7.14a Quitting *(web3d-M0)*
+
+```twe
+quit_on_escape(false)   # the game handles Escape itself (e.g. opens a pause menu)
+quit()                  # end the game after the current frame (a menu's Quit button)
+```
+
+By default Escape closes the game window — a prototyping convenience, identical in `twec play`, `twec play3d`, and shipped builds. A game that uses Escape (a pause menu) calls `quit_on_escape(false)` once at startup, and then must offer its own exit via `quit()`. Before web3d-M0 Escape was hard-wired, so a script's Escape handler never ran, and there was no way to quit from script. Headless runs (`twec run`) ignore `quit()`. Both reset to their defaults on hot reload.
+
 #### 7.14b Per-state pause opt-out *(v1.0.1 Session 6)*
 
 A state registered as **persistent** keeps ticking through the global pause flag — its `on update(dt):` body, every-clocks, predicate hooks, and key-press handlers all fire while the rest of the world is frozen. Pause menus, debug HUDs, and toast notifications use this to stay interactive under pause.

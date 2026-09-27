@@ -3051,3 +3051,18 @@ fn touch_queries_are_inert_headless() {
         .expect("touch queries should run headless");
     assert_eq!(out, "false\n0\n");
 }
+
+#[test]
+fn quit_and_quit_on_escape_are_callable_and_type_checked() {
+    // web3d-M0: games need `quit()` for a menu's Quit button and
+    // `quit_on_escape(false)` to use Escape themselves (pause menus);
+    // before, Escape was hard-wired to close the window and there was
+    // no way to quit from script.
+    let out = run_program_str("quit_on_escape(false)\nquit()\nprint(\"ok\")\n")
+        .expect("quit builtins should run headless");
+    assert_eq!(out, "ok\n");
+    assert!(twec::stdlib::take_quit_request(), "quit() should request exit");
+    assert!(!twec::stdlib::quit_on_escape());
+    let err = run_program_str("quit_on_escape(1)\n").expect_err("non-bool should error");
+    assert!(err.contains("quit_on_escape expects a bool"), "got: {err}");
+}

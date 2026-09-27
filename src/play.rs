@@ -485,7 +485,11 @@ async fn run_loop(path: String) {
     flush_output(&mut env);
 
     loop {
-        if is_key_pressed(KeyCode::Escape) {
+        // web3d-M0: Escape quits unless the script took it over with
+        // `quit_on_escape(false)`; `quit()` requests exit explicitly.
+        if (crate::stdlib::quit_on_escape() && is_key_pressed(KeyCode::Escape))
+            || crate::stdlib::take_quit_request()
+        {
             break;
         }
 
@@ -1096,7 +1100,11 @@ async fn run_loop_bytecode(path: String) {
     let mut accumulator: f64 = 0.0;
 
     loop {
-        if is_key_pressed(KeyCode::Escape) {
+        // web3d-M0: Escape quits unless the script took it over with
+        // `quit_on_escape(false)`; `quit()` requests exit explicitly.
+        if (crate::stdlib::quit_on_escape() && is_key_pressed(KeyCode::Escape))
+            || crate::stdlib::take_quit_request()
+        {
             break;
         }
 
@@ -1194,6 +1202,11 @@ async fn run_loop_embedded(source: String) {
     // web3d-M0: macroquad is initialised from here on (see
     // `stdlib::set_macroquad_live`).
     crate::stdlib::set_macroquad_live(true);
+    // web3d-M0: shipped (bundled) builds are exactly where Steam must be
+    // live — this loop previously skipped the init that `run_loop` does,
+    // so achievements / cloud saves silently no-oped in a Steam build.
+    // No-op in non-steam builds.
+    crate::steam::init();
     const LABEL: &str = "<embedded>main.twe";
     let mut env = match initialize_from_source(&source, LABEL) {
         Ok(e) => e,
@@ -1207,7 +1220,11 @@ async fn run_loop_embedded(source: String) {
     flush_output(&mut env);
 
     loop {
-        if is_key_pressed(KeyCode::Escape) {
+        // web3d-M0: Escape quits unless the script took it over with
+        // `quit_on_escape(false)`; `quit()` requests exit explicitly.
+        if (crate::stdlib::quit_on_escape() && is_key_pressed(KeyCode::Escape))
+            || crate::stdlib::take_quit_request()
+        {
             break;
         }
 
