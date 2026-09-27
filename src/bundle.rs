@@ -507,14 +507,20 @@ pub fn detect_in_self() -> io::Result<Option<BundleReader>> {
 }
 
 pub fn detect_in_file(path: &Path) -> io::Result<Option<BundleReader>> {
-    let mut file = File::open(path)?;
-    let len = file.seek(SeekFrom::End(0))?;
-    if len < BOOT_FOOTER_SIZE {
-        return Ok(None);
-    }
-    file.seek(SeekFrom::End(-(BOOT_FOOTER_SIZE as i64)))?;
-    let mut footer = [0u8; BOOT_FOOTER_SIZE as usize];
-    file.read_exact(&mut footer)?;
+    // Read the footer in its own scope so the handle is closed before
+    // `open_at` reopens the file (web3d-M0: an explicit `drop(file)`
+    // tripped clippy's drop_non_drop on wasm32, where `File` is a stub).
+    let (len, footer) = {
+        let mut file = File::open(path)?;
+        let len = file.seek(SeekFrom::End(0))?;
+        if len < BOOT_FOOTER_SIZE {
+            return Ok(None);
+        }
+        file.seek(SeekFrom::End(-(BOOT_FOOTER_SIZE as i64)))?;
+        let mut footer = [0u8; BOOT_FOOTER_SIZE as usize];
+        file.read_exact(&mut footer)?;
+        (len, footer)
+    };
     if &footer[16..24] != BOOT_MAGIC {
         return Ok(None);
     }
@@ -527,7 +533,6 @@ pub fn detect_in_file(path: &Path) -> io::Result<Option<BundleReader>> {
             "embedded bundle footer points outside the host file",
         ));
     }
-    drop(file);
     let reader = BundleReader::open_at(path, bundle_offset)?;
     Ok(Some(reader))
 }

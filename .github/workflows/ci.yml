@@ -48,11 +48,47 @@ jobs:
       - name: Clippy
         run: cargo clippy --release --all-targets -- -D warnings
 
+      # web3d-M0: scaffolding namespaces build only with this feature;
+      # keep them compiling + tested so gating them doesn't rot them.
+      - name: Clippy (experimental)
+        run: cargo clippy --release --all-targets --features experimental -- -D warnings
+
+      - name: Test (experimental)
+        run: cargo test --release --features experimental
+
       # Format check is Linux-only — line-ending differences across
       # platforms make rustfmt --check noisy on Windows checkouts.
       - name: Format check
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
+
+  # web3d-M0: the browser (wasm32) build silently stopped compiling
+  # during the 3D phases — 32 errors that nothing caught. It is the
+  # v1.0 target platform now, so every PR must keep it building clean.
+  wasm-check:
+    name: WASM check (wasm32-unknown-unknown)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-wasm32-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Clippy (wasm32)
+        run: cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Clippy (wasm32, experimental)
+        run: cargo clippy --release --target wasm32-unknown-unknown --features experimental -- -D warnings
 
   # Phase 34 session 5: cross-compile validation. The release.yml
   # matrix builds the artifacts on tag push, but a tag is too late to

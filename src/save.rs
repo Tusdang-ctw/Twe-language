@@ -33,7 +33,9 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::json;
@@ -252,38 +254,33 @@ fn tagged(tag: &str, fields: &[(&str, json::Value)]) -> json::Value {
 
 // ─── Phase 30 session 2: WASM save / load via localStorage ──────────────────
 //
-// std::fs is unavailable on wasm32-unknown-unknown. Save data is
-// rerouted to `localStorage` via quad_url's thin miniquad JS-FFI layer.
-// The key used is the forward-slash path string — games that save to
-// "data/progress.sav" get localStorage key "data/progress.sav". The
-// 5 MB per-origin localStorage limit is sufficient for game-save sizes;
-// large binary blobs (e.g. replay logs) should not be saved this way.
+// std::fs is unavailable on wasm32-unknown-unknown, and there is no
+// working web save backend yet. web3d-M0: the Phase 30 path called
+// `quad_url::set_program_parameter`, which writes URL *query
+// parameters* (the page address), not localStorage — saves would land
+// in the address bar and never persist — and its load half called a
+// function quad-url doesn't have, so the web build didn't compile.
+// Real localStorage persistence lands with the wasm-bindgen web shell
+// (web3d-M2). Until then saves fail with a clear error.
 //
 // Non-WASM: unchanged atomic-write path below.
 
-/// WASM implementation: encode → JSON string → localStorage.
+#[cfg(target_arch = "wasm32")]
+const WEB_SAVE_UNSUPPORTED: &str =
+    "saving isn't supported in the browser build yet (planned for web3d-M2: localStorage)";
+
+/// WASM: not yet supported — see the note above.
 #[cfg(target_arch = "wasm32")]
 pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
-    let json_value = encode(value)?;
-    let serialized = json::to_string(&json_value);
-    let key = path.to_string_lossy().to_string();
-    quad_url::set_program_parameter(&key, &serialized);
-    Ok(())
+    let _ = (path, value);
+    Err(WEB_SAVE_UNSUPPORTED.to_string())
 }
 
-/// WASM implementation: localStorage → JSON string → Value.
+/// WASM: not yet supported — see the note above.
 #[cfg(target_arch = "wasm32")]
 pub fn load_from_path(path: &Path) -> Result<Value, String> {
-    let key = path.to_string_lossy().to_string();
-    let text = quad_url::get_program_parameter(&key).ok_or_else(|| {
-        format!(
-            "no save data for '{}' — game may not have been saved yet",
-            path.display()
-        )
-    })?;
-    let json_value = json::parse(&text)
-        .map_err(|e| format!("save data for '{}' is not valid JSON: {e}", path.display()))?;
-    Ok(decode(&json_value))
+    let _ = path;
+    Err(WEB_SAVE_UNSUPPORTED.to_string())
 }
 
 // ─── Native save / load (non-WASM) ───────────────────────────────────────────

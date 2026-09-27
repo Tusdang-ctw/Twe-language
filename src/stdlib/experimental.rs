@@ -483,6 +483,9 @@ fn cloud_save_save(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             ],
         );
     }
+    // No cloud backend in the browser build.
+    #[cfg(target_arch = "wasm32")]
+    let _ = (slot, payload);
     let _ = env;
     Ok(Value::NIL)
 }

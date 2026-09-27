@@ -58,6 +58,14 @@ removal would be load-bearing.
   carried. They now resolve through the bundle first (`bundle::asset_exists`).
   On the web target the check defers to the async loaders instead of always
   failing.
+- **The browser (wasm32) build compiles again.** It had silently broken
+  during the 3D phases (32 errors). 3D-only state types moved to
+  `render3d_types`; `physics.*` is not installed on wasm32 (rapier is
+  native-only). CI now runs clippy for wasm32. Web saves never worked:
+  they wrote to URL query parameters, not localStorage, and the load half
+  didn't compile. They now return a clear "not supported in the browser yet"
+  error until real localStorage lands (web3d-M2), and the `quad-url`
+  dependency is removed.
 - **Steam initialises in shipped builds.** The embedded (bundled-exe) play
   loop skipped `steam::init()`, so achievements and cloud saves silently did
   nothing in a Steam build.

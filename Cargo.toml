@@ -121,12 +121,10 @@ x11rb = { version = "0.13", default-features = false }
 
 # ── WASM-only dependencies ──
 #
-# Phase 30 session 2: quad_url provides synchronous localStorage access
-# via miniquad's JS-FFI layer. Used by save.rs to reroute save_to_path /
-# load_from_path to localStorage on the web target. Only compiled when
-# targeting wasm32-unknown-unknown.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-quad-url = "0.1"
+# web3d-M0: `quad-url` removed — it manipulates URL query parameters,
+# not localStorage, and the save path built on it never compiled. Web
+# saves return an explicit "not supported yet" error until the
+# wasm-bindgen web shell (web3d-M2) adds real localStorage.
 
 [dev-dependencies]
 insta = "1.41"

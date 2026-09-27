@@ -314,49 +314,11 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
-/// Phase 20: per-frame lighting uniform. Up to 8 point lights +
-/// one directional sun + a global ambient. Padded to vec4-aligned
-/// fields per std140 / wgsl uniform layout rules. Disabled lights
-/// have `radius = 0.0` so the shader can early-out cheaply.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct PointLightU {
-    /// xyz = world-space position. w padding.
-    pub pos: [f32; 4],
-    /// xyz = light color (linear-ish, treat as gain). w = radius.
-    /// `radius == 0.0` means "slot disabled".
-    pub color_radius: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct LightsUniform {
-    /// xyz = ambient color (RGB), w padding.
-    pub ambient: [f32; 4],
-    /// xyz = normalized direction TOWARD the sun (i.e. light comes
-    /// from this direction). w = sun intensity (0..1+).
-    pub sun_dir: [f32; 4],
-    pub point_lights: [PointLightU; 8],
-}
-
-impl LightsUniform {
-    pub fn new() -> Self {
-        Self {
-            ambient: [0.20, 0.20, 0.22, 0.0],
-            sun_dir: [0.4, 0.85, 0.35, 1.0],
-            point_lights: [PointLightU {
-                pos: [0.0; 4],
-                color_radius: [0.0; 4],
-            }; 8],
-        }
-    }
-}
-
-impl Default for LightsUniform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// web3d-M0: `PointLightU`, `LightsUniform` and `AnimSnapshot` live in
+// `crate::render3d_types` (always compiled) so the script-side state in
+// `stdlib` builds on wasm32 too; re-exported here for existing paths.
+pub use crate::render3d_types::{LightsUniform, PointLightU};
+pub(crate) use crate::render3d_types::AnimSnapshot;
 
 /// Phase 28 session 2: cascaded shadow maps. Three concentric
 /// orthographic projections from the sun direction, each rendered
@@ -3069,18 +3031,6 @@ fn sample_channel(channel: &AnimChannel, t: f32) -> SampledValue {
         (AnimProperty::Translation | AnimProperty::Scale, _) => SampledValue::Vec3([0.0; 3]),
         (AnimProperty::Rotation, _) => SampledValue::Vec4([0.0, 0.0, 0.0, 1.0]),
     }
-}
-
-/// Phase 24: minimal animation snapshot read from the script-side
-/// `mesh_anim` state. The render path passes this to
-/// `compute_skinned_joint_matrices`, which samples the named clip
-/// at `time` and writes joint matrices.
-#[derive(Clone, Default, Debug)]
-pub(crate) struct AnimSnapshot {
-    pub(crate) clip: String,
-    pub(crate) time: f32,
-    pub(crate) blend_clip: Option<String>,
-    pub(crate) blend_t: f32,
 }
 
 /// Phase 24: compute per-joint skin matrices at the current

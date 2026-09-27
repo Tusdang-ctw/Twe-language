@@ -431,98 +431,103 @@ pub fn install(env: &mut Env) {
         }))),
     );
 
-    // Phase 18: 3D physics surface. All builtins forward to the
-    // thread-local PhysicsWorld in src/physics3d.rs. The play3d
-    // loop steps the world before each Twe `on update(dt)` so
-    // scripts read authoritative positions.
-    let mut physics_fields = HashMap::new();
-    physics_fields.insert(
-        "body".to_string(),
-        Value::from_builtin("physics.body", &["shape", "at", "mass"], physics_body_impl),
-    );
-    physics_fields.insert(
-        "static_box".to_string(),
-        Value::from_builtin(
-            "physics.static_box",
-            &["at", "size"],
-            physics_static_box_impl,
-        ),
-    );
-    physics_fields.insert(
-        "static_sphere".to_string(),
-        Value::from_builtin(
-            "physics.static_sphere",
-            &["at", "radius"],
-            physics_static_sphere_impl,
-        ),
-    );
-    physics_fields.insert(
-        "static_mesh".to_string(),
-        Value::from_builtin(
-            "physics.static_mesh",
-            &["path", "at"],
-            physics_static_mesh_impl,
-        ),
-    );
-    physics_fields.insert(
-        "raycast".to_string(),
-        Value::from_builtin(
-            "physics.raycast",
-            &["origin", "direction", "max_dist"],
-            physics_raycast_impl,
-        ),
-    );
-    physics_fields.insert(
-        "position".to_string(),
-        Value::from_builtin("physics.position", &["handle"], physics_position_impl),
-    );
-    physics_fields.insert(
-        "velocity".to_string(),
-        Value::from_builtin("physics.velocity", &["handle", "v"], physics_velocity_impl),
-    );
-    physics_fields.insert(
-        "impulse".to_string(),
-        Value::from_builtin("physics.impulse", &["handle", "v"], physics_impulse_impl),
-    );
-    physics_fields.insert(
-        "gravity".to_string(),
-        Value::from_builtin("physics.gravity", &["v"], physics_gravity_impl),
-    );
-    physics_fields.insert(
-        "character".to_string(),
-        Value::from_builtin(
-            "physics.character",
-            &["at", "height", "radius"],
-            physics_character_impl,
-        ),
-    );
-    physics_fields.insert(
-        "character_move".to_string(),
-        Value::from_builtin(
-            "physics.character_move",
-            &["handle", "dir", "dt"],
-            physics_character_move_impl,
-        ),
-    );
-    physics_fields.insert(
-        "collisions".to_string(),
-        Value::from_builtin("physics.collisions", &[], physics_collisions_impl),
-    );
-    physics_fields.insert(
-        "despawn".to_string(),
-        Value::from_builtin("physics.despawn", &["handle"], physics_despawn_impl),
-    );
-    physics_fields.insert(
-        "reset".to_string(),
-        Value::from_builtin("physics.reset", &[], physics_reset_impl),
-    );
-    env.set(
-        "physics".to_string(),
-        Value::from_object(Rc::new(RefCell::new(Object {
-            fields: physics_fields,
-            kind: "module",
-        }))),
-    );
+    // web3d-M0: rapier (physics3d) is native-only; `physics.*` is not
+    // installed in the wasm32 build until the kernel's physics lands.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Phase 18: 3D physics surface. All builtins forward to the
+        // thread-local PhysicsWorld in src/physics3d.rs. The play3d
+        // loop steps the world before each Twe `on update(dt)` so
+        // scripts read authoritative positions.
+        let mut physics_fields = HashMap::new();
+        physics_fields.insert(
+            "body".to_string(),
+            Value::from_builtin("physics.body", &["shape", "at", "mass"], physics_body_impl),
+        );
+        physics_fields.insert(
+            "static_box".to_string(),
+            Value::from_builtin(
+                "physics.static_box",
+                &["at", "size"],
+                physics_static_box_impl,
+            ),
+        );
+        physics_fields.insert(
+            "static_sphere".to_string(),
+            Value::from_builtin(
+                "physics.static_sphere",
+                &["at", "radius"],
+                physics_static_sphere_impl,
+            ),
+        );
+        physics_fields.insert(
+            "static_mesh".to_string(),
+            Value::from_builtin(
+                "physics.static_mesh",
+                &["path", "at"],
+                physics_static_mesh_impl,
+            ),
+        );
+        physics_fields.insert(
+            "raycast".to_string(),
+            Value::from_builtin(
+                "physics.raycast",
+                &["origin", "direction", "max_dist"],
+                physics_raycast_impl,
+            ),
+        );
+        physics_fields.insert(
+            "position".to_string(),
+            Value::from_builtin("physics.position", &["handle"], physics_position_impl),
+        );
+        physics_fields.insert(
+            "velocity".to_string(),
+            Value::from_builtin("physics.velocity", &["handle", "v"], physics_velocity_impl),
+        );
+        physics_fields.insert(
+            "impulse".to_string(),
+            Value::from_builtin("physics.impulse", &["handle", "v"], physics_impulse_impl),
+        );
+        physics_fields.insert(
+            "gravity".to_string(),
+            Value::from_builtin("physics.gravity", &["v"], physics_gravity_impl),
+        );
+        physics_fields.insert(
+            "character".to_string(),
+            Value::from_builtin(
+                "physics.character",
+                &["at", "height", "radius"],
+                physics_character_impl,
+            ),
+        );
+        physics_fields.insert(
+            "character_move".to_string(),
+            Value::from_builtin(
+                "physics.character_move",
+                &["handle", "dir", "dt"],
+                physics_character_move_impl,
+            ),
+        );
+        physics_fields.insert(
+            "collisions".to_string(),
+            Value::from_builtin("physics.collisions", &[], physics_collisions_impl),
+        );
+        physics_fields.insert(
+            "despawn".to_string(),
+            Value::from_builtin("physics.despawn", &["handle"], physics_despawn_impl),
+        );
+        physics_fields.insert(
+            "reset".to_string(),
+            Value::from_builtin("physics.reset", &[], physics_reset_impl),
+        );
+        env.set(
+            "physics".to_string(),
+            Value::from_object(Rc::new(RefCell::new(Object {
+                fields: physics_fields,
+                kind: "module",
+            }))),
+        );
+    }
 
     // Phase 17 session 3: cursor lock/unlock for FPS-style camera
     // control in `twec play3d`. The builtins write a pending flag
@@ -1022,8 +1027,8 @@ thread_local! {
     /// reads this once per frame and uploads to the GPU lights
     /// uniform. Up to 8 simultaneous point lights; light.add()
     /// returns the slot index (1-based, so 0 means "all full").
-    static LIGHTS_STATE: RefCell<crate::play3d::LightsUniform> =
-        RefCell::new(crate::play3d::LightsUniform::new());
+    static LIGHTS_STATE: RefCell<crate::render3d_types::LightsUniform> =
+        RefCell::new(crate::render3d_types::LightsUniform::new());
     /// Phase 25: shadow-pass enable flag (default off — opt-in via
     /// `sun.shadow(true)`). When off, the play3d frame loop still
     /// writes the shadow uniform, but with `flags.w = 0` so the
@@ -1081,7 +1086,7 @@ pub fn take_pending_screenshot() -> Option<String> {
 /// Phase 20: snapshot the current lighting state for the play3d
 /// frame loop. Returns by value so the caller can write it
 /// straight into a wgpu buffer without holding the thread-local.
-pub fn lights_snapshot() -> crate::play3d::LightsUniform {
+pub fn lights_snapshot() -> crate::render3d_types::LightsUniform {
     LIGHTS_STATE.with(|s| *s.borrow())
 }
 
@@ -1451,6 +1456,9 @@ fn clipboard_write(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
     {
         let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
     }
+    // No clipboard backend in the browser build yet; the write is a no-op.
+    #[cfg(target_arch = "wasm32")]
+    let _ = text;
     Ok(Value::NIL)
 }
 
@@ -4573,19 +4581,18 @@ fn joystick_builtin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     // Find the touch closest to the stick center. Multi-touch
     // games can have multiple sticks; each call to `joystick`
     // picks the closest active touch within `size` of its center.
+    // web3d-M0: no wasm32 gate — `touches()` is empty when no macroquad
+    // window exists, and on the web build it reports real browser touches.
     let mut nearest: Option<(f64, f64, f64)> = None; // (dist, dx, dy)
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        for t in touches() {
-            let dx = t.position.x as f64 - cx;
-            let dy = t.position.y as f64 - cy;
-            let d = (dx * dx + dy * dy).sqrt();
-            if d <= size {
-                match nearest {
-                    None => nearest = Some((d, dx, dy)),
-                    Some((nd, _, _)) if d < nd => nearest = Some((d, dx, dy)),
-                    _ => {}
-                }
+    for t in touches() {
+        let dx = t.position.x as f64 - cx;
+        let dy = t.position.y as f64 - cy;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d <= size {
+            match nearest {
+                None => nearest = Some((d, dx, dy)),
+                Some((nd, _, _)) if d < nd => nearest = Some((d, dx, dy)),
+                _ => {}
             }
         }
     }
@@ -6769,17 +6776,18 @@ fn mesh_advance_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
 /// snapshot (clip=""), which the renderer treats as "rest pose,
 /// no animation," when the script never called `mesh_anim.play`
 /// for this handle.
-pub(crate) fn mesh_anim_state(handle: u32) -> crate::play3d::AnimSnapshot {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn mesh_anim_state(handle: u32) -> crate::render3d_types::AnimSnapshot {
     MESH_ANIM_STATE.with(|s| {
         let st = s.borrow();
         match st.get(&handle) {
-            Some(e) => crate::play3d::AnimSnapshot {
+            Some(e) => crate::render3d_types::AnimSnapshot {
                 clip: e.clip.clone(),
                 time: e.time,
                 blend_clip: e.blend_clip.clone(),
                 blend_t: e.blend_t,
             },
-            None => crate::play3d::AnimSnapshot::default(),
+            None => crate::render3d_types::AnimSnapshot::default(),
         }
     })
 }
@@ -11508,6 +11516,7 @@ fn handle_int(v: &Value, what: &str) -> Result<u32, RuntimeError> {
     Ok(i as u32)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_body_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.body")?;
     let shape = string_arg(&args[0], "physics.body", "shape")?;
@@ -11522,6 +11531,7 @@ fn physics_body_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     Ok(Value::from_int(id as i64))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_box")?;
     let at = xyz_of(&args[0], "physics.static_box.at")?;
@@ -11531,6 +11541,7 @@ fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runt
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_sphere")?;
     let at = xyz_of(&args[0], "physics.static_sphere.at")?;
@@ -11540,6 +11551,7 @@ fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, R
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_position_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.position")?;
     let handle = handle_int(&args[0], "physics.position")?;
@@ -11556,6 +11568,7 @@ fn physics_position_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
     ])))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_velocity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.velocity")?;
     let handle = handle_int(&args[0], "physics.velocity")?;
@@ -11569,6 +11582,7 @@ fn physics_velocity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
     Ok(Value::NIL)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_impulse_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.impulse")?;
     let handle = handle_int(&args[0], "physics.impulse")?;
@@ -11582,6 +11596,7 @@ fn physics_impulse_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
     Ok(Value::NIL)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_gravity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.gravity")?;
     let v = xyz_of(&args[0], "physics.gravity.v")?;
@@ -11589,6 +11604,7 @@ fn physics_gravity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
     Ok(Value::NIL)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_character_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.character")?;
     let at = xyz_of(&args[0], "physics.character.at")?;
@@ -11599,6 +11615,7 @@ fn physics_character_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runti
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.character_move")?;
     let handle = handle_int(&args[0], "physics.character_move")?;
@@ -11627,6 +11644,7 @@ fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, 
     }))))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_collisions_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
     let events = crate::physics3d::drain_collisions();
     let list: Vec<Value> = events
@@ -11645,12 +11663,14 @@ fn physics_collisions_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, Run
     Ok(Value::from_list(Rc::new(RefCell::new(list))))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_despawn_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.despawn")?;
     let handle = handle_int(&args[0], "physics.despawn")?;
     Ok(Value::from_bool(crate::physics3d::despawn(handle)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_reset_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
     crate::physics3d::reset();
     Ok(Value::NIL)
@@ -11662,6 +11682,7 @@ fn physics_reset_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeE
 /// transforms are flattened into the positions at load time.
 /// Returns the body handle (mostly for record-keeping; static
 /// bodies rarely need post-creation lookup).
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_static_mesh_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_mesh")?;
     let path = string_arg(&args[0], "physics.static_mesh", "path")?;
@@ -11685,6 +11706,7 @@ fn physics_static_mesh_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Run
 /// nil on miss, or an Object `{ handle, point, distance }` on
 /// hit. The handle field is the same u32 id `physics.body()`
 /// returns, so callers can look up the body that was struck.
+#[cfg(not(target_arch = "wasm32"))]
 fn physics_raycast_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.raycast")?;
     let origin = xyz_of(&args[0], "physics.raycast.origin")?;
