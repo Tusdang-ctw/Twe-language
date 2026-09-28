@@ -234,35 +234,71 @@ fn tagged(tag: &str, fields: &[(&str, json::Value)]) -> json::Value {
     json::Value::Object(map)
 }
 
-// ─── Phase 30 session 2: WASM save / load via localStorage ──────────────────
+// ─── WASM save / load: the page's storage (web3d-M4) ─────────────────────────
 //
-// std::fs is unavailable on wasm32-unknown-unknown, and there is no
-// working web save backend yet. web3d-M0: the Phase 30 path called
-// `quad_url::set_program_parameter`, which writes URL *query
-// parameters* (the page address), not localStorage — saves would land
-// in the address bar and never persist — and its load half called a
-// function quad-url doesn't have, so the web build didn't compile.
-// Real localStorage persistence lands with the wasm-bindgen web shell
-// (web3d-M2). Until then saves fail with a clear error.
-//
-// Non-WASM: unchanged atomic-write path below.
+// std::fs is unavailable on wasm32-unknown-unknown. The web shell
+// installs the page's `localStorage` with `install_web_storage`; a save
+// path becomes its key (prefixed `twe:`), and the save's JSON its value.
+// (Phase 30 wrote URL query parameters by mistake; web3d-M0 made web
+// saves an explicit error until this shell existed.)
 
 #[cfg(target_arch = "wasm32")]
-const WEB_SAVE_UNSUPPORTED: &str =
-    "saving isn't supported in the browser build yet (planned for web3d-M2: localStorage)";
-
-/// WASM: not yet supported — see the note above.
+type StorageGet = fn(&str) -> Option<String>;
 #[cfg(target_arch = "wasm32")]
-pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
-    let _ = (path, value);
-    Err(WEB_SAVE_UNSUPPORTED.to_string())
+type StorageSet = fn(&str, &str) -> Result<(), String>;
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WEB_STORAGE: std::cell::Cell<Option<(StorageGet, StorageSet)>> =
+        const { std::cell::Cell::new(None) };
 }
 
-/// WASM: not yet supported — see the note above.
+/// WASM: the host's key/value storage (the web shell passes
+/// `localStorage` getters and setters).
+#[cfg(target_arch = "wasm32")]
+pub fn install_web_storage(get: StorageGet, set: StorageSet) {
+    WEB_STORAGE.with(|s| s.set(Some((get, set))));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_storage() -> Result<(StorageGet, StorageSet), String> {
+    WEB_STORAGE
+        .with(|s| s.get())
+        .ok_or_else(|| "saving needs the page's storage, and this host has none".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn storage_key(path: &Path) -> String {
+    format!("twe:{}", path.display())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
+    let (_, set) = web_storage()?;
+    let json_value = encode(value)?;
+    set(&storage_key(path), &json::to_string(&json_value))
+}
+
 #[cfg(target_arch = "wasm32")]
 pub fn load_from_path(path: &Path) -> Result<Value, String> {
-    let _ = path;
-    Err(WEB_SAVE_UNSUPPORTED.to_string())
+    let (get, _) = web_storage()?;
+    let text = get(&storage_key(path)).ok_or_else(|| format!("no save at {}", path.display()))?;
+    let json_value = json::parse(&text)
+        .map_err(|e| format!("save at {} is not valid JSON: {e}", path.display()))?;
+    Ok(decode(&json_value))
+}
+
+/// Whether a save exists at `path` (a file natively, a storage key in
+/// the browser). `save.try_read` / `settings.try_load` ask this first.
+pub fn exists(path: &Path) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_storage().is_ok_and(|(get, _)| get(&storage_key(path)).is_some())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        path.exists()
+    }
 }
 
 // ─── Native save / load (non-WASM) ───────────────────────────────────────────

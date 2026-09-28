@@ -238,3 +238,95 @@ pub fn apply_key_state(
         }
     }
 }
+
+// Phase 11 follow-on (deeper): the real auto-pause-on-window-blur
+// machinery the Phase-11 closeout punted on. Each shell reports focus once per
+// frame (the 2D loop polls `window_focus::is_focused()`; the native 3D
+// shell reads winit focus events; the browser reads
+// `document.visibilityState`) and this drives the pause flag on
+// transitions. State-machine summary:
+//
+// * Off (auto_pause_on_blur(false)): paused_by_us cleared every frame
+//   so a manual pause never gets auto-resumed.
+// * Focused → Unfocused: if not already paused, set paused + remember
+//   we did it.
+// * Unfocused → Focused: if we drove the pause, clear it; otherwise
+//   the pause was set manually, leave it alone.
+//
+// Symmetry with `IdleAutoPause` is intentional — the two state
+// machines are independent and either can drive the pause flag, but
+// only the one that *did* drive it auto-resumes.
+pub struct BlurAutoPause {
+    /// Was the window focused last frame? Initial state is `true` so
+    /// startup-while-unfocused doesn't fire a spurious pause.
+    last_focused: bool,
+    /// True when we drove `pause(true)` — focus return will then drive
+    /// `pause(false)`. Manually set pause stays paused.
+    paused_by_us: bool,
+}
+
+impl BlurAutoPause {
+    pub fn new() -> Self {
+        Self {
+            last_focused: true,
+            paused_by_us: false,
+        }
+    }
+
+    pub fn tick(&mut self, focused: bool) {
+        if !crate::stdlib::auto_pause_on_blur_enabled() {
+            // Disabled — clear our flag so a previously-driven pause
+            // doesn't auto-resume after the script flips the toggle.
+            self.paused_by_us = false;
+            self.last_focused = focused;
+            return;
+        }
+        if self.last_focused && !focused {
+            // Focused → Unfocused.
+            if !crate::stdlib::is_paused() {
+                crate::stdlib::set_paused(true);
+                self.paused_by_us = true;
+            }
+        } else if !self.last_focused && focused && self.paused_by_us {
+            // Unfocused → Focused, and we drove the pause.
+            crate::stdlib::set_paused(false);
+            self.paused_by_us = false;
+        }
+        self.last_focused = focused;
+    }
+}
+
+impl Default for BlurAutoPause {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod blur_tests {
+    use super::BlurAutoPause;
+    use crate::stdlib::{is_paused, set_paused};
+
+    #[test]
+    fn blur_pauses_only_when_asked_and_resumes_its_own_pause() {
+        set_paused(false);
+        let mut blur = BlurAutoPause::new();
+        blur.tick(false);
+        assert!(!is_paused(), "off by default");
+        blur.tick(true);
+
+        crate::stdlib::set_auto_pause_on_blur(true);
+        blur.tick(false);
+        assert!(is_paused(), "focus lost: paused");
+        blur.tick(true);
+        assert!(!is_paused(), "focus back: resumed");
+
+        // A pause the game set itself survives a focus round trip.
+        set_paused(true);
+        blur.tick(false);
+        blur.tick(true);
+        assert!(is_paused());
+        set_paused(false);
+        crate::stdlib::set_auto_pause_on_blur(false);
+    }
+}

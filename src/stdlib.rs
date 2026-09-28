@@ -1176,6 +1176,11 @@ pub fn auto_pause_on_blur_enabled() -> bool {
     AUTO_PAUSE_ON_BLUR.with(|c| c.get())
 }
 
+/// Rust-side setter for `auto_pause_on_blur` (shell tests).
+pub fn set_auto_pause_on_blur(enabled: bool) {
+    AUTO_PAUSE_ON_BLUR.with(|c| c.set(enabled));
+}
+
 fn auto_pause_on_blur_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "auto_pause_on_blur")?;
     let v = &args[0];
@@ -1453,9 +1458,11 @@ fn clipboard_write(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
 ///
 /// Returns the absolute path with no trailing separator: `%APPDATA%\app`
 /// on Windows, `~/Library/Application Support/app` on macOS, and
-/// `$XDG_DATA_HOME/app` (or `~/.local/share/app`) on Linux. On WASM it
-/// returns the empty string, since the browser target persists via
-/// localStorage (Phase 30) rather than a filesystem path.
+/// `$XDG_DATA_HOME/app` (or `~/.local/share/app`) on Linux. Setting
+/// `TWE_DATA_DIR` replaces the platform base (tests, portable installs).
+/// On WASM it returns `app` itself: saves there are localStorage keys
+/// (web3d-M4), so `os.data_dir("MyGame") + "/best.json"` names the key
+/// `twe:MyGame/best.json` and each game keeps its own.
 ///
 /// `app` must be a single folder name; path separators are rejected so it
 /// cannot escape the platform base directory (Principle 3).
@@ -1478,11 +1485,11 @@ fn os_data_dir(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             help: Some("pass a single folder name like `\"MyGame\"`".to_string()),
         });
     }
-    // WASM has no filesystem; saves route through localStorage (Phase 30),
-    // so there's no meaningful path to return.
+    // WASM has no filesystem; saves are localStorage keys, namespaced
+    // by the app name.
     #[cfg(target_arch = "wasm32")]
     {
-        Ok(Value::from_string(String::new()))
+        Ok(Value::from_string(app))
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1501,6 +1508,9 @@ fn os_data_dir(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 #[cfg(not(target_arch = "wasm32"))]
 fn platform_data_dir(app: &str) -> std::path::PathBuf {
     use std::path::PathBuf;
+    if let Some(base) = std::env::var_os("TWE_DATA_DIR").filter(|b| !b.is_empty()) {
+        return PathBuf::from(base).join(app);
+    }
     #[cfg(target_os = "windows")]
     {
         std::env::var_os("APPDATA")
@@ -1728,7 +1738,7 @@ fn settings_try_load(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     arity(args, 1, "settings.try_load")?;
     let path = string_arg(&args[0], "settings.try_load", "path")?;
     let p = std::path::Path::new(&path);
-    if !p.exists() {
+    if !crate::save::exists(p) {
         return Ok(Value::FALSE);
     }
     let loaded =
@@ -6619,7 +6629,7 @@ fn save_read_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
 fn save_try_read_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "save.try_read")?;
     let key = string_arg(&args[0], "save.try_read", "path")?;
-    if !std::path::Path::new(&key).exists() {
+    if !crate::save::exists(std::path::Path::new(&key)) {
         return Ok(Value::from_bool(false));
     }
     match crate::save::load_from_path(std::path::Path::new(&key)) {

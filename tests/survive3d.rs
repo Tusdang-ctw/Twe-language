@@ -12,6 +12,10 @@ use twec::render3d_types::HudItem;
 
 const DT: f64 = 1.0 / 60.0;
 
+fn data_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("twe-survive3d-{}", std::process::id()))
+}
+
 struct Game {
     env: twec::value::Env,
 }
@@ -20,6 +24,8 @@ impl Game {
     fn new() -> Self {
         // Assets resolve against the game's folder, as `twec play3d` sets.
         twec::bundle::set_asset_root(Some("examples/survive3d".into()));
+        // The best run is saved under `os.data_dir`: keep it in target/.
+        std::env::set_var("TWE_DATA_DIR", data_dir());
         let src = std::fs::read_to_string("examples/survive3d/main.twe").expect("read game");
         let program = twec::parser::parse(&twec::lexer::lex(&src).expect("lex")).expect("parse");
         let mut env = twec::value::Env::new();
@@ -117,6 +123,16 @@ fn survive3d_plays_through_a_run() {
     assert_eq!(g.state(), "playing");
     assert_eq!(g.global("kills"), 0.0);
     assert_eq!(g.global("player_hp"), 100.0);
+
+    // The best run was saved, and a new session reads it back.
+    let best = data_dir().join("survive3d").join("best.json");
+    assert!(best.exists(), "no save at {}", best.display());
+    let (wave, time) = (g.global("best_wave"), g.global("best_time"));
+    assert!(time > 10.0, "best time {time}");
+    let again = Game::new();
+    assert_eq!(again.global("best_wave"), wave);
+    assert!((again.global("best_time") - time).abs() < 1e-3);
+    let _ = std::fs::remove_dir_all(data_dir());
 }
 
 /// web3d-M4: in a 3D shell the game's sounds become audio commands

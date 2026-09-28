@@ -36,9 +36,18 @@ var pick_c = 2
 var weapon_time = 0.0
 var best_wave = 1
 var best_time = 0.0
+
+# The best run survives restarts: a file in the player's data folder
+# natively, localStorage in the browser.
+let best_path = os.data_dir("survive3d") + "/best.json"
+if save.try_read(best_path):
+    best_wave = save.get_int("best_wave")
+    best_time = save.get_f32("best_time")
 var boss_wave_counter = 0
 
 random.seed(20260928)
+# Tabbing away (or hiding the browser tab) freezes the run.
+auto_pause_on_blur(true)
 
 # Sound effects: synthesised by tests/gen_survive3d_sounds.rs. Pools cap
 # how many of each can overlap, so a mass kill is one crunch, not forty.
@@ -572,6 +581,9 @@ scene Survive3D:
             if player_hp <= 0.0:
                 best_wave = math.max(best_wave, wave_index + 1)
                 best_time = math.max(best_time, elapsed)
+                save.int("best_wave", best_wave)
+                save.f32("best_time", best_time)
+                save.write(best_path)
                 frozen = true
                 -> game_over
             if key_press.escape:

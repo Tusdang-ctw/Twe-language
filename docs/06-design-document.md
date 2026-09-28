@@ -1240,6 +1240,8 @@ auto_pause_when_idle(30.0)   # pause after 30s with no input
 auto_pause_on_blur(true)     # pause when window loses focus (Windows; macOS/Linux stubbed)
 ```
 
+*web3d-M4:* in `twec play3d` focus comes from the window's focus events, and in a web build from the page (a hidden tab or an unfocused window counts as blurred), so `auto_pause_on_blur(true)` works on every 3D shell. A pause the game set itself is never lifted by focus returning.
+
 #### 7.14a Quitting *(web3d-M0)*
 
 ```twe
@@ -1302,10 +1304,13 @@ os.clipboard.write("copied!")
 let dir = os.data_dir("MyGame")
 #   Windows: %APPDATA%\MyGame   macOS: ~/Library/Application Support/MyGame
 #   Linux:   $XDG_DATA_HOME/MyGame (or ~/.local/share/MyGame)
-#   WASM:    "" — the browser persists via localStorage instead
+#   WASM:    "MyGame" — see below
+#   TWE_DATA_DIR set: $TWE_DATA_DIR/MyGame (tests, portable installs)
 save.write(dir + "/slot1.json")
 settings.save(dir + "/settings.json")
 ```
+
+*web3d-M4:* in a web build, `save.*` and `settings.*` read and write the page's `localStorage`. The path is the key (prefixed `twe:`), so the code above stores `twe:MyGame/slot1.json` and works unchanged in the browser. `save.try_read` / `settings.try_load` return `false` when the key is absent. If the page has no storage (some private modes), writes fail with a runtime error rather than silently losing the save.
 
 ### 7.17 Screenshot
 

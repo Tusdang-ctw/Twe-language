@@ -290,6 +290,9 @@ struct App {
     exit_code: i32,
     /// web3d-M4: plays the script's queued `sound.*` commands.
     audio: NativeAudio,
+    /// web3d-M4: `auto_pause_on_blur(true)` pauses when the window
+    /// loses focus.
+    blur: crate::host3d::BlurAutoPause,
 }
 
 /// web3d-M4: the native 3D shell's sound player. `sound.*` queues
@@ -379,6 +382,7 @@ impl App {
             sim_accumulator: 0.0,
             exit_code: 0,
             audio: NativeAudio::default(),
+            blur: crate::host3d::BlurAutoPause::new(),
         }
     }
 
@@ -434,6 +438,7 @@ impl ApplicationHandler for App {
         };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(focused) => self.blur.tick(focused),
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
                     state.renderer.resize(size.width, size.height);

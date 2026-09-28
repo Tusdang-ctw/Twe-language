@@ -13,6 +13,16 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Saves in the browser** (web3d-M4): `save.*` and `settings.*` use the
+  page's localStorage in web builds (they were a runtime error). The
+  save path is the key; `os.data_dir(app)` returns `app` on the web, so
+  one script saves correctly on desktop and in the browser. `survive3d`
+  keeps your best wave and time.
+- **`auto_pause_on_blur` in 3D and on the web**: `twec play3d` pauses
+  on window focus loss, a web build when its tab is hidden or the
+  window loses focus. `survive3d` turns it on.
+- **`TWE_DATA_DIR`** overrides the base of `os.data_dir` (tests,
+  portable installs).
 - **Sound in 3D and in the browser** (web3d-M4): `sound.*` plays in
   `twec play3d` and in web builds (WebAudio, unlocked by the first key
   press or click). `survive3d` has synthesised effects for shots, hits,

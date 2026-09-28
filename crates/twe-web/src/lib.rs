@@ -164,8 +164,12 @@ async fn run() -> Result<(), String> {
         Err(_) => fetch_bytes("main.twe").await?,
     };
     let source = String::from_utf8(source_bytes).map_err(|_| "main.twe is not UTF-8")?;
-    // web3d-M4: this shell plays `sound.*` (see `audio`).
+    // web3d-M4: this shell plays `sound.*` (see `audio`), keeps
+    // `save.*` / `settings.*` in the page's localStorage, and reports
+    // focus for `auto_pause_on_blur`.
     twec::audio_host::enable();
+    twec::save::install_web_storage(storage_get, storage_set);
+    listen_focus(&window, &document)?;
     let tokens = twec::lexer::lex(&source).map_err(|e| format!("main.twe:{e}"))?;
     let program = twec::parser::parse(&tokens).map_err(|e| format!("main.twe:{e}"))?;
     let mut env = twec::value::Env::new();
@@ -345,6 +349,51 @@ fn listen_keys(
     down.forget();
     up.forget();
     click.forget();
+    Ok(())
+}
+
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+fn storage_get(key: &str) -> Option<String> {
+    local_storage()?.get_item(key).ok()?
+}
+
+fn storage_set(key: &str, value: &str) -> Result<(), String> {
+    local_storage()
+        .ok_or("this page has no localStorage (private mode or disabled)")?
+        .set_item(key, value)
+        .map_err(|_| "localStorage is full or refused the write".to_string())
+}
+
+thread_local! {
+    static BLUR: RefCell<twec::host3d::BlurAutoPause> =
+        RefCell::new(twec::host3d::BlurAutoPause::new());
+}
+
+/// The page counts as focused while its tab is visible and the window
+/// has focus. `requestAnimationFrame` stops in hidden tabs anyway, so
+/// the transition is fed from the events, not the frame loop.
+fn listen_focus(window: &web_sys::Window, document: &web_sys::Document) -> Result<(), String> {
+    let update = Closure::<dyn FnMut()>::new(|| {
+        let focused = web_sys::window()
+            .and_then(|w| w.document())
+            .map(|d| !d.hidden() && d.has_focus().unwrap_or(true))
+            .unwrap_or(true);
+        BLUR.with(|b| b.borrow_mut().tick(focused));
+    });
+    let f = update.as_ref().unchecked_ref();
+    document
+        .add_event_listener_with_callback("visibilitychange", f)
+        .map_err(|_| "visibilitychange listener")?;
+    window
+        .add_event_listener_with_callback("blur", f)
+        .map_err(|_| "blur listener")?;
+    window
+        .add_event_listener_with_callback("focus", f)
+        .map_err(|_| "focus listener")?;
+    update.forget();
     Ok(())
 }
 
