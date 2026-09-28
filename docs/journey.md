@@ -102,6 +102,11 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 ---
 
+- **2026-09-28: the bar is raised to "better than Three.js."**
+  - **The decision:** asked whether the plan covered graphics quality, the honest answer was no. Twe's renderer was behind Three.js on image quality. The maintainer set the new bar, "better and more advanced than Three.js", with no deadline.
+  - **The plan:** a new milestone, M7, was written into the plan. Tier 1 is parity: physically based materials, environment lighting, anti-aliasing, AO, post-processing. Tier 2 goes beyond: GPU-driven rendering for 100k instances, hundreds of lights, a million GPU particles, and procedural materials written in Twe code.
+  - **The test:** measured against Three.js with the same assets on the Khronos glTF sample scenes, with published image-error numbers. Where Twe loses, it will say so.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.
