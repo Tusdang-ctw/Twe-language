@@ -13,6 +13,13 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Sound in 3D and in the browser** (web3d-M4): `sound.*` plays in
+  `twec play3d` and in web builds (WebAudio, unlocked by the first key
+  press or click). `survive3d` has synthesised effects for shots, hits,
+  pickups, damage, level-up and the boss.
+- **Web builds ship one `game.twebundle`** instead of loose files: the
+  shell fetches and mounts it, so sounds, meshes and textures load the
+  same way as in a desktop `.exe`.
 - **`examples/survive3d`** (web3d-M4): the v1.0 slice, a top-down 3D
   survivors game with enemies, auto-weapons, XP, level-ups, a boss every
   fifth wave, pause and restart, playable in Chrome and natively.

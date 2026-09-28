@@ -3008,6 +3008,7 @@ dependencies = [
  "naga",
  "objc2 0.5.2",
  "pollster",
+ "quad-snd",
  "rapier3d",
  "steamworks",
  "toml",

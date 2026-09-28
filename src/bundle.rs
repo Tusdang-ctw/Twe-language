@@ -370,8 +370,13 @@ pub fn decode_header<R: Read>(r: &mut R) -> io::Result<BundleHeader> {
 /// Random-access reader over a bundle on disk. Holds the file handle
 /// open for the lifetime of the reader; cheap to keep around because
 /// the index is small and lookups seek by absolute offset.
+/// Anything a bundle can be read from: a file on disk, or (web3d-M4)
+/// bytes already in memory — the browser fetches `game.twebundle`.
+trait BundleSource: Read + Seek + Send {}
+impl<T: Read + Seek + Send> BundleSource for T {}
+
 pub struct BundleReader {
-    file: File,
+    file: Box<dyn BundleSource>,
     /// Path → (body_offset, body_length). HashMap for O(1) lookup —
     /// the original entry order is recoverable from `header.entries`
     /// if needed but the reader itself doesn't expose it.
@@ -400,7 +405,17 @@ impl BundleReader {
         Self::from_file_at(file, base_offset)
     }
 
-    fn from_file_at(mut file: File, base_offset: u64) -> io::Result<Self> {
+    /// web3d-M4: a bundle already in memory (the web shell fetches
+    /// `game.twebundle` and mounts it with this).
+    pub fn from_bytes(bytes: Vec<u8>) -> io::Result<Self> {
+        Self::from_source(Box::new(io::Cursor::new(bytes)), 0)
+    }
+
+    fn from_file_at(file: File, base_offset: u64) -> io::Result<Self> {
+        Self::from_source(Box::new(file), base_offset)
+    }
+
+    fn from_source(mut file: Box<dyn BundleSource>, base_offset: u64) -> io::Result<Self> {
         file.seek(SeekFrom::Start(base_offset))?;
         let header = decode_header(&mut file)?;
         let mut index = HashMap::with_capacity(header.entries.len());

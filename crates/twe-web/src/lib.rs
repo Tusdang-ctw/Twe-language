@@ -16,6 +16,8 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+mod audio;
+
 use twec::kernel::render::{parse_glb_bytes, AssetKind, AssetReady, AssetSource, Renderer};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -132,6 +134,11 @@ struct Shell {
     accumulator: f64,
     held: Rc<RefCell<HashSet<String>>>,
     pressed: Rc<RefCell<HashSet<String>>>,
+    audio: audio::WebAudio,
+    /// Set by the first key press or click: browsers only let audio
+    /// start after a user gesture.
+    gestured: Rc<std::cell::Cell<bool>>,
+    unlocked: bool,
 }
 
 async fn run() -> Result<(), String> {
@@ -144,9 +151,21 @@ async fn run() -> Result<(), String> {
         .map_err(|_| "#twe-canvas is not a canvas")?;
     let (width, height) = (canvas.width().max(1), canvas.height().max(1));
 
-    // The game: `main.twe` next to the page.
-    let source =
-        String::from_utf8(fetch_bytes("main.twe").await?).map_err(|_| "main.twe is not UTF-8")?;
+    // The game: `game.twebundle` next to the page (what `twec build
+    // --target web` writes: the script plus every asset, readable
+    // synchronously once mounted), or a bare `main.twe` for dev pages.
+    let source_bytes = match fetch_bytes("game.twebundle").await {
+        Ok(bytes) => {
+            let reader = twec::bundle::BundleReader::from_bytes(bytes)
+                .map_err(|e| format!("game.twebundle: {e}"))?;
+            twec::bundle::set_active_bundle(reader);
+            twec::bundle::read_asset_bytes("main.twe").map_err(|e| format!("main.twe: {e}"))?
+        }
+        Err(_) => fetch_bytes("main.twe").await?,
+    };
+    let source = String::from_utf8(source_bytes).map_err(|_| "main.twe is not UTF-8")?;
+    // web3d-M4: this shell plays `sound.*` (see `audio`).
+    twec::audio_host::enable();
     let tokens = twec::lexer::lex(&source).map_err(|e| format!("main.twe:{e}"))?;
     let program = twec::parser::parse(&tokens).map_err(|e| format!("main.twe:{e}"))?;
     let mut env = twec::value::Env::new();
@@ -169,7 +188,8 @@ async fn run() -> Result<(), String> {
 
     let held = Rc::new(RefCell::new(HashSet::new()));
     let pressed = Rc::new(RefCell::new(HashSet::new()));
-    listen_keys(&window, held.clone(), pressed.clone())?;
+    let gestured = Rc::new(std::cell::Cell::new(false));
+    listen_keys(&window, held.clone(), pressed.clone(), gestured.clone())?;
 
     let shell = Rc::new(RefCell::new(Shell {
         env,
@@ -179,6 +199,9 @@ async fn run() -> Result<(), String> {
         accumulator: 0.0,
         held,
         pressed,
+        audio: audio::WebAudio::default(),
+        gestured,
+        unlocked: false,
     }));
     start_frame_loop(shell);
     if let Some(el) = document.get_element_by_id("twe-status") {
@@ -232,6 +255,11 @@ fn frame(shell: &mut Shell) {
         }
     };
     flush_output(env);
+    if !shell.unlocked && shell.gestured.get() {
+        shell.audio.unlock();
+        shell.unlocked = true;
+    }
+    shell.audio.play_queued();
     STATS.with(|s| {
         let mut s = s.borrow_mut();
         s.frames += 1.0;
@@ -273,6 +301,7 @@ fn listen_keys(
     window: &web_sys::Window,
     held: Rc<RefCell<HashSet<String>>>,
     pressed: Rc<RefCell<HashSet<String>>>,
+    gestured: Rc<std::cell::Cell<bool>>,
 ) -> Result<(), String> {
     let name_of = |code: &str| KEYS.iter().find(|(_, c)| *c == code).map(|(n, _)| *n);
     // Keys the page itself would act on (scrolling, focus moves). All
@@ -284,8 +313,10 @@ fn listen_keys(
         )
     };
     let (h, p) = (held.clone(), pressed);
+    let g = gestured.clone();
     let down =
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+            g.set(true);
             if let Some(name) = name_of(&e.code()) {
                 if h.borrow_mut().insert(name.to_string()) {
                     p.borrow_mut().insert(name.to_string());
@@ -306,9 +337,14 @@ fn listen_keys(
     window
         .add_event_listener_with_callback("keyup", up.as_ref().unchecked_ref())
         .map_err(|_| "keyup listener")?;
+    let click = Closure::<dyn FnMut()>::new(move || gestured.set(true));
+    window
+        .add_event_listener_with_callback("pointerdown", click.as_ref().unchecked_ref())
+        .map_err(|_| "pointerdown listener")?;
     // The listeners live for the page's lifetime.
     down.forget();
     up.forget();
+    click.forget();
     Ok(())
 }
 
@@ -340,6 +376,15 @@ struct WebAssets {
 
 impl AssetSource for WebAssets {
     fn request(&mut self, kind: AssetKind, id: u32, path: &str) {
+        // In the mounted game bundle: ready now, no fetch.
+        if twec::bundle::asset_exists(path) {
+            let bytes = twec::bundle::read_asset_bytes(path).map_err(|e| e.to_string());
+            self.ready.borrow_mut().push(match kind {
+                AssetKind::Mesh => AssetReady::Mesh(id, bytes.and_then(|b| parse_glb_bytes(&b))),
+                AssetKind::Texture => AssetReady::Texture(id, bytes),
+            });
+            return;
+        }
         let ready = self.ready.clone();
         let path = path.to_string();
         wasm_bindgen_futures::spawn_local(async move {

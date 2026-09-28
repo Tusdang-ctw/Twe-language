@@ -18,6 +18,8 @@ struct Game {
 
 impl Game {
     fn new() -> Self {
+        // Assets resolve against the game's folder, as `twec play3d` sets.
+        twec::bundle::set_asset_root(Some("examples/survive3d".into()));
         let src = std::fs::read_to_string("examples/survive3d/main.twe").expect("read game");
         let program = twec::parser::parse(&twec::lexer::lex(&src).expect("lex")).expect("parse");
         let mut env = twec::value::Env::new();
@@ -115,4 +117,25 @@ fn survive3d_plays_through_a_run() {
     assert_eq!(g.state(), "playing");
     assert_eq!(g.global("kills"), 0.0);
     assert_eq!(g.global("player_hp"), 100.0);
+}
+
+/// web3d-M4: in a 3D shell the game's sounds become audio commands
+/// for the shell to play — shots from the start, hits as enemies die.
+#[test]
+fn survive3d_queues_its_sounds() {
+    twec::audio_host::enable();
+    let mut g = Game::new();
+    twec::audio_host::drain();
+    for _ in 0..60 * 20 {
+        g.frame(&["w"], &[]);
+    }
+    let paths: Vec<String> = twec::audio_host::drain()
+        .into_iter()
+        .filter_map(|c| match c {
+            twec::audio_host::AudioCmd::Play { path, .. } => Some(path),
+            _ => None,
+        })
+        .collect();
+    assert!(paths.iter().any(|p| p == "assets/shot.wav"), "{paths:?}");
+    assert!(paths.iter().any(|p| p == "assets/hit.wav"), "{paths:?}");
 }

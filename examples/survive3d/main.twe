@@ -40,9 +40,22 @@ var boss_wave_counter = 0
 
 random.seed(20260928)
 
+# Sound effects: synthesised by tests/gen_survive3d_sounds.rs. Pools cap
+# how many of each can overlap, so a mass kill is one crunch, not forty.
+let snd_shot = sound.load("assets/shot.wav")
+let snd_hit = sound.load("assets/hit.wav")
+let snd_pickup = sound.load("assets/pickup.wav")
+let snd_hurt = sound.load("assets/hurt.wav")
+let snd_levelup = sound.load("assets/levelup.wav")
+let snd_boss = sound.load("assets/boss.wav")
+sound.pool("assets/hit.wav", 4)
+sound.pool("assets/pickup.wav", 3)
+sound.pool("assets/shot.wav", 2)
+
 function take_player_damage(amount):
     player_hp -= amount
     player_iframes = 0.6
+    sound.play(snd_hurt)
 
 # Distance² on the ground plane.
 function d2(a, b):
@@ -410,6 +423,7 @@ entity XPGem:
         let d = d2(pos, player)
         if d < 0.5:
             xp += value
+            sound.play_at(snd_pickup, 0.6)
             despawn self
             return
         if d < magnet_radius * magnet_radius:
@@ -418,15 +432,18 @@ entity XPGem:
 on Slime.death(s):
     spawn XPGem at s.pos
     spawn Spark at s.pos
+    sound.play(snd_hit)
 
 on Bat.death(b):
     spawn XPGem at b.pos
     spawn Spark at b.pos
+    sound.play(snd_hit)
 
 on Skeleton.death(k):
     spawn XPGem at k.pos
     spawn XPGem at vec3(k.pos.x + 0.4, 0, k.pos.z)
     spawn Spark at k.pos
+    sound.play(snd_hit)
 
 on Boss.death(b):
     for i in 0..<10:
@@ -506,6 +523,7 @@ scene Survive3D:
                 if boss_wave_counter >= 5:
                     boss_wave_counter = 0
                     spawn Boss at spawn_point()
+                    sound.play(snd_boss)
             wave_timer += dt
             if wave_timer >= spawn_interval:
                 wave_timer = 0.0
@@ -527,6 +545,7 @@ scene Survive3D:
             if attack_timer >= attack_interval:
                 attack_timer = 0.0
                 spawn Projectile at player
+                sound.play_at(snd_shot, 0.5)
 
             # Movement, normalised so diagonals aren't faster.
             var mx = 0.0
@@ -570,6 +589,7 @@ scene Survive3D:
                 if pick_c >= 7:
                     pick_c -= 7
                 frozen = true
+                sound.play(snd_levelup)
                 -> level_up
 
         on render():

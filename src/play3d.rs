@@ -149,6 +149,8 @@ fn mouse_button_name(b: MouseButton) -> Option<&'static str> {
 /// code once, then enters the wgpu render loop until the window
 /// closes. Returns the process exit code.
 pub fn launch(path: String) -> i32 {
+    // web3d-M4: this shell plays `sound.*` (see `NativeAudio`).
+    crate::audio_host::enable();
     let env = match initialize(&path) {
         Ok(env) => env,
         Err(()) => return 1,
@@ -286,6 +288,73 @@ struct App {
     /// `physics3d::step` + `eval::tick_frame` before each render.
     sim_accumulator: f64,
     exit_code: i32,
+    /// web3d-M4: plays the script's queued `sound.*` commands.
+    audio: NativeAudio,
+}
+
+/// web3d-M4: the native 3D shell's sound player. `sound.*` queues
+/// commands (`audio_host`) since there is no macroquad window here;
+/// this plays them through `quad-snd`, macroquad's own audio backend.
+/// The device opens on the first sound, so silent games never touch it.
+#[derive(Default)]
+struct NativeAudio {
+    ctx: Option<quad_snd::AudioContext>,
+    sounds: HashMap<String, quad_snd::Sound>,
+    /// Paths that failed to load: reported once, not every play.
+    failed: HashSet<String>,
+}
+
+impl NativeAudio {
+    fn play_queued(&mut self) {
+        for cmd in crate::audio_host::drain() {
+            match cmd {
+                crate::audio_host::AudioCmd::Play {
+                    path,
+                    volume,
+                    looped,
+                } => {
+                    if self.load(&path) {
+                        if let (Some(ctx), Some(sound)) = (&self.ctx, self.sounds.get(&path)) {
+                            sound.play(ctx, quad_snd::PlaySoundParams { looped, volume });
+                        }
+                    }
+                }
+                crate::audio_host::AudioCmd::Stop { path } => {
+                    if let (Some(ctx), Some(sound)) = (&self.ctx, self.sounds.get(&path)) {
+                        sound.stop(ctx);
+                    }
+                }
+                crate::audio_host::AudioCmd::SetVolume { path, volume } => {
+                    if let (Some(ctx), Some(sound)) = (&self.ctx, self.sounds.get(&path)) {
+                        sound.set_volume(ctx, volume);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Decode `path` on first use (opening the device if needed);
+    /// false if it can't be loaded.
+    fn load(&mut self, path: &str) -> bool {
+        if self.failed.contains(path) {
+            return false;
+        }
+        if !self.sounds.contains_key(path) {
+            let ctx = self.ctx.get_or_insert_with(quad_snd::AudioContext::new);
+            match crate::bundle::read_asset_bytes(path) {
+                Ok(bytes) => {
+                    let sound = quad_snd::Sound::load(ctx, &bytes);
+                    self.sounds.insert(path.to_string(), sound);
+                }
+                Err(e) => {
+                    eprintln!("sound: cannot read '{path}': {e}");
+                    self.failed.insert(path.to_string());
+                    return false;
+                }
+            }
+        }
+        true
+    }
 }
 
 impl App {
@@ -309,6 +378,7 @@ impl App {
             mouse_buttons_pressed_this_frame: HashSet::new(),
             sim_accumulator: 0.0,
             exit_code: 0,
+            audio: NativeAudio::default(),
         }
     }
 
@@ -547,6 +617,7 @@ impl ApplicationHandler for App {
                     print!("{}", self.env.out);
                     self.env.out.clear();
                 }
+                self.audio.play_queued();
                 if let Err(e) = rendered {
                     eprintln!("render error: {e}");
                 }

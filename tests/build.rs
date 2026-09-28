@@ -1092,15 +1092,19 @@ fn web_build_writes_a_servable_folder() {
     assert!(fs::read_to_string(out.join("env.js"))
         .unwrap()
         .contains("export function now()"));
+    // web3d-M4: the script and assets travel in one bundle the shell mounts.
+    let mut bundle =
+        twec::bundle::BundleReader::from_bytes(fs::read(out.join("game.twebundle")).unwrap())
+            .expect("a readable bundle");
     assert_eq!(
-        fs::read_to_string(out.join("main.twe")).unwrap(),
-        "print(\"hi\")
-"
+        bundle.read("main.twe").unwrap().unwrap(),
+        b"print(\"hi\")\n"
     );
     assert_eq!(
-        fs::read(out.join("assets/meshes/ship.glb")).unwrap(),
+        bundle.read("assets/meshes/ship.glb").unwrap().unwrap(),
         b"glTF fake"
     );
+    assert!(!out.join("main.twe").exists(), "no loose copies");
     let _ = fs::remove_dir_all(&dir);
 }
 

@@ -1079,6 +1079,13 @@ The `_aabb` helpers sample all four corners of the box; they fit the platformer 
 
 ### 7.10 Audio
 
+**Where sound plays (web3d-M4):**
+- **2D player:** macroquad's audio.
+- **Native 3D shell** (`twec play3d`): `quad-snd`.
+- **Browser** (`twec build --target web`): WebAudio. The first key press or click unlocks it, because browsers block sound until the player interacts.
+
+Pools, ducking and scheduling behave the same in all three. Paths are relative to the game's folder; in a web build they come from its `game.twebundle`.
+
 ```twe
 sound.play(sfx)                     # play once
 sound.play_at(sfx, (x, y))         # positional (attenuates with distance)

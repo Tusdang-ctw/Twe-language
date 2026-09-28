@@ -45,6 +45,7 @@ pub mod mcp;
 // by Twe Studio's in-app AI prompt so every model authoring Twe is grounded.
 pub mod primer;
 // Phase 33 session 6: examples-as-corpus header parser. Pure file IO.
+pub mod audio_host;
 pub mod clock;
 pub mod corpus;
 // Phase 33 session 7: replay-based LLM evaluation harness. Reuses

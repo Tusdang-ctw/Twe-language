@@ -93,6 +93,10 @@ optional = true
 # with `#[cfg(not(target_arch = "wasm32"))]` in src/lib.rs.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 winit = "0.30"
+# web3d-M4: sound in the native 3D shell (src/play3d.rs), which has no
+# macroquad context. It is macroquad's own audio backend (same version,
+# already in the tree), used directly; the browser uses WebAudio.
+quad-snd = "0.2"
 pollster = "0.3"
 # Phase 9 session 5: cross-platform gamepad input via XInput / evdev /
 # IOKit. gilrs has no WASM backend; gamepad is no-op on the web target.

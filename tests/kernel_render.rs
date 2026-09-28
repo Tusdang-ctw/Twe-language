@@ -216,6 +216,7 @@ fn survive3d_frame_renders() {
     let Some(mut renderer) = headless() else {
         return;
     };
+    twec::bundle::set_asset_root(Some("examples/survive3d".into()));
     let rgba = render_script(&mut renderer, "examples/survive3d/main.twe", 1200);
     save_png("survive3d", &rgba);
     // Not a blank frame: many distinct colours on screen.

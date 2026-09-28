@@ -1808,7 +1808,11 @@ pub fn find_web_runtime() -> Result<PathBuf, String> {
 
 /// Write a browser build of `project` into `out`: the runtime from
 /// `runtime_dir`, the page (`web/index.html`, titled after the game),
-/// `env.js`, `main.twe` and the project's assets at their bundle keys.
+/// `env.js`, and `game.twebundle` — `main.twe` plus every asset, in the
+/// same bundle format a desktop build embeds. The web shell fetches the
+/// bundle once and mounts it, so scripts read sounds, meshes and
+/// textures synchronously, as they do natively (web3d-M4). Uncompressed:
+/// the page is served compressed by the web server anyway.
 ///
 /// Games are single-file today: `import` resolves modules on the
 /// filesystem, which the browser doesn't have.
@@ -1829,16 +1833,8 @@ pub fn write_web_build(
     let page = WEB_INDEX_HTML.replace("<title>Twe</title>", &format!("<title>{title}</title>"));
     write("index.html", page.as_bytes())?;
     write("env.js", WEB_ENV_JS.as_bytes())?;
-    fs::copy(&project.main, out.join("main.twe"))
-        .map_err(|e| format!("cannot copy main.twe: {e}"))?;
-    for asset in &project.assets {
-        let dest = out.join(&asset.bundle_key);
-        if let Some(p) = dest.parent() {
-            fs::create_dir_all(p).map_err(|e| format!("cannot create '{}': {e}", p.display()))?;
-        }
-        fs::copy(&asset.abs, &dest)
-            .map_err(|e| format!("cannot copy asset '{}': {e}", asset.abs.display()))?;
-    }
+    let bundle = encode_bundle_to_vec(project, false, BuildTarget::Web, BuildConfig::Release)?;
+    write("game.twebundle", &bundle)?;
     Ok(())
 }
 

@@ -2635,6 +2635,10 @@ fn sound_play3d_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 fn sound_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.stop")?;
     let path = sound_handle_path(&args[0], "sound.stop")?;
+    if !macroquad_live() {
+        crate::audio_host::push(crate::audio_host::AudioCmd::Stop { path });
+        return Ok(Value::NIL);
+    }
     SOUND_CACHE.with(|cache| {
         if let Some(snd) = cache.borrow().get(&path) {
             macroquad::audio::stop_sound(snd);
@@ -2649,6 +2653,13 @@ fn sound_set_volume(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     arity(args, 2, "sound.set_volume")?;
     let path = sound_handle_path(&args[0], "sound.set_volume")?;
     let volume = number(&args[1], "sound.set_volume.volume")? as f32;
+    if !macroquad_live() {
+        crate::audio_host::push(crate::audio_host::AudioCmd::SetVolume {
+            path,
+            volume: volume.clamp(0.0, 1.0),
+        });
+        return Ok(Value::NIL);
+    }
     SOUND_CACHE.with(|cache| {
         if let Some(snd) = cache.borrow().get(&path) {
             macroquad::audio::set_sound_volume(snd, volume.clamp(0.0, 1.0));
@@ -2888,6 +2899,16 @@ fn play_sound_path(
         // sfx under the same name by aliasing in user code.
         crate::audio_polish::duck_scale(path, volume)
     };
+    // web3d-M4: no macroquad window (3D / browser) — hand the sound to
+    // the shell's player.
+    if !macroquad_live() {
+        crate::audio_host::push(crate::audio_host::AudioCmd::Play {
+            path: path.to_string(),
+            volume: final_vol,
+            looped,
+        });
+        return Ok(());
+    }
     SOUND_CACHE.with(|cache| -> Result<(), RuntimeError> {
         let mut c = cache.borrow_mut();
         if !c.contains_key(path) {
