@@ -544,6 +544,7 @@ A visual that fails the GPU-safety checks (`twec verify`) is an error when a loo
   - Both give the same result as evaluating every key for every entity. The split only removes redundant work.
 - **Inheritance.** Keys merge along `extends`: a subclass overrides individual keys.
 - **What is drawn.** Live entities are drawn, including while paused; despawned ones are not. The top-level `on render():` still runs and draws alongside looks. Per-entity `render()` methods are not called in 3D.
+- **Colour.** Tints (and `cube()` / `sphere()` colours) are sRGB, as picked in any colour tool; the renderer decodes them to linear light before shading.
 - **In the 2D player** (`twec play`), a program that declares a look is refused at startup with an error pointing at `twec play3d` / `twec build --target web`, until the 2D player moves onto the kernel (web3d-M6).
 
 ### 4.10 Particles

@@ -149,6 +149,73 @@ pub fn render_frame(
     })
 }
 
+/// web3d-M4: every key a Twe script can name, with its code — the
+/// DOM `KeyboardEvent.code`, which is also winit's `KeyCode` variant
+/// name. Both 3D shells report exactly this set (the native shell's
+/// table is checked against it by a test).
+pub const KEY_CODES: &[(&str, &str)] = &[
+    ("right", "ArrowRight"),
+    ("left", "ArrowLeft"),
+    ("up", "ArrowUp"),
+    ("down", "ArrowDown"),
+    ("space", "Space"),
+    ("escape", "Escape"),
+    ("enter", "Enter"),
+    ("tab", "Tab"),
+    ("backspace", "Backspace"),
+    ("shift", "ShiftLeft"),
+    ("ctrl", "ControlLeft"),
+    ("alt", "AltLeft"),
+    ("a", "KeyA"),
+    ("b", "KeyB"),
+    ("c", "KeyC"),
+    ("d", "KeyD"),
+    ("e", "KeyE"),
+    ("f", "KeyF"),
+    ("g", "KeyG"),
+    ("h", "KeyH"),
+    ("i", "KeyI"),
+    ("j", "KeyJ"),
+    ("k", "KeyK"),
+    ("l", "KeyL"),
+    ("m", "KeyM"),
+    ("n", "KeyN"),
+    ("o", "KeyO"),
+    ("p", "KeyP"),
+    ("q", "KeyQ"),
+    ("r", "KeyR"),
+    ("s", "KeyS"),
+    ("t", "KeyT"),
+    ("u", "KeyU"),
+    ("v", "KeyV"),
+    ("w", "KeyW"),
+    ("x", "KeyX"),
+    ("y", "KeyY"),
+    ("z", "KeyZ"),
+    ("0", "Digit0"),
+    ("1", "Digit1"),
+    ("2", "Digit2"),
+    ("3", "Digit3"),
+    ("4", "Digit4"),
+    ("5", "Digit5"),
+    ("6", "Digit6"),
+    ("7", "Digit7"),
+    ("8", "Digit8"),
+    ("9", "Digit9"),
+    ("f1", "F1"),
+    ("f2", "F2"),
+    ("f3", "F3"),
+    ("f4", "F4"),
+    ("f5", "F5"),
+    ("f6", "F6"),
+    ("f7", "F7"),
+    ("f8", "F8"),
+    ("f9", "F9"),
+    ("f10", "F10"),
+    ("f11", "F11"),
+    ("f12", "F12"),
+];
+
 /// Write the host's keyboard state into the `key` (held) and
 /// `key_press` (pressed this frame) ambients for every name in `names`.
 /// Shells map their own key codes (winit / DOM `KeyboardEvent.code`) to

@@ -20,22 +20,9 @@ use twec::kernel::render::{parse_glb_bytes, AssetKind, AssetReady, AssetSource, 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-/// Twe key names the browser shell reports, with their DOM
-/// `KeyboardEvent.code`. (Full key coverage follows; these are what the
-/// 3D examples read.)
-const KEYS: &[(&str, &str)] = &[
-    ("left", "ArrowLeft"),
-    ("right", "ArrowRight"),
-    ("up", "ArrowUp"),
-    ("down", "ArrowDown"),
-    ("a", "KeyA"),
-    ("d", "KeyD"),
-    ("w", "KeyW"),
-    ("s", "KeyS"),
-    ("space", "Space"),
-    ("enter", "Enter"),
-    ("escape", "Escape"),
-];
+/// Twe key names with their DOM `KeyboardEvent.code`: the same table
+/// the native shell reports (web3d-M4).
+use twec::host3d::KEY_CODES as KEYS;
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -288,6 +275,14 @@ fn listen_keys(
     pressed: Rc<RefCell<HashSet<String>>>,
 ) -> Result<(), String> {
     let name_of = |code: &str| KEYS.iter().find(|(_, c)| *c == code).map(|(n, _)| *n);
+    // Keys the page itself would act on (scrolling, focus moves). All
+    // others — F5, F12, shortcuts — stay with the browser.
+    let captured = |code: &str| {
+        matches!(
+            code,
+            "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Space" | "Tab" | "Backspace"
+        )
+    };
     let (h, p) = (held.clone(), pressed);
     let down =
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
@@ -295,7 +290,9 @@ fn listen_keys(
                 if h.borrow_mut().insert(name.to_string()) {
                     p.borrow_mut().insert(name.to_string());
                 }
-                e.prevent_default();
+                if captured(&e.code()) {
+                    e.prevent_default();
+                }
             }
         });
     let up = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {

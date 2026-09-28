@@ -5703,6 +5703,12 @@ fn install_math(env: &mut Env) {
     );
     // web3d-M3: the angle of a direction, for a look's `facing`
     // (`math.atan2(dx, dz)` faces (dx, dz)).
+    // Documented in docs/06 §7.2 since Phase 9 but never installed;
+    // web3d-M4's survive3d was the first program to call it.
+    math.insert(
+        "clamp".to_string(),
+        Value::from_builtin("math.clamp", &["v", "lo", "hi"], math_clamp),
+    );
     math.insert(
         "atan2".to_string(),
         Value::from_builtin("math.atan2", &["y", "x"], math_atan2),
@@ -6252,6 +6258,28 @@ fn math_sin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn math_cos(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.cos")?;
     Ok(Value::from_float(as_f64(&args[0], "math.cos")?.cos()))
+}
+
+fn math_clamp(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "math.clamp")?;
+    let v = as_f64(&args[0], "math.clamp")?;
+    let lo = as_f64(&args[1], "math.clamp")?;
+    let hi = as_f64(&args[2], "math.clamp")?;
+    if lo > hi {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("math.clamp: lo ({lo}) is greater than hi ({hi})"),
+            help: Some("call it as math.clamp(value, low, high)".to_string()),
+        });
+    }
+    // Ints stay ints when every argument is one.
+    if args.iter().all(|a| a.is_int_or_boxed_int()) {
+        return Ok(Value::from_int(
+            args[0].as_int().clamp(args[1].as_int(), args[2].as_int()),
+        ));
+    }
+    Ok(Value::from_float(v.clamp(lo, hi)))
 }
 
 fn math_atan2(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

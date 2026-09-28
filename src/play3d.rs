@@ -791,6 +791,19 @@ impl AssetSource for NativeAssets {
 mod tests {
     use super::*;
 
+    /// web3d-M4: native and web report the same keys under the same
+    /// names; the native table must match `host3d::KEY_CODES`.
+    #[test]
+    fn native_keys_match_the_shared_table() {
+        let native: Vec<(&str, String)> =
+            KEYS.iter().map(|(n, k)| (*n, format!("{k:?}"))).collect();
+        let shared: Vec<(&str, String)> = crate::host3d::KEY_CODES
+            .iter()
+            .map(|(n, c)| (*n, c.to_string()))
+            .collect();
+        assert_eq!(native, shared);
+    }
+
     #[test]
     fn the_3d_shell_never_calls_into_macroquad() {
         // play3d runs on winit + wgpu; macroquad is never initialised

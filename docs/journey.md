@@ -107,6 +107,9 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
   - **The plan:** a new milestone, M7, was written into the plan. Tier 1 is parity: physically based materials, environment lighting, anti-aliasing, AO, post-processing. Tier 2 goes beyond: GPU-driven rendering for 100k instances, hundreds of lights, a million GPU particles, and procedural materials written in Twe code.
   - **The test:** measured against Three.js with the same assets on the Khronos glTF sample scenes, with published image-error numbers. Where Twe loses, it will say so.
 
+- **2026-09-28: M4 opens, and the game exists.** `survive3d`, the top-down 3D survivors game that defines v1.0, is playable: waves, a boss, three weapon types, XP and level-ups, pause, game over and restart. A headless test plays a whole run with scripted keys.
+  - **It found four engine gaps, all fixed the same day:** menus couldn't draw in 3D; the browser only knew 11 keys; a documented math function didn't exist; and 3D colours had always been washed out, because colours were never converted from the sRGB values authors pick.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

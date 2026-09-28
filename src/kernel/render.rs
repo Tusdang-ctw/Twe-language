@@ -829,6 +829,18 @@ fn surface_pipeline(
     })
 }
 
+/// web3d-M4: script colours are sRGB (as authors pick them, and as
+/// `color.*` names them); lighting runs in linear light. Decoding here
+/// is what makes a dark tint look dark and a saturated one saturated —
+/// the same convention as Three.js's colour management.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// web3d-M3: draw-group keys. A built-in shape groups by (texture,
 /// material); a mesh by (mesh id, texture, material). Each group is one
 /// instanced draw over an `InstanceRange` of the instance buffer.
@@ -3406,7 +3418,12 @@ impl Renderer {
                     out.push(Instance {
                         position: d.at,
                         size: d.size,
-                        color: d.color,
+                        color: [
+                            srgb_to_linear(d.color[0]),
+                            srgb_to_linear(d.color[1]),
+                            srgb_to_linear(d.color[2]),
+                            d.color[3],
+                        ],
                         rot: [s, c, 0.0, 0.0],
                     });
                 }

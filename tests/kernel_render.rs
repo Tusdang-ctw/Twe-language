@@ -208,3 +208,20 @@ fn hud_draws_text_and_rects_over_the_scene() {
         .count();
     assert!(green > 100, "only {green} green text pixels");
 }
+
+/// web3d-M4: a frame of the v1.0 slice, 20 s into a run, through the
+/// real renderer: the arena, the swarm and the HUD all draw.
+#[test]
+fn survive3d_frame_renders() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let rgba = render_script(&mut renderer, "examples/survive3d/main.twe", 1200);
+    save_png("survive3d", &rgba);
+    // Not a blank frame: many distinct colours on screen.
+    let mut colours = std::collections::HashSet::new();
+    for px in rgba.chunks(4) {
+        colours.insert([px[0] / 16, px[1] / 16, px[2] / 16]);
+    }
+    assert!(colours.len() > 20, "only {} colours", colours.len());
+}

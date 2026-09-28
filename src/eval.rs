@@ -612,17 +612,24 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
 pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
     env.render_queue3d.clear();
     env.hud_queue.clear();
+    let prev_render = env.in_render;
+    env.in_render = true;
+    let mut result = Ok(());
     if let Some(body) = env.top_on_render.clone() {
-        let prev_render = env.in_render;
-        env.in_render = true;
-        let result = run_frame_body(env, Vec::new(), &body);
-        env.in_render = prev_render;
+        result = run_frame_body(env, Vec::new(), &body);
         // A `return` in the top-level on_render body just stops the
         // current frame's draw composition; clear the flag so
         // subsequent frames aren't affected.
         env.returning.take();
-        result?;
     }
+    // web3d-M4: the active scene state's `on render():` too — per-state
+    // HUDs and menus (level-up picker, game over).
+    if result.is_ok() {
+        result = render_scene_state(env);
+        env.returning.take();
+    }
+    env.in_render = prev_render;
+    result?;
     draw_looks(env)
 }
 
@@ -868,6 +875,15 @@ fn look_tint(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 4], Runtim
 /// call).
 pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
     let _profile = crate::profile::scope("render");
+    render_scene_state(env)?;
+    render_entities_2d(env)
+}
+
+/// The active scene's current state's `on render():`, then any state
+/// transition it raised (a modal's "Resume" / "pick upgrade"). Shared
+/// by the 2D and 3D render paths (web3d-M4: `survive3d` draws its HUD
+/// and menus per state).
+fn render_scene_state(env: &mut Env) -> Result<(), RuntimeError> {
     if let Some(scene) = env.active_scene.clone() {
         let body: Option<Vec<Stmt>> = {
             let inst = scene.borrow();
@@ -890,6 +906,11 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
             enter_state(env, &scene, &target)?;
         }
     }
+    Ok(())
+}
+
+/// Each live entity's 2D `render()` (and particle emitters).
+fn render_entities_2d(env: &mut Env) -> Result<(), RuntimeError> {
     let entities = env.active_entities.clone();
     for entity in entities {
         if entity.borrow().despawned {

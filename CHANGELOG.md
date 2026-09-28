@@ -13,6 +13,15 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **`examples/survive3d`** (web3d-M4): the v1.0 slice, a top-down 3D
+  survivors game with enemies, auto-weapons, XP, level-ups, a boss every
+  fifth wave, pause and restart, playable in Chrome and natively.
+- **`math.clamp(v, lo, hi)`**: documented since Phase 9, now actually
+  installed.
+- **3D scene states draw**: a scene state's `on render():` now runs in
+  3D (it only ran in 2D), so per-state HUDs and menus work.
+- **Full keyboard on the web**: letters, digits, F-keys and modifiers,
+  the same names as native.
 - **HUD text in 3D** (web3d-M3): `text()` and `rect()` inside a 3D
   `on render():` draw screen-space text and boxes over the scene, in the
   2D canvas's 640×480 coordinates. They used to be an error in 3D.
@@ -65,6 +74,10 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **3D colours are sRGB (visible change).** Tints and `cube()` /
+  `sphere()` colours are now decoded from sRGB before lighting, as
+  authors pick them (Three.js does the same). Dark colours look dark
+  and saturated ones saturated; scenes used to look washed out.
 - **`look` is a reserved word (breaking; web3d-M3).** A variable named
   `look` must be renamed. `examples/fps_demo.twe` had one.
 - **`twec play` exits with status 1 when the script fails to start**
