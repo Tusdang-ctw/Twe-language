@@ -706,6 +706,7 @@ impl<'a> Parser<'a> {
             body,
             line: kw.line,
             col: kw.col,
+            var_res: Default::default(),
         })
     }
 
@@ -827,6 +828,7 @@ impl<'a> Parser<'a> {
             ty: None,
             line,
             col,
+            res: Default::default(),
         });
 
         // 3. for each migration from M (ascending), emit
@@ -856,6 +858,7 @@ impl<'a> Parser<'a> {
                             name: cache_name.clone(),
                             line: mline,
                             col: mcol,
+                            res: Default::default(),
                         }),
                         right: Box::new(Expr::Int {
                             value: k,
@@ -1762,6 +1765,7 @@ impl<'a> Parser<'a> {
             ty,
             line: kw.line,
             col: kw.col,
+            res: Default::default(),
         })
     }
 
@@ -2251,6 +2255,7 @@ impl<'a> Parser<'a> {
                     name,
                     line: tok.line,
                     col: tok.col,
+                    res: Default::default(),
                 }),
             },
             TokenKind::KwSelf => Ok(Expr::SelfRef {
@@ -2355,6 +2360,7 @@ impl<'a> Parser<'a> {
                     condition,
                     line: lb_line,
                     col: lb_col,
+                    var_res: Default::default(),
                 });
             }
             elems.push(first);
@@ -2470,6 +2476,7 @@ fn make_persistent_state_stmt(state_name: &str, line: u32, col: u32) -> Stmt {
             name: "persistent_state".to_string(),
             line,
             col,
+            res: Default::default(),
         }),
         args: vec![Expr::Str {
             value: state_name.to_string(),
@@ -2492,6 +2499,7 @@ fn make_save_call(method: &str, args: Vec<Expr>, line: u32, col: u32) -> Expr {
                 name: "save".to_string(),
                 line,
                 col,
+                res: Default::default(),
             }),
             name: method.to_string(),
             line,
@@ -2537,7 +2545,12 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             line,
             col,
         },
-        Expr::Ident { name, .. } => Expr::Ident { name, line, col },
+        Expr::Ident { name, .. } => Expr::Ident {
+            name,
+            line,
+            col,
+            res: Default::default(),
+        },
         Expr::SelfRef { .. } => Expr::SelfRef { line, col },
         Expr::Tuple { elems, .. } => Expr::Tuple {
             elems: elems
@@ -2554,6 +2567,7 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             condition,
             ..
         } => Expr::ListComp {
+            var_res: Default::default(),
             element: Box::new(shift_expr(*element, line, col)),
             var,
             iterable: Box::new(shift_expr(*iterable, line, col)),
@@ -2646,7 +2660,7 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
 
 fn expr_to_target(e: &Expr) -> Option<AssignTarget> {
     match e {
-        Expr::Ident { name, .. } => Some(AssignTarget::Name(name.clone())),
+        Expr::Ident { name, .. } => Some(AssignTarget::Name(name.clone(), Default::default())),
         Expr::Field { object, name, .. } => Some(AssignTarget::Field {
             object: object.clone(),
             name: name.clone(),

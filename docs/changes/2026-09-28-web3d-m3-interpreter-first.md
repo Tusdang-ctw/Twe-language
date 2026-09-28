@@ -44,6 +44,7 @@ Each step is re-measured against the targets. Columnar storage returns only if t
 | Baseline | 2,459 |
 | Builtin calls pass positional arguments without copying | 2,105 |
 | Pooled argument vectors; methods and functions don't copy positional arguments | 1,969 |
+| Locals by slot: the resolver annotates names (`ast::Res`), the runtime indexes frames | 1,370 |
 
 **Chrome profile (CDP sampling, wasm name section).** The first browser profile found a cost the native numbers couldn't show: about 18% of the frame was spent reading the clock. The incremental GC sweep checked its time budget after every freed object, and on wasm each clock read is a JS round trip (`window()` → `performance()` → `now()`).
 
@@ -55,3 +56,16 @@ The remaining profile:
 - allocation (malloc, free, sweep): ~7%.
 
 That confirms slot-indexed names as the next step.
+
+## How slots work
+
+`resolve` gives each frame's locals a slot, in order of first declaration, parameters first. That is the order the runtime binds them. It records a `Res` on every name:
+- `Local { slot, name }`
+- `Field`
+- `Global`
+
+It records nothing when it can't resolve the name.
+
+The runtime then reads and writes a local as `frame.locals[slot]`. It checks that the slot holds that name (by pointer, since the resolver shares one `Rc<str>` per local), and skips the frame scan for fields and globals.
+
+On any mismatch it falls back to the by-name lookup, so a wrong annotation is slow, never wrong. `eval::slot_misses()` counts those fallbacks. `tests/slots.rs` runs every test program and example and requires zero, which pins the resolver's frame model to the runtime's.

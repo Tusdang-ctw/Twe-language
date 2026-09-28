@@ -1910,6 +1910,172 @@ fn lookup_self_field(env: &Env, name: &str) -> Option<Value> {
     }
 }
 
+// ---- web3d-M3: names by resolution ----
+//
+// The resolver annotates each name with where it lives (`ast::Res`).
+// These go straight to that binding; whenever the runtime disagrees
+// with the annotation they fall back to the by-name functions above,
+// so a wrong annotation costs speed, not correctness. `slot_misses`
+// counts the fallbacks — the corpus runs with none
+// (`tests/examples_run.rs`).
+
+thread_local! {
+    static SLOT_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Name of an unused slot (padding, or a loop variable after its
+    /// loop). Never equal to a real name.
+    static NO_NAME: Rc<str> = Rc::from("");
+}
+
+/// How many resolved names fell back to a by-name lookup on this
+/// thread. Zero means the resolver's frames matched the runtime's.
+pub fn slot_misses() -> u64 {
+    SLOT_MISSES.with(|c| c.get())
+}
+
+fn slot_miss() {
+    SLOT_MISSES.with(|c| c.set(c.get() + 1));
+}
+
+#[inline]
+fn slot_is(held: &Rc<str>, want: &Rc<str>) -> bool {
+    Rc::ptr_eq(held, want) || **held == **want
+}
+
+/// A module global or env global: `lookup_name` without the frame and
+/// `self` steps.
+fn lookup_global(env: &Env, name: &str) -> Option<Value> {
+    if let Some(h) = env.frames.last().and_then(|f| f.home) {
+        if h.is_object() {
+            if let Some(v) = h.as_object().borrow().fields.get(name) {
+                return Some(*v);
+            }
+        }
+    }
+    env.get(name)
+}
+
+/// Read `name` using its resolution.
+#[inline]
+fn read_name(env: &Env, name: &str, res: &crate::ast::ResCell) -> Option<Value> {
+    use crate::ast::Res;
+    match res.get() {
+        Some(Res::Local { slot, name: want }) => {
+            if let Some((held, v)) = env
+                .frames
+                .last()
+                .and_then(|f| f.locals.get(usize::from(*slot)))
+            {
+                if slot_is(held, want) {
+                    return Some(*v);
+                }
+            }
+            slot_miss();
+            lookup_name(env, name)
+        }
+        Some(Res::Field) => lookup_self_field(env, name).or_else(|| lookup_name(env, name)),
+        Some(Res::Global) => lookup_global(env, name).or_else(|| lookup_name(env, name)),
+        None => lookup_name(env, name),
+    }
+}
+
+/// `let` / loop-variable binding using its resolution.
+fn declare_resolved(env: &mut Env, name: &str, res: &crate::ast::ResCell, v: Value) {
+    if let Some(crate::ast::Res::Local { slot, name: want }) = res.get() {
+        if let Some(f) = env.frames.last_mut() {
+            let i = usize::from(*slot);
+            if i < f.locals.len() {
+                let (held, val) = &mut f.locals[i];
+                if slot_is(held, want) || held.is_empty() {
+                    *held = want.clone();
+                    *val = v;
+                    return;
+                }
+            } else {
+                while f.locals.len() < i {
+                    f.locals.push((NO_NAME.with(Rc::clone), Value::NIL));
+                }
+                f.locals.push((want.clone(), v));
+                return;
+            }
+        }
+        slot_miss();
+    }
+    declare_name(env, name, v);
+}
+
+/// `name = value` using its resolution; false if `name` isn't bound.
+fn assign_resolved(env: &mut Env, name: &str, res: &crate::ast::ResCell, v: Value) -> bool {
+    use crate::ast::Res;
+    match res.get() {
+        Some(Res::Local { slot, name: want }) => {
+            if let Some((held, val)) = env
+                .frames
+                .last_mut()
+                .and_then(|f| f.locals.get_mut(usize::from(*slot)))
+            {
+                if slot_is(held, want) {
+                    *val = v;
+                    return true;
+                }
+            }
+            slot_miss();
+        }
+        Some(Res::Field) => {
+            if let Some(t) = env.self_value.as_ref() {
+                if t.is_instance()
+                    && t.with_instance(|inst| inst.borrow_mut().set_existing_field(name, v))
+                {
+                    return true;
+                }
+            }
+        }
+        Some(Res::Global) | None => {}
+    }
+    assign_name(env, name, v)
+}
+
+/// [`loop_var_save`] using the loop variable's resolution.
+fn loop_var_save_resolved(env: &Env, var: &str, res: &crate::ast::ResCell) -> Option<Value> {
+    if let Some(crate::ast::Res::Local { slot, name: want }) = res.get() {
+        if let Some(f) = env.frames.last() {
+            return match f.locals.get(usize::from(*slot)) {
+                Some((held, v)) if slot_is(held, want) => Some(*v),
+                _ => None,
+            };
+        }
+    }
+    loop_var_save(env, var)
+}
+
+/// [`loop_var_restore`] using the loop variable's resolution: put the
+/// shadowed value back, or free the slot.
+fn loop_var_restore_resolved(
+    env: &mut Env,
+    var: &str,
+    res: &crate::ast::ResCell,
+    saved: Option<Value>,
+) {
+    if let Some(crate::ast::Res::Local { slot, name: want }) = res.get() {
+        if let Some(entry) = env
+            .frames
+            .last_mut()
+            .and_then(|f| f.locals.get_mut(usize::from(*slot)))
+        {
+            if slot_is(&entry.0, want) {
+                match saved {
+                    Some(v) => entry.1 = v,
+                    None => {
+                        entry.0 = NO_NAME.with(Rc::clone);
+                        entry.1 = Value::NIL;
+                    }
+                }
+                return;
+            }
+        }
+    }
+    loop_var_restore(env, var, saved);
+}
+
 fn quantity_to_seconds(v: &Value, line: u32, col: u32) -> Result<f64, RuntimeError> {
     if v.is_quantity() {
         let (value, unit) = v.as_quantity();
@@ -2149,9 +2315,11 @@ fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
 
 fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
     match stmt {
-        Stmt::Let { name, value, .. } => {
+        Stmt::Let {
+            name, value, res, ..
+        } => {
             let v = eval_expr(env, value)?;
-            declare_name(env, name, v);
+            declare_resolved(env, name, res, v);
             Ok(())
         }
         Stmt::Assign {
@@ -2233,9 +2401,10 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             body,
             line,
             col,
+            var_res,
         } => {
             env.loop_depth += 1;
-            let result = run_for(env, var, iter, body, *line, *col);
+            let result = run_for(env, var, var_res, iter, body, *line, *col);
             env.loop_depth -= 1;
             result
         }
@@ -2543,7 +2712,7 @@ fn eval_assign(
 ) -> Result<(), RuntimeError> {
     let new_value = eval_expr(env, value)?;
     match target {
-        AssignTarget::Name(name) => {
+        AssignTarget::Name(name, res) => {
             // web3d-M1: `name = value` updates an existing binding —
             // local, `self` field, module global, or global (see
             // `assign_name`). New names come only from `let` / `var`;
@@ -2552,7 +2721,7 @@ fn eval_assign(
             let final_value = if matches!(op, AssignOp::Set) {
                 new_value
             } else {
-                let current = lookup_name(env, name).ok_or_else(|| RuntimeError {
+                let current = read_name(env, name, res).ok_or_else(|| RuntimeError {
                     line,
                     col,
                     message: format!("name '{name}' is not defined"),
@@ -2560,7 +2729,7 @@ fn eval_assign(
                 })?;
                 compound(op, &current, &new_value, line, col)?
             };
-            if assign_name(env, name, final_value) {
+            if assign_resolved(env, name, res, final_value) {
                 Ok(())
             } else {
                 Err(undeclared_assign_error(name, line, col))
@@ -2726,7 +2895,12 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
         }
         Expr::Percent { value, .. } => Ok(Value::from_percent(*value)),
         Expr::Quantity { value, unit, .. } => Ok(Value::from_quantity(*value, Rc::new(unit.clone()))),
-        Expr::Ident { name, line, col } => lookup_name(env, name).ok_or_else(|| RuntimeError {
+        Expr::Ident {
+            name,
+            line,
+            col,
+            res,
+        } => read_name(env, name, res).ok_or_else(|| RuntimeError {
             line: *line,
             col: *col,
             message: format!("name '{name}' is not defined"),
@@ -2762,16 +2936,17 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             condition,
             line,
             col,
+            var_res,
         } => {
             let iter_val = eval_expr(env, iterable)?;
             let items = iterable_snapshot(&iter_val, *line, *col)?;
             // Shadow the loop variable for the duration of the
             // comprehension, then restore it (matches `run_for`).
-            let saved = loop_var_save(env, var);
+            let saved = loop_var_save_resolved(env, var, var_res);
             let mut out = Vec::new();
             let mut result = Ok(());
             for item in items {
-                declare_name(env, var, item);
+                declare_resolved(env, var, var_res, item);
                 if let Some(cond) = condition {
                     match eval_expr(env, cond) {
                         Ok(c) => {
@@ -2793,7 +2968,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
                     }
                 }
             }
-            loop_var_restore(env, var, saved);
+            loop_var_restore_resolved(env, var, var_res, saved);
             result?;
             Ok(Value::from_list(Rc::new(RefCell::new(out))))
         }
@@ -3618,13 +3793,14 @@ fn iterable_snapshot(val: &Value, line: u32, col: u32) -> Result<Vec<Value>, Run
 fn run_for(
     env: &mut Env,
     var: &str,
+    var_res: &crate::ast::ResCell,
     iter: &Expr,
     body: &[Stmt],
     line: u32,
     col: u32,
 ) -> Result<(), RuntimeError> {
     let iter_val = eval_expr(env, iter)?;
-    let saved = loop_var_save(env, var);
+    let saved = loop_var_save_resolved(env, var, var_res);
     // web3d-M0: the iterable, its element snapshot, and the shadowed
     // loop variable live only on the Rust stack while the body runs
     // statements (safepoints). Root them for the loop's duration — the
@@ -3638,17 +3814,17 @@ fn run_for(
     let result = if iter_val.is_range() {
         let (start, end, exclusive) = iter_val.as_range();
         let limit = if exclusive { end } else { end + 1 };
-        run_for_iter(env, var, body, (start..limit).map(Value::from_int))
+        run_for_iter(env, var, var_res, body, (start..limit).map(Value::from_int))
     } else if iter_val.is_list() {
         let rc = iter_val.as_list();
         let snapshot: Vec<Value> = rc.borrow().clone();
         roots.push_all(&snapshot);
-        run_for_iter(env, var, body, snapshot.into_iter())
+        run_for_iter(env, var, var_res, body, snapshot.into_iter())
     } else if iter_val.is_tuple() {
         let elems = iter_val.as_tuple();
         let snapshot: Vec<Value> = elems.iter().cloned().collect();
         roots.push_all(&snapshot);
-        run_for_iter(env, var, body, snapshot.into_iter())
+        run_for_iter(env, var, var_res, body, snapshot.into_iter())
     } else {
         let other = iter_val;
         Err(RuntimeError {
@@ -3661,18 +3837,19 @@ fn run_for(
             help: None,
         })
     };
-    loop_var_restore(env, var, saved);
+    loop_var_restore_resolved(env, var, var_res, saved);
     result
 }
 
 fn run_for_iter<I: Iterator<Item = Value>>(
     env: &mut Env,
     var: &str,
+    var_res: &crate::ast::ResCell,
     body: &[Stmt],
     items: I,
 ) -> Result<(), RuntimeError> {
     for item in items {
-        declare_name(env, var, item);
+        declare_resolved(env, var, var_res, item);
         run_block(env, body)?;
         if env.returning.is_some() {
             break;

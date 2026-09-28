@@ -30,7 +30,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{AssignTarget, DeclKind, DeclMember, Expr, Program, StateMember, Stmt};
+use std::rc::Rc;
+
+use crate::ast::{
+    AssignTarget, DeclKind, DeclMember, Expr, Program, Res, ResCell, StateMember, Stmt,
+};
 
 /// Why a name couldn't be resolved lexically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -197,6 +201,11 @@ struct Resolver<'a> {
     unresolved: Vec<Use>,
     /// Issues known at the point they occur (not reclassified later).
     direct: Vec<ScopeIssue>,
+    /// web3d-M3: each frame's local slots, numbered in order of first
+    /// declaration (parameters first — the order the runtime binds
+    /// them). The `Rc<str>` is shared by every [`Res::Local`] for the
+    /// name, so the runtime can check a slot by pointer.
+    slots: HashMap<u32, HashMap<String, (u16, Rc<str>)>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -247,6 +256,7 @@ impl<'a> Resolver<'a> {
             declared: HashMap::new(),
             unresolved: Vec::new(),
             direct: Vec::new(),
+            slots: HashMap::new(),
         }
     }
 
@@ -285,6 +295,13 @@ impl<'a> Resolver<'a> {
         let frame = self.frame();
         if let Some(s) = self.scopes.last_mut() {
             s.names.insert(name.to_string());
+        }
+        if frame != 0 {
+            let slots = self.slots.entry(frame).or_default();
+            if !slots.contains_key(name) {
+                let slot = u16::try_from(slots.len()).unwrap_or(u16::MAX);
+                slots.insert(name.to_string(), (slot, Rc::from(name)));
+            }
         }
         self.declared
             .entry(name.to_string())
@@ -354,7 +371,43 @@ impl<'a> Resolver<'a> {
         self.globals.contains(name) || self.builtins.contains(name)
     }
 
-    fn use_name(&mut self, name: &str, line: u32, col: u32, assign: bool) {
+    /// web3d-M3: where `name` lives here, if it resolves: a local slot
+    /// of the current frame, a field of `self`, or a global. Names in
+    /// top-level blocks are globals at run time (there is no top-level
+    /// frame), so they resolve as [`Res::Global`].
+    fn resolution(&self, name: &str) -> Option<Res> {
+        let frame = self.frame();
+        let local = self
+            .scopes
+            .iter()
+            .rev()
+            .take_while(|s| s.frame == frame)
+            .any(|s| s.names.contains(name));
+        if local {
+            if frame == 0 {
+                return Some(Res::Global);
+            }
+            let (slot, name) = self.slots.get(&frame)?.get(name)?;
+            return Some(Res::Local {
+                slot: *slot,
+                name: name.clone(),
+            });
+        }
+        if self.class_ctx.last().is_some_and(|m| m.contains(name)) {
+            return Some(Res::Field);
+        }
+        (self.globals.contains(name) || self.builtins.contains(name)).then_some(Res::Global)
+    }
+
+    /// Record `name`'s resolution in `cell` (see [`Res`]).
+    fn annotate(&self, name: &str, cell: &ResCell) {
+        if let Some(r) = self.resolution(name) {
+            cell.set(r);
+        }
+    }
+
+    fn use_name(&mut self, name: &str, line: u32, col: u32, assign: bool, cell: &ResCell) {
+        self.annotate(name, cell);
         if !self.resolves(name) {
             self.unresolved.push(Use {
                 name: name.to_string(),
@@ -428,10 +481,12 @@ impl<'a> Resolver<'a> {
                 value,
                 line,
                 col,
+                res,
                 ..
             } => {
                 self.expr(value);
                 self.declare_checked(name, *line, *col);
+                self.annotate(name, res);
             }
             Stmt::Assign {
                 target,
@@ -442,7 +497,7 @@ impl<'a> Resolver<'a> {
             } => {
                 self.expr(value);
                 match target {
-                    AssignTarget::Name(n) => self.use_name(n, *line, *col, true),
+                    AssignTarget::Name(n, res) => self.use_name(n, *line, *col, true, res),
                     AssignTarget::Field { object, .. } => self.expr(object),
                 }
             }
@@ -496,11 +551,16 @@ impl<'a> Resolver<'a> {
                 self.block(body);
             }
             Stmt::For {
-                var, iter, body, ..
+                var,
+                iter,
+                body,
+                var_res,
+                ..
             } => {
                 self.expr(iter);
                 self.push_block();
                 self.declare(var);
+                self.annotate(var, var_res);
                 for s in body {
                     self.stmt(s);
                 }
@@ -608,7 +668,12 @@ impl<'a> Resolver<'a> {
 
     fn expr(&mut self, e: &Expr) {
         match e {
-            Expr::Ident { name, line, col } => self.use_name(name, *line, *col, false),
+            Expr::Ident {
+                name,
+                line,
+                col,
+                res,
+            } => self.use_name(name, *line, *col, false, res),
             Expr::Str { .. }
             | Expr::Int { .. }
             | Expr::Float { .. }
@@ -632,11 +697,13 @@ impl<'a> Resolver<'a> {
                 var,
                 iterable,
                 condition,
+                var_res,
                 ..
             } => {
                 self.expr(iterable);
                 self.push_block();
                 self.declare(var);
+                self.annotate(var, var_res);
                 if let Some(c) = condition {
                     self.expr(c);
                 }

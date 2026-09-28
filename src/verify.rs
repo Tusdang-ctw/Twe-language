@@ -705,7 +705,9 @@ fn walk_expr(
     out: &mut Vec<VerifyDiagnostic>,
 ) {
     match expr {
-        Expr::Ident { name, line, col } => {
+        Expr::Ident {
+            name, line, col, ..
+        } => {
             if let Some(dep) = deprecated.get(name) {
                 let since = dep
                     .since

@@ -3,6 +3,53 @@ pub struct Program {
     pub stmts: Vec<Stmt>,
 }
 
+/// web3d-M3: where a name lives at run time, as the resolver saw it
+/// (`resolve::annotate`, before a program runs). The runtime uses it to
+/// skip lookups that can't match; on any disagreement it falls back to
+/// the by-name lookup, so a wrong annotation costs speed, not
+/// correctness (`eval::slot_misses` counts those fallbacks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Res {
+    /// Local `slot` of the innermost frame. `name` is shared by every
+    /// use of this local in its frame, so the runtime can check a slot
+    /// by pointer.
+    Local { slot: u16, name: std::rc::Rc<str> },
+    /// A field of `self` (in a method, handler or look of a class).
+    Field,
+    /// A module global or builtin.
+    Global,
+}
+
+/// A name's [`Res`], set once by the resolver. Parsed programs start
+/// unresolved. Compares equal to any other `ResCell` and prints as
+/// `_`, so annotation never changes AST equality or snapshots.
+#[derive(Clone, Default)]
+pub struct ResCell(std::cell::OnceCell<Res>);
+
+impl ResCell {
+    pub fn get(&self) -> Option<&Res> {
+        self.0.get()
+    }
+
+    /// Record the resolution; a second call (the same AST resolved
+    /// again) keeps the first.
+    pub fn set(&self, res: Res) {
+        let _ = self.0.set(res);
+    }
+}
+
+impl PartialEq for ResCell {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for ResCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("_")
+    }
+}
+
 /// Phase 13 session 9: `@deprecated("since vX.Y")` annotation.
 /// The optional `since` carries the version string from the
 /// argument; absent when the annotation is the bare
@@ -35,6 +82,7 @@ pub enum Stmt {
         ty: Option<crate::types::Type>,
         line: u32,
         col: u32,
+        res: ResCell,
     },
     Assign {
         target: AssignTarget,
@@ -122,6 +170,7 @@ pub enum Stmt {
         body: Vec<Stmt>,
         line: u32,
         col: u32,
+        var_res: ResCell,
     },
     Break {
         line: u32,
@@ -458,7 +507,7 @@ impl StateMember {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssignTarget {
-    Name(String),
+    Name(String, ResCell),
     Field { object: Box<Expr>, name: String },
 }
 
@@ -514,6 +563,7 @@ pub enum Expr {
         name: String,
         line: u32,
         col: u32,
+        res: ResCell,
     },
     SelfRef {
         line: u32,
@@ -538,6 +588,7 @@ pub enum Expr {
         condition: Option<Box<Expr>>,
         line: u32,
         col: u32,
+        var_res: ResCell,
     },
     Range {
         start: Box<Expr>,

@@ -768,7 +768,7 @@ fn push_params(out: &mut String, params: &[crate::ast::Param]) {
 
 fn print_assign_target(out: &mut String, target: &AssignTarget) {
     match target {
-        AssignTarget::Name(n) => out.push_str(n),
+        AssignTarget::Name(n, _) => out.push_str(n),
         AssignTarget::Field { object, name } => {
             print_expr(out, object, Prec::Postfix);
             out.push('.');

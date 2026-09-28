@@ -23,6 +23,7 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             ty,
             line,
             col,
+            ..
         } => {
             s.push_str("{\"kind\":\"Let\",\"name\":");
             write_str_value(s, name);
@@ -217,6 +218,7 @@ fn write_stmt(s: &mut String, stmt: &Stmt) {
             body,
             line,
             col,
+            ..
         } => {
             s.push_str("{\"kind\":\"For\",\"var\":");
             write_str_value(s, var);
@@ -554,7 +556,7 @@ fn write_state_member(s: &mut String, m: &StateMember) {
 
 fn write_target(s: &mut String, target: &AssignTarget) {
     match target {
-        AssignTarget::Name(n) => {
+        AssignTarget::Name(n, _) => {
             s.push_str("{\"kind\":\"Name\",\"name\":");
             write_str_value(s, n);
             s.push('}');
@@ -627,7 +629,9 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
-        Expr::Ident { name, line, col } => {
+        Expr::Ident {
+            name, line, col, ..
+        } => {
             s.push_str("{\"kind\":\"Ident\",\"name\":");
             write_str_value(s, name);
             write_pos(s, *line, *col);
@@ -657,6 +661,7 @@ fn write_expr(s: &mut String, expr: &Expr) {
             condition,
             line,
             col,
+            ..
         } => {
             s.push_str("{\"kind\":\"ListComp\",\"element\":");
             write_expr(s, element);

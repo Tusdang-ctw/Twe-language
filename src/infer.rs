@@ -327,6 +327,7 @@ impl Inferer {
                 ty,
                 line,
                 col,
+                ..
             } => {
                 let inferred = self.expr_type(value);
                 // Phase 6 session 2: if the user annotated the
@@ -819,7 +820,9 @@ impl Inferer {
             // mode does NOT push an error here; the hole is reported
             // separately by `verify::collect_holes` as a Warning.
             Expr::Hole { .. } => self.fresh_var(),
-            Expr::Ident { name, line, col } => {
+            Expr::Ident {
+                name, line, col, ..
+            } => {
                 match self.lookup(name) {
                     Some(t) => t,
                     None => {

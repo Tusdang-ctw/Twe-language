@@ -452,7 +452,9 @@ fn check_expr(expr: &Expr, errors: &mut Vec<VisualError>) {
 ///     a helpful error if the user tries to call it like a function
 fn check_callable(callee: &Expr, errors: &mut Vec<VisualError>) {
     match callee {
-        Expr::Ident { name, line, col } => {
+        Expr::Ident {
+            name, line, col, ..
+        } => {
             if !ALLOWED_BARE_FNS.contains(&name.as_str()) {
                 errors.push(VisualError {
                     message: format!("function `{name}` is not allowed inside a `visual` body"),
