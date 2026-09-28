@@ -23,6 +23,10 @@ removal would be load-bearing.
   Rust toolchain needed on the author's machine. Replaces the placeholder
   `wasm32-3d` target (kept as an alias). Single-file games only for now
   (`import` reads modules from the filesystem).
+- **`frame_stats()` in the web runtime** (web3d-M3): per-frame averages
+  (ticks per frame, update ms, script-render ms, kernel ms) for measuring
+  a game in the browser. `examples/swarm_3d.twe` is the 5,000-enemy
+  benchmark M3 is measured on.
 - **`twec build` accepts a single `.twe` file** as well as a project
   directory: the game is named after the file, with its folder's
   `assets/`.

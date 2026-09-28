@@ -69,6 +69,39 @@ fn show_error(msg: &str) {
     }
 }
 
+/// Rolling frame-time totals since the last `frame_stats()` call.
+#[derive(Default)]
+struct Stats {
+    frames: f64,
+    ticks: f64,
+    tick_ms: f64,
+    script_render_ms: f64,
+    kernel_ms: f64,
+}
+
+thread_local! {
+    static STATS: RefCell<Stats> = RefCell::new(Stats::default());
+}
+
+/// Averages since the previous call, then resets: `[frames, ticks per
+/// frame, ms per tick (script update), ms per frame in the script's
+/// render, ms per frame in the kernel]`. For measuring from the page
+/// or DevTools (`(await import("./twe_web.js")).frame_stats()`).
+#[wasm_bindgen]
+pub fn frame_stats() -> Vec<f64> {
+    STATS.with(|s| {
+        let s = std::mem::take(&mut *s.borrow_mut());
+        let per = |x: f64, n: f64| if n > 0.0 { x / n } else { 0.0 };
+        vec![
+            s.frames,
+            per(s.ticks, s.frames),
+            per(s.tick_ms, s.ticks),
+            per(s.script_render_ms, s.frames),
+            per(s.kernel_ms, s.frames),
+        ]
+    })
+}
+
 struct Shell {
     env: twec::value::Env,
     renderer: Renderer,
@@ -149,6 +182,7 @@ fn frame(shell: &mut Shell) {
     shell.pressed.borrow_mut().clear();
 
     shell.accumulator += dt;
+    let tick_start = now_secs();
     let mut steps = 0;
     while shell.accumulator >= twec::eval::PHYSICS_DT && steps < twec::eval::MAX_SUBSTEPS {
         if let Err(e) = twec::eval::tick_frame(&mut shell.env, twec::eval::PHYSICS_DT) {
@@ -160,6 +194,7 @@ fn frame(shell: &mut Shell) {
     if steps >= twec::eval::MAX_SUBSTEPS {
         shell.accumulator = 0.0;
     }
+    let tick_ms = (now_secs() - tick_start) * 1e3;
 
     let Shell {
         env,
@@ -167,10 +202,22 @@ fn frame(shell: &mut Shell) {
         assets,
         ..
     } = shell;
-    if let Err(e) = twec::host3d::render_frame(renderer, env, assets) {
-        web_sys::console::error_1(&format!("render: {e}").into());
-    }
+    let times = match twec::host3d::render_frame(renderer, env, assets) {
+        Ok(t) => t,
+        Err(e) => {
+            web_sys::console::error_1(&format!("render: {e}").into());
+            Default::default()
+        }
+    };
     flush_output(env);
+    STATS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.frames += 1.0;
+        s.ticks += f64::from(steps);
+        s.tick_ms += tick_ms;
+        s.script_render_ms += times.script_ms;
+        s.kernel_ms += times.kernel_ms;
+    });
 }
 
 fn flush_output(env: &mut twec::value::Env) {

@@ -1,0 +1,63 @@
+# @task: thousands of enemies seek the player across a plane (top-down 3D)
+# @inputs: WASD / arrows
+# @expected: a red swarm converges on the white player; enemies that reach it respawn at the rim
+# @category: 3d
+# @difficulty: medium
+#
+# web3d-M3's exit benchmark: 5,000 seeking enemies at 60 fps in Chrome.
+# It is written in today's Twe on purpose, so it measures what the
+# current entity model costs before M3 changes it: every enemy is an
+# instance with its own `update(dt)`, and the top-level `on render():`
+# draws each one (3D ignores per-entity `render()` methods today).
+
+let count = 5000
+let arena = 40.0
+let player_speed = 8.0
+
+var player = vec3(0, 0, 0)
+
+# Seeded, so the swarm is the same every run and frame times compare
+# across builds.
+random.seed(7)
+
+function rim_point():
+    let a = random.float() * 6.2831853
+    let r = arena * (0.6 + 0.4 * random.float())
+    return vec3(player.x + r * math.cos(a), 0, player.z + r * math.sin(a))
+
+entity Enemy:
+    var pos = vec3(0, 0, 0)
+    var speed = 3.0
+
+    function update(dt):
+        let dx = player.x - pos.x
+        let dz = player.z - pos.z
+        let d2 = dx * dx + dz * dz
+        if d2 < 0.36:
+            pos = rim_point()
+            return
+        let step = speed * dt / math.sqrt(d2)
+        pos = vec3(pos.x + dx * step, 0, pos.z + dz * step)
+
+for i in 0..count:
+    spawn Enemy at rim_point()
+
+on update(dt):
+    var mx = 0.0
+    var mz = 0.0
+    if key.a or key.left:
+        mx = mx - 1.0
+    if key.d or key.right:
+        mx = mx + 1.0
+    if key.w or key.up:
+        mz = mz - 1.0
+    if key.s or key.down:
+        mz = mz + 1.0
+    player = vec3(player.x + mx * player_speed * dt, 0, player.z + mz * player_speed * dt)
+    camera.eye = vec3(player.x, 38, player.z + 22)
+    camera.target = player
+
+on render():
+    sphere(at: player, color: (0.95, 0.95, 0.95, 1.0), size: 0.8)
+    for e in entities.of(Enemy):
+        cube(at: e.pos, color: color.red, size: 0.35)

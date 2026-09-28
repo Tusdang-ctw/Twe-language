@@ -77,6 +77,17 @@ fn number(v: &Value) -> Option<f64> {
     }
 }
 
+/// Where one rendered frame's time went, in milliseconds (0 when the
+/// host has no clock). Hosts show it (the web shell's `frame_stats()`,
+/// web3d-M3's exit measurement).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameTimes {
+    /// The script's `on render():` filling the draw queue.
+    pub script_ms: f64,
+    /// Snapshot + kernel: culling, instance upload, command encoding.
+    pub kernel_ms: f64,
+}
+
 /// Run the script's `on render():`, then hand the kernel a snapshot of
 /// everything the frame needs from the interpreter. Script output (and
 /// a render-body error) is left in `env.out` for the host to print.
@@ -84,7 +95,8 @@ pub fn render_frame(
     renderer: &mut Renderer,
     env: &mut Env,
     assets: &mut dyn AssetSource,
-) -> Result<(), String> {
+) -> Result<FrameTimes, String> {
+    let start = crate::clock::now_secs();
     if let Err(e) = eval::render_frame3d(env) {
         // Surface the runtime error to stderr but keep rendering — a
         // broken render frame shouldn't tear down the window.
@@ -117,12 +129,21 @@ pub fn render_frame(
         texture_paths: &env.texture_paths,
         anim: &anim,
     };
+    let scripted = crate::clock::now_secs();
     let result = renderer.render(&snap, assets);
     // Hand the (cleared) allocation back so the queue doesn't regrow.
     let mut draws = draws;
     draws.clear();
     env.render_queue3d = draws;
-    result
+    result?;
+    let ms = |a: Option<f64>, b: Option<f64>| match (a, b) {
+        (Some(a), Some(b)) => (b - a) * 1e3,
+        _ => 0.0,
+    };
+    Ok(FrameTimes {
+        script_ms: ms(start, scripted),
+        kernel_ms: ms(scripted, crate::clock::now_secs()),
+    })
 }
 
 /// Write the host's keyboard state into the `key` (held) and

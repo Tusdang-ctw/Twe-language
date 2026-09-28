@@ -43,3 +43,35 @@ fn probe() {
     println!("PERF sum_loop {:.2}ms = {:.0} ns/iter | fib20 {:.2}ms = {:.0} ns/call | entity_update {:.2}ms = {:.0} ns/update",
         s, s * 1e6 / 100001.0, f, f * 1e6 / 21891.0, e, e * 1e6 / 60000.0);
 }
+
+/// web3d-M3: the exit benchmark (`examples/swarm_3d.twe`, 5,000 seeking
+/// enemies) split into its two script-side costs per frame: the
+/// `update` tick and the `render()` calls that fill the 3D draw queue.
+/// The renderer itself is not included.
+#[test]
+#[ignore = "timing probe; run manually with --ignored --nocapture"]
+fn swarm_3d() {
+    let src = std::fs::read_to_string("examples/swarm_3d.twe").unwrap();
+    let program = parse(&src);
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).unwrap();
+    let frames = 120;
+    let (mut tick, mut render) = (f64::MAX, f64::MAX);
+    for _ in 0..frames {
+        let t = Instant::now();
+        twec::eval::tick_frame(&mut env, 1.0 / 60.0).unwrap();
+        tick = tick.min(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        twec::eval::render_frame3d(&mut env).unwrap();
+        render = render.min(t.elapsed().as_secs_f64() * 1e3);
+        assert!(env.render_queue3d.len() > 5000);
+        env.render_queue3d.clear();
+    }
+    println!(
+        "PERF swarm_3d (5000 enemies, min of {frames} frames): tick {tick:.2} ms = {:.0} ns/update | render {render:.2} ms = {:.0} ns/entity | script total {:.2} ms/frame",
+        tick * 1e6 / 5000.0,
+        render * 1e6 / 5000.0,
+        tick + render
+    );
+}
