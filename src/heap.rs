@@ -635,6 +635,19 @@ fn mark_class(class: &crate::value::ClassDef) {
                 mark_value(h);
             }
         }
+        // web3d-M3: the instance field layout (the same values as the
+        // chain's defaults today, marked in case that ever changes),
+        // and the modules a `look:`'s keys resolve in.
+        for (_, v) in &c.field_layout {
+            mark_value(v);
+        }
+        if let Some(look) = &c.look {
+            for slot in [&look.mesh, &look.tint, &look.scale].into_iter().flatten() {
+                if let Some(h) = &slot.home {
+                    mark_value(h);
+                }
+            }
+        }
         cur = c.parent.as_deref();
     }
 }

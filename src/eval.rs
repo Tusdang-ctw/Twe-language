@@ -1966,8 +1966,35 @@ fn read_name(env: &Env, name: &str, res: &crate::ast::ResCell) -> Option<Value> 
             slot_miss();
             lookup_name(env, name)
         }
-        Some(Res::Field) => lookup_self_field(env, name).or_else(|| lookup_name(env, name)),
-        Some(Res::Global) => lookup_global(env, name).or_else(|| lookup_name(env, name)),
+        Some(Res::Field) => {
+            if let Some(t) = env.self_value.as_ref().filter(|t| t.is_instance()) {
+                let hit = t.with_instance(|inst| {
+                    let inst = inst.borrow();
+                    inst.fields.at(res.hint(), name).or_else(|| {
+                        let i = inst.fields.index_of(name)?;
+                        res.set_hint(i as u32);
+                        inst.fields.at(i as u32, name)
+                    })
+                });
+                if hit.is_some() {
+                    return hit;
+                }
+            }
+            lookup_name(env, name)
+        }
+        Some(Res::Global) => {
+            // Entry-program globals by cached index; module globals
+            // (a frame with a `home`) keep the by-name path.
+            if env.frames.last().is_none_or(|f| f.home.is_none()) {
+                if let Some(v) = env.global_at(res.hint(), name) {
+                    return Some(v);
+                }
+                if let Some(i) = env.global_slot(name) {
+                    res.set_hint(i);
+                }
+            }
+            lookup_global(env, name).or_else(|| lookup_name(env, name))
+        }
         None => lookup_name(env, name),
     }
 }
@@ -2017,13 +2044,34 @@ fn assign_resolved(env: &mut Env, name: &str, res: &crate::ast::ResCell, v: Valu
         Some(Res::Field) => {
             if let Some(t) = env.self_value.as_ref() {
                 if t.is_instance()
-                    && t.with_instance(|inst| inst.borrow_mut().set_existing_field(name, v))
+                    && t.with_instance(|inst| {
+                        let mut inst = inst.borrow_mut();
+                        inst.fields.set_at(res.hint(), name, v) || {
+                            match inst.fields.index_of(name) {
+                                Some(i) => {
+                                    res.set_hint(i as u32);
+                                    inst.fields.set_at(i as u32, name, v)
+                                }
+                                None => false,
+                            }
+                        }
+                    })
                 {
                     return true;
                 }
             }
         }
-        Some(Res::Global) | None => {}
+        Some(Res::Global) => {
+            if env.frames.last().is_none_or(|f| f.home.is_none()) {
+                if env.assign_global_at(res.hint(), name, v) {
+                    return true;
+                }
+                if let Some(i) = env.global_slot(name) {
+                    res.set_hint(i);
+                }
+            }
+        }
+        None => {}
     }
     assign_name(env, name, v)
 }
@@ -2770,7 +2818,7 @@ fn eval_assign(
                             .get_field(name)
                             .ok_or_else(|| {
                                 let inst = rc.borrow();
-                                let names: Vec<&String> = inst.fields.keys().collect();
+                                let names: Vec<&str> = inst.fields.keys().collect();
                                 let suggestion = crate::value::did_you_mean(name, &names)
                                     .map(str::to_string);
                                 RuntimeError {
@@ -3192,8 +3240,11 @@ fn eval_call(
     // read/assign behaviour in `lookup_name` / `eval_assign`. Without
     // this, scene methods would only be reachable via `self.method()`
     // — verbose, and Snake-style code uses bare calls.
-    if let Expr::Ident { name, .. } = callee {
-        if let Some(__t) = (env.self_value).as_ref() {
+    if let Expr::Ident { name, res, .. } = callee {
+        // web3d-M3: a name the resolver placed among the globals
+        // (`vec3`, a top-level function) can't be a method of `self`.
+        let may_be_method = !matches!(res.get(), Some(crate::ast::Res::Global));
+        if let Some(__t) = (env.self_value).as_ref().filter(|_| may_be_method) {
             if __t.is_instance() {
                 let rc = __t.as_instance();
                 let class = rc.borrow().class.clone();
@@ -3654,20 +3705,28 @@ pub(crate) fn call_function(
     Ok(return_value)
 }
 
-fn instantiate(class: Rc<ClassDef>) -> Value {
-    let mut fields: crate::value::NameMap<TaggedValue> = crate::value::NameMap::default();
-    // Walk the parent chain, oldest first, so child overrides win.
-    let mut chain: Vec<Rc<ClassDef>> = Vec::new();
-    let mut cur = Some(class.clone());
-    while let Some(c) = cur {
-        chain.push(c.clone());
-        cur = c.parent.clone();
-    }
-    for c in chain.iter().rev() {
-        for (k, v) in &c.field_defaults {
-            fields.insert(k.clone(), *v);
+/// web3d-M3: a class's [`ClassDef::field_layout`]: the parent's
+/// layout, then this class's own fields in sorted order (new names
+/// appended; defaults for inherited names overwrite in place).
+fn field_layout(
+    parent: Option<&Rc<ClassDef>>,
+    own: &HashMap<String, TaggedValue>,
+) -> Vec<(Rc<str>, TaggedValue)> {
+    let mut layout = parent.map(|p| p.field_layout.clone()).unwrap_or_default();
+    let mut names: Vec<&String> = own.keys().collect();
+    names.sort();
+    for name in names {
+        let v = own[name];
+        match layout.iter_mut().find(|(n, _)| **n == **name) {
+            Some(slot) => slot.1 = v,
+            None => layout.push((Rc::from(name.as_str()), v)),
         }
     }
+    layout
+}
+
+fn instantiate(class: Rc<ClassDef>) -> Value {
+    let fields = crate::value::Fields::from_layout(&class.field_layout);
     let rc = Rc::new(RefCell::new(Instance {
         class,
         fields,
@@ -4124,6 +4183,7 @@ fn eval_decl(
     }
 
     let look = build_look(env, parent_class.as_ref(), own_look, &field_defaults)?;
+    let field_layout = field_layout(parent_class.as_ref(), &field_defaults);
     let class = Rc::new(ClassDef {
         kind: kind.as_str(),
         name: name.to_string(),
@@ -4133,6 +4193,7 @@ fn eval_decl(
         states,
         initial_state,
         look,
+        field_layout,
     });
     env.set(name.to_string(), Value::from_class(class.clone()));
 

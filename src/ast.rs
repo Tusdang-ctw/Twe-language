@@ -23,18 +23,43 @@ pub enum Res {
 /// A name's [`Res`], set once by the resolver. Parsed programs start
 /// unresolved. Compares equal to any other `ResCell` and prints as
 /// `_`, so annotation never changes AST equality or snapshots.
-#[derive(Clone, Default)]
-pub struct ResCell(std::cell::OnceCell<Res>);
+#[derive(Clone)]
+pub struct ResCell {
+    res: std::cell::OnceCell<Res>,
+    /// Where the runtime last found this name (a global's index, or a
+    /// field's position in its instance). Only ever a hint: every use
+    /// checks it still holds the name.
+    hint: std::cell::Cell<u32>,
+}
+
+impl Default for ResCell {
+    fn default() -> Self {
+        ResCell {
+            res: std::cell::OnceCell::new(),
+            hint: std::cell::Cell::new(u32::MAX),
+        }
+    }
+}
 
 impl ResCell {
     pub fn get(&self) -> Option<&Res> {
-        self.0.get()
+        self.res.get()
     }
 
     /// Record the resolution; a second call (the same AST resolved
     /// again) keeps the first.
     pub fn set(&self, res: Res) {
-        let _ = self.0.set(res);
+        let _ = self.res.set(res);
+    }
+
+    #[inline]
+    pub fn hint(&self) -> u32 {
+        self.hint.get()
+    }
+
+    #[inline]
+    pub fn set_hint(&self, i: u32) {
+        self.hint.set(i);
     }
 }
 

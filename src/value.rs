@@ -87,6 +87,82 @@ pub struct LookSlot {
     pub col: u32,
 }
 
+/// web3d-M3: an instance's fields, as a short vector — the class's
+/// fields first, in [`ClassDef::field_layout`] order (so every instance
+/// of a class keeps a field at the same position, which
+/// `ast::ResCell` hints cache), then any added at run time. Instances
+/// have a handful of fields, where a scan beats hashing.
+#[derive(Debug, Clone, Default)]
+pub struct Fields(Vec<(Rc<str>, TaggedValue)>);
+
+impl Fields {
+    pub fn from_layout(layout: &[(Rc<str>, TaggedValue)]) -> Self {
+        Fields(layout.to_vec())
+    }
+
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.0.iter().position(|(n, _)| **n == *name)
+    }
+
+    pub fn get(&self, name: &str) -> Option<&TaggedValue> {
+        self.0.iter().find(|(n, _)| **n == *name).map(|(_, v)| v)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut TaggedValue> {
+        self.0
+            .iter_mut()
+            .find(|(n, _)| **n == *name)
+            .map(|(_, v)| v)
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.index_of(name).is_some()
+    }
+
+    /// Set a field, adding it if absent.
+    pub fn insert(&mut self, name: impl AsRef<str>, value: TaggedValue) {
+        let name = name.as_ref();
+        match self.get_mut(name) {
+            Some(slot) => *slot = value,
+            None => self.0.push((Rc::from(name), value)),
+        }
+    }
+
+    /// The field at position `i`, if it is `name` (a stale hint reads
+    /// as `None`).
+    #[inline]
+    pub fn at(&self, i: u32, name: &str) -> Option<TaggedValue> {
+        match self.0.get(i as usize) {
+            Some((n, v)) if **n == *name => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Write the field at position `i` if it is `name`.
+    #[inline]
+    pub fn set_at(&mut self, i: u32, name: &str, value: TaggedValue) -> bool {
+        match self.0.get_mut(i as usize) {
+            Some((n, v)) if **n == *name => {
+                *v = value;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|(n, _)| &**n)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &TaggedValue> {
+        self.0.iter().map(|(_, v)| v)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &TaggedValue)> {
+        self.0.iter().map(|(n, v)| (&**n, v))
+    }
+}
+
 #[derive(Debug)]
 pub struct ClassDef {
     pub kind: &'static str,
@@ -98,6 +174,10 @@ pub struct ClassDef {
     pub initial_state: Option<String>,
     /// web3d-M3: the merged `look:`, if this class or an ancestor has one.
     pub look: Option<Rc<LookDef>>,
+    /// web3d-M3: every field an instance starts with — ancestors'
+    /// first, a subclass's defaults overriding — in a fixed order, so
+    /// instances share field positions. Built once per class.
+    pub field_layout: Vec<(Rc<str>, TaggedValue)>,
 }
 
 #[derive(Debug)]
@@ -201,12 +281,8 @@ pub struct EveryClockDef {
 #[derive(Debug)]
 pub struct Instance {
     pub class: Rc<ClassDef>,
-    /// v0.2 Phase 8.5 session 8d: instance fields stored as
-    /// `TaggedValue`. Direct accessors in `eval` shim with
-    /// `to_legacy()` / `from_legacy()` at the boundary; the
-    /// interior pattern matches still operate on legacy `Value`
-    /// until 8f.
-    pub fields: NameMap<TaggedValue>,
+    /// web3d-M3: see [`Fields`].
+    pub fields: Fields,
     pub current_state: Option<String>,
     /// Accumulated seconds since each clock last fired, parallel-indexed
     /// to `current_state`'s `every_clocks`.
@@ -259,8 +335,8 @@ impl Instance {
         self.fields.get(name).cloned()
     }
 
-    pub fn insert_field(&mut self, name: impl Into<String>, value: TaggedValue) {
-        self.fields.insert(name.into(), value);
+    pub fn insert_field(&mut self, name: impl AsRef<str>, value: TaggedValue) {
+        self.fields.insert(name, value);
     }
 
     /// web3d-M1: overwrite an existing field in place — no key
@@ -398,11 +474,14 @@ impl fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 pub struct Env {
-    /// v0.2 Phase 8.5 session 8d: globals stored as
-    /// `TaggedValue`. The `get` / `set` / `iter_bindings` API
-    /// converts at the boundary so external callers (eval,
-    /// stdlib) keep working on legacy `Value` until 8e/8f.
-    bindings: NameMap<TaggedValue>,
+    /// Globals. web3d-M3: stored by index — `global_names[i]` /
+    /// `global_values[i]`, with `global_index` mapping a name to its
+    /// index — so a name's index can be cached (`ast::ResCell` hint)
+    /// and read back without hashing. Indices never move: removing a
+    /// global leaves `None` in its slot.
+    global_names: Vec<Rc<str>>,
+    global_values: Vec<Option<TaggedValue>>,
+    global_index: NameMap<u32>,
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
     /// Top-level `on render():` handler — runs once per rendered
@@ -491,7 +570,9 @@ pub struct OnDeathHandler {
 impl Env {
     pub fn new() -> Self {
         Self {
-            bindings: NameMap::default(),
+            global_names: Vec::new(),
+            global_values: Vec::new(),
+            global_index: NameMap::default(),
             out: String::new(),
             on_update: None,
             top_on_render: None,
@@ -589,37 +670,84 @@ impl Env {
     /// Look up a binding. v0.2 Phase 8.5 session 8f: returns the
     /// stored `TaggedValue` directly.
     pub fn get(&self, name: &str) -> Option<TaggedValue> {
-        self.bindings.get(name).cloned()
+        let i = *self.global_index.get(name)?;
+        self.global_values[i as usize]
     }
 
     pub fn set(&mut self, name: String, value: TaggedValue) {
-        self.bindings.insert(name, value);
+        match self.global_index.get(name.as_str()) {
+            Some(&i) => self.global_values[i as usize] = Some(value),
+            None => {
+                let i = u32::try_from(self.global_values.len()).expect("fewer than 2^32 globals");
+                self.global_names.push(Rc::from(name.as_str()));
+                self.global_values.push(Some(value));
+                self.global_index.insert(name, i);
+            }
+        }
     }
 
     /// web3d-M1: update an existing global in place (no key
     /// allocation); returns false if `name` isn't bound.
     pub fn assign_existing(&mut self, name: &str, value: TaggedValue) -> bool {
-        match self.bindings.get_mut(name) {
-            Some(slot) => {
-                *slot = value;
-                true
-            }
+        match self.global_index.get(name) {
+            Some(&i) => match &mut self.global_values[i as usize] {
+                Some(slot) => {
+                    *slot = value;
+                    true
+                }
+                None => false,
+            },
             None => false,
         }
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.bindings.contains_key(name)
+        self.get(name).is_some()
     }
 
     pub fn remove(&mut self, name: &str) {
-        self.bindings.remove(name);
+        if let Some(&i) = self.global_index.get(name) {
+            self.global_values[i as usize] = None;
+        }
+    }
+
+    /// web3d-M3: the index of global `name`, for caching.
+    pub fn global_slot(&self, name: &str) -> Option<u32> {
+        self.global_index.get(name).copied()
+    }
+
+    /// web3d-M3: the global at a cached index, if that index still
+    /// holds `name` (a stale or foreign hint reads as `None`).
+    #[inline]
+    pub fn global_at(&self, i: u32, name: &str) -> Option<TaggedValue> {
+        let i = i as usize;
+        match self.global_names.get(i) {
+            Some(n) if **n == *name => self.global_values[i],
+            _ => None,
+        }
+    }
+
+    /// web3d-M3: [`Env::global_at`] for writing; false when the hint
+    /// doesn't hold `name` or the global was removed.
+    #[inline]
+    pub fn assign_global_at(&mut self, i: u32, name: &str, value: TaggedValue) -> bool {
+        let i = i as usize;
+        match (self.global_names.get(i), self.global_values.get_mut(i)) {
+            (Some(n), Some(Some(slot))) if **n == *name => {
+                *slot = value;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Iterate over every (name, value) currently bound. v0.2 Phase
     /// 8.5 session 8f: yields owned `(String, TaggedValue)` tuples.
     pub fn iter_bindings(&self) -> impl Iterator<Item = (String, TaggedValue)> + '_ {
-        self.bindings.iter().map(|(k, v)| (k.clone(), *v))
+        self.global_names
+            .iter()
+            .zip(&self.global_values)
+            .filter_map(|(n, v)| v.map(|v| (n.to_string(), v)))
     }
 
     /// v0.2 Phase 8.5 session 8h: walk every GC root reachable through
@@ -630,7 +758,7 @@ impl Env {
     /// active scene's instance fields + fiber frames, and every
     /// active entity's instance fields + fiber frames.
     pub fn scan_roots(&self) {
-        for v in self.bindings.values() {
+        for v in self.global_values.iter().flatten() {
             crate::heap::mark_value(v);
         }
         if let Some(v) = &self.self_value {

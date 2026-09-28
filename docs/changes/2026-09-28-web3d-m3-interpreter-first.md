@@ -46,8 +46,11 @@ Each step is re-measured against the targets. Columnar storage returns only if t
 | Pooled argument vectors; methods and functions don't copy positional arguments | 1,969 |
 | Locals by slot: the resolver annotates names (`ast::Res`), the runtime indexes frames | 1,370 |
 | Tuples store elements inline (`Rc<[T]>`); `.x`/`.y`/`.z` and vec3 decoding borrow instead of cloning | 1,234 |
+| A callee the resolver placed among the globals skips the `self`-method lookup | 1,194 |
+| Globals by index (`Env` value vector + name index), read through a per-name hint | 1,135 |
+| Instance fields as a short ordered vector (`value::Fields`) in a per-class layout, read through the hint | 1,108 |
 
-**The wasm measurement.** `web/bench.mjs` runs the web runtime's `bench_ticks` export under Node. It is the same interpreter build as the browser, headless, so the number doesn't depend on a visible page. CI runs it on every PR (report only). At this step, `examples/swarm_3d.twe` measured a **5.45 ms** median tick (best 4.87 ms) against the 4 ms target.
+**The wasm measurement.** `web/bench.mjs` runs the web runtime's `bench_ticks` export under Node. It is the same interpreter build as the browser, headless, so the number doesn't depend on a visible page. CI runs it on every PR (report only). At this step, `examples/swarm_3d.twe` measured a **5.45 ms** median tick (best 4.87 ms) against the 4 ms target. After the global and field hints it measured **~5.0 ms** (best 4.3 ms).
 
 **Chrome profile (CDP sampling, wasm name section).** The first browser profile found a cost the native numbers couldn't show: about 18% of the frame was spent reading the clock. The incremental GC sweep checked its time budget after every freed object, and on wasm each clock read is a JS round trip (`window()` → `performance()` → `now()`).
 
