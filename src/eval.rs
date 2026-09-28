@@ -273,12 +273,9 @@ fn seed_particle_emitter(
     };
     let on_spawn = find_method(&class, "on_spawn");
     let mut particles: Vec<Value> = Vec::with_capacity(count);
-    let initial_pos = at.cloned().unwrap_or_else(|| {
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(0.0),
-            Value::from_float(0.0),
-        ]))
-    });
+    let initial_pos = at
+        .cloned()
+        .unwrap_or_else(|| Value::from_tuple(vec![Value::from_float(0.0), Value::from_float(0.0)]));
     for _ in 0..count {
         let p = make_particle(&initial_pos, lifetime);
         if let Some(method) = on_spawn.clone() {
@@ -309,19 +306,16 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
     o.insert_field("pos", *initial_pos);
     o.insert_field(
         "velocity",
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(0.0),
-            Value::from_float(0.0),
-        ])),
+        Value::from_tuple(vec![Value::from_float(0.0), Value::from_float(0.0)]),
     );
     o.insert_field(
         "color",
-        Value::from_tuple(Rc::new(vec![
+        Value::from_tuple(vec![
             Value::from_float(1.0),
             Value::from_float(1.0),
             Value::from_float(1.0),
             Value::from_float(1.0),
-        ])),
+        ]),
     );
     o.insert_field("size", Value::from_float(4.0));
     o.insert_field("age", Value::from_float(0.0));
@@ -2823,7 +2817,7 @@ fn refresh_pos(rc: &Rc<std::cell::RefCell<crate::value::Object>>) {
         )
     };
     rc.borrow_mut()
-        .insert_field("pos", Value::from_tuple(Rc::new(vec![x, y])));
+        .insert_field("pos", Value::from_tuple(vec![x, y]));
 }
 
 fn compound(
@@ -2920,7 +2914,7 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             for e in elems {
                 vals.push(eval_expr(env, e)?);
             }
-            Ok(Value::from_tuple(Rc::new(vals)))
+            Ok(Value::from_tuple(vals))
         }
         Expr::List { elems, .. } => {
             let mut vals = Vec::with_capacity(elems.len());
@@ -3113,12 +3107,17 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
 
 fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, RuntimeError> {
     if obj.is_tuple() {
-        let elems = obj.as_tuple();
-        match name {
-            "x" if !elems.is_empty() => Ok(elems[0]),
-            "y" if elems.len() >= 2 => Ok(elems[1]),
-            "z" if elems.len() >= 3 => Ok(elems[2]),
-            _ => Err(RuntimeError {
+        let component = obj
+            .with_tuple(|elems| match name {
+                "x" => elems.first().copied(),
+                "y" => elems.get(1).copied(),
+                "z" => elems.get(2).copied(),
+                _ => None,
+            })
+            .flatten();
+        match component {
+            Some(v) => Ok(v),
+            None => Err(RuntimeError {
                 line,
                 col,
                 message: format!("tuple has no field '{name}'"),
@@ -4282,7 +4281,7 @@ fn apply_arith(
             for (x, y) in a.iter().zip(b.iter()) {
                 out_elems.push(apply_arith(op, x, y, line, col)?);
             }
-            return Ok(Value::from_tuple(Rc::new(out_elems)));
+            return Ok(Value::from_tuple(out_elems));
         }
     }
     if l.is_tuple() {
@@ -4292,7 +4291,7 @@ fn apply_arith(
             for x in elems.iter() {
                 out_elems.push(apply_arith(op, x, r, line, col)?);
             }
-            return Ok(Value::from_tuple(Rc::new(out_elems)));
+            return Ok(Value::from_tuple(out_elems));
         }
     }
     if r.is_tuple() {
@@ -4302,7 +4301,7 @@ fn apply_arith(
             for y in elems.iter() {
                 out_elems.push(apply_arith(op, l, y, line, col)?);
             }
-            return Ok(Value::from_tuple(Rc::new(out_elems)));
+            return Ok(Value::from_tuple(out_elems));
         }
     }
     let pair = if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {

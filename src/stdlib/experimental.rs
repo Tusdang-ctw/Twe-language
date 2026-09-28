@@ -1415,7 +1415,7 @@ fn world_stream_step(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         .collect();
     let load_list = Value::from_list(Rc::new(RefCell::new(to_load)));
     let unload_list = Value::from_list(Rc::new(RefCell::new(to_unload)));
-    Ok(Value::from_tuple(Rc::new(vec![load_list, unload_list])))
+    Ok(Value::from_tuple(vec![load_list, unload_list]))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1964,11 +1964,11 @@ fn terrain_normal_at(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     let x = as_f64(&args[0], "terrain.normal_at")? as f32;
     let z = as_f64(&args[1], "terrain.normal_at")? as f32;
     match crate::terrain::with_terrain(|t| t.normal_at(x, z)) {
-        Some(n) => Ok(Value::from_tuple(Rc::new(vec![
+        Some(n) => Ok(Value::from_tuple(vec![
             Value::from_float(n[0] as f64),
             Value::from_float(n[1] as f64),
             Value::from_float(n[2] as f64),
-        ]))),
+        ])),
         None => Ok(Value::NIL),
     }
 }

@@ -44,6 +44,10 @@ pub fn start() {
     }));
     // `Instant` panics on wasm32; give the runtime the page's clock.
     twec::clock::install_host_clock(now_secs);
+    // Loaded outside a page (the Node benchmark): nothing to run.
+    if web_sys::window().is_none() {
+        return;
+    }
     wasm_bindgen_futures::spawn_local(async {
         if let Err(e) = run().await {
             show_error(&e);
@@ -55,8 +59,34 @@ thread_local! {
     /// The page's `Performance`, looked up once: `window()` +
     /// `performance()` on every clock read were a measurable share of
     /// the frame (web3d-M3 profiling).
-    static PERFORMANCE: Option<web_sys::Performance> =
-        web_sys::window().and_then(|w| w.performance());
+    static PERFORMANCE: Option<web_sys::Performance> = match web_sys::window() {
+        Some(w) => w.performance(),
+        // Node (the benchmark) has a global `performance` too.
+        None => js_sys::Reflect::get(&js_sys::global(), &"performance".into())
+            .ok()
+            .and_then(|p| p.dyn_into().ok()),
+    };
+}
+
+/// Headless benchmark (web3d-M3's wasm measurement, run under Node by
+/// `web/bench.mjs`): run `source`'s top level, then `ticks` update
+/// ticks at 60 Hz, and return every tick's duration in milliseconds.
+/// No page, no renderer: the script tick alone, as the exit criterion
+/// measures it.
+#[wasm_bindgen]
+pub fn bench_ticks(source: &str, ticks: u32) -> Result<Vec<f64>, String> {
+    let tokens = twec::lexer::lex(source).map_err(|e| e.to_string())?;
+    let program = twec::parser::parse(&tokens).map_err(|e| e.to_string())?;
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(ticks as usize);
+    for _ in 0..ticks {
+        let t = now_secs();
+        twec::eval::tick_frame(&mut env, twec::eval::PHYSICS_DT).map_err(|e| e.to_string())?;
+        out.push((now_secs() - t) * 1e3);
+    }
+    Ok(out)
 }
 
 fn now_secs() -> f64 {

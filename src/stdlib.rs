@@ -656,10 +656,7 @@ pub fn install(env: &mut Env) {
     mouse_fields.insert("y".to_string(), Value::from_float(0.0));
     mouse_fields.insert(
         "pos".to_string(),
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(0.0),
-            Value::from_float(0.0),
-        ])),
+        Value::from_tuple(vec![Value::from_float(0.0), Value::from_float(0.0)]),
     );
     mouse_fields.insert("wheel".to_string(), Value::from_float(0.0));
     // Phase 27: pre-register dx/dy so reading them in headless
@@ -4955,10 +4952,10 @@ fn physics2d_resolve(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         let b_cy = by + bh * 0.5;
         (0.0, if a_cy < b_cy { -pen_y } else { pen_y })
     };
-    Ok(Value::from_tuple(Rc::new(vec![
+    Ok(Value::from_tuple(vec![
         Value::from_float(dx as f64),
         Value::from_float(dy as f64),
-    ])))
+    ]))
 }
 
 /// Swept AABB (slab method on the Minkowski-inflated static box). Returns
@@ -5345,10 +5342,10 @@ fn physics2d_bounce(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
             (vx, vy)
         }
     };
-    Ok(Value::from_tuple(Rc::new(vec![
+    Ok(Value::from_tuple(vec![
         Value::from_float(rx),
         Value::from_float(ry),
-    ])))
+    ]))
 }
 
 fn collision_record(v1x: f64, v1y: f64, v2x: f64, v2y: f64) -> Value {
@@ -5945,7 +5942,7 @@ fn load_atlas_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
     fields.insert("path".to_string(), Value::from_string(path));
     fields.insert(
         "grid".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_int(cols), Value::from_int(rows)])),
+        Value::from_tuple(vec![Value::from_int(cols), Value::from_int(rows)]),
     );
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
         fields,
@@ -6296,7 +6293,7 @@ fn math_mix(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let bv = as_f64(&b[i], "mix")?;
             out.push(Value::from_float(av * (1.0 - t) + bv * t));
         }
-        return Ok(Value::from_tuple(Rc::new(out)));
+        return Ok(Value::from_tuple(out));
     }
     let a = as_f64(&args[0], "mix")?;
     let b = as_f64(&args[1], "mix")?;
@@ -6401,11 +6398,11 @@ fn math_cross(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             help: Some("cross product is only defined in 3D".to_string()),
         });
     }
-    Ok(Value::from_tuple(Rc::new(vec![
+    Ok(Value::from_tuple(vec![
         Value::from_float(a[1] * b[2] - a[2] * b[1]),
         Value::from_float(a[2] * b[0] - a[0] * b[2]),
         Value::from_float(a[0] * b[1] - a[1] * b[0]),
-    ])))
+    ]))
 }
 
 fn math_length(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -6421,11 +6418,11 @@ fn save_vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     arity(args, 2, "save.vec3")?;
     let key = string_arg(&args[0], "save.vec3", "key")?;
     let v = xyz_of(&args[1], "save.vec3.v")?;
-    let tup = Value::from_tuple(Rc::new(vec![
+    let tup = Value::from_tuple(vec![
         Value::from_float(v[0] as f64),
         Value::from_float(v[1] as f64),
         Value::from_float(v[2] as f64),
-    ]));
+    ]);
     SAVE_STORE.with(|s| s.borrow_mut().insert(key, tup));
     Ok(Value::NIL)
 }
@@ -7086,11 +7083,11 @@ fn mat4_transform_vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Run
     let x = m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12];
     let y = m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13];
     let z = m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14];
-    Ok(Value::from_tuple(Rc::new(vec![
+    Ok(Value::from_tuple(vec![
         Value::from_float(x as f64),
         Value::from_float(y as f64),
         Value::from_float(z as f64),
-    ])))
+    ]))
 }
 
 fn math_normalize(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -7103,7 +7100,7 @@ fn math_normalize(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         return Ok(args[0]);
     }
     let normalized: Vec<Value> = v.iter().map(|x| Value::from_float(x / len)).collect();
-    Ok(Value::from_tuple(Rc::new(normalized)))
+    Ok(Value::from_tuple(normalized))
 }
 
 fn install_random(env: &mut Env) {
@@ -7276,12 +7273,12 @@ fn install_color(env: &mut Env) {
     for (name, r, g, b, a) in palette {
         fields.insert(
             (*name).to_string(),
-            Value::from_tuple(Rc::new(vec![
+            Value::from_tuple(vec![
                 Value::from_float(*r),
                 Value::from_float(*g),
                 Value::from_float(*b),
                 Value::from_float(*a),
-            ])),
+            ]),
         );
     }
     // Phase 9 session 6: color pipeline.
@@ -7536,12 +7533,12 @@ fn rgba(v: &Value, what: &str) -> Result<(f64, f64, f64, f64), RuntimeError> {
 }
 
 fn make_color(r: f64, g: f64, b: f64, a: f64) -> Value {
-    Value::from_tuple(Rc::new(vec![
+    Value::from_tuple(vec![
         Value::from_float(r),
         Value::from_float(g),
         Value::from_float(b),
         Value::from_float(a),
-    ]))
+    ])
 }
 
 fn install_screen(env: &mut Env) {
@@ -7549,17 +7546,11 @@ fn install_screen(env: &mut Env) {
     let mut fields = HashMap::new();
     fields.insert(
         "size".to_string(),
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(640.0),
-            Value::from_float(480.0),
-        ])),
+        Value::from_tuple(vec![Value::from_float(640.0), Value::from_float(480.0)]),
     );
     fields.insert(
         "center".to_string(),
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(320.0),
-            Value::from_float(240.0),
-        ])),
+        Value::from_tuple(vec![Value::from_float(320.0), Value::from_float(240.0)]),
     );
     env.set(
         "screen".to_string(),
@@ -8035,20 +8026,20 @@ fn push_rect(env: &mut Env, x: f32, y: f32, size: f32, color: [f32; 4]) {
     // for v0.2 minimum we go through the same `rect` builtin to
     // reuse its existing pipe. Build the args inline.
     let args = vec![
-        Value::from_tuple(Rc::new(vec![
+        Value::from_tuple(vec![
             Value::from_float(x as f64),
             Value::from_float(y as f64),
-        ])),
-        Value::from_tuple(Rc::new(vec![
+        ]),
+        Value::from_tuple(vec![
             Value::from_float(size as f64),
             Value::from_float(size as f64),
-        ])),
-        Value::from_tuple(Rc::new(vec![
+        ]),
+        Value::from_tuple(vec![
             Value::from_float(color[0] as f64),
             Value::from_float(color[1] as f64),
             Value::from_float(color[2] as f64),
             Value::from_float(color[3] as f64),
-        ])),
+        ]),
     ];
     let _ = draw_rect(env, &args);
 }
@@ -10027,14 +10018,8 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
 /// destructure with `slot.at` / `slot.size` — same access shape as
 /// the existing `mouse.pos` ambient.
 fn layout_slot(at_x: f64, at_y: f64, sz_w: f64, sz_h: f64) -> Value {
-    let at = Value::from_tuple(Rc::new(vec![
-        Value::from_float(at_x),
-        Value::from_float(at_y),
-    ]));
-    let size = Value::from_tuple(Rc::new(vec![
-        Value::from_float(sz_w),
-        Value::from_float(sz_h),
-    ]));
+    let at = Value::from_tuple(vec![Value::from_float(at_x), Value::from_float(at_y)]);
+    let size = Value::from_tuple(vec![Value::from_float(sz_w), Value::from_float(sz_h)]);
     let mut fields = HashMap::new();
     fields.insert("at".to_string(), at);
     fields.insert("size".to_string(), size);
@@ -10175,11 +10160,11 @@ fn layout_scroll(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let mut fields = HashMap::new();
     fields.insert(
         "at".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_float(x), Value::from_float(y)])),
+        Value::from_tuple(vec![Value::from_float(x), Value::from_float(y)]),
     );
     fields.insert(
         "size".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
+        Value::from_tuple(vec![Value::from_float(w), Value::from_float(h)]),
     );
     fields.insert("scroll_y".to_string(), Value::from_float(new_scroll));
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
@@ -10525,34 +10510,31 @@ fn install_3d(env: &mut Env) {
     let mut fields = HashMap::new();
     fields.insert(
         "eye".to_string(),
-        Value::from_tuple(Rc::new(vec![
+        Value::from_tuple(vec![
             Value::from_float(0.0),
             Value::from_float(1.5),
             Value::from_float(3.0),
-        ])),
+        ]),
     );
     fields.insert(
         "target".to_string(),
-        Value::from_tuple(Rc::new(vec![
+        Value::from_tuple(vec![
             Value::from_float(0.0),
             Value::from_float(0.0),
             Value::from_float(0.0),
-        ])),
+        ]),
     );
     fields.insert(
         "up".to_string(),
-        Value::from_tuple(Rc::new(vec![
+        Value::from_tuple(vec![
             Value::from_float(0.0),
             Value::from_float(1.0),
             Value::from_float(0.0),
-        ])),
+        ]),
     );
     fields.insert(
         "pos".to_string(),
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(0.0),
-            Value::from_float(0.0),
-        ])),
+        Value::from_tuple(vec![Value::from_float(0.0), Value::from_float(0.0)]),
     );
     fields.insert("zoom".to_string(), Value::from_float(1.0));
     fields.insert(
@@ -10585,11 +10567,12 @@ fn vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let x = number(&args[0], "vec3.x")?;
     let y = number(&args[1], "vec3.y")?;
     let z = number(&args[2], "vec3.z")?;
-    Ok(Value::from_tuple(Rc::new(vec![
+    // An array, not a `vec!`: the tuple's storage is allocated once.
+    Ok(Value::from_tuple([
         Value::from_float(x),
         Value::from_float(y),
         Value::from_float(z),
-    ])))
+    ]))
 }
 
 // `camera.follow(target_xy, lerp)` — exponential smoothing toward a
@@ -10638,7 +10621,7 @@ fn camera_follow_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     let ny = cy + (ty - cy) * lerp;
     o.insert_field(
         "pos".to_string(),
-        Value::from_tuple(Rc::new(vec![Value::from_float(nx), Value::from_float(ny)])),
+        Value::from_tuple(vec![Value::from_float(nx), Value::from_float(ny)]),
     );
     Ok(Value::NIL)
 }
@@ -10687,10 +10670,7 @@ fn camera_reset_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
             let mut o = rc.borrow_mut();
             o.insert_field(
                 "pos".to_string(),
-                Value::from_tuple(Rc::new(vec![
-                    Value::from_float(0.0),
-                    Value::from_float(0.0),
-                ])),
+                Value::from_tuple(vec![Value::from_float(0.0), Value::from_float(0.0)]),
             );
             o.insert_field("zoom".to_string(), Value::from_float(1.0));
         }
@@ -10806,7 +10786,7 @@ pub fn camera2d_tick(env: &mut Env, dt: f64) {
             if let Some((px, py)) = pan_out {
                 o.insert_field(
                     "pos".to_string(),
-                    Value::from_tuple(Rc::new(vec![Value::from_float(px), Value::from_float(py)])),
+                    Value::from_tuple(vec![Value::from_float(px), Value::from_float(py)]),
                 );
             }
         }
@@ -10842,7 +10822,7 @@ fn apply_bounds(env: &mut Env) {
     if (cx - px).abs() > 1e-9 || (cy - py).abs() > 1e-9 {
         o.insert_field(
             "pos".to_string(),
-            Value::from_tuple(Rc::new(vec![Value::from_float(cx), Value::from_float(cy)])),
+            Value::from_tuple(vec![Value::from_float(cx), Value::from_float(cy)]),
         );
     }
 }
@@ -10956,10 +10936,7 @@ fn camera2d_follow(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     };
     o.insert_field(
         "pos".to_string(),
-        Value::from_tuple(Rc::new(vec![
-            Value::from_float(new_x),
-            Value::from_float(new_y),
-        ])),
+        Value::from_tuple(vec![Value::from_float(new_x), Value::from_float(new_y)]),
     );
     Ok(Value::NIL)
 }
@@ -11520,11 +11497,11 @@ fn physics_position_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
         message: format!("physics.position: unknown handle {handle}"),
         help: None,
     })?;
-    Ok(Value::from_tuple(Rc::new(vec![
+    Ok(Value::from_tuple(vec![
         Value::from_float(pos[0] as f64),
         Value::from_float(pos[1] as f64),
         Value::from_float(pos[2] as f64),
-    ])))
+    ]))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -11590,11 +11567,11 @@ fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, 
     let mut fields = HashMap::new();
     fields.insert(
         "translation".to_string(),
-        Value::from_tuple(Rc::new(vec![
+        Value::from_tuple(vec![
             Value::from_float(translation[0] as f64),
             Value::from_float(translation[1] as f64),
             Value::from_float(translation[2] as f64),
-        ])),
+        ]),
     );
     fields.insert("grounded".to_string(), Value::from_bool(grounded));
     Ok(Value::from_object(Rc::new(RefCell::new(Object {
@@ -11677,11 +11654,11 @@ fn physics_raycast_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
             fields.insert("handle".to_string(), Value::from_int(handle as i64));
             fields.insert(
                 "point".to_string(),
-                Value::from_tuple(Rc::new(vec![
+                Value::from_tuple(vec![
                     Value::from_float(point[0] as f64),
                     Value::from_float(point[1] as f64),
                     Value::from_float(point[2] as f64),
-                ])),
+                ]),
             );
             fields.insert("distance".to_string(), Value::from_float(distance as f64));
             Ok(Value::from_object(Rc::new(RefCell::new(Object {
@@ -11747,15 +11724,15 @@ fn texture_handle_id(v: &Value, what: &str) -> Result<u32, RuntimeError> {
 /// Pull a 3-component float vector out of a Twe tuple. Used by the
 /// 3D builtins. Mirrors `xy_of` but for the third axis.
 pub(crate) fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
-    if v.is_tuple() && {
-        let elems = v.as_tuple();
-        elems.len() == 3
-    } {
-        let elems = v.as_tuple();
+    let xyz = v.with_tuple(|e| match e {
+        [x, y, z] => Some([*x, *y, *z]),
+        _ => None,
+    });
+    if let Some(Some([x, y, z])) = xyz {
         Ok([
-            number(&elems[0], what)? as f32,
-            number(&elems[1], what)? as f32,
-            number(&elems[2], what)? as f32,
+            number(&x, what)? as f32,
+            number(&y, what)? as f32,
+            number(&z, what)? as f32,
         ])
     } else {
         let other = *v;

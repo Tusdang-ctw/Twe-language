@@ -172,7 +172,7 @@ pub fn decode(value: &json::Value) -> Value {
                     "tuple" => {
                         if let Some(json::Value::Array(arr)) = map.get("v") {
                             let elems: Vec<Value> = arr.iter().map(decode).collect();
-                            return Value::from_tuple(Rc::new(elems));
+                            return Value::from_tuple(elems);
                         }
                     }
                     "percent" => {
@@ -397,11 +397,11 @@ mod tests {
 
     #[test]
     fn tuple_round_trips_as_tuple_not_list() {
-        let v = Value::from_tuple(Rc::new(vec![
+        let v = Value::from_tuple(vec![
             Value::from_int(1),
             Value::from_int(2),
             Value::from_int(3),
-        ]));
+        ]);
         let back = round_trip(v);
         if back.is_tuple() {
             let elems = back.as_tuple();

@@ -658,10 +658,7 @@ fn update_mouse_state(
             o.insert_field("dy", Value::from_float(mouse_dy));
             o.insert_field(
                 "pos",
-                Value::from_tuple(Rc::new(vec![
-                    Value::from_float(mouse_x),
-                    Value::from_float(mouse_y),
-                ])),
+                Value::from_tuple(vec![Value::from_float(mouse_x), Value::from_float(mouse_y)]),
             );
             o.insert_field("wheel", Value::from_float(wheel_y as f64));
         }

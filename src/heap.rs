@@ -746,12 +746,11 @@ mod tests {
 
     #[test]
     fn collect_through_tuple_marks_children() {
-        use std::rc::Rc;
         gc_collect(&[]);
         let inner = TaggedValue::from_borrowed_str("nested");
-        let tup = TaggedValue::from_tuple(Rc::new(vec![inner]));
+        let tup = TaggedValue::from_tuple(vec![inner]);
         // Only `tup` is rooted. Marking it should reach `inner` through
-        // the tuple's Rc<Vec<TaggedValue>>, keeping the string alive.
+        // the tuple's elements, keeping the string alive.
         gc_collect(&[&tup]);
         // Reading the tuple's element back works — child wasn't swept.
         let elems = tup.as_tuple();

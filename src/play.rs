@@ -1220,10 +1220,10 @@ fn write_mouse_object(mouse: Option<Value>) {
     o.insert_field("y", Value::from_float(my as f64));
     o.insert_field(
         "pos",
-        Value::from_tuple(Rc::new(vec![
+        Value::from_tuple(vec![
             Value::from_float(mx as f64),
             Value::from_float(my as f64),
-        ])),
+        ]),
     );
     // y-axis wheel delta is the canonical "scroll" reading; macroquad
     // resets `mouse_wheel()` between frames so the value here is the
@@ -1368,14 +1368,11 @@ fn update_key_state(env: &mut Env) {
             let h = screen_height() as f64;
             o.insert_field(
                 "size".to_string(),
-                Value::from_tuple(Rc::new(vec![Value::from_float(w), Value::from_float(h)])),
+                Value::from_tuple(vec![Value::from_float(w), Value::from_float(h)]),
             );
             o.insert_field(
                 "center".to_string(),
-                Value::from_tuple(Rc::new(vec![
-                    Value::from_float(w / 2.0),
-                    Value::from_float(h / 2.0),
-                ])),
+                Value::from_tuple(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)]),
             );
         }
     }

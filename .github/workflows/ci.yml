@@ -128,6 +128,15 @@ jobs:
           name: web-runtime
           path: target/web-runtime/
 
+      # web3d-M3: the wasm script tick on the 5,000-enemy benchmark
+      # (exit target: median <= 4 ms). Reported, not gated: CI runners'
+      # speed varies too much for a hard threshold.
+      - name: wasm tick benchmark (swarm_3d)
+        run: |
+          wasm-bindgen --target nodejs --no-typescript --out-dir target/web-bench \
+            target/wasm32-unknown-unknown/release/twe_web.wasm
+          node web/bench.mjs examples/swarm_3d.twe 300
+
   # Phase 34 session 5: cross-compile validation. The release.yml
   # matrix builds the artifacts on tag push, but a tag is too late to
   # discover that someone just merged a PR that breaks aarch64-linux.

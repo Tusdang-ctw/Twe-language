@@ -115,7 +115,9 @@ pub enum HeapBody {
     /// Immutable tuple. v0.2 Phase 8.5 session 8f: interior is
     /// `Vec<TaggedValue>`. Shared `Rc` with `LegacyValue::Tuple` so
     /// `to_legacy` rewraps without deep-copy.
-    Tuple(Rc<Vec<TaggedValue>>),
+    /// web3d-M3: elements stored inline with the refcount (one
+    /// allocation, not an `Rc` around a separately allocated `Vec`).
+    Tuple(Rc<[TaggedValue]>),
     /// Mutable list. Same migration as Tuple.
     List(Rc<RefCell<Vec<TaggedValue>>>),
     /// Generic object — Twe stdlib's `key`, `mouse`, sprite/sound
@@ -322,8 +324,8 @@ impl TaggedValue {
         })
     }
 
-    pub fn from_tuple(elems: Rc<Vec<TaggedValue>>) -> Self {
-        Self::from_heap(HeapBody::Tuple(elems))
+    pub fn from_tuple(elems: impl Into<Rc<[TaggedValue]>>) -> Self {
+        Self::from_heap(HeapBody::Tuple(elems.into()))
     }
 
     pub fn from_list(elems: Rc<RefCell<Vec<TaggedValue>>>) -> Self {
@@ -737,11 +739,25 @@ impl TaggedValue {
         })
     }
 
-    pub fn as_tuple(&self) -> Rc<Vec<TaggedValue>> {
+    pub fn as_tuple(&self) -> Rc<[TaggedValue]> {
         self.with_obj_body(|b| match b {
             HeapBody::Tuple(rc) => rc.clone(),
             other => panic!("as_tuple: not a tuple: {other:?}"),
         })
+    }
+
+    /// web3d-M3: run `f` on a tuple's elements without cloning its
+    /// `Rc` (the hot path for `.x` / `.y` / `.z` and vec3 decoding);
+    /// `None` if this isn't a tuple.
+    #[inline]
+    pub fn with_tuple<R>(&self, f: impl FnOnce(&[TaggedValue]) -> R) -> Option<R> {
+        if !self.is_tuple() {
+            return None;
+        }
+        Some(self.with_obj_body(|b| match b {
+            HeapBody::Tuple(rc) => f(rc),
+            other => panic!("with_tuple: not a tuple: {other:?}"),
+        }))
     }
 
     pub fn as_list(&self) -> Rc<RefCell<Vec<TaggedValue>>> {
@@ -1080,11 +1096,11 @@ mod tests {
 
     #[test]
     fn tuple_round_trip_holds_tagged_values() {
-        let elems = Rc::new(vec![
+        let elems = vec![
             TaggedValue::from_int(1),
             TaggedValue::from_int(2),
             TaggedValue::from_int(3),
-        ]);
+        ];
         let v = TaggedValue::from_tuple(elems);
         assert!(v.is_tuple());
         let rc = v.as_tuple();
