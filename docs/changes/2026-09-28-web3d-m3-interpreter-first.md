@@ -51,6 +51,24 @@ Each step is re-measured against the targets. Columnar storage returns only if t
 | Instance fields as a short ordered vector (`value::Fields`) in a per-class layout, read through the hint | 1,108 |
 | Float-with-float arithmetic first; `is_tuple`/`is_instance`/… read the cached body kind instead of borrowing the body | 1,070 |
 | `tick_entities` reuses the last class's `update` lookup | 1,017 |
+| One heap decode per tuple component or `self`-field read (`with_tuple`, `try_with_instance`) | 1,010 |
+
+## Where it stands
+
+| Measure | Baseline | Now | M3 target |
+|---|---|---|---|
+| Native update (`swarm_3d`-style) | 2,459 ns | 1,010 ns | ≤ 300 ns |
+| wasm tick, `swarm_3d` (Node, median) | — (Chrome: 7.3–8.3 ms) | 4.6–4.9 ms (best 3.4 ms) | ≤ 4 ms |
+| Chrome frame rate, 5,000 enemies | 39–49 fps | 134–141 fps (144 Hz cap) | 60 fps |
+
+The latest profile (Node, wasm) no longer shows hashing or clock reads. What remains is the tree-walk itself:
+- `eval_expr` and `eval_stmt` self time: ~29%;
+- name reads: ~9%;
+- heap decodes: ~8%;
+- the call machinery: ~12%;
+- GC and allocation: ~6–7%.
+
+Closing the last ~15% of the wasm target needs a structural step, such as compiling the AST to closures, or a cheaper `vec3`, not more lookup caching. The native 300 ns target was set assuming the columnar design and is not reachable by a tree-walker along this path. See the M3 closeout for the decision.
 
 **The wasm measurement.** `web/bench.mjs` runs the web runtime's `bench_ticks` export under Node. It is the same interpreter build as the browser, headless, so the number doesn't depend on a visible page. CI runs it on every PR (report only). At this step, `examples/swarm_3d.twe` measured a **5.45 ms** median tick (best 4.87 ms) against the 4 ms target. After the global and field hints it measured **~5.0 ms** (best 4.3 ms). Then **4.67–4.81 ms** (best 3.96 ms).
 

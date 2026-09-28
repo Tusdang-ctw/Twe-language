@@ -1978,20 +1978,18 @@ fn read_name(env: &Env, name: &str, res: &crate::ast::ResCell) -> Option<Value> 
             lookup_name(env, name)
         }
         Some(Res::Field) => {
-            if let Some(t) = env.self_value.as_ref().filter(|t| t.is_instance()) {
-                let hit = t.with_instance(|inst| {
+            let hit = env.self_value.as_ref().and_then(|t| {
+                t.try_with_instance(|inst| {
                     let inst = inst.borrow();
                     inst.fields.at(res.hint(), name).or_else(|| {
                         let i = inst.fields.index_of(name)?;
                         res.set_hint(i as u32);
                         inst.fields.at(i as u32, name)
                     })
-                });
-                if hit.is_some() {
-                    return hit;
-                }
-            }
-            lookup_name(env, name)
+                })
+                .flatten()
+            });
+            hit.or_else(|| lookup_name(env, name))
         }
         Some(Res::Global) => {
             // Entry-program globals by cached index; module globals
@@ -3165,15 +3163,13 @@ fn index_get(obj: &Value, idx: &Value, line: u32, col: u32) -> Result<Value, Run
 }
 
 fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, RuntimeError> {
-    if obj.is_tuple() {
-        let component = obj
-            .with_tuple(|elems| match name {
-                "x" => elems.first().copied(),
-                "y" => elems.get(1).copied(),
-                "z" => elems.get(2).copied(),
-                _ => None,
-            })
-            .flatten();
+    // One decode for the common tuple case (`.x` / `.y` / `.z`).
+    if let Some(component) = obj.with_tuple(|elems| match name {
+        "x" => elems.first().copied(),
+        "y" => elems.get(1).copied(),
+        "z" => elems.get(2).copied(),
+        _ => None,
+    }) {
         match component {
             Some(v) => Ok(v),
             None => Err(RuntimeError {

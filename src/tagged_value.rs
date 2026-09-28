@@ -754,13 +754,19 @@ impl TaggedValue {
     /// `None` if this isn't a tuple.
     #[inline]
     pub fn with_tuple<R>(&self, f: impl FnOnce(&[TaggedValue]) -> R) -> Option<R> {
-        if !self.is_tuple() {
+        if !self.is_obj() {
             return None;
         }
-        Some(self.with_obj_body(|b| match b {
-            HeapBody::Tuple(rc) => f(rc),
-            other => panic!("with_tuple: not a tuple: {other:?}"),
-        }))
+        // One decode: check the kind and borrow the body together.
+        self.with_heap_object(|o| {
+            if o.body_kind != HeapBodyKind::Tuple {
+                return None;
+            }
+            match &*o.body.borrow() {
+                HeapBody::Tuple(rc) => Some(f(rc)),
+                _ => None,
+            }
+        })
     }
 
     pub fn as_list(&self) -> Rc<RefCell<Vec<TaggedValue>>> {
@@ -794,6 +800,27 @@ impl TaggedValue {
     /// web3d-M1: borrow the instance behind an instance-tagged value
     /// without cloning its `Rc` (no refcount traffic) — for the hot
     /// bare-name field reads / writes inside methods.
+    /// web3d-M3: [`TaggedValue::with_instance`] for a value that may
+    /// not be an instance, in one decode; `None` if it isn't.
+    #[inline]
+    pub fn try_with_instance<R>(
+        &self,
+        f: impl FnOnce(&RefCell<crate::value::Instance>) -> R,
+    ) -> Option<R> {
+        if !self.is_obj() {
+            return None;
+        }
+        self.with_heap_object(|o| {
+            if o.body_kind != HeapBodyKind::Instance {
+                return None;
+            }
+            match &*o.body.borrow() {
+                HeapBody::Instance(rc) => Some(f(rc)),
+                _ => None,
+            }
+        })
+    }
+
     pub fn with_instance<R>(&self, f: impl FnOnce(&RefCell<crate::value::Instance>) -> R) -> R {
         self.with_obj_body(|b| match b {
             HeapBody::Instance(rc) => f(rc),
