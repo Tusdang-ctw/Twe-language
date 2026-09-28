@@ -310,6 +310,8 @@ async fn run_loop_wasm() {
     // web3d-M0: macroquad is initialised from here on (see
     // `stdlib::set_macroquad_live`).
     crate::stdlib::set_macroquad_live(true);
+    // web3d-M2: give wasm code a clock (`Instant` panics on wasm32).
+    crate::clock::install_host_clock(macroquad::time::get_time);
     const LABEL: &str = "main.twe";
     // Fetch the game source from the web server (same origin as the
     // HTML page). macroquad's load_file uses XMLHttpRequest / fetch

@@ -6737,7 +6737,6 @@ fn mesh_advance_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
 /// snapshot (clip=""), which the renderer treats as "rest pose,
 /// no animation," when the script never called `mesh_anim.play`
 /// for this handle.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn mesh_anim_state(handle: u32) -> crate::render3d_types::AnimSnapshot {
     MESH_ANIM_STATE.with(|s| {
         let st = s.borrow();

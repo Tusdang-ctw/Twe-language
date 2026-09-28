@@ -248,7 +248,14 @@ impl Heap {
             COLLECT_PENDING.with(|c| c.set(true));
         }
 
-        let start = std::time::Instant::now();
+        // web3d-M2: `crate::clock`, not `Instant` (which panics on
+        // wasm32). With no clock available the sweep simply runs to
+        // completion.
+        let start = crate::clock::now_secs();
+        let elapsed_ns = || match start {
+            Some(t0) => ((crate::clock::now_secs().unwrap_or(t0) - t0) * 1e9) as u64,
+            None => 0,
+        };
         unsafe {
             while !self.sweep_cur.is_null() {
                 let cur = self.sweep_cur;
@@ -275,19 +282,19 @@ impl Heap {
                 }
                 self.sweep_cur = next;
 
-                // Budget check is per-object — Instant::now() is
+                // Budget check is per-object — reading the clock is
                 // cheap on Win/Mac/Linux (rdtsc-backed). Checking
                 // every N objects would amortize but the sweep loop
                 // is already cheap enough that the per-object check
                 // doesn't dominate.
-                if start.elapsed().as_nanos() as u64 >= budget_ns {
-                    self.in_flight_collect_ns += start.elapsed().as_nanos() as u64;
+                if start.is_some() && elapsed_ns() >= budget_ns {
+                    self.in_flight_collect_ns += elapsed_ns();
                     return false;
                 }
             }
         }
         // Sweep completed.
-        self.in_flight_collect_ns += start.elapsed().as_nanos() as u64;
+        self.in_flight_collect_ns += elapsed_ns();
         self.last_collect_ns = self.in_flight_collect_ns;
         self.in_flight_collect_ns = 0;
         self.sweep_phase = SweepPhase::Idle;

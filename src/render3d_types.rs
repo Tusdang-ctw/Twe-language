@@ -1,18 +1,17 @@
 //! web3d-M0: plain data shared between the script-side 3D state in
 //! `stdlib` (lights, mesh animation) and the wgpu renderer in `play3d`.
 //!
-//! Split out of `play3d.rs` so `stdlib` compiles on wasm32, where the
-//! native renderer is configured out. The GPU layout derives
-//! (`bytemuck::Pod` / `Zeroable`) apply only where `play3d` exists.
-//! These types move into the `twe-kernel` crate in web3d-M2.
+//! Split out of `play3d.rs` in web3d-M0 so `stdlib` compiled on wasm32;
+//! since web3d-M2 the kernel renderer builds on wasm32 too, so the GPU
+//! layout derives are unconditional. Moves with the kernel when the
+//! workspace splits.
 
 /// Phase 20: per-frame lighting uniform. Up to 8 point lights +
 /// one directional sun + a global ambient. Padded to vec4-aligned
 /// fields per std140 / wgsl uniform layout rules. Disabled lights
 /// have `radius = 0.0` so the shader can early-out cheaply.
 #[repr(C)]
-#[derive(Copy, Clone)]
-#[cfg_attr(not(target_arch = "wasm32"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PointLightU {
     /// xyz = world-space position. w padding.
     pub pos: [f32; 4],
@@ -22,8 +21,7 @@ pub struct PointLightU {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-#[cfg_attr(not(target_arch = "wasm32"), derive(bytemuck::Pod, bytemuck::Zeroable))]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightsUniform {
     /// xyz = ambient color (RGB), w padding.
     pub ambient: [f32; 4],

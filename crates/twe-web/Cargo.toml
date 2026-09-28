@@ -1,0 +1,33 @@
+[package]
+name = "twe-web"
+version = "0.1.0"
+edition = "2021"
+description = "Twe's browser shell: the interpreter + renderer kernel on WebGPU"
+publish = false
+
+# web3d-M2: built only for wasm32-unknown-unknown (`twec build --target
+# web` ships the prebuilt runtime). See docs/changes/*-web3d-m2-*.md.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+twec = { path = "../.." }
+wgpu = "30"
+wasm-bindgen = "=0.2.120"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Document",
+    "Element",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "KeyboardEvent",
+    "Performance",
+    "Request",
+    "Response",
+    "Window",
+] }
+
+[lints.rust]
+unsafe_code = "deny"

@@ -31,3 +31,6 @@ practice.twe
 
 # Claude Code's per-project conversation + memory state.
 .claude/
+
+# Browser-automation session logs (Playwright MCP).
+.playwright-mcp/

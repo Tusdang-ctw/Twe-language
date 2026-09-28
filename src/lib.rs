@@ -45,6 +45,7 @@ pub mod mcp;
 // by Twe Studio's in-app AI prompt so every model authoring Twe is grounded.
 pub mod primer;
 // Phase 33 session 6: examples-as-corpus header parser. Pure file IO.
+pub mod clock;
 pub mod corpus;
 // Phase 33 session 7: replay-based LLM evaluation harness. Reuses
 // `eval::run_with_frames` for deterministic execution; one suite =
@@ -143,10 +144,10 @@ pub mod build;
 pub mod cli;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod physics3d;
-// web3d-M2: renderer kernel (native-only until its deps move to the
-// shared dependency section for the web shell).
-#[cfg(not(target_arch = "wasm32"))]
+// web3d-M2: renderer kernel — builds for native and wasm32 (WebGPU).
 pub mod kernel;
+// web3d-M2: interpreter-side 3D hosting shared by the native and web shells.
+pub mod host3d;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play3d;
 #[cfg(not(target_arch = "wasm32"))]

@@ -40,7 +40,7 @@ fn render_script(renderer: &mut Renderer, path: &str, frames: u32) -> Vec<u8> {
         twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
     }
     let mut assets = twec::play3d::NativeAssets::default();
-    twec::play3d::render_frame(renderer, &mut env, &mut assets).expect("render");
+    twec::host3d::render_frame(renderer, &mut env, &mut assets).expect("render");
     renderer.read_pixels().expect("read pixels")
 }
 

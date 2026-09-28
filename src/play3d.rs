@@ -50,8 +50,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::kernel::render::{
-    parse_glb_bytes, AssetKind, AssetReady, AssetSource, Camera3d, LoadedGlb, PostFx,
-    RenderSnapshot, Renderer, ShadowSettings,
+    parse_glb_bytes, AssetKind, AssetReady, AssetSource, LoadedGlb, Renderer,
 };
 use crate::value::{Env, Object, Value};
 use crate::{eval, lexer, parser, stdlib};
@@ -341,7 +340,7 @@ impl ApplicationHandler for App {
             }
         };
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let created = instance
             .create_surface(window.clone())
             .map_err(|e| e.to_string())
@@ -539,7 +538,13 @@ impl ApplicationHandler for App {
                 if substeps >= crate::eval::MAX_SUBSTEPS {
                     self.sim_accumulator = 0.0;
                 }
-                if let Err(e) = render_frame(&mut state.renderer, &mut self.env, &mut self.assets) {
+                let rendered =
+                    crate::host3d::render_frame(&mut state.renderer, &mut self.env, &mut self.assets);
+                if !self.env.out.is_empty() {
+                    print!("{}", self.env.out);
+                    self.env.out.clear();
+                }
+                if let Err(e) = rendered {
                     eprintln!("render error: {e}");
                 }
                 // web3d-M0: a script's `quit()` ends the game after
@@ -720,127 +725,12 @@ fn step_simulation_3d(env: &mut Env, dt: f32) {
     }
 }
 
-/// Extract `camera.eye` / `camera.target` / `camera.up` from the
-/// env's `camera` Object. Missing or malformed fields fall back to
-/// the stdlib defaults (eye 3 units back + 1.5 up, looking at the
-/// origin, +y up). Phase 5 task 5 session (d).
-fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
-    let eye_default = [0.0, 1.5, 3.0];
-    let target_default = [0.0, 0.0, 0.0];
-    let up_default = [0.0, 1.0, 0.0];
-    let camera = {
-        let __opt = env.get("camera");
-        if let Some(__t) = (__opt).as_ref() {
-            if __t.is_object() {
-                let rc = __t.as_object();
-                rc.clone()
-            } else {
-                return (eye_default, target_default, up_default);
-            }
-        } else {
-            return (eye_default, target_default, up_default);
-        }
-    };
-    let cam = camera.borrow();
-    let eye = cam
-        .get_field("eye")
-        .as_ref()
-        .and_then(value_as_vec3)
-        .unwrap_or(eye_default);
-    let target = cam
-        .get_field("target")
-        .as_ref()
-        .and_then(value_as_vec3)
-        .unwrap_or(target_default);
-    let up = cam
-        .get_field("up")
-        .as_ref()
-        .and_then(value_as_vec3)
-        .unwrap_or(up_default);
-    (eye, target, up)
-}
-
-fn value_as_vec3(v: &Value) -> Option<[f32; 3]> {
-    if v.is_tuple() {
-        let elems = v.as_tuple();
-        if elems.len() == 3 {
-            let x = number(&elems[0])?;
-            let y = number(&elems[1])?;
-            let z = number(&elems[2])?;
-            return Some([x as f32, y as f32, z as f32]);
-        }
-    }
-    None
-}
-
-fn number(v: &Value) -> Option<f64> {
-    if v.is_int_or_boxed_int() {
-        let n = v.as_int();
-        Some(n as f64)
-    } else if v.is_float() {
-        let f = v.as_float();
-        Some(f)
-    } else {
-        None
-    }
-}
-
 // ---------- Hand-rolled column-major matrix math ----------
 
 /// web3d-M2: the native host's window + kernel renderer.
 struct ShellState {
     window: Arc<Window>,
     renderer: Renderer,
-}
-
-/// Run the script's `on render():`, then hand the kernel a snapshot of
-/// everything the frame needs from the interpreter.
-pub fn render_frame(
-    renderer: &mut Renderer,
-    env: &mut Env,
-    assets: &mut NativeAssets,
-) -> Result<(), String> {
-    if let Err(e) = eval::render_frame3d(env) {
-        // Surface the runtime error to stderr but keep rendering — a
-        // broken render frame shouldn't tear down the window.
-        eprintln!(
-            "render error in `on render()`: {}:{}: {}",
-            e.line, e.col, e.message
-        );
-    }
-    if !env.out.is_empty() {
-        print!("{}", env.out);
-        env.out.clear();
-    }
-    let (eye, target, up) = read_camera(env);
-    let draws = std::mem::take(&mut env.render_queue3d);
-    let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
-    let snap = RenderSnapshot {
-        camera: Camera3d { eye, target, up },
-        lights: crate::stdlib::lights_snapshot(),
-        shadow: ShadowSettings {
-            enabled: crate::stdlib::shadow_enabled(),
-            extent: crate::stdlib::shadow_extent(),
-        },
-        post: PostFx {
-            tonemap_aces: crate::stdlib::tonemap_enabled(),
-            vignette: crate::stdlib::vignette_strength(),
-            vignette_color: crate::stdlib::vignette_color(),
-            bloom_intensity: crate::stdlib::bloom_intensity(),
-            bloom_threshold: crate::stdlib::bloom_threshold(),
-            frustum_cull: crate::stdlib::frustum_culling_enabled(),
-        },
-        draws: &draws,
-        mesh_paths: &env.mesh_paths,
-        texture_paths: &env.texture_paths,
-        anim: &anim,
-    };
-    let result = renderer.render(&snap, assets);
-    // Hand the (cleared) allocation back so the queue doesn't regrow.
-    let mut draws = draws;
-    draws.clear();
-    env.render_queue3d = draws;
-    result
 }
 
 /// web3d-M2: native asset loading for the kernel. `.glb` files are read

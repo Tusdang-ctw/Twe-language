@@ -331,7 +331,7 @@ struct Lights {
     point_lights: array<PointLight, 8>,
 };
 
-@group(2) @binding(0) var<uniform> lights: Lights;
+@group(0) @binding(1) var<uniform> lights: Lights;
 
 // Phase 24: per-mesh joint matrix UBO. Up to 128 joints per
 // skinned mesh. Unskinned meshes (cube, sphere, glb without a
@@ -344,7 +344,7 @@ struct Lights {
 struct Joints {
     matrices: array<mat4x4<f32>, 128>,
 };
-@group(3) @binding(0) var<uniform> joints_u: Joints;
+@group(2) @binding(0) var<uniform> joints_u: Joints;
 
 // Phase 28 session 2: cascaded shadow maps. `light_space_matrices`
 // holds one mat4 per cascade; `split_distances` xyz are the
@@ -357,9 +357,9 @@ struct Shadow {
     split_distances: vec4<f32>,
     flags: vec4<f32>,
 };
-@group(4) @binding(0) var<uniform> shadow_u: Shadow;
-@group(4) @binding(1) var t_shadow: texture_depth_2d_array;
-@group(4) @binding(2) var s_shadow: sampler_comparison;
+@group(3) @binding(0) var<uniform> shadow_u: Shadow;
+@group(3) @binding(1) var t_shadow: texture_depth_2d_array;
+@group(3) @binding(2) var s_shadow: sampler_comparison;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -462,10 +462,14 @@ fn sample_shadow(world_pos: vec3<f32>, view_z: f32) -> f32 {
     let dim = vec2<f32>(textureDimensions(t_shadow));
     let inv = vec2<f32>(1.0 / dim.x, 1.0 / dim.y);
     var sum = 0.0;
+    // `...CompareLevel`, not `textureSampleCompare`: the early return
+    // and cascade choice above make this non-uniform control flow,
+    // where WebGPU (Tint) rejects implicit-derivative sampling. The
+    // shadow map has one mip, so the result is identical.
     for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
         for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
             let off = vec2<f32>(f32(dx), f32(dy)) * inv;
-            sum = sum + textureSampleCompare(
+            sum = sum + textureSampleCompareLevel(
                 t_shadow,
                 s_shadow,
                 shadow_uv.xy + off,
@@ -1031,11 +1035,11 @@ pub struct Renderer {
     /// (by doubling) when a frame's instance count exceeds this.
     instance_capacity: u64,
     camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
-    /// Phase 20: lighting uniform buffer + bind group. Updated
-    /// once per frame from the lights state in `stdlib::LIGHTS`.
+    /// Bind group 0: camera (binding 0) + lights (binding 1).
+    frame_bind_group: wgpu::BindGroup,
+    /// Phase 20: lighting uniform buffer, written once per frame from
+    /// the snapshot.
     lights_buffer: wgpu::Buffer,
-    lights_bind_group: wgpu::BindGroup,
     /// Phase 24: bind group layout for joint matrix UBOs. Reused
     /// for every skinned mesh's per-mesh joint UBO, plus the
     /// identity-default UBO bound for unskinned meshes.
@@ -1255,7 +1259,7 @@ impl Renderer {
     /// `Rgba8UnormSrgb` texture, read back with [`Renderer::read_pixels`].
     /// Used by the kernel's render tests.
     pub async fn new_headless(width: u32, height: u32) -> Result<Renderer, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         init_renderer(&instance, None, width, height).await
     }
 
@@ -1293,15 +1297,14 @@ async fn init_renderer(
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: surface.as_ref(),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         })
         .await
-        .ok_or_else(|| "no compatible wgpu adapter found (WebGPU unavailable?)".to_string())?;
-    // Phase 27: 5 bind groups (camera, texture, lights, joints,
-    // shadow). 8 is the WebGPU spec floor, so this is safe everywhere.
-    let required_limits = wgpu::Limits {
-        max_bind_groups: 8,
-        ..wgpu::Limits::default()
-    };
+        .map_err(|e| format!("no compatible wgpu adapter found (WebGPU unavailable?): {e}"))?;
+    // web3d-M2: request only the WebGPU default limits (4 bind groups,
+    // etc.) so the renderer runs on any conformant device — browsers
+    // and mobile GPUs included. The main pipeline uses exactly 4 groups.
+    let required_limits = wgpu::Limits::default();
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
@@ -1309,8 +1312,9 @@ async fn init_renderer(
                 required_features: wgpu::Features::empty(),
                 required_limits,
                 memory_hints: wgpu::MemoryHints::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::Off,
             },
-            None,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -1326,6 +1330,7 @@ async fn init_renderer(
             wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format,
+                color_space: wgpu::SurfaceColorSpace::Auto,
                 width: width.max(1),
                 height: height.max(1),
                 present_mode: caps.present_modes[0],
@@ -1338,6 +1343,7 @@ async fn init_renderer(
         None => wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: width.max(1),
             height: height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
@@ -1400,57 +1406,46 @@ async fn init_renderer(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("twec-play3d camera bgl"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
-    });
-    let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("twec-play3d camera bg"),
-        layout: &camera_bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: camera_buffer.as_entire_binding(),
-        }],
-    });
-
-    // Phase 20: lights uniform buffer + bind group. Bound once per
-    // frame at group 2 alongside camera. Initial contents = the
-    // LightsUniform default (low ambient + a sensible sun).
+    // Phase 20: lights uniform. web3d-M2: shares bind group 0 with the
+    // camera (both change once per frame), so the main pipeline fits in
+    // the WebGPU minimum of 4 bind groups. Initial contents are
+    // overwritten by the first frame's snapshot.
     let lights_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("twec-play3d lights"),
+        label: Some("twe-kernel lights"),
         size: std::mem::size_of::<LightsUniform>() as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let lights_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("twec-play3d lights bgl"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
+    let uniform_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("twe-kernel frame bgl (camera + lights)"),
+        entries: &[
+            uniform_entry(0, wgpu::ShaderStages::VERTEX),
+            uniform_entry(1, wgpu::ShaderStages::FRAGMENT),
+        ],
     });
-    let lights_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("twec-play3d lights bg"),
-        layout: &lights_bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: lights_buffer.as_entire_binding(),
-        }],
+    let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twe-kernel frame bg (camera + lights)"),
+        layout: &frame_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: lights_buffer.as_entire_binding(),
+            },
+        ],
     });
 
     // Phase 24: joint UBO bind group layout, plus a shared
@@ -1551,7 +1546,7 @@ async fn init_renderer(
         address_mode_w: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
         anisotropy_clamp: 16,
         ..Default::default()
     });
@@ -1629,26 +1624,25 @@ async fn init_renderer(
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d pipeline layout"),
         bind_group_layouts: &[
-            &camera_bgl,
-            &texture_bgl,
-            &lights_bgl,
-            &joints_bgl,
-            &shadow_combined_bgl,
+            Some(&frame_bgl),
+            Some(&texture_bgl),
+            Some(&joints_bgl),
+            Some(&shadow_combined_bgl),
         ],
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("twec-play3d pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: "vs_main",
-            buffers: &[Vertex::layout(), Instance::layout()],
+            entry_point: Some("vs_main"),
+            buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: "fs_main",
+            entry_point: Some("fs_main"),
             // Phase 26: main pipeline always targets HDR. The
             // tonemap pass converts to the swapchain's sRGB.
             targets: &[Some(wgpu::ColorTargetState {
@@ -1669,13 +1663,13 @@ async fn init_renderer(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -1762,7 +1756,7 @@ async fn init_renderer(
         address_mode_w: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         compare: Some(wgpu::CompareFunction::LessEqual),
         ..Default::default()
     });
@@ -1793,16 +1787,16 @@ async fn init_renderer(
     });
     let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d shadow pipeline layout"),
-        bind_group_layouts: &[&shadow_uniform_bgl, &joints_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&shadow_uniform_bgl), Some(&joints_bgl)],
+        immediate_size: 0,
     });
     let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("twec-play3d shadow pipeline"),
         layout: Some(&shadow_pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shadow_shader,
-            entry_point: "vs_shadow",
-            buffers: &[Vertex::layout(), Instance::layout()],
+            entry_point: Some("vs_shadow"),
+            buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
             compilation_options: Default::default(),
         },
         fragment: None, // depth-only pass
@@ -1819,8 +1813,8 @@ async fn init_renderer(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState {
                 constant: 2,
@@ -1829,7 +1823,7 @@ async fn init_renderer(
             },
         }),
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -1875,7 +1869,7 @@ async fn init_renderer(
         address_mode_w: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
     // Phase 28 sessions 3+4: tonemap params is now two vec4s (32 B):
@@ -1899,21 +1893,21 @@ async fn init_renderer(
     });
     let tonemap_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d tonemap pipeline layout"),
-        bind_group_layouts: &[&tonemap_bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&tonemap_bgl)],
+        immediate_size: 0,
     });
     let tonemap_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("twec-play3d tonemap pipeline"),
         layout: Some(&tonemap_pipeline_layout),
         vertex: wgpu::VertexState {
             module: &tonemap_shader,
-            entry_point: "vs_fullscreen",
+            entry_point: Some("vs_fullscreen"),
             buffers: &[],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &tonemap_shader,
-            entry_point: "fs_tonemap",
+            entry_point: Some("fs_tonemap"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: surface_format,
                 blend: Some(wgpu::BlendState::REPLACE),
@@ -1927,7 +1921,7 @@ async fn init_renderer(
         },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
 
@@ -1947,9 +1941,8 @@ async fn init_renderer(
         instance_buffer,
         instance_capacity,
         camera_buffer,
-        camera_bind_group,
+        frame_bind_group,
         lights_buffer,
-        lights_bind_group,
         joints_bgl,
         identity_joints_bind_group,
         shadow_pipeline,
@@ -2050,14 +2043,14 @@ fn upload_texture_with_mips(
         view_formats: &[],
     });
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         rgba,
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(4 * width),
             rows_per_image: Some(height),
@@ -2078,14 +2071,14 @@ fn upload_texture_with_mips(
             let mip =
                 image::imageops::resize(&source, mw, mh, image::imageops::FilterType::Triangle);
             queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &texture,
                     mip_level: level,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 &mip,
-                wgpu::ImageDataLayout {
+                wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * mw),
                     rows_per_image: Some(mh),
@@ -3383,11 +3376,24 @@ impl Renderer {
         // 5. Acquire the target (swapchain frame, or the headless
         //    offscreen texture) and draw.
         let frame = match &state.surface {
-            Some(surface) => Some(
-                surface
-                    .get_current_texture()
-                    .map_err(|e| format!("acquire surface: {e}"))?,
-            ),
+            Some(surface) => match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+                // Nothing to draw into this frame (minimised, busy
+                // compositor): skip it.
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    return Ok(());
+                }
+                // The surface went stale (resize race, device change):
+                // reconfigure and draw next frame.
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    surface.configure(&state.device, &state.config);
+                    return Ok(());
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    return Err("surface configuration failed validation".to_string());
+                }
+            },
             None => None,
         };
         let view_target = match (&frame, &state.offscreen) {
@@ -3437,6 +3443,7 @@ impl Renderer {
                     }),
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 spass.set_pipeline(&state.shadow_pipeline);
                 spass.set_bind_group(0, &state.shadow_pass_bgs[cascade], &[]);
@@ -3504,6 +3511,7 @@ impl Renderer {
                 label: Some("twec-play3d main pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: main_color_view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -3525,20 +3533,20 @@ impl Renderer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             if !instances.is_empty() {
                 rpass.set_pipeline(&state.pipeline);
-                rpass.set_bind_group(0, &state.camera_bind_group, &[]);
-                rpass.set_bind_group(2, &state.lights_bind_group, &[]);
+                rpass.set_bind_group(0, &state.frame_bind_group, &[]);
                 // Phase 24: bind the shared identity joint UBO as the
                 // default for unskinned draws (cube, sphere, glb
                 // without a skin). Skinned mesh draws override slot 3
                 // with their per-mesh joint bind group below.
-                rpass.set_bind_group(3, &state.identity_joints_bind_group, &[]);
+                rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
                 // Phase 25: shadow combined bind group at slot 4 —
                 // shadow uniform + texture + comparison sampler. The
                 // shader short-circuits when flags.w == 0.
-                rpass.set_bind_group(4, &state.shadow_combined_bg, &[]);
+                rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
                 rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
                 // Phase 17 session 3: helper closure that picks the
                 // right texture bind group for a given texture id.
@@ -3608,7 +3616,7 @@ impl Renderer {
                     // step 4c above. Unskinned meshes leave slot 3
                     // bound to the identity UBO from the outer setup.
                     if let Some(skin) = &gpu_mesh.skin {
-                        rpass.set_bind_group(3, &skin.joint_bind_group, &[]);
+                        rpass.set_bind_group(2, &skin.joint_bind_group, &[]);
                     }
                     rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
                     rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
@@ -3618,7 +3626,7 @@ impl Renderer {
                     // unskinned draws don't accidentally read this
                     // mesh's joint matrices.
                     if gpu_mesh.skin.is_some() {
-                        rpass.set_bind_group(3, &state.identity_joints_bind_group, &[]);
+                        rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
                     }
                 }
             }
@@ -3658,6 +3666,7 @@ impl Renderer {
                 label: Some("twec-play3d tonemap pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view_target,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -3667,6 +3676,7 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             tmpass.set_pipeline(&state.tonemap_pipeline);
             tmpass.set_bind_group(0, bg, &[]);
@@ -3675,7 +3685,7 @@ impl Renderer {
 
         state.queue.submit(Some(encoder.finish()));
         if let Some(frame) = frame {
-            frame.present();
+            state.queue.present(frame);
         }
         Ok(())
     }
@@ -3704,9 +3714,9 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded),
                     rows_per_image: Some(h),
@@ -3724,11 +3734,13 @@ impl Renderer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| e.to_string())?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity((row * h) as usize);
         for y in 0..h as usize {
             let start = y * padded as usize;
@@ -4036,11 +4048,12 @@ mod tests {
 
     /// Phase 27: every WGSL shader the play3d pipeline ships
     /// must parse + validate cleanly under naga (wgpu's WGSL
-    /// frontend). naga's accept-set is a superset of what
-    /// wgpu::create_shader_module accepts at runtime, so a parse
-    /// or validation failure here would also fail at GPU init.
+    /// frontend). A failure here would also fail at GPU init.
     /// Catches typos, bind-group / location mismatches, and
     /// invalid type usage without needing a window or adapter.
+    /// Passing is necessary, not sufficient: in the browser the
+    /// WGSL goes to Tint, which is stricter (see
+    /// `shaders_avoid_implicit_derivatives_in_non_uniform_flow`).
     fn validate_wgsl(label: &str, src: &str) {
         let module = match naga::front::wgsl::parse_str(src) {
             Ok(m) => m,
@@ -4061,6 +4074,26 @@ mod tests {
     #[test]
     fn main_shader_parses_and_validates() {
         validate_wgsl("SHADER_SRC", SHADER_SRC);
+    }
+
+    /// web3d-M2: Chrome's Tint rejected the main shader (black
+    /// canvas) because `sample_shadow` called `textureSampleCompare`
+    /// after a data-dependent early return; naga accepted it. Shadow
+    /// lookups must use the explicit-level form, which is valid in
+    /// non-uniform control flow.
+    #[test]
+    fn shaders_avoid_implicit_derivatives_in_non_uniform_flow() {
+        for (label, src) in [
+            ("SHADER_SRC", SHADER_SRC),
+            ("SHADOW_SHADER_SRC", SHADOW_SHADER_SRC),
+            ("TONEMAP_SHADER_SRC", TONEMAP_SHADER_SRC),
+        ] {
+            assert!(
+                !src.contains("textureSampleCompare("),
+                "{label}: use textureSampleCompareLevel (Tint rejects \
+                 textureSampleCompare in non-uniform control flow)"
+            );
+        }
     }
 
     #[test]

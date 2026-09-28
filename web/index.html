@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twe</title>
+<!-- web3d-M2: bare `env` imports from the runtime resolve to env.js. -->
+<script type="importmap">{ "imports": { "env": "./env.js" } }</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #0f1014; color: #d8dae0;
+               font: 14px system-ui, sans-serif; }
+  main { display: grid; place-items: center; height: 100%; }
+  canvas { width: min(100vw, 133.33vh); aspect-ratio: 4 / 3; display: block; }
+  #twe-status { position: fixed; left: 16px; bottom: 16px; max-width: calc(100vw - 32px); }
+</style>
+</head>
+<body>
+<main><canvas id="twe-canvas" width="1280" height="960"></canvas></main>
+<p id="twe-status">Loading…</p>
+<script type="module">
+  import init from "./twe_web.js";
+  if (!navigator.gpu) {
+    document.getElementById("twe-status").textContent =
+      "This game needs WebGPU (Chrome, Edge, Safari 26+, or a recent Firefox).";
+  } else {
+    init();
+  }
+</script>
+</body>
+</html>

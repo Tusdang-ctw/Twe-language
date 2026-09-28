@@ -13,6 +13,12 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **3D games run in the browser on WebGPU** (web3d-M2, in progress). The
+  new `crates/twe-web` shell runs a Twe script in the page and draws it
+  through the same renderer kernel as `twec play3d`; `examples/hello_3d.twe`
+  renders in Chrome at the display's refresh rate. `twec build --target web`
+  packaging follows. The renderer now fits WebGPU's default limits (4 bind
+  groups) and is on wgpu 30.
 - **`quit()` and `quit_on_escape(flag)`** (web3d-M0; `docs/06` §7.14a). Games
   can now exit from their own menus, and can take Escape over for a pause
   menu. Previously Escape was hard-wired to close the window (so a script's

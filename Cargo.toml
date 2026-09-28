@@ -5,6 +5,12 @@ edition = "2021"
 description = "Twe language compiler and tree-walking interpreter"
 publish = false
 
+# web3d-M2: the root crate (twec: language + CLI + native shells) plus the
+# browser shell. The kernel / language split into their own crates
+# follows once the web path is proven (see the M2 notes).
+[workspace]
+members = [".", "crates/twe-web"]
+
 [lints.rust]
 # v0.2 Phase 8.5 (session 8a): eased from `forbid` to `deny` so
 # `src/tagged_value.rs` can scope `#![allow(unsafe_code)]`. NaN
@@ -35,6 +41,25 @@ toml = "0.8"
 # Steamworks SDK redistributable at link time (steam_api.dll on
 # Windows). Only compiled when `--features steam` is passed —
 # default builds have zero Steam overhead.
+# web3d-M2: the renderer kernel (src/kernel) builds for native *and*
+# wasm32 (WebGPU in the browser), so its dependencies are shared.
+# wgpu's default features include the `webgpu` backend used on wasm.
+# Phase 5 task 5 session 1: wgpu-driven 3D rendering for `twec play3d`.
+# winit handles the window + event loop; pollster blocks on the few
+# async wgpu calls (adapter + device acquisition). bytemuck only
+# enters when vertex / uniform layout work lands in a later session.
+wgpu = "30"
+# Phase 5 task 5 session (b): vertex / uniform buffer layout via
+# `#[derive(Pod, Zeroable)]`.
+bytemuck = { version = "1", features = ["derive"] }
+# v0.2 session 1: glTF 2.0 mesh import. Pure-Rust crate but only
+# referenced by play3d / physics3d which are excluded from WASM.
+gltf = { version = "1", default-features = false, features = ["import", "utils", "names"] }
+# Phase 17 session 3: PNG/JPEG texture loading for the 3D pipeline.
+# Transitively available via macroquad on WASM, but the explicit dep
+# is only needed by play3d which is native-only.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
 [features]
 # web3d-M0: scaffolding namespaces (console / platform services / mmo /
 # workshop / rollback / world / terrain) — author-facing APIs whose
@@ -63,19 +88,8 @@ optional = true
 # C toolchain configured for WASM. The corresponding modules are gated
 # with `#[cfg(not(target_arch = "wasm32"))]` in src/lib.rs.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Phase 5 task 5 session 1: wgpu-driven 3D rendering for `twec play3d`.
-# winit handles the window + event loop; pollster blocks on the few
-# async wgpu calls (adapter + device acquisition). bytemuck only
-# enters when vertex / uniform layout work lands in a later session.
-wgpu = "22.0"
 winit = "0.30"
 pollster = "0.3"
-# Phase 5 task 5 session (b): vertex / uniform buffer layout via
-# `#[derive(Pod, Zeroable)]`.
-bytemuck = { version = "1", features = ["derive"] }
-# v0.2 session 1: glTF 2.0 mesh import. Pure-Rust crate but only
-# referenced by play3d / physics3d which are excluded from WASM.
-gltf = { version = "1", default-features = false, features = ["import", "utils", "names"] }
 # Phase 9 session 5: cross-platform gamepad input via XInput / evdev /
 # IOKit. gilrs has no WASM backend; gamepad is no-op on the web target.
 gilrs = "0.10"
@@ -91,10 +105,6 @@ rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f3
 # for wasm32-unknown-unknown without emscripten/wasi-sdk. WASM builds
 # produce uncompressed asset copies; bundles stay native-only.
 zstd = "0.13"
-# Phase 17 session 3: PNG/JPEG texture loading for the 3D pipeline.
-# Transitively available via macroquad on WASM, but the explicit dep
-# is only needed by play3d which is native-only.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Phase 11 follow-on: Win32 bindings for GetForegroundWindow polling.
 [target.'cfg(windows)'.dependencies]
@@ -136,7 +146,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Phase 9 session 11: WGSL validation in tests without needing a GPU.
 # naga is wgpu's WGSL frontend; if naga accepts the shader, wgpu's
 # create_shader_module will too. Pinned to match wgpu = 22.0.
-naga = { version = "22", default-features = false, features = ["wgsl-in"] }
+naga = { version = "30", default-features = false, features = ["wgsl-in"] }
 # Phase 11 session 6: criterion bench harness driving the perf gap
 # from Phase 8.5. Statistical (warmup + sample-size + outlier
 # detection) so the regression numbers are stable run-to-run.

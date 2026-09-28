@@ -235,7 +235,7 @@ impl ApplicationHandler for App {
 
 fn init_wgpu(window: Arc<Window>, wgsl: &str) -> Result<RenderState, String> {
     let size = window.inner_size();
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let surface = instance
         .create_surface(window.clone())
         .map_err(|e| e.to_string())?;
@@ -243,16 +243,18 @@ fn init_wgpu(window: Arc<Window>, wgsl: &str) -> Result<RenderState, String> {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
-    .ok_or_else(|| "no compatible wgpu adapter found".to_string())?;
+    .map_err(|e| format!("no compatible wgpu adapter found: {e}"))?;
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("twec-play_visual device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::default(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::Off,
         },
-        None,
     ))
     .map_err(|e| e.to_string())?;
     let surface_caps = surface.get_capabilities(&adapter);
@@ -265,6 +267,7 @@ fn init_wgpu(window: Arc<Window>, wgsl: &str) -> Result<RenderState, String> {
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface_format,
+        color_space: wgpu::SurfaceColorSpace::Auto,
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: surface_caps.present_modes[0],
@@ -338,8 +341,8 @@ fn build_pipeline(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play_visual pipeline layout"),
-        bind_group_layouts: &[bind_group_layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
     });
     Ok(
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -347,7 +350,7 @@ fn build_pipeline(
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 // No vertex buffers — vs_main builds the fullscreen quad
                 // from vertex_index alone.
                 buffers: &[],
@@ -355,7 +358,7 @@ fn build_pipeline(
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -377,7 +380,7 @@ fn build_pipeline(
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         }),
     )
@@ -395,10 +398,18 @@ fn rebuild_pipeline(state: &mut RenderState, wgsl: &str) -> Result<(), String> {
 }
 
 fn render(state: &RenderState, time: f32) -> Result<(), String> {
-    let frame = state
-        .surface
-        .get_current_texture()
-        .map_err(|e| e.to_string())?;
+    let frame = match state.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        // Skip the frame; a stale surface is reconfigured first.
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            state.surface.configure(&state.device, &state.config);
+            return Ok(());
+        }
+        wgpu::CurrentSurfaceTexture::Validation => {
+            return Err("surface configuration failed validation".to_string());
+        }
+    };
     let view = frame
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
@@ -419,6 +430,7 @@ fn render(state: &RenderState, time: f32) -> Result<(), String> {
             label: Some("twec-play_visual pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -428,6 +440,7 @@ fn render(state: &RenderState, time: f32) -> Result<(), String> {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         rpass.set_pipeline(&state.pipeline);
         rpass.set_bind_group(0, &state.bind_group, &[]);
@@ -436,6 +449,6 @@ fn render(state: &RenderState, time: f32) -> Result<(), String> {
         rpass.draw(0..3, 0..1);
     }
     state.queue.submit(Some(encoder.finish()));
-    frame.present();
+    state.queue.present(frame);
     Ok(())
 }
