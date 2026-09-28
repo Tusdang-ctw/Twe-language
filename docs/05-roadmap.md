@@ -11,8 +11,8 @@
 > | M0 — truth + foundation safety | **closed 2026-09-27** ([closeout](changes/2026-09-27-web3d-m0-closeout.md)) |
 > | M1 — lexical scoping + interpreter speed | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m1-closeout.md)) |
 > | M2 — workspace + kernel + WebGPU | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m2-closeout.md)) |
-> | M3 — SoA entities, `look:`, materials, HUD | **active** |
-> | M4 — `survive3d` slice + Studio viewport | planned |
+> | M3 — SoA entities, `look:`, materials, HUD | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m3-closeout.md)) |
+> | M4 — `survive3d` slice + Studio viewport | next |
 > | M5 — measured LLM benchmark (parallel, from week 10) | planned |
 > | M6 — one engine (retire macroquad) | planned |
 
