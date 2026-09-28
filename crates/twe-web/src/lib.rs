@@ -152,10 +152,16 @@ async fn run() -> Result<(), String> {
         .map_err(|_| "#twe-canvas is not a canvas")?;
     let (width, height) = (canvas.width().max(1), canvas.height().max(1));
 
-    // The game: `game.twebundle` next to the page (what `twec build
-    // --target web` writes: the script plus every asset, readable
-    // synchronously once mounted), or a bare `main.twe` for dev pages.
-    let source_bytes = match fetch_bytes("game.twebundle").await {
+    // The game: the bundle `twec build --target web` writes (the script
+    // plus every asset, readable synchronously once mounted). The page
+    // downloads it with a progress bar and leaves it in
+    // `window.tweBundle`; otherwise fetch `game.twebundle`, or a bare
+    // `main.twe` for dev pages.
+    let bundle = match preloaded_bundle(&window).await {
+        Some(bytes) => Ok(bytes),
+        None => fetch_bytes("game.twebundle").await,
+    };
+    let source_bytes = match bundle {
         Ok(bytes) => {
             let reader = twec::bundle::BundleReader::from_bytes(bytes)
                 .map_err(|e| format!("game.twebundle: {e}"))?;
@@ -518,6 +524,16 @@ fn poll_gamepad() -> Option<([bool; 14], [f64; 6])> {
         held,
         [axis(0), -axis(1), axis(2), -axis(3), trigger(6), trigger(7)],
     ))
+}
+
+/// The bundle the page already downloaded: `window.tweBundle`, a
+/// promise of a `Uint8Array` (or `null` if that download failed).
+async fn preloaded_bundle(window: &web_sys::Window) -> Option<Vec<u8>> {
+    let value = js_sys::Reflect::get(window, &"tweBundle".into()).ok()?;
+    let promise: js_sys::Promise = value.dyn_into().ok()?;
+    let bytes = wasm_bindgen_futures::JsFuture::from(promise).await.ok()?;
+    let bytes: js_sys::Uint8Array = bytes.dyn_into().ok()?;
+    Some(bytes.to_vec())
 }
 
 /// `fetch` a URL relative to the page and return its body.

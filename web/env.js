@@ -10,7 +10,10 @@
 // become NaN in an f64 import.
 export function now() { return performance.now() / 1000; }
 
-// Audio (web audio lands with the web3d-M4 slice).
+// macroquad's audio backend.
+// (The WebGPU shell plays sound itself; see crates/twe-web/src/audio.rs.)
+export function audio_add_buffer() { return 0; }
+export function audio_source_is_loaded() { return 0; }
 export function audio_play_buffer() { return 0; }
 export function audio_source_set_volume() {}
 export function audio_source_stop() {}

@@ -545,6 +545,17 @@ A visual that fails the GPU-safety checks (`twec verify`) is an error when a loo
 - **Inheritance.** Keys merge along `extends`: a subclass overrides individual keys.
 - **What is drawn.** Live entities are drawn, including while paused; despawned ones are not. The top-level `on render():` still runs and draws alongside looks. Per-entity `render()` methods are not called in 3D.
 - **Colour.** Tints (and `cube()` / `sphere()` colours) are sRGB, as picked in any colour tool; the renderer decodes them to linear light before shading.
+- **Animated meshes** *(web3d-M4)*. A skinned `.glb` plays the clip `mesh_anim` selects for that mesh path; every entity drawing the mesh shares it. `survive3d`'s hero:
+
+  ```twe
+  mesh_anim.play("assets/hero.glb", "walk", true)   # clip by name, looping; restarts only when the clip changes
+  mesh_anim.advance(dt)                              # move every playing clip on by dt (call each tick)
+  mesh_anim.blend("assets/hero.glb", "idle", "walk", 0.5)
+  mesh_anim.current("assets/hero.glb")              # the playing clip's name
+  mesh_anim.stop("assets/hero.glb")                 # back to the rest pose
+  ```
+
+  Clips advance only through `mesh_anim.advance`, so a paused game's models hold still and replays match. Per-entity clips (each slime on its own frame) are not in M4.
 - **In the 2D player** (`twec play`), a program that declares a look is refused at startup with an error pointing at `twec play3d` / `twec build --target web`, until the 2D player moves onto the kernel (web3d-M6).
 
 ### 4.10 Particles
@@ -1346,7 +1357,7 @@ replay.stop()                          # end either mode
 
 `replay.tick` runs once per simulation step inside the play loop, so user code doesn't observe the recorder. The deterministic-input contract from Phase 29 still holds: same script + same input log → byte-identical run.
 
-**The input-command stream** *(web3d-M4)*. In the 3D shells (`twec play3d` and web builds) input reaches the simulation only as one *input command* per fixed tick: keys and mouse buttons held and newly pressed, cursor position, pointer motion and wheel. The shell collects events between ticks (a press is seen by exactly one tick, however render frames and ticks interleave), and each command passes through the recorder / player before it is written into `key`, `key_press`, `mouse`, `mouse_held` and `mouse_press`. So a log replays a 3D run exactly, and the same stream is where a remote player's input would arrive. Logs are stored like saves (§7.11): a file natively, a localStorage key in the browser. The format is v2 (`TWE-REPLAY v2`, adding mouse motion and wheel to each line); v1 logs still play.
+**The input-command stream** *(web3d-M4)*. In the 3D shells (`twec play3d` and web builds) input reaches the simulation only as one *input command* per fixed tick: keys, mouse buttons and gamepad buttons held and newly pressed, cursor position, pointer motion, wheel and gamepad axes. The shell collects events between ticks (a press is seen by exactly one tick, however render frames and ticks interleave), and each command passes through the recorder / player before it is written into `key`, `key_press`, `mouse`, `mouse_held` and `mouse_press`. So a log replays a 3D run exactly, and the same stream is where a remote player's input would arrive. Logs are stored like saves (§7.11): a file natively, a localStorage key in the browser. The format is v2 (`TWE-REPLAY v2`, adding mouse motion, wheel and the gamepad to each line); v1 logs still play.
 
 **Always-on input ring.** v1.0.1 Session 10 adds a 30-second circular buffer that captures every frame's input regardless of explicit `replay.record` state. When the runtime crashes (any panic), the crash reporter writes a sibling `twec-crash-<secs>-<pid>.replay` next to its `.log`. Reproduce the bug with:
 

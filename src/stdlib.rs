@@ -6722,9 +6722,24 @@ struct MeshAnimEntry {
     blend_t: f32,
 }
 
-fn mesh_play_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+/// web3d-M4: `mesh_anim.*` names a mesh by the path its draws use
+/// (`look: mesh: "hero.glb"` / `mesh("hero.glb", ...)`), which is the
+/// renderer's mesh id. Every instance of that mesh shares the clip.
+/// (An integer handle is still accepted; ids were never exposed to
+/// scripts, so the path is the only practical form.)
+fn anim_handle(env: &mut Env, v: &Value, what: &str) -> Result<u32, RuntimeError> {
+    if v.is_str() {
+        return Ok(env.intern_mesh_path(&v.as_string()));
+    }
+    handle_int(v, what).map_err(|mut e| {
+        e.help = Some(format!("pass the mesh's path, e.g. `{what}(\"assets/hero.glb\", ...)`"));
+        e
+    })
+}
+
+fn mesh_play_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "mesh.play")?;
-    let handle = handle_int(&args[0], "mesh.play")?;
+    let handle = anim_handle(env, &args[0], "mesh_anim.play")?;
     let clip = string_arg(&args[1], "mesh.play", "clip")?;
     let looping = if args[2].is_bool() {
         args[2].as_bool()
@@ -6745,18 +6760,18 @@ fn mesh_play_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     Ok(Value::NIL)
 }
 
-fn mesh_stop_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+fn mesh_stop_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "mesh.stop")?;
-    let handle = handle_int(&args[0], "mesh.stop")?;
+    let handle = anim_handle(env, &args[0], "mesh_anim.stop")?;
     MESH_ANIM_STATE.with(|s| {
         s.borrow_mut().remove(&handle);
     });
     Ok(Value::NIL)
 }
 
-fn mesh_blend_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+fn mesh_blend_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "mesh.blend")?;
-    let handle = handle_int(&args[0], "mesh.blend")?;
+    let handle = anim_handle(env, &args[0], "mesh_anim.blend")?;
     let clip_a = string_arg(&args[1], "mesh.blend", "clip_a")?;
     let clip_b = string_arg(&args[2], "mesh.blend", "clip_b")?;
     let t = (number(&args[3], "mesh.blend.t")? as f32).clamp(0.0, 1.0);
@@ -6773,9 +6788,9 @@ fn mesh_blend_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
     Ok(Value::NIL)
 }
 
-fn mesh_current_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+fn mesh_current_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "mesh.current")?;
-    let handle = handle_int(&args[0], "mesh.current")?;
+    let handle = anim_handle(env, &args[0], "mesh_anim.current")?;
     MESH_ANIM_STATE.with(|s| {
         let st = s.borrow();
         let entry = st.get(&handle).cloned().unwrap_or_default();
@@ -10553,23 +10568,23 @@ fn install_3d(env: &mut Env) {
     let mut mesh_anim = HashMap::new();
     mesh_anim.insert(
         "play".to_string(),
-        Value::from_builtin("mesh.play", &["handle", "clip", "looping"], mesh_play_impl),
+        Value::from_builtin("mesh.play", &["mesh", "clip", "looping"], mesh_play_impl),
     );
     mesh_anim.insert(
         "stop".to_string(),
-        Value::from_builtin("mesh.stop", &["handle"], mesh_stop_impl),
+        Value::from_builtin("mesh.stop", &["mesh"], mesh_stop_impl),
     );
     mesh_anim.insert(
         "blend".to_string(),
         Value::from_builtin(
             "mesh.blend",
-            &["handle", "clip_a", "clip_b", "t"],
+            &["mesh", "clip_a", "clip_b", "t"],
             mesh_blend_impl,
         ),
     );
     mesh_anim.insert(
         "current".to_string(),
-        Value::from_builtin("mesh.current", &["handle"], mesh_current_impl),
+        Value::from_builtin("mesh.current", &["mesh"], mesh_current_impl),
     );
     mesh_anim.insert(
         "advance".to_string(),

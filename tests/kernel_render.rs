@@ -52,6 +52,15 @@ fn render_script_with(
     }
     let mut assets = twec::play3d::NativeAssets::default();
     twec::host3d::render_frame(renderer, &mut env, &mut assets).expect("render");
+    // Meshes load on worker threads; draw until they have arrived.
+    for _ in 0..200 {
+        if assets.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        twec::host3d::render_frame(renderer, &mut env, &mut assets).expect("render");
+    }
+    twec::host3d::render_frame(renderer, &mut env, &mut assets).expect("render");
     renderer.read_pixels().expect("read pixels")
 }
 
@@ -255,4 +264,36 @@ fn survive3d_level_up_renders() {
         .filter(|p| p[0] > 200 && p[1] > 200 && p[2] < 80)
         .count();
     assert!(yellow > 150, "only {yellow} yellow pixels");
+}
+
+/// web3d-M4: the survive3d hero close up, mid-stride: skinning, the
+/// `walk` clip (by mesh path) and the palette texture all reach the
+/// frame.
+#[test]
+fn hero_renders_mid_stride() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    twec::bundle::set_asset_root(Some("examples/survive3d".into()));
+    let src = r#"
+camera.eye = vec3(1.2, 1.3, 3.0)
+camera.target = vec3(0, 0.8, 0)
+mesh_anim.play("assets/hero.glb", "walk", true)
+mesh_anim.advance(0.2)
+on render():
+    mesh("assets/hero.glb", at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+"#;
+    let rgba = render_source(&mut renderer, "hero_walk", src);
+    save_png("hero_walk", &rgba);
+    // The shirt's blue and the skin tone are both on screen.
+    let count = |f: &dyn Fn(i32, i32, i32) -> bool| {
+        rgba.chunks(4)
+            .filter(|p| f(i32::from(p[0]), i32::from(p[1]), i32::from(p[2])))
+            .count()
+    };
+    // (The clear colour is a duller blue: b ≈ 140.)
+    let blue = count(&|r, _, b| b > 170 && r < 90);
+    let skin = count(&|r, g, b| r > 150 && g > 100 && r > b + 40);
+    assert!(blue > 300, "shirt pixels: {blue}");
+    assert!(skin > 100, "skin pixels: {skin}");
 }

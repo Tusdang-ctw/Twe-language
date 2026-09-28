@@ -1077,25 +1077,46 @@ fn web_build_writes_a_servable_folder() {
 
     let project = discover_project(&project_dir).expect("discover");
     let out = dir.join("out");
+    // A stale file from an earlier build is cleared.
+    fs::create_dir_all(&out).unwrap();
+    fs::write(out.join("game.0123456789ab.twebundle"), b"old").unwrap();
     write_web_build(&project, &runtime, &out).expect("web build");
 
-    for f in WEB_RUNTIME_FILES {
-        assert_eq!(
-            fs::read_to_string(out.join(f)).unwrap(),
-            format!("runtime {f}")
-        );
-    }
+    // web3d-M4: everything but the page is named after its content.
+    let named = |stem: &str, ext: &str| -> String {
+        let mut found: Vec<String> = fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with(&format!("{stem}.")) && n.ends_with(&format!(".{ext}")))
+            .collect();
+        assert_eq!(found.len(), 1, "one {stem}.*.{ext}: {found:?}");
+        let name = found.pop().unwrap();
+        assert_eq!(name.len(), stem.len() + 1 + 12 + 1 + ext.len(), "{name}");
+        name
+    };
+    let js = named("twe_web", "js");
+    let wasm = named("twe_web_bg", "wasm");
+    let env = named("env", "js");
+    let game = named("game", "twebundle");
+    assert_ne!(game, "game.0123456789ab.twebundle");
+    assert_eq!(fs::read_to_string(out.join(&js)).unwrap(), "runtime twe_web.js");
+    assert_eq!(
+        fs::read_to_string(out.join(&wasm)).unwrap(),
+        "runtime twe_web_bg.wasm"
+    );
     let page = fs::read_to_string(out.join("index.html")).unwrap();
     assert!(page.contains("<title>orbit_game</title>"), "{page}");
-    assert!(page.contains(r#""env": "./env.js""#), "import map missing");
-    assert!(page.contains("./twe_web.js"));
-    assert!(fs::read_to_string(out.join("env.js"))
+    assert!(page.contains(&format!(r#""env": "./{env}""#)), "import map");
+    assert!(
+        page.contains(&format!(r#"js: "./{js}", wasm: "{wasm}", bundle: "{game}""#)),
+        "file names in the page"
+    );
+    assert!(fs::read_to_string(out.join(&env))
         .unwrap()
         .contains("export function now()"));
     // web3d-M4: the script and assets travel in one bundle the shell mounts.
-    let mut bundle =
-        twec::bundle::BundleReader::from_bytes(fs::read(out.join("game.twebundle")).unwrap())
-            .expect("a readable bundle");
+    let mut bundle = twec::bundle::BundleReader::from_bytes(fs::read(out.join(&game)).unwrap())
+        .expect("a readable bundle");
     assert_eq!(
         bundle.read("main.twe").unwrap().unwrap(),
         b"print(\"hi\")\n"

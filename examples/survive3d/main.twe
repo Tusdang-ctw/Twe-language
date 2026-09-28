@@ -21,6 +21,8 @@ var player_speed = 6.0
 var player_hp = 100.0
 var player_max_hp = 100.0
 var player_iframes = 0.0
+var player_heading = 0.0  # yaw the hero faces (last move direction)
+var hero_tint = (1.0, 1.0, 1.0)
 var kills = 0
 
 var xp = 0
@@ -66,6 +68,24 @@ function take_player_damage(amount):
     player_hp -= amount
     player_iframes = 0.6
     sound.play(snd_hurt)
+
+# The player's body: an animated model (built by
+# tests/gen_survive3d_hero.rs) standing where `player` is, feet on the
+# ground. The scene picks its clip: `walk` while moving, else `idle`.
+let hero_mesh = "assets/hero.glb"
+
+entity Hero:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "assets/hero.glb"
+        tint: hero_tint
+        scale: 1.1
+        facing: player_heading
+
+    function update(dt):
+        pos = vec3(player.x, -0.5, player.z)
+
+spawn Hero at vec3(0, -0.5, 0)
 
 # Distance² on the ground plane.
 function d2(a, b):
@@ -499,10 +519,6 @@ function draw_world():
                 if math.mod(math.floor(tx / 4.0) + math.floor(tz / 4.0), 2) == 0:
                     shade = 0.17
                 cube(at: vec3(tx + 2.0, -2.5, tz + 2.0), color: (shade, shade * 1.05, shade * 1.2, 1.0), size: 4.0)
-    var tint = (0.95, 0.95, 0.95, 1.0)
-    if player_iframes > 0.0:
-        tint = (1.0, 0.85, 0.3, 1.0)
-    sphere(at: vec3(player.x, 0.1, player.z), color: tint, size: 1.2)
     let e = arena + 0.6
     for i in 0..<20:
         let t = -e + i * (2.0 * e / 19.0)
@@ -601,6 +617,15 @@ scene Survive3D:
                 let m = math.sqrt(m2)
                 mx = mx / m
                 mz = mz / m
+            if m2 > 0.0:
+                player_heading = math.atan2(mx, mz)
+                mesh_anim.play(hero_mesh, "walk", true)
+            else:
+                mesh_anim.play(hero_mesh, "idle", true)
+            mesh_anim.advance(dt)
+            hero_tint = (1.0, 1.0, 1.0)
+            if player_iframes > 0.0:
+                hero_tint = (1.0, 0.8, 0.35)
             let px = math.clamp(player.x + mx * player_speed * dt, -arena, arena)
             let pz = math.clamp(player.z + mz * player_speed * dt, -arena, arena)
             player = vec3(px, 0, pz)

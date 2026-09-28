@@ -1821,21 +1821,87 @@ pub fn write_web_build(
     runtime_dir: &Path,
     out: &Path,
 ) -> Result<(), String> {
-    let write = |name: &str, bytes: &[u8]| {
-        fs::write(out.join(name), bytes).map_err(|e| format!("cannot write {name}: {e}"))
-    };
     fs::create_dir_all(out).map_err(|e| format!("cannot create '{}': {e}", out.display()))?;
-    for f in WEB_RUNTIME_FILES {
-        fs::copy(runtime_dir.join(f), out.join(f))
-            .map_err(|e| format!("cannot copy runtime file {f}: {e}"))?;
+    // web3d-M4: every file but the page is named after its content, so
+    // a browser (or CDN) holding an old build's files can never mix
+    // them with a new page; `index.html` is the one file to serve
+    // uncached. Hashed files from earlier builds are removed first.
+    for entry in fs::read_dir(out).map_err(|e| format!("cannot read '{}': {e}", out.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if is_hashed_web_file(name) {
+            let _ = fs::remove_file(&path);
+        }
     }
-    let title = html_escape(&project.name);
-    let page = WEB_INDEX_HTML.replace("<title>Twe</title>", &format!("<title>{title}</title>"));
-    write("index.html", page.as_bytes())?;
-    write("env.js", WEB_ENV_JS.as_bytes())?;
+    let mut runtime = Vec::new();
+    for f in WEB_RUNTIME_FILES {
+        let bytes = fs::read(runtime_dir.join(f))
+            .map_err(|e| format!("cannot read runtime file {f}: {e}"))?;
+        runtime.push(bytes);
+    }
     let bundle = encode_bundle_to_vec(project, false, BuildTarget::Web, BuildConfig::Release)?;
-    write("game.twebundle", &bundle)?;
+    let files = [
+        ("twe_web", "js", &runtime[0][..]),
+        ("twe_web_bg", "wasm", &runtime[1][..]),
+        ("env", "js", WEB_ENV_JS.as_bytes()),
+        ("game", "twebundle", &bundle[..]),
+    ];
+    let mut names = Vec::new();
+    for (stem, ext, bytes) in files {
+        let name = format!("{stem}.{:012x}.{ext}", fnv1a64(bytes) >> 16);
+        fs::write(out.join(&name), bytes).map_err(|e| format!("cannot write {name}: {e}"))?;
+        names.push(name);
+    }
+
+    let title = html_escape(&project.name);
+    let mut page = WEB_INDEX_HTML.to_string();
+    for (from, to) in [
+        ("<title>Twe</title>".to_string(), format!("<title>{title}</title>")),
+        (
+            r#"const FILES = { js: "./twe_web.js", wasm: "twe_web_bg.wasm", bundle: "game.twebundle" };"#
+                .to_string(),
+            format!(
+                r#"const FILES = {{ js: "./{}", wasm: "{}", bundle: "{}" }};"#,
+                names[0], names[1], names[3]
+            ),
+        ),
+        (
+            r#""env": "./env.js""#.to_string(),
+            format!(r#""env": "./{}""#, names[2]),
+        ),
+    ] {
+        if !page.contains(&from) {
+            return Err(format!("web/index.html no longer contains `{from}`"));
+        }
+        page = page.replace(&from, &to);
+    }
+    fs::write(out.join("index.html"), page).map_err(|e| format!("cannot write index.html: {e}"))?;
     Ok(())
+}
+
+/// A file `write_web_build` names after its content:
+/// `<stem>.<12 hex>.<ext>` for one of its four files.
+fn is_hashed_web_file(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('.').collect();
+    matches!(
+        parts.as_slice(),
+        [stem, hash, ext]
+            if hash.len() == 12
+                && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                && matches!(
+                    (*stem, *ext),
+                    ("twe_web", "js") | ("twe_web_bg", "wasm") | ("env", "js") | ("game", "twebundle")
+                )
+    )
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }
 
 const WEB_INDEX_HTML: &str = include_str!("../web/index.html");

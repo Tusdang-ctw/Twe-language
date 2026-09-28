@@ -13,18 +13,87 @@
   main { display: grid; place-items: center; height: 100%; }
   canvas { width: min(100vw, 133.33vh); aspect-ratio: 4 / 3; display: block; }
   #twe-status { position: fixed; left: 16px; bottom: 16px; max-width: calc(100vw - 32px); }
+  #twe-loading { position: fixed; inset: 0; display: grid; place-content: center; gap: 14px;
+                 text-align: center; background: #0f1014; }
+  #twe-loading h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: 0.02em; }
+  #twe-loading .bar { width: min(320px, 70vw); height: 6px; border-radius: 3px;
+                      background: #262a33; overflow: hidden; }
+  #twe-progress { width: 0; height: 100%; background: #5b8cff; transition: width 0.15s; }
+  #twe-loading p { margin: 0; color: #8a8f9c; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
 <main><canvas id="twe-canvas" width="1280" height="960"></canvas></main>
-<p id="twe-status">Loading…</p>
+<div id="twe-loading">
+  <h1 id="twe-title">Twe</h1>
+  <div class="bar"><div id="twe-progress"></div></div>
+  <p id="twe-bytes">Loading…</p>
+</div>
+<p id="twe-status"></p>
 <script type="module">
-  import init from "./twe_web.js";
+  // web3d-M4: `twec build --target web` rewrites this line with the
+  // content-hashed file names it wrote (so a new build never mixes
+  // with cached old files). The defaults serve a dev folder.
+  const FILES = { js: "./twe_web.js", wasm: "twe_web_bg.wasm", bundle: "game.twebundle" };
+
+  const $ = (id) => document.getElementById(id);
+  $("twe-title").textContent = document.title;
+  const fail = (message) => {
+    $("twe-loading").remove();
+    $("twe-status").textContent = message;
+  };
+
+  // Download a file, reporting bytes as they arrive.
+  async function download(url, onBytes) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+    const size = Number(response.headers.get("content-length")) || 0;
+    const reader = response.body.getReader();
+    const chunks = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      onBytes(got, size);
+    }
+    const bytes = new Uint8Array(got);
+    let at = 0;
+    for (const c of chunks) { bytes.set(c, at); at += c.length; }
+    return bytes;
+  }
+
   if (!navigator.gpu) {
-    document.getElementById("twe-status").textContent =
-      "This game needs WebGPU (Chrome, Edge, Safari 26+, or a recent Firefox).";
+    fail("This game needs WebGPU (Chrome, Edge, Safari 26+, or a recent Firefox).");
   } else {
-    init();
+    // One progress bar over the runtime and the game bundle.
+    const progress = { wasm: [0, 0], bundle: [0, 0] };
+    const show = () => {
+      const got = progress.wasm[0] + progress.bundle[0];
+      const size = progress.wasm[1] + progress.bundle[1];
+      const mb = (n) => (n / 1048576).toFixed(1);
+      $("twe-progress").style.width = size ? `${Math.min(99, (100 * got) / size)}%` : "30%";
+      $("twe-bytes").textContent = size ? `${mb(Math.min(got, size))} / ${mb(size)} MB` : `${mb(got)} MB`;
+    };
+    const track = (key) => (got, size) => { progress[key] = [got, size]; show(); };
+    // The shell reads the bundle from `window.tweBundle` when it starts;
+    // it falls back to fetching `game.twebundle` itself.
+    window.tweBundle = download(FILES.bundle, track("bundle")).catch(() => null);
+    try {
+      const [{ default: init }, wasm] = await Promise.all([
+        import(FILES.js),
+        download(FILES.wasm, track("wasm")),
+      ]);
+      await window.tweBundle;
+      $("twe-progress").style.width = "100%";
+      $("twe-bytes").textContent = "Starting…";
+      await init({ module_or_path: wasm });
+      // The shell clears #twe-status once the first frame is up.
+      $("twe-loading").remove();
+    } catch (e) {
+      fail(`Could not load the game: ${e.message ?? e}`);
+    }
   }
 </script>
 </body>

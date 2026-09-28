@@ -675,6 +675,13 @@ pub struct NativeAssets {
     ready: Vec<AssetReady>,
 }
 
+impl NativeAssets {
+    /// Loads requested but not yet handed to the renderer.
+    pub fn pending(&self) -> usize {
+        self.mesh_jobs.len() + self.ready.len()
+    }
+}
+
 impl AssetSource for NativeAssets {
     fn request(&mut self, kind: AssetKind, id: u32, path: &str) {
         match kind {
