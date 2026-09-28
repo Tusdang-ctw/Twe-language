@@ -12,9 +12,9 @@
 > | M1 — lexical scoping + interpreter speed | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m1-closeout.md)) |
 > | M2 — workspace + kernel + WebGPU | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m2-closeout.md)) |
 > | M3 — SoA entities, `look:`, materials, HUD | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m3-closeout.md)) |
-> | M4 — `survive3d` slice + Studio viewport | **active** ([plan](changes/2026-09-28-web3d-m4-plan.md)) |
+> | M4 — `survive3d` slice + Studio viewport | **codebase-closed 2026-09-28**; itch.io publish pending (maintainer) — [closeout](changes/2026-09-28-web3d-m4-closeout.md) |
 > | M5 — measured LLM benchmark (parallel, from week 10) | planned |
-> | M7 — graphics beyond Three.js (after M4; part of v1.0) | planned — [plan](changes/2026-09-28-web3d-m7-graphics-beyond-threejs.md) |
+> | M7 — graphics beyond Three.js (after M4; part of v1.0) | **next** — [plan](changes/2026-09-28-web3d-m7-graphics-beyond-threejs.md) |
 > | M6 — one engine (retire macroquad; after M7) | planned |
 
 ---

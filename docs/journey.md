@@ -110,6 +110,14 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 - **2026-09-28: M4 opens, and the game exists.** `survive3d`, the top-down 3D survivors game that defines v1.0, is playable: waves, a boss, three weapon types, XP and level-ups, pause, game over and restart. A headless test plays a whole run with scripted keys.
   - **It found four engine gaps, all fixed the same day:** menus couldn't draw in 3D; the browser only knew 11 keys; a documented math function didn't exist; and 3D colours had always been washed out, because colours were never converted from the sRGB values authors pick.
 
+- **2026-09-28: M4 finished in code, the same day it opened.** `survive3d` became a real small game, and the engine grew what that took.
+  - **In the browser:** sound, saved best runs, pausing when you switch tabs, mouse and gamepad, a clickable upgrade picker, and a loading screen with a progress bar.
+  - **An animated hero:** a walking character built entirely from code, like the game's sound effects. No art tools were used.
+  - **A net-ready spine:** every input now reaches the game as one command per simulation tick, so any run can be recorded and replayed exactly. Building it fixed a real bug: on 144 Hz screens, key presses could vanish or count twice.
+  - **Soak-tested:** a scripted player ran ten 10-minute sessions natively and ten in WebAssembly, dying and restarting 3–6 times each, with no crash and no memory growth. The native and browser builds played the *same* sessions move for move: deterministic across machines, which replays and multiplayer depend on.
+  - **Inside the editor:** TweEngine Studio now runs the game in a panel beside the code and reloads it on every save.
+  - **Still to do by hand:** the itch.io upload. The 1 MB build is ready.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.
