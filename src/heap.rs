@@ -256,6 +256,8 @@ impl Heap {
             Some(t0) => ((crate::clock::now_secs().unwrap_or(t0) - t0) * 1e9) as u64,
             None => 0,
         };
+        // Objects swept since the last budget check.
+        let mut since_check = 0u32;
         unsafe {
             while !self.sweep_cur.is_null() {
                 let cur = self.sweep_cur;
@@ -282,14 +284,19 @@ impl Heap {
                 }
                 self.sweep_cur = next;
 
-                // Budget check is per-object — reading the clock is
-                // cheap on Win/Mac/Linux (rdtsc-backed). Checking
-                // every N objects would amortize but the sweep loop
-                // is already cheap enough that the per-object check
-                // doesn't dominate.
-                if start.is_some() && elapsed_ns() >= budget_ns {
-                    self.in_flight_collect_ns += elapsed_ns();
-                    return false;
+                // Budget check every 256 objects. Per-object was fine
+                // natively (rdtsc), but on wasm the clock is a call out
+                // to JS: web3d-M3 profiling found the sweep's clock
+                // reads at ~18% of a 5,000-entity frame in Chrome.
+                // Freeing 256 objects takes microseconds, far under
+                // any budget.
+                since_check += 1;
+                if since_check >= 256 {
+                    since_check = 0;
+                    if start.is_some() && elapsed_ns() >= budget_ns {
+                        self.in_flight_collect_ns += elapsed_ns();
+                        return false;
+                    }
                 }
             }
         }

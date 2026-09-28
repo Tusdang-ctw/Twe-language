@@ -51,11 +51,16 @@ pub fn start() {
     });
 }
 
+thread_local! {
+    /// The page's `Performance`, looked up once: `window()` +
+    /// `performance()` on every clock read were a measurable share of
+    /// the frame (web3d-M3 profiling).
+    static PERFORMANCE: Option<web_sys::Performance> =
+        web_sys::window().and_then(|w| w.performance());
+}
+
 fn now_secs() -> f64 {
-    web_sys::window()
-        .and_then(|w| w.performance())
-        .map(|p| p.now() / 1000.0)
-        .unwrap_or(0.0)
+    PERFORMANCE.with(|p| p.as_ref().map(|p| p.now() / 1000.0).unwrap_or(0.0))
 }
 
 /// Log to the console and, if the page has one, into `#twe-status`.

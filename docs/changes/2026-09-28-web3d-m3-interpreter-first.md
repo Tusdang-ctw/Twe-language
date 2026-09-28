@@ -44,3 +44,14 @@ Each step is re-measured against the targets. Columnar storage returns only if t
 | Baseline | 2,459 |
 | Builtin calls pass positional arguments without copying | 2,105 |
 | Pooled argument vectors; methods and functions don't copy positional arguments | 1,969 |
+
+**Chrome profile (CDP sampling, wasm name section).** The first browser profile found a cost the native numbers couldn't show: about 18% of the frame was spent reading the clock. The incremental GC sweep checked its time budget after every freed object, and on wasm each clock read is a JS round trip (`window()` → `performance()` → `now()`).
+
+The sweep now checks every 256 objects, and the web shell caches `Performance`. In Chrome the tick went from 9.4–10.5 to 8.0–8.8 ms, and the frame rate from 114–127 to 134–141 fps, near the 144 Hz display cap.
+
+The remaining profile:
+- name resolution (`lookup_name`, `get_field`, `Env::get`, instance access, `find_method`, hashing): ~28% of busy time;
+- the tree-walk itself (`eval_expr` / `eval_stmt` / arithmetic): ~26%;
+- allocation (malloc, free, sweep): ~7%.
+
+That confirms slot-indexed names as the next step.
