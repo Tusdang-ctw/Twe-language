@@ -94,6 +94,7 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
     - globals and fields read through cached positions;
     - tuples (every `vec3`) allocated once instead of three times.
   - **Result:** one enemy's update went from **2,459 ns to 668 ns** natively (3.7×). In wasm, the script tick for 5,000 enemies went from ~8 ms to a **4.3 ms median**, against a 4 ms goal.
+  - **Stopped deliberately, 7% short of the 4 ms wasm goal.** The frame-rate goal was already met with room to spare, and the next step (compiling to closures) would mean rewriting how suspended code resumes. That is kept in reserve until a real game needs it.
 
 ---
 

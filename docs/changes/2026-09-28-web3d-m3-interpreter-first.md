@@ -69,7 +69,22 @@ The latest profile (Node, wasm) no longer shows hashing or clock reads. What rem
 - the call machinery: ~12%;
 - GC and allocation: ~6–7%.
 
-Closing the last ~15% of the wasm target needs a structural step, such as compiling the AST to closures, or a cheaper `vec3`, not more lookup caching. The native 300 ns target was set assuming the columnar design and is not reachable by a tree-walker along this path. See the M3 closeout for the decision.
+Closing the last ~15% of the wasm target needs a structural step, such as compiling the AST to closures, or a cheaper `vec3`, not more lookup caching. The native 300 ns target was set assuming the columnar design and is not reachable by a tree-walker along this path.
+
+**Follow-up (same day).** The cheaper `vec3` came first: tuples of up to three elements now live inline in the heap object (`HeapBody::SmallTuple`). That took the native update to 668 ns and the wasm median to **4.3 ms** (best 3.05 ms), about 7% over the 4 ms target.
+
+## Decision: stop the interpreter work here for M3
+
+The user asked for the best option. The frame-rate exit criterion, 5,000 enemies at 60 fps in Chrome, is met with about 2.3× headroom (134–141 fps, capped by the display). The wasm tick is 7% over its secondary target.
+
+The remaining profile is the tree-walk itself. The structural fix, compiling the AST to closures, would have to re-implement fiber suspension: `wait` resumes a body by AST statement index. That makes it a multi-session rewrite with real risk, justified only if a real game needs it.
+
+So:
+- The wasm tick target is recorded as **not met (4.3 ms vs 4 ms)**.
+- The native 300 ns target is **restated as unreachable on the tree-walker** (it assumed columnar storage).
+- Closure compilation re-enters only if the M4 `survive3d` slice profiles as interpreter-bound in Chrome.
+
+The CI benchmark (`web/bench.mjs`) keeps the number visible on every PR.
 
 **The wasm measurement.** `web/bench.mjs` runs the web runtime's `bench_ticks` export under Node. It is the same interpreter build as the browser, headless, so the number doesn't depend on a visible page. CI runs it on every PR (report only). At this step, `examples/swarm_3d.twe` measured a **5.45 ms** median tick (best 4.87 ms) against the 4 ms target. After the global and field hints it measured **~5.0 ms** (best 4.3 ms). Then **4.67–4.81 ms** (best 3.96 ms).
 
