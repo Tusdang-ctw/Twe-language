@@ -129,6 +129,7 @@ pub fn render_frame(
         texture_paths: &env.texture_paths,
         time: env.sim_time as f32,
         materials: &env.material_sources,
+        hud: &env.hud_queue,
         anim: &anim,
     };
     let scripted = crate::clock::now_secs();

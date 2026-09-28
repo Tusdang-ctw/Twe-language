@@ -8859,8 +8859,9 @@ fn require_render_2d(env: &Env, name: &str) -> Result<(), RuntimeError> {
                 "{name}() is a 2D drawing call and needs the 2D runtime (`twec play`)"
             ),
             help: Some(
-                "3D scenes (`twec play3d`) can't use 2D drawing or UI widgets yet; \
-                 an in-3D HUD layer is planned (web3d-M3)"
+                "in 3D (`twec play3d`, the web build) only `text()` and `rect()` draw, \
+                 as a HUD; the other 2D calls and UI widgets come with the 2D-on-kernel \
+                 port (web3d-M6)"
                     .to_string(),
             ),
         });
@@ -8958,8 +8959,23 @@ pub(crate) fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
 }
 
 fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "rect")?;
     arity(args, 3, "rect")?;
+    if !macroquad_live() {
+        // web3d-M3: in 3D, a HUD rectangle over the scene.
+        require_render(env, "rect")?;
+        let (x, y) = xy_of(&args[0], "rect.at")?;
+        let (w, h) = xy_of(&args[1], "rect.size")?;
+        let c = color_of(&args[2], "rect.color")?;
+        env.hud_queue.push(crate::render3d_types::HudItem::Rect {
+            x: x as f32,
+            y: y as f32,
+            w: w as f32,
+            h: h as f32,
+            color: [c.r, c.g, c.b, c.a],
+        });
+        return Ok(Value::NIL);
+    }
+    require_render_2d(env, "rect")?;
     let (x, y) = xy_of(&args[0], "rect.at")?;
     let (w, h) = xy_of(&args[1], "rect.size")?;
     let color = color_of(&args[2], "rect.color")?;
@@ -9099,8 +9115,26 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 }
 
 fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "text")?;
     arity(args, 4, "text")?;
+    if !macroquad_live() {
+        // web3d-M3: in 3D, HUD text over the scene.
+        require_render(env, "text")?;
+        let (x, y) = xy_of(&args[1], "text.at")?;
+        let c = color_of(&args[3], "text.color")?;
+        env.hud_queue.push(crate::render3d_types::HudItem::Text {
+            text: if args[0].is_str() {
+                args[0].as_string()
+            } else {
+                args[0].display()
+            },
+            x: x as f32,
+            y: y as f32,
+            size: number(&args[2], "text.size")? as f32,
+            color: [c.r, c.g, c.b, c.a],
+        });
+        return Ok(Value::NIL);
+    }
+    require_render_2d(env, "text")?;
     let content = {
         let __t = &args[0];
         if __t.is_str() {

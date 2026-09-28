@@ -611,6 +611,7 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
 /// session (d).
 pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
     env.render_queue3d.clear();
+    env.hud_queue.clear();
     if let Some(body) = env.top_on_render.clone() {
         let prev_render = env.in_render;
         env.in_render = true;

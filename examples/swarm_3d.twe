@@ -64,3 +64,6 @@ on update(dt):
 
 on render():
     sphere(at: player, color: (0.95, 0.95, 0.95, 1.0), size: 0.8)
+    # HUD: 2D-canvas coordinates (640x480), drawn over the scene.
+    rect((10, 10), (190, 28), (0.0, 0.0, 0.0, 0.5))
+    text("{count} enemies", (18, 31), 20, color.white)

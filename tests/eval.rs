@@ -2944,10 +2944,11 @@ sound.schedule(snd, 0.2, 1.0)
 
 #[test]
 fn two_d_draw_in_3d_render_errors_instead_of_panicking() {
-    // `text()` is a macroquad (2D) call. In `twec play3d` the render
+    // `circle()` is a macroquad (2D) call. In `twec play3d` the render
     // hook runs with `in_render` set but no macroquad window, which
     // used to abort the process on macroquad's THREAD_ID assertion.
-    let src = "on render():\n    text(\"hp\", (10, 10), 16, color.white)\n";
+    // (`text()` and `rect()` draw the 3D HUD since web3d-M3.)
+    let src = "on render():\n    circle((10, 10), 4, color.white)\n";
     let tokens = lexer::lex(src).expect("lex");
     let program = parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();
@@ -3215,4 +3216,34 @@ fn look_block_is_refused_by_the_2d_player() {
 
     let plain = env_for("entity E:\n    var hp = 1\n").expect("runs");
     assert_eq!(eval::first_look_class(&plain), None);
+}
+
+#[test]
+fn text_and_rect_queue_a_hud_in_3d() {
+    use twec::render3d_types::HudItem;
+    let src = concat!(
+        "on render():\n",
+        "    rect((10, 400), (200, 20), color.red)\n",
+        "    text(\"HP\", (14, 416), 16, color.white)\n",
+        "    text(42, (0, 0), 8, color.white)\n",
+    );
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    eval::run_top_level(&mut env, &program).expect("top-level");
+    eval::render_frame3d(&mut env).expect("render");
+    let hud = &env.hud_queue;
+    assert_eq!(hud.len(), 3, "{hud:?}");
+    assert!(
+        matches!(&hud[0], HudItem::Rect { x, w, color, .. } if *x == 10.0 && *w == 200.0 && color[0] == 1.0)
+    );
+    assert!(matches!(&hud[1], HudItem::Text { text, size, .. } if text == "HP" && *size == 16.0));
+    assert!(
+        matches!(&hud[2], HudItem::Text { text, .. } if text == "42"),
+        "non-strings display"
+    );
+    // The queue is per frame, not cumulative.
+    eval::render_frame3d(&mut env).expect("render");
+    assert_eq!(env.hud_queue.len(), 3);
 }

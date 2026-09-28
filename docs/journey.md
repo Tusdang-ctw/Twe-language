@@ -94,6 +94,7 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
     - globals and fields read through cached positions;
     - tuples (every `vec3`) allocated once instead of three times.
   - **Result:** one enemy's update went from **2,459 ns to 668 ns** natively (3.7×). In wasm, the script tick for 5,000 enemies went from ~8 ms to a **4.3 ms median**, against a 4 ms goal.
+  - **A HUD in 3D (2026-09-28).** Health bars and score text draw over the 3D scene, the last feature a survivors game needed from M3.
   - **Procedural surfaces reach the game (2026-09-28).** `material: Fire` paints an entity's mesh with a `visual` block, the code-only shader system from Phase 9, now compiled into the 3D renderer. The headline "procedural visuals from code" feature now works in the game itself, not only in a standalone viewer.
   - **`look:` learns to turn (2026-09-28).** `facing` rotates an entity on the GPU, shadows included, and `math.atan2` points it along its heading.
   - **Stopped deliberately, 7% short of the 4 ms wasm goal.** The frame-rate goal was already met with room to spare, and the next step (compiling to closures) would mean rewriting how suspended code resumes. That is kept in reserve until a real game needs it.

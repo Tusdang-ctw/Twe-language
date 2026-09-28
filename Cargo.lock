@@ -2999,6 +2999,7 @@ dependencies = [
  "arboard",
  "bytemuck",
  "criterion",
+ "fontdue",
  "gilrs",
  "gltf",
  "image 0.25.10",

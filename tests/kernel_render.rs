@@ -175,3 +175,36 @@ fn look_material_paints_and_cuts_out() {
         "a fully transparent material cuts the mesh out"
     );
 }
+
+/// web3d-M3: `text()` / `rect()` in a 3D render draw a HUD over the
+/// scene, in the 2D runtime's 640×480 canvas coordinates.
+#[test]
+fn hud_draws_text_and_rects_over_the_scene() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let src = concat!(
+        "on render():\n",
+        "    rect((0, 0), (320, 240), color.red)\n",
+        "    text(\"TWE\", (340, 400), 120, color.green)\n",
+    );
+    let rgba = render_source(&mut renderer, "hud", src);
+    save_png("hud", &rgba);
+    // The rect covers the top-left quarter of the target (160×120 of
+    // the 320×240 test target) in the colour it was given.
+    let [r, g, b] = pixel(&rgba, 40, 30);
+    assert!(
+        r > 240 && g < 20 && b < 20,
+        "rect should be red, got {:?}",
+        [r, g, b]
+    );
+    // Somewhere in the text's box there is green ink.
+    let green = (170..310)
+        .flat_map(|x| (140..205).map(move |y| (x, y)))
+        .filter(|&(x, y)| {
+            let [r, g, b] = pixel(&rgba, x, y);
+            g > 200 && r < 60 && b < 60
+        })
+        .count();
+    assert!(green > 100, "only {green} green text pixels");
+}

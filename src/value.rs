@@ -526,6 +526,8 @@ pub struct Env {
     /// Material id → WGSL, as the kernel's snapshot takes it; index 0
     /// is the plain surface. See [`Env::intern_material`].
     pub material_sources: Vec<String>,
+    /// web3d-M3: this frame's HUD (`text()` / `rect()` in a 3D render).
+    pub hud_queue: Vec<crate::render3d_types::HudItem>,
     material_names: Vec<String>,
     /// web3d-M1: the module object being initialised when this env runs
     /// a module's top level (`None` for the entry program). A function
@@ -607,6 +609,7 @@ impl Env {
             sim_time: 0.0,
             visual_materials: HashMap::new(),
             material_sources: vec![String::new()],
+            hud_queue: Vec::new(),
             material_names: vec![String::new()],
             current_module: None,
             render_queue3d: Vec::new(),

@@ -13,6 +13,12 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **HUD text in 3D** (web3d-M3): `text()` and `rect()` inside a 3D
+  `on render():` draw screen-space text and boxes over the scene, in the
+  2D canvas's 640×480 coordinates. They used to be an error in 3D.
+- **Correct colour in the browser**: the web build now renders through
+  an sRGB view of the canvas, so browsers that give WebGPU a non-sRGB
+  canvas no longer show the scene without its final gamma curve.
 - **`look:` `material`** (web3d-M3): a `visual` block as a mesh's
   surface — its `pixel(uv, time)` shades the mesh on the GPU, lit and
   tinted, with alpha below 0.5 cut out. Visual blocks now reach the

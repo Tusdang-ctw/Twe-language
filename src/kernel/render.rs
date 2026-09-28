@@ -58,6 +58,8 @@ pub struct RenderSnapshot<'a> {
     /// web3d-M3: WGSL for each material id (`twe_pixel` from
     /// `visual_wgsl::compile_material`); index 0 is unused.
     pub materials: &'a [String],
+    /// web3d-M3: HUD text and rectangles, drawn over the scene.
+    pub hud: &'a [crate::render3d_types::HudItem],
     /// Animation state for a skinned mesh id.
     pub anim: &'a dyn Fn(u32) -> AnimSnapshot,
 }
@@ -1145,6 +1147,11 @@ pub struct Renderer {
     /// Material pipelines keyed by their WGSL, not by id: ids restart
     /// with every program (and on hot reload), the source doesn't lie.
     material_pipelines: HashMap<String, wgpu::RenderPipeline>,
+    /// web3d-M3: the sRGB format frames are drawn in — the surface's
+    /// own format, or an sRGB view of it (browsers often give a
+    /// WebGPU canvas a non-sRGB format).
+    target_format: wgpu::TextureFormat,
+    hud: super::hud::Hud,
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
@@ -1471,7 +1478,16 @@ async fn init_renderer(
             desired_maximum_frame_latency: 2,
         },
     };
-    let surface_format = config.format;
+    let mut config = config;
+    // web3d-M3: always draw through an sRGB view. The tonemap and HUD
+    // write linear colour and rely on the target's sRGB encoding; a
+    // non-sRGB surface (common for browser canvases) gets an sRGB view
+    // format instead of silently skipping the gamma curve.
+    let target_format = config.format.add_srgb_suffix();
+    if target_format != config.format {
+        config.view_formats.push(target_format);
+    }
+    let surface_format = target_format;
     if let Some(surface) = &surface {
         surface.configure(&device, &config);
     }
@@ -2005,6 +2021,7 @@ async fn init_renderer(
         cache: None,
     });
 
+    let hud = super::hud::Hud::new(&device, &queue, target_format);
     Ok(Renderer {
         surface,
         offscreen,
@@ -2014,6 +2031,8 @@ async fn init_renderer(
         pipeline,
         pipeline_layout,
         material_pipelines: HashMap::new(),
+        target_format,
+        hud,
         cube_vertex_buffer,
         cube_index_buffer,
         cube_index_count: CUBE_INDICES.len() as u32,
@@ -3515,12 +3534,20 @@ impl Renderer {
             None => None,
         };
         let view_target = match (&frame, &state.offscreen) {
-            (Some(f), _) => f
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default()),
+            (Some(f), _) => f.texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(state.target_format),
+                ..Default::default()
+            }),
             (None, Some(t)) => t.create_view(&wgpu::TextureViewDescriptor::default()),
             (None, None) => return Err("renderer has no target".to_string()),
         };
+        state.hud.prepare(
+            &state.device,
+            &state.queue,
+            snap.hud,
+            state.config.width,
+            state.config.height,
+        );
         let mut encoder = state
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -3810,6 +3837,8 @@ impl Renderer {
             tmpass.set_pipeline(&state.tonemap_pipeline);
             tmpass.set_bind_group(0, bg, &[]);
             tmpass.draw(0..3, 0..1);
+            // web3d-M3: the HUD, over the finished scene.
+            state.hud.draw(&mut tmpass);
         }
 
         state.queue.submit(Some(encoder.finish()));
@@ -4261,6 +4290,11 @@ mod tests {
             }
         }
         assert!(checked > 0, "no visual blocks found in examples/");
+    }
+
+    #[test]
+    fn hud_shader_parses_and_validates() {
+        validate_wgsl("HUD_SHADER", crate::kernel::hud::HUD_SHADER);
     }
 
     #[test]
