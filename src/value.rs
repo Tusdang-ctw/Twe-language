@@ -72,6 +72,7 @@ pub struct LookDef {
     pub mesh: Option<LookSlot>,
     pub tint: Option<LookSlot>,
     pub scale: Option<LookSlot>,
+    pub facing: Option<LookSlot>,
 }
 
 /// One look key: its expression, where it was written, and whether it

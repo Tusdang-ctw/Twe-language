@@ -88,5 +88,5 @@ The update tick is unchanged by this stage: 9.4–10.5 ms per tick in Chrome, ag
 ## Staging
 
 1. **Stage 1:** `mesh` / `tint` / `scale`, drawn through the existing instanced path. Full integration across the lexer, parser, printer, AST JSON, resolver, inference, verify, grammar export, tree-sitter and TextMate. `swarm_3d` moves to `look:`, and the baseline is re-measured.
-2. **Stage 2:** `facing` (a per-instance rotation in the kernel's instance data and shader).
+2. **Stage 2: done (2026-09-28).** `facing` is a yaw in radians about +Y, where `0` faces +Z. The kernel's instance data carries (sin, cos), and both the main and shadow vertex shaders rotate position and normal, so shadows turn with the mesh. `math.atan2(y, x)` was added so a script can turn a direction into a facing. `tests/kernel_render.rs::look_facing_rotates_the_mesh` checks it on the GPU: a cube turned 45° changes its footprint, and one turned 90° matches the unturned cube.
 3. **Stage 3:** `material` (`visual` blocks as mesh surfaces).

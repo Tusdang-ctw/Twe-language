@@ -44,6 +44,15 @@ fn render_script(renderer: &mut Renderer, path: &str, frames: u32) -> Vec<u8> {
     renderer.read_pixels().expect("read pixels")
 }
 
+/// Render a script given as source (written to a scratch file).
+fn render_source(renderer: &mut Renderer, name: &str, src: &str) -> Vec<u8> {
+    let dir = std::path::Path::new("target/kernel-render");
+    std::fs::create_dir_all(dir).expect("create output dir");
+    let path = dir.join(format!("{name}.twe"));
+    std::fs::write(&path, src).expect("write script");
+    render_script(renderer, path.to_str().unwrap(), 1)
+}
+
 fn save_png(name: &str, rgba: &[u8]) {
     let dir = std::path::Path::new("target/kernel-render");
     std::fs::create_dir_all(dir).expect("create output dir");
@@ -91,5 +100,41 @@ fn hello_3d_renders_its_scene() {
     assert!(
         differing > (W * H / 50) as usize,
         "only {differing} pixels differ from the sky"
+    );
+}
+
+/// web3d-M3: a look's `facing` turns the mesh about +Y. A square cube
+/// seen from above changes its screen footprint when turned 45 degrees,
+/// and a quarter turn maps it back onto itself.
+#[test]
+fn look_facing_rotates_the_mesh() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let scene = |yaw: &str| {
+        format!(
+            "camera.eye = vec3(0, 6, 0.001)\ncamera.target = vec3(0, 0, 0)\n\
+             entity Box:\n    var pos = vec3(0, 0, 0)\n    look:\n        mesh: \"cube\"\n\
+             \x20       scale: 2.0\n        facing: {yaw}\nspawn Box\n"
+        )
+    };
+    let flat = render_source(&mut renderer, "facing_0", &scene("0.0"));
+    let turned = render_source(&mut renderer, "facing_45", &scene("0.7853982"));
+    let quarter = render_source(&mut renderer, "facing_90", &scene("1.5707964"));
+    save_png("facing_45", &turned);
+    let differing = |a: &[u8], b: &[u8]| {
+        a.chunks(4)
+            .zip(b.chunks(4))
+            .filter(|(p, q)| p[..3].iter().zip(&q[..3]).any(|(x, y)| x.abs_diff(*y) > 8))
+            .count()
+    };
+    let total = (W * H) as usize;
+    assert!(
+        differing(&flat, &turned) > total / 100,
+        "45 degrees changed too little"
+    );
+    assert!(
+        differing(&flat, &quarter) < total / 200,
+        "a quarter turn of a cube should look the same"
     );
 }

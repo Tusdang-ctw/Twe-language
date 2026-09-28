@@ -3068,7 +3068,7 @@ fn look_block_draws_every_live_entity() {
     let q = &env.render_queue3d;
     // Top-level `on render():` still draws (first), then one draw per
     // live look entity: the despawned crate at x = 6 is not drawn.
-    assert_eq!(q.len(), 6, "{q:#?}");
+    assert_eq!(q.len(), 7, "{q:#?}");
     assert!(matches!(q[0].primitive, Primitive::Sphere) && q[0].at == [0.0, 5.0, 0.0]);
     let at = |x: f32| {
         q.iter()
@@ -3082,6 +3082,15 @@ fn look_block_draws_every_live_entity() {
         crate_.color,
         [0.5, 0.25, 0.0, 1.0],
         "3-component tint gets alpha 1"
+    );
+    assert_eq!(crate_.yaw, 1.5);
+    assert_eq!(at(2.0).yaw, 0.0, "facing defaults to 0");
+    // Per-entity facing through math.atan2: dir (1, 0, 0) is +X, a
+    // quarter turn from +Z.
+    let arrow = at(7.0).yaw;
+    assert!(
+        (arrow - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+        "{arrow}"
     );
     // Per-entity key: only the hurt slime flashes white.
     assert_eq!(at(2.0).color, [0.0, 1.0, 0.0, 1.0]);
@@ -3112,10 +3121,10 @@ fn look_block_rejects_unknown_duplicate_and_unimplemented_keys() {
     let e = env_for(dup).err().expect("duplicate key errors");
     assert!(e.contains("`scale` is set twice"), "{e}");
 
-    let later = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        facing: 1.0\n";
+    let later = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        material: \"fire\"\n";
     let e = env_for(later).err().expect("unimplemented key errors");
     assert!(
-        e.contains("not implemented yet") && e.contains("stage 2"),
+        e.contains("not implemented yet") && e.contains("stage 3"),
         "{e}"
     );
 }
@@ -3162,7 +3171,7 @@ fn look_block_is_refused_by_the_2d_player() {
     // silently drawing nothing.
     let src = fs::read_to_string("tests/programs/look_block.twe").unwrap();
     let mut env = env_for(&src).expect("program runs");
-    assert_eq!(eval::first_look_class(&env).as_deref(), Some("BigSlime"));
+    assert_eq!(eval::first_look_class(&env).as_deref(), Some("Arrow"));
     let e = eval::render_frame(&mut env).expect_err("2D render refuses looks");
     assert!(
         e.message.contains("only the 3D runtime draws"),

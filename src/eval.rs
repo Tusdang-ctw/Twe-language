@@ -656,6 +656,7 @@ struct LookValues {
     primitive: crate::value::Primitive,
     color: [f32; 4],
     size: f32,
+    yaw: f32,
 }
 
 /// web3d-M3: queue a draw for every live entity whose class has a
@@ -713,6 +714,7 @@ fn draw_looks(env: &mut Env) -> Result<(), RuntimeError> {
             color: values.color,
             size: values.size,
             texture: 0,
+            yaw: values.yaw,
         });
     }
     Ok(())
@@ -724,6 +726,7 @@ impl LookValues {
             primitive: crate::value::Primitive::Cube,
             color: [1.0, 1.0, 1.0, 1.0],
             size: 1.0,
+            yaw: 0.0,
         }
     }
 }
@@ -755,6 +758,10 @@ fn look_values(
     if let Some(slot) = wanted(&look.scale, per_entity) {
         let val = eval_look_slot(env, entity, slot)?;
         v.size = crate::stdlib::number(&val, "look scale").map_err(|e| at_slot(e, slot))? as f32;
+    }
+    if let Some(slot) = wanted(&look.facing, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.yaw = crate::stdlib::number(&val, "look facing").map_err(|e| at_slot(e, slot))? as f32;
     }
     Ok(v)
 }
@@ -3987,6 +3994,7 @@ fn build_look(
             "mesh" => look.mesh = Some(slot),
             "tint" => look.tint = Some(slot),
             "scale" => look.scale = Some(slot),
+            "facing" => look.facing = Some(slot),
             other => unreachable!("look_key_problem accepted `{other}`"),
         }
     }

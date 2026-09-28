@@ -13,6 +13,9 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **`look:` `facing`** (web3d-M3): yaw in radians about +Y (0 faces +Z),
+  applied on the GPU to the mesh and its shadow; and **`math.atan2(y, x)`**
+  to turn a direction into a facing (`facing: math.atan2(dx, dz)`).
 - **`look:` blocks** (web3d-M3; `docs/06` §4.9a). In 3D, an entity
   declares how it is drawn (`mesh`, `tint`, `scale`) and the runtime
   draws every live instance at its `pos`, with no per-entity draw code.

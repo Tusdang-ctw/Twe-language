@@ -241,7 +241,7 @@ nested_block   := "state" identifier ":" indented_block
                 | look_block                      # entity only (§4.9a)
 
 look_block     := "look" ":" INDENT (look_key ":" expr NEWLINE)+ DEDENT
-look_key       := "mesh" | "tint" | "scale"      # closed set; verify rejects others
+look_key       := "mesh" | "tint" | "scale" | "facing"   # closed set; verify rejects others
 ```
 
 V0.1 ships with **six** core block keywords: `entity`, `state`, `visual`, `particles`, `scene`, `dialogue`. The other forms (`item`, `inventory`, `ai`, `tilemap`, `save`) are stdlib-defined patterns that desugar to `entity` plus convention. They may be promoted to keywords in v0.2 once their semantics are stable.
@@ -522,10 +522,11 @@ entity Enemy:
 | `mesh` | `"cube"`, `"sphere"`, or a `.glb` path | `"cube"` |
 | `tint` | color `(r, g, b)` or `(r, g, b, a)` | white |
 | `scale` | number (uniform size) | `1.0` |
+| `facing` | number: yaw in radians about +Y; `0` faces +Z, and `math.atan2(dx, dz)` faces the direction `(dx, dz)` | `0` |
 
 - **The key set is closed.** `twec verify` reports:
   - an unknown key (`look-error.unknown-key`, with a rename fix when one key is close);
-  - a planned key (`facing`, `material`: `look-error.not-yet`);
+  - a planned key (`material`: `look-error.not-yet`);
   - a duplicate key (`look-error.duplicate`);
   - a literal mesh that is neither a shape nor a `.glb` path (`look-error.mesh`).
 
@@ -736,6 +737,7 @@ math.max(2, 5)         # 5
 math.mod(-1, 4)        # 3 — Euclidean modulo. `%` is reserved for percent literals.
 math.sin(math.pi)      # ~0
 math.cos(0.0)          # 1.0
+math.atan2(1.0, 0.0)   # ~1.5708 — the angle of direction (x, y) = (0, 1); `facing: math.atan2(dx, dz)` turns a look toward (dx, dz)
 math.noise((x, y))     # deterministic 2D value noise, range [-1, 1]
 math.smoothstep(0.0, 1.0, t)  # smooth 0→1 curve
 math.mix(a, b, t)      # linear interpolation; works on numbers or same-shape tuples

@@ -5701,6 +5701,12 @@ fn install_math(env: &mut Env) {
         "cos".to_string(),
         Value::from_builtin("math.cos", &["x"], math_cos),
     );
+    // web3d-M3: the angle of a direction, for a look's `facing`
+    // (`math.atan2(dx, dz)` faces (dx, dz)).
+    math.insert(
+        "atan2".to_string(),
+        Value::from_builtin("math.atan2", &["y", "x"], math_atan2),
+    );
     math.insert(
         "smoothstep".to_string(),
         Value::from_builtin("math.smoothstep", &["low", "high", "x"], math_smoothstep),
@@ -6246,6 +6252,13 @@ fn math_sin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 fn math_cos(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "math.cos")?;
     Ok(Value::from_float(as_f64(&args[0], "math.cos")?.cos()))
+}
+
+fn math_atan2(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "math.atan2")?;
+    let y = as_f64(&args[0], "math.atan2")?;
+    let x = as_f64(&args[1], "math.atan2")?;
+    Ok(Value::from_float(y.atan2(x)))
 }
 
 // WGSL-spec smoothstep: t = clamp((x - low) / (high - low), 0, 1);
@@ -11062,6 +11075,7 @@ fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         color,
         size,
         texture: 0,
+        yaw: 0.0,
     });
     Ok(Value::NIL)
 }
@@ -11078,6 +11092,7 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         color,
         size,
         texture: 0,
+        yaw: 0.0,
     });
     Ok(Value::NIL)
 }
@@ -11110,6 +11125,7 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         color,
         size,
         texture: 0,
+        yaw: 0.0,
     });
     Ok(Value::NIL)
 }
@@ -11151,6 +11167,7 @@ fn mesh_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         color,
         size,
         texture: tex_id,
+        yaw: 0.0,
     });
     Ok(Value::NIL)
 }
@@ -11169,6 +11186,7 @@ fn cube_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         color,
         size,
         texture: tex_id,
+        yaw: 0.0,
     });
     Ok(Value::NIL)
 }

@@ -234,7 +234,7 @@ fn look_block_diagnostics_and_fix_round_trip() {
     };
     let head = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n";
     assert_eq!(
-        kinds(&format!("{head}        facing: 1\n")),
+        kinds(&format!("{head}        material: \"fire\"\n")),
         ["look-error.not-yet"]
     );
     assert_eq!(

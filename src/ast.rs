@@ -407,15 +407,14 @@ pub struct LookKey {
     pub col: u32,
 }
 
-/// The keys a `look:` block may set (web3d-M3 stage 1). `facing` and
-/// `material` join in later M3 stages; see [`look_key_stage`].
-pub const LOOK_KEYS: &[&str] = &["mesh", "tint", "scale"];
+/// The keys a `look:` block may set. `material` joins in a later M3
+/// stage; see [`look_key_stage`].
+pub const LOOK_KEYS: &[&str] = &["mesh", "tint", "scale", "facing"];
 
 /// For a key that is planned but not implemented yet, the M3 stage that
 /// adds it — so `verify` can say so instead of "unknown key".
 pub fn look_key_stage(key: &str) -> Option<&'static str> {
     match key {
-        "facing" => Some("web3d-M3 stage 2 (per-instance rotation)"),
         "material" => Some("web3d-M3 stage 3 (visual blocks as surfaces)"),
         _ => None,
     }

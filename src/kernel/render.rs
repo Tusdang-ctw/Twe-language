@@ -161,12 +161,16 @@ struct Instance {
     position: [f32; 3],
     size: f32,
     color: [f32; 4],
+    /// web3d-M3: (sin yaw, cos yaw, 0, 0) — rotation about +Y, applied
+    /// by both vertex shaders.
+    rot: [f32; 4],
 }
 
 impl Instance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
         2 => Float32x4, // packed (position.xyz, size)
         3 => Float32x4,
+        7 => Float32x4, // rotation (sin yaw, cos yaw, _, _)
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -372,7 +376,13 @@ struct VertexInput {
 struct InstanceInput {
     @location(2) inst_pos_size: vec4<f32>, // xyz = position, w = uniform scale
     @location(3) inst_color: vec4<f32>,
+    @location(7) inst_rot: vec4<f32>,      // (sin yaw, cos yaw, _, _)
 };
+
+// web3d-M3: rotate about +Y by the instance's yaw (0 faces +Z).
+fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
+    return vec3<f32>(rot.y * v.x + rot.x * v.z, v.y, -rot.x * v.x + rot.y * v.z);
+}
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
@@ -400,10 +410,11 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
         + vert.weights.w * joints_u.matrices[vert.joints.w];
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
-    let model_pos = skinned_pos * inst.inst_pos_size.w + inst.inst_pos_size.xyz;
+    let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
+        + inst.inst_pos_size.xyz;
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
-    out.world_normal = skinned_normal;
+    out.world_normal = yaw_rotate(skinned_normal, inst.inst_rot);
     out.base_color = inst.inst_color.rgb;
     out.tex_coord = vert.uv;
     out.world_pos = model_pos;
@@ -704,7 +715,13 @@ struct VertexInput {
 struct InstanceInput {
     @location(2) inst_pos_size: vec4<f32>,
     @location(3) inst_color: vec4<f32>,
+    @location(7) inst_rot: vec4<f32>,
 };
+
+// Same rotation as the main shader's, so shadows match the geometry.
+fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
+    return vec3<f32>(rot.y * v.x + rot.x * v.z, v.y, -rot.x * v.x + rot.y * v.z);
+}
 
 @vertex
 fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<f32> {
@@ -714,7 +731,8 @@ fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<
         + vert.weights.z * joints_u.matrices[vert.joints.z]
         + vert.weights.w * joints_u.matrices[vert.joints.w];
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
-    let model_pos = skinned_pos * inst.inst_pos_size.w + inst.inst_pos_size.xyz;
+    let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
+        + inst.inst_pos_size.xyz;
     return shadow_u.light_space_matrix * vec4<f32>(model_pos, 1.0);
 }
 "#;
@@ -3290,10 +3308,12 @@ impl Renderer {
                     if cull_sphere(d.at, world_radius) {
                         continue;
                     }
+                    let (s, c) = d.yaw.sin_cos();
                     out.push(Instance {
                         position: d.at,
                         size: d.size,
                         color: d.color,
+                        rot: [s, c, 0.0, 0.0],
                     });
                 }
                 let end = out.len() as u32;

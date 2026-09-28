@@ -135,9 +135,10 @@ entity Enemy:
         mesh: "cube"               # "cube" | "sphere" | "path/to/model.glb"
         scale: 0.35                # uniform size, default 1
         tint: if hurt: color.white else: color.red   # may read fields
+        facing: math.atan2(vel.x, vel.z)             # yaw radians; 0 faces +Z
 ```
 
-The keys are exactly `mesh`, `tint` and `scale`, and a subclass can
+The keys are exactly `mesh`, `tint`, `scale` and `facing`, and a subclass can
 override single keys. `look:` is 3D-only for now (`twec play3d`,
 `twec build --target web`).
 
