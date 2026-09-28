@@ -90,8 +90,8 @@ async fn run() -> Result<(), String> {
     let (width, height) = (canvas.width().max(1), canvas.height().max(1));
 
     // The game: `main.twe` next to the page.
-    let source = String::from_utf8(fetch_bytes("main.twe").await?)
-        .map_err(|_| "main.twe is not UTF-8")?;
+    let source =
+        String::from_utf8(fetch_bytes("main.twe").await?).map_err(|_| "main.twe is not UTF-8")?;
     let tokens = twec::lexer::lex(&source).map_err(|e| format!("main.twe:{e}"))?;
     let program = twec::parser::parse(&tokens).map_err(|e| format!("main.twe:{e}"))?;
     let mut env = twec::value::Env::new();
@@ -142,12 +142,9 @@ fn frame(shell: &mut Shell) {
         let held = shell.held.borrow();
         let pressed = shell.pressed.borrow();
         let names: Vec<&str> = KEYS.iter().map(|(n, _)| *n).collect();
-        twec::host3d::apply_key_state(
-            &mut shell.env,
-            &names,
-            &|n| held.contains(n),
-            &|n| pressed.contains(n),
-        );
+        twec::host3d::apply_key_state(&mut shell.env, &names, &|n| held.contains(n), &|n| {
+            pressed.contains(n)
+        });
     }
     shell.pressed.borrow_mut().clear();
 
@@ -210,14 +207,15 @@ fn listen_keys(
 ) -> Result<(), String> {
     let name_of = |code: &str| KEYS.iter().find(|(_, c)| *c == code).map(|(n, _)| *n);
     let (h, p) = (held.clone(), pressed);
-    let down = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
-        if let Some(name) = name_of(&e.code()) {
-            if h.borrow_mut().insert(name.to_string()) {
-                p.borrow_mut().insert(name.to_string());
+    let down =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
+            if let Some(name) = name_of(&e.code()) {
+                if h.borrow_mut().insert(name.to_string()) {
+                    p.borrow_mut().insert(name.to_string());
+                }
+                e.prevent_default();
             }
-            e.prevent_default();
-        }
-    });
+        });
     let up = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
         if let Some(name) = name_of(&e.code()) {
             held.borrow_mut().remove(name);

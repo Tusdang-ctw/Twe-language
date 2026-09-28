@@ -86,7 +86,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 
 **Status (2026-09-27).** About 1,040 tests pass, and `cargo clippy --release --all-targets -- -D warnings` is clean. The 2D runtime, the wgpu 3D renderer (glTF, skinning, shadows, HDR), rapier physics, LAN lockstep netcode, the Windows 2D build pipeline, and the LLM tooling above are real and tested.
 
-**Direction: Web3D pivot.** Twe is being reworked into a browser-first 3D language + engine: one Rust + wgpu kernel running on WebGPU and natively, with a top-down 3D "survivors" game as the v1.0 vertical slice. See [`docs/changes/2026-09-27-web3d-pivot.md`](docs/changes/2026-09-27-web3d-pivot.md) for the plan, milestones, and exit criteria. Browser 3D does **not** work yet (the web build today is 2D only).
+**Direction: Web3D pivot.** Twe is being reworked into a browser-first 3D language + engine: one Rust + wgpu kernel running on WebGPU and natively, with a top-down 3D "survivors" game as the v1.0 vertical slice. See [`docs/changes/2026-09-27-web3d-pivot.md`](docs/changes/2026-09-27-web3d-pivot.md) for the plan, milestones, and exit criteria. Browser 3D now runs: `twec build --target web` packages a 3D game for WebGPU browsers (web3d-M2; single-file games for now). The 2D web build (`--target wasm32`) stays until the kernel draws sprites.
 
 **Experimental (not in the default build).** Several later phases shipped author-facing APIs whose runtimes are stubs: `console.*`, `achievements.*` / `cloud_save.*` / `friends.*`, `mmo.*`, `workshop.*`, `rollback.*` (a snapshot ring, no rewind engine), and `world.*` / `terrain.*` (spatial / streaming / LOD bookkeeping the renderer doesn't consume). They compile only with `cargo build --features experimental`; their demos live in `examples/experimental/`. iOS / Android / console / linux-server build targets write directory layouts only. The phase history is in [`CHANGELOG.md`](CHANGELOG.md) and `docs/changes/`.
 
@@ -133,6 +133,9 @@ Build a redistributable:
 ```sh
 twec build examples/survive_beta
 # → examples/survive_beta/dist/survive_beta.exe (self-extracting, no Twe required)
+
+twec build --target web examples/hello_3d.twe
+# → examples/dist/web/ — serve it over HTTP, open index.html in a WebGPU browser
 ```
 
 ## Examples gallery

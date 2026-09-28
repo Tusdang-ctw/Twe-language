@@ -16,9 +16,16 @@ removal would be load-bearing.
 - **3D games run in the browser on WebGPU** (web3d-M2, in progress). The
   new `crates/twe-web` shell runs a Twe script in the page and draws it
   through the same renderer kernel as `twec play3d`; `examples/hello_3d.twe`
-  renders in Chrome at the display's refresh rate. `twec build --target web`
-  packaging follows. The renderer now fits WebGPU's default limits (4 bind
-  groups) and is on wgpu 30.
+  renders in Chrome at the display's refresh rate. The renderer now fits
+  WebGPU's default limits (4 bind groups) and is on wgpu 30.
+- **`twec build --target web`** (web3d-M2) writes a servable folder: the
+  prebuilt WebGPU runtime, `index.html`, the script and its `assets/`. No
+  Rust toolchain needed on the author's machine. Replaces the placeholder
+  `wasm32-3d` target (kept as an alias). Single-file games only for now
+  (`import` reads modules from the filesystem).
+- **`twec build` accepts a single `.twe` file** as well as a project
+  directory: the game is named after the file, with its folder's
+  `assets/`.
 - **`quit()` and `quit_on_escape(flag)`** (web3d-M0; `docs/06` §7.14a). Games
   can now exit from their own menus, and can take Escape over for a pause
   menu. Previously Escape was hard-wired to close the window (so a script's

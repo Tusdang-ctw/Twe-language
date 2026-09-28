@@ -44,19 +44,14 @@ pub enum BuildTarget {
     /// this target today to produce the bundle + server launcher for
     /// a host that already runs a desktop session.
     LinuxServer,
-    /// Phase 38 session 1: browser 3D target. Same shape as
-    /// `Wasm32` (the 2D path) but the produced HTML wires up a
-    /// wgpu-on-web context instead of macroquad's GL backend. The
-    /// directory layout is `dist/web-3d/` with the same file set as
-    /// `Wasm32`. **Honest scaffolding:** the browser wgpu pipeline
-    /// itself (porting `src/play3d.rs` past its
-    /// `cfg(not(target_arch = "wasm32"))` gates) is deferred to a
-    /// follow-on session — Phase 38 of `docs/05-roadmap.md` is
-    /// itself gated on Firefox-stable + Safari-stable browser wgpu
-    /// support. The target descriptor lets the build pipeline grow
-    /// the third matrix row today; production of a working web-3D
-    /// experience waits on browser maturity.
-    Wasm32_3D,
+    /// web3d-M2: browser 3D build (`--target web`). Produces
+    /// `dist/web/` holding the prebuilt WebGPU runtime (`crates/twe-web`
+    /// → `twe_web.js` + `twe_web_bg.wasm`), `index.html`, `env.js`,
+    /// `main.twe` and the project's `assets/`. Nothing is compiled: the
+    /// runtime ships prebuilt (see [`find_web_runtime`]), so authors
+    /// need no Rust toolchain. Replaces Phase 38's placeholder
+    /// `wasm32-3d` layout (still accepted as an alias).
+    Web,
     /// Phase 39 session 1: iOS aarch64 target. Produces
     /// `dist/<game>-ios/` containing the bundle + Info.plist
     /// scaffold + signing instructions. **Honest scaffolding:** the
@@ -88,7 +83,7 @@ impl BuildTarget {
             }
             "wasm32" | "wasm32-unknown-unknown" => Some(BuildTarget::Wasm32),
             "linux-server" | "x86_64-unknown-linux-server" => Some(BuildTarget::LinuxServer),
-            "wasm32-3d" | "wasm32-unknown-unknown-3d" => Some(BuildTarget::Wasm32_3D),
+            "web" | "wasm32-3d" | "wasm32-unknown-unknown-3d" => Some(BuildTarget::Web),
             "ios" | "ios-aarch64" | "aarch64-apple-ios" => Some(BuildTarget::IosAarch64),
             "android" | "android-aarch64" | "aarch64-linux-android" => {
                 Some(BuildTarget::AndroidAarch64)
@@ -141,7 +136,7 @@ impl BuildTarget {
             | BuildTarget::IosAarch64
             | BuildTarget::AndroidAarch64 => "",
             // WASM outputs are directories, not files; extension unused.
-            BuildTarget::Wasm32 | BuildTarget::Wasm32_3D => "",
+            BuildTarget::Wasm32 | BuildTarget::Web => "",
         }
     }
 
@@ -153,7 +148,7 @@ impl BuildTarget {
             BuildTarget::LinuxX86_64 => "linux-x86_64",
             BuildTarget::Wasm32 => "wasm32",
             BuildTarget::LinuxServer => "linux-server",
-            BuildTarget::Wasm32_3D => "wasm32-3d",
+            BuildTarget::Web => "web",
             BuildTarget::IosAarch64 => "ios-aarch64",
             BuildTarget::AndroidAarch64 => "android-aarch64",
         }
@@ -482,28 +477,46 @@ pub struct AssetEntry {
     pub bundle_key: String,
 }
 
+///
+/// `dir` may also be a single `.twe` file (web3d-M2; every example is
+/// one): the game is that file, named after its stem, with its
+/// directory as the root (so a sibling `assets/` and `twe.toml` apply).
 pub fn discover_project(dir: &Path) -> Result<DiscoveredProject, String> {
-    let root = dir
+    let path = dir
         .canonicalize()
         .map_err(|e| format!("cannot resolve project directory '{}': {e}", dir.display()))?;
-    if !root.is_dir() {
-        return Err(format!(
-            "project path '{}' is not a directory",
-            dir.display()
-        ));
-    }
-    let main = root.join("main.twe");
-    if !main.is_file() {
-        return Err(format!(
-            "project '{}' is missing required file 'main.twe'",
-            root.display()
-        ));
-    }
-    let name = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "twe_game".to_string());
+    let (root, main, name) = if path.is_file() && path.extension().is_some_and(|e| e == "twe") {
+        let root = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.clone());
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "twe_game".to_string());
+        (root, path, name)
+    } else {
+        if !path.is_dir() {
+            return Err(format!(
+                "project path '{}' is not a directory or a .twe file",
+                dir.display()
+            ));
+        }
+        let main = path.join("main.twe");
+        if !main.is_file() {
+            return Err(format!(
+                "project '{}' is missing required file 'main.twe'",
+                path.display()
+            ));
+        }
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "twe_game".to_string());
+        (path, main, name)
+    };
     let manifest_path = root.join("twe.toml");
     let manifest = if manifest_path.is_file() {
         Some(manifest_path)
@@ -685,7 +698,7 @@ pub fn run(mut args: BuildArgs) -> i32 {
         }
         BuildTarget::LinuxX86_64 => build_linux_appdir(&project, &out_path, &args, &resolved),
         BuildTarget::LinuxServer => build_linux_server(&project, &out_path, &args, &resolved),
-        BuildTarget::Wasm32_3D => build_wasm3d_target(&project, &args),
+        BuildTarget::Web => build_web_target(&project, &args),
         BuildTarget::IosAarch64 => build_ios_layout(&project, &out_path, &args, &resolved),
         BuildTarget::AndroidAarch64 => build_android_layout(&project, &out_path, &args, &resolved),
         #[allow(unreachable_patterns)]
@@ -1716,76 +1729,128 @@ fn build_linux_server(
     0
 }
 
-/// Phase 38 session 1: browser 3D build layout. Same directory shape
-/// as Phase 30's `Wasm32` target, but the produced index.html wires
-/// up a wgpu-on-web context instead of macroquad-GL. Today this
-/// emits only the directory + bundle + a placeholder HTML; the
-/// actual wgpu-on-web pipeline (porting `src/play3d.rs` past its
-/// `cfg(not(target_arch = "wasm32"))` gates) is the deferred
-/// follow-on session.
-fn build_wasm3d_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
+/// Files of the prebuilt browser runtime (`crates/twe-web` after
+/// `wasm-bindgen --target web`).
+pub const WEB_RUNTIME_FILES: [&str; 2] = ["twe_web.js", "twe_web_bg.wasm"];
+
+/// Locate the prebuilt browser runtime: `$TWE_WEB_RUNTIME`, then
+/// `web-runtime/` next to the `twec` binary (where release archives
+/// ship it), then `target/web-runtime/` in the twec source checkout
+/// (a development build). Returns the directory holding
+/// [`WEB_RUNTIME_FILES`].
+pub fn find_web_runtime() -> Result<PathBuf, String> {
+    let has_runtime = |d: &Path| WEB_RUNTIME_FILES.iter().all(|f| d.join(f).is_file());
+    if let Ok(dir) = std::env::var("TWE_WEB_RUNTIME") {
+        let dir = PathBuf::from(dir);
+        return if has_runtime(&dir) {
+            Ok(dir)
+        } else {
+            Err(format!(
+                "TWE_WEB_RUNTIME={} does not contain {}",
+                dir.display(),
+                WEB_RUNTIME_FILES.join(" + ")
+            ))
+        };
+    }
+    let mut candidates = Vec::new();
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        candidates.push(exe_dir.join("web-runtime"));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("web-runtime"),
+    );
+    candidates
+        .iter()
+        .find(|d| has_runtime(d))
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "the prebuilt web runtime was not found (looked in {}).\n\
+             hint: release downloads of twec include it in `web-runtime/`. From a \
+             source checkout, build it once with:\n  \
+             cargo build -p twe-web --target wasm32-unknown-unknown --release\n  \
+             wasm-bindgen --target web --no-typescript --out-dir target/web-runtime \
+             target/wasm32-unknown-unknown/release/twe_web.wasm\n\
+             or point TWE_WEB_RUNTIME at a directory holding {}",
+                candidates
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                WEB_RUNTIME_FILES.join(" + ")
+            )
+        })
+}
+
+/// Write a browser build of `project` into `out`: the runtime from
+/// `runtime_dir`, the page (`web/index.html`, titled after the game),
+/// `env.js`, `main.twe` and the project's assets at their bundle keys.
+///
+/// Games are single-file today: `import` resolves modules on the
+/// filesystem, which the browser doesn't have.
+pub fn write_web_build(
+    project: &DiscoveredProject,
+    runtime_dir: &Path,
+    out: &Path,
+) -> Result<(), String> {
+    let write = |name: &str, bytes: &[u8]| {
+        fs::write(out.join(name), bytes).map_err(|e| format!("cannot write {name}: {e}"))
+    };
+    fs::create_dir_all(out).map_err(|e| format!("cannot create '{}': {e}", out.display()))?;
+    for f in WEB_RUNTIME_FILES {
+        fs::copy(runtime_dir.join(f), out.join(f))
+            .map_err(|e| format!("cannot copy runtime file {f}: {e}"))?;
+    }
+    let title = html_escape(&project.name);
+    let page = WEB_INDEX_HTML.replace("<title>Twe</title>", &format!("<title>{title}</title>"));
+    write("index.html", page.as_bytes())?;
+    write("env.js", WEB_ENV_JS.as_bytes())?;
+    fs::copy(&project.main, out.join("main.twe"))
+        .map_err(|e| format!("cannot copy main.twe: {e}"))?;
+    for asset in &project.assets {
+        let dest = out.join(&asset.bundle_key);
+        if let Some(p) = dest.parent() {
+            fs::create_dir_all(p).map_err(|e| format!("cannot create '{}': {e}", p.display()))?;
+        }
+        fs::copy(&asset.abs, &dest)
+            .map_err(|e| format!("cannot copy asset '{}': {e}", asset.abs.display()))?;
+    }
+    Ok(())
+}
+
+const WEB_INDEX_HTML: &str = include_str!("../web/index.html");
+const WEB_ENV_JS: &str = include_str!("../web/env.js");
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// web3d-M2: `twec build --target web`.
+fn build_web_target(project: &DiscoveredProject, args: &BuildArgs) -> i32 {
     let web_dir = match &args.out {
         Some(p) => p.clone(),
-        None => project.root.join("dist").join("web-3d"),
+        None => project.root.join("dist").join("web"),
     };
-    if let Err(e) = fs::create_dir_all(&web_dir) {
-        eprintln!("error: cannot create '{}': {e}", web_dir.display());
+    let result =
+        find_web_runtime().and_then(|runtime| write_web_build(project, &runtime, &web_dir));
+    if let Err(e) = result {
+        eprintln!("error: {e}");
         return 1;
     }
-    if let Err(e) = fs::write(web_dir.join("index.html"), wasm3d_html(&project.name)) {
-        eprintln!("error: cannot write index.html: {e}");
-        return 1;
-    }
-    if let Err(e) = fs::copy(&project.main, web_dir.join("main.twe")) {
-        eprintln!("error: cannot copy main.twe: {e}");
-        return 1;
-    }
-    for asset in &project.assets {
-        let dest = web_dir.join(&asset.bundle_key);
-        if let Some(p) = dest.parent() {
-            let _ = fs::create_dir_all(p);
-        }
-        if let Err(e) = fs::copy(&asset.abs, &dest) {
-            eprintln!("error: cannot copy asset '{}': {e}", asset.abs.display());
-            return 1;
-        }
-    }
-    let readme = format!(
-        "Twe browser 3D build — {}\n\
-         \n\
-         This target produces the directory layout for a wgpu-on-web build.\n\
-         The wgpu pipeline port (src/play3d.rs past its cfg gates) is\n\
-         deferred to a Phase 38 follow-on session, gated on Firefox-stable\n\
-         + Safari-stable browser wgpu support (as of 2026-05, Chrome ships;\n\
-         Safari Tech Preview ships; Firefox lags).\n\
-         \n\
-         Use Phase 30's `--target wasm32` for 2D browser play today.\n",
-        project.name
-    );
-    let _ = fs::write(web_dir.join("README.txt"), readme);
     eprintln!(
-        "[twec build] wrote {} (wasm32-3d directory layout; wgpu-on-web pipeline deferred)",
+        "[twec build] → {}   (serve the folder over HTTP and open index.html in a \
+         WebGPU browser, e.g. `python -m http.server -d {}`)",
+        web_dir.display(),
         web_dir.display()
     );
     0
-}
-
-fn wasm3d_html(game_name: &str) -> String {
-    format!(
-        "<!DOCTYPE html>\n\
-         <html><head><meta charset=\"utf-8\"><title>{game_name}</title>\n\
-         <style>\n\
-         body {{ margin: 0; background: #000; color: #ccc; font: 14px monospace; padding: 24px; }}\n\
-         canvas {{ display: block; margin: 24px auto; image-rendering: pixelated; aspect-ratio: 4 / 3; }}\n\
-         </style></head><body>\n\
-         <h1>{game_name}</h1>\n\
-         <p>Browser 3D target (wasm32-3d). This build directory ships the layout;\n\
-         the wgpu-on-web rendering pipeline is a Phase 38 follow-on session,\n\
-         gated on Firefox-stable + Safari-stable browser wgpu support.</p>\n\
-         <p>For 2D browser play today, rebuild with <code>--target wasm32</code>.</p>\n\
-         <canvas id=\"glcanvas\" width=\"800\" height=\"600\"></canvas>\n\
-         </body></html>\n"
-    )
 }
 
 /// Phase 39 session 1: iOS aarch64 build layout. Produces the

@@ -125,7 +125,6 @@ pub fn render_frame(
     result
 }
 
-
 /// Write the host's keyboard state into the `key` (held) and
 /// `key_press` (pressed this frame) ambients for every name in `names`.
 /// Shells map their own key codes (winit / DOM `KeyboardEvent.code`) to

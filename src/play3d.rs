@@ -538,8 +538,11 @@ impl ApplicationHandler for App {
                 if substeps >= crate::eval::MAX_SUBSTEPS {
                     self.sim_accumulator = 0.0;
                 }
-                let rendered =
-                    crate::host3d::render_frame(&mut state.renderer, &mut self.env, &mut self.assets);
+                let rendered = crate::host3d::render_frame(
+                    &mut state.renderer,
+                    &mut self.env,
+                    &mut self.assets,
+                );
                 if !self.env.out.is_empty() {
                     print!("{}", self.env.out);
                     self.env.out.clear();

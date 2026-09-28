@@ -1306,16 +1306,14 @@ async fn init_renderer(
     // and mobile GPUs included. The main pipeline uses exactly 4 groups.
     let required_limits = wgpu::Limits::default();
     let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("twe-kernel device"),
-                required_features: wgpu::Features::empty(),
-                required_limits,
-                memory_hints: wgpu::MemoryHints::default(),
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                trace: wgpu::Trace::Off,
-            },
-        )
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("twe-kernel device"),
+            required_features: wgpu::Features::empty(),
+            required_limits,
+            memory_hints: wgpu::MemoryHints::default(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::Off,
+        })
         .await
         .map_err(|e| e.to_string())?;
     let config = match &surface {

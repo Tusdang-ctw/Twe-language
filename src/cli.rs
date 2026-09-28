@@ -278,7 +278,7 @@ fn handle_build(args: &[String]) -> i32 {
                 };
                 let Some(t) = BuildTarget::parse(v) else {
                     eprintln!(
-                        "error: unknown target '{v}' (try windows-x86_64, macos-aarch64, macos-x86_64, linux-x86_64)"
+                        "error: unknown target '{v}' (try windows-x86_64, macos-aarch64, macos-x86_64, linux-x86_64, web, wasm32)"
                     );
                     return 2;
                 };

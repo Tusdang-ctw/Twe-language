@@ -246,16 +246,14 @@ fn init_wgpu(window: Arc<Window>, wgsl: &str) -> Result<RenderState, String> {
         apply_limit_buckets: false,
     }))
     .map_err(|e| format!("no compatible wgpu adapter found: {e}"))?;
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("twec-play_visual device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::default(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            trace: wgpu::Trace::Off,
-        },
-    ))
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("twec-play_visual device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::default(),
+        experimental_features: wgpu::ExperimentalFeatures::default(),
+        trace: wgpu::Trace::Off,
+    }))
     .map_err(|e| e.to_string())?;
     let surface_caps = surface.get_capabilities(&adapter);
     let surface_format = surface_caps
@@ -401,7 +399,9 @@ fn render(state: &RenderState, time: f32) -> Result<(), String> {
     let frame = match state.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
         // Skip the frame; a stale surface is reconfigured first.
-        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+            return Ok(())
+        }
         wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
             state.surface.configure(&state.device, &state.config);
             return Ok(());

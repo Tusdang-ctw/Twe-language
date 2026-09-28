@@ -9,6 +9,7 @@ Cargo.lock.bak
 # .exe / .app / .AppDir + Steam Depot layout). Reproducible from
 # source; not source.
 examples/*/dist/
+examples/dist/
 
 # Phase 11 crash dumps land at the repo root by default.
 twec-crash-*.log

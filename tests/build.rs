@@ -12,7 +12,7 @@ use twec::build::{
     discover_project, encode_bundle_to_vec, parse_manifest, render_app_build_vdf,
     render_apprun_script, render_depot_build_vdf, render_desktop_entry, render_info_plist,
     resolve_config, validate_project, write_bundle, write_bundle_with_options, write_steam_layout,
-    BuildArgs, BuildConfig, BuildTarget,
+    write_web_build, BuildArgs, BuildConfig, BuildTarget, WEB_RUNTIME_FILES,
 };
 use twec::bundle::{
     append_to_binary, clear_active_bundle, detect_in_file, encode_with_options, has_active_bundle,
@@ -84,15 +84,36 @@ fn discover_errors_when_main_missing() {
 }
 
 #[test]
-fn discover_errors_when_path_not_a_directory() {
+fn discover_errors_when_path_not_a_directory_or_twe_file() {
     let dir = temp_project("discover_not_a_dir");
-    let file = dir.join("main.twe");
-    fs::write(&file, "print(\"hi\")\n").unwrap();
-    let err = discover_project(&file).expect_err("should fail when given a file");
-    assert!(
-        err.contains("not a directory") || err.contains("missing"),
-        "got: {err}"
-    );
+    let file = dir.join("notes.txt");
+    fs::write(
+        &file, "hi
+",
+    )
+    .unwrap();
+    let err = discover_project(&file).expect_err("should fail for a non-.twe file");
+    assert!(err.contains("not a directory"), "got: {err}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// web3d-M2: a single `.twe` file is a project too, named after its
+/// stem, with its directory's `assets/`.
+#[test]
+fn discover_accepts_a_single_twe_file() {
+    let dir = temp_project("discover_file");
+    fs::write(
+        dir.join("orbit.twe"),
+        "print(\"hi\")
+",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::write(dir.join("assets/a.png"), b"png").unwrap();
+    let project = discover_project(&dir.join("orbit.twe")).expect("discover");
+    assert_eq!(project.name, "orbit");
+    assert!(project.main.ends_with("orbit.twe"));
+    assert_eq!(project.assets.len(), 1);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1031,4 +1052,77 @@ fn script_loaders_resolve_assets_that_exist_only_in_the_bundle() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// web3d-M2: `twec build --target web` lays out a servable folder: the
+/// prebuilt runtime, the page (titled after the game), `env.js`, the
+/// script and the assets at their bundle keys.
+#[test]
+fn web_build_writes_a_servable_folder() {
+    let dir = temp_project("web_build");
+    let project_dir = dir.join("orbit_game");
+    fs::create_dir_all(project_dir.join("assets/meshes")).unwrap();
+    fs::write(
+        project_dir.join("main.twe"),
+        "print(\"hi\")
+",
+    )
+    .unwrap();
+    fs::write(project_dir.join("assets/meshes/ship.glb"), b"glTF fake").unwrap();
+    let runtime = dir.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    for f in WEB_RUNTIME_FILES {
+        fs::write(runtime.join(f), format!("runtime {f}")).unwrap();
+    }
+
+    let project = discover_project(&project_dir).expect("discover");
+    let out = dir.join("out");
+    write_web_build(&project, &runtime, &out).expect("web build");
+
+    for f in WEB_RUNTIME_FILES {
+        assert_eq!(
+            fs::read_to_string(out.join(f)).unwrap(),
+            format!("runtime {f}")
+        );
+    }
+    let page = fs::read_to_string(out.join("index.html")).unwrap();
+    assert!(page.contains("<title>orbit_game</title>"), "{page}");
+    assert!(page.contains(r#""env": "./env.js""#), "import map missing");
+    assert!(page.contains("./twe_web.js"));
+    assert!(fs::read_to_string(out.join("env.js"))
+        .unwrap()
+        .contains("export function now()"));
+    assert_eq!(
+        fs::read_to_string(out.join("main.twe")).unwrap(),
+        "print(\"hi\")
+"
+    );
+    assert_eq!(
+        fs::read(out.join("assets/meshes/ship.glb")).unwrap(),
+        b"glTF fake"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn web_build_reports_a_missing_runtime() {
+    let dir = temp_project("web_build_no_runtime");
+    fs::write(
+        dir.join("main.twe"),
+        "print(1)
+",
+    )
+    .unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let err = write_web_build(&project, &dir.join("no-runtime"), &dir.join("out")).unwrap_err();
+    assert!(err.contains("twe_web.js"), "{err}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn web_target_parses_with_legacy_alias() {
+    assert_eq!(BuildTarget::parse("web"), Some(BuildTarget::Web));
+    assert_eq!(BuildTarget::parse("wasm32-3d"), Some(BuildTarget::Web));
+    assert_eq!(BuildTarget::Web.label(), "web");
+    assert_eq!(BuildTarget::parse("wasm32"), Some(BuildTarget::Wasm32));
 }

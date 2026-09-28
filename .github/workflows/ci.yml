@@ -97,6 +97,37 @@ jobs:
       - name: Clippy (wasm32, experimental)
         run: cargo clippy --release --target wasm32-unknown-unknown --features experimental -- -D warnings
 
+      # web3d-M2: build the browser runtime `twec build --target web`
+      # ships (crates/twe-web → twe_web.js + twe_web_bg.wasm).
+      - name: Clippy (twe-web)
+        run: cargo clippy --release -p twe-web --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Build web runtime
+        run: cargo build --release -p twe-web --target wasm32-unknown-unknown
+
+      # Must match the `wasm-bindgen` version pinned in
+      # crates/twe-web/Cargo.toml: the CLI and the library share a
+      # schema and refuse to mix versions.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.120
+
+      - name: wasm-bindgen
+        run: >
+          wasm-bindgen --target web --no-typescript --out-dir target/web-runtime
+          target/wasm32-unknown-unknown/release/twe_web.wasm
+
+      # Every `env` import left by macroquad must be stubbed in web/env.js.
+      - name: Web runtime imports are all provided
+        run: cargo test --release --test web_runtime
+        env:
+          TWE_WEB_WASM: target/wasm32-unknown-unknown/release/twe_web.wasm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-runtime
+          path: target/web-runtime/
+
   # Phase 34 session 5: cross-compile validation. The release.yml
   # matrix builds the artifacts on tag push, but a tag is too late to
   # discover that someone just merged a PR that breaks aarch64-linux.
