@@ -90,7 +90,7 @@ It drives the real input path (`InputState` → `sim_tick`) and the 3D render sc
 
 ## The itch.io build
 
-`target/survive3d-itch.zip` (1.0 MB; regenerate with `twec build --target web --out <dir> examples/survive3d` and zip the folder's contents):
+`examples/survive3d/dist/survive3d-itch.zip` (1.0 MB, git-ignored; regenerate with `twec build --target web --out <dir> examples/survive3d` and zip the folder's contents):
 - `index.html` sits at the root;
 - every path is relative;
 - nothing needs SharedArrayBuffer or special headers.
