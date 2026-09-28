@@ -407,18 +407,8 @@ pub struct LookKey {
     pub col: u32,
 }
 
-/// The keys a `look:` block may set. `material` joins in a later M3
-/// stage; see [`look_key_stage`].
-pub const LOOK_KEYS: &[&str] = &["mesh", "tint", "scale", "facing"];
-
-/// For a key that is planned but not implemented yet, the M3 stage that
-/// adds it — so `verify` can say so instead of "unknown key".
-pub fn look_key_stage(key: &str) -> Option<&'static str> {
-    match key {
-        "material" => Some("web3d-M3 stage 3 (visual blocks as surfaces)"),
-        _ => None,
-    }
-}
+/// The keys a `look:` block may set.
+pub const LOOK_KEYS: &[&str] = &["mesh", "tint", "scale", "facing", "material"];
 
 /// The problem with a `look:` key, if any, as `(message, help)`. Shared
 /// by `twec verify` and the runtime so both say the same thing.
@@ -427,12 +417,6 @@ pub fn look_key_problem(key: &str) -> Option<(String, String)> {
         return None;
     }
     let known = LOOK_KEYS.join(", ");
-    if let Some(stage) = look_key_stage(key) {
-        return Some((
-            format!("look key `{key}` is not implemented yet"),
-            format!("it arrives in {stage}; the keys available now are {known}"),
-        ));
-    }
     let help = match crate::value::did_you_mean(key, LOOK_KEYS.iter()) {
         Some(s) => format!("did you mean `{s}`? look keys are {known}"),
         None => format!("look keys are {known}"),

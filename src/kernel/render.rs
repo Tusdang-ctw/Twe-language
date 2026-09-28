@@ -53,6 +53,11 @@ pub struct RenderSnapshot<'a> {
     pub mesh_paths: &'a [String],
     /// `DrawCall3d::texture` id -> asset path (id 0 = untextured).
     pub texture_paths: &'a [String],
+    /// web3d-M3: simulation time in seconds (materials animate on it).
+    pub time: f32,
+    /// web3d-M3: WGSL for each material id (`twe_pixel` from
+    /// `visual_wgsl::compile_material`); index 0 is unused.
+    pub materials: &'a [String],
     /// Animation state for a skinned mesh id.
     pub anim: &'a dyn Fn(u32) -> AnimSnapshot,
 }
@@ -187,6 +192,8 @@ impl Instance {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    /// web3d-M3: x = simulation time (s), for materials.
+    time: [f32; 4],
 }
 
 // web3d-M0: `PointLightU`, `LightsUniform` and `AnimSnapshot` live in
@@ -312,6 +319,8 @@ impl Default for JointsUniform {
 pub(crate) const SHADER_SRC: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
+    // x = simulation time in seconds (materials animate on it).
+    time: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -494,6 +503,15 @@ fn sample_shadow(world_pos: vec3<f32>, view_z: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Sampled first, in uniform control flow (WebGPU requires it for
+    // implicit-derivative sampling).
+    let tex = textureSample(t_diffuse, s_diffuse, in.tex_coord);
+    return vec4<f32>(in.base_color * tex.rgb * light_at(in), tex.a);
+}
+
+// Light arriving at a fragment: ambient, the shadowed sun, and up to 8
+// point lights. Shared by the plain surface and every material.
+fn light_at(in: VertexOutput) -> vec3<f32> {
     let n = normalize(in.world_normal);
     var lit = lights.ambient.rgb;
     // Directional sun. w = intensity multiplier; 0 disables the sun.
@@ -531,10 +549,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let atten = t * t;
         lit = lit + pl.color_radius.rgb * (lambert * atten);
     }
-    let tex = textureSample(t_diffuse, s_diffuse, in.tex_coord);
-    return vec4<f32>(in.base_color * tex.rgb * lit, tex.a);
+    return lit;
 }
 "#;
+
+/// web3d-M3: fragment entry for a `visual` block used as a mesh
+/// material. The visual's `twe_pixel(uv, time)` is the surface colour
+/// (times the instance tint), lit like any surface; alpha below 0.5 is
+/// cut out, so a visual can shape the mesh (a flame on a quad).
+const MATERIAL_FS: &str = r#"
+@fragment
+fn fs_material(in: VertexOutput) -> @location(0) vec4<f32> {
+    let c = twe_pixel(in.tex_coord, camera.time.x);
+    if (c.a < 0.5) {
+        discard;
+    }
+    return vec4<f32>(in.base_color * c.rgb * light_at(in), 1.0);
+}
+"#;
+
+/// The full shader for a material: the main shader, the visual's
+/// `twe_pixel` (from `visual_wgsl::compile_material`), and the
+/// material fragment entry. Public so tests can validate it.
+pub fn material_shader_source(pixel: &str) -> String {
+    format!("{SHADER_SRC}\n{pixel}\n{MATERIAL_FS}")
+}
 
 /// Phase 26: ACES filmic tone mapping shader. Reads an HDR
 /// linear-light texture and writes sRGB-encoded LDR to the
@@ -736,6 +775,64 @@ fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<
     return shadow_u.light_space_matrix * vec4<f32>(model_pos, 1.0);
 }
 "#;
+
+/// The lit-surface pipeline with fragment entry `fs_entry`: `fs_main`
+/// (the plain surface) or a material's `fs_material` (web3d-M3).
+fn surface_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    fs_entry: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(fs_entry),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fs_entry),
+            // Phase 26: main pipeline always targets HDR. The
+            // tonemap pass converts to the swapchain's sRGB.
+            targets: &[Some(wgpu::ColorTargetState {
+                format: HDR_FORMAT,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// web3d-M3: draw-group keys. A built-in shape groups by (texture,
+/// material); a mesh by (mesh id, texture, material). Each group is one
+/// instanced draw over an `InstanceRange` of the instance buffer.
+type SurfaceKey = (u32, u32);
+type MeshKey = (u32, u32, u32);
+type InstanceRange = (u32, u32);
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -1042,6 +1139,12 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    /// web3d-M3: the main pipeline's layout, reused by material
+    /// pipelines.
+    pipeline_layout: wgpu::PipelineLayout,
+    /// Material pipelines keyed by their WGSL, not by id: ids restart
+    /// with every program (and on hot reload), the source doesn't lie.
+    material_pipelines: HashMap<String, wgpu::RenderPipeline>,
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
@@ -1445,7 +1548,8 @@ async fn init_renderer(
     let frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("twe-kernel frame bgl (camera + lights)"),
         entries: &[
-            uniform_entry(0, wgpu::ShaderStages::VERTEX),
+            // web3d-M3: fragments read `camera.time` (materials).
+            uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
             uniform_entry(1, wgpu::ShaderStages::FRAGMENT),
         ],
     });
@@ -1647,47 +1751,7 @@ async fn init_renderer(
         ],
         immediate_size: 0,
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("twec-play3d pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            // Phase 26: main pipeline always targets HDR. The
-            // tonemap pass converts to the swapchain's sRGB.
-            targets: &[Some(wgpu::ColorTargetState {
-                format: HDR_FORMAT,
-                blend: Some(wgpu::BlendState::REPLACE),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Less),
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
+    let pipeline = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main");
 
     let depth_view = create_depth_view(&device, config.width, config.height);
 
@@ -1948,6 +2012,8 @@ async fn init_renderer(
         queue,
         config,
         pipeline,
+        pipeline_layout,
+        material_pipelines: HashMap::new(),
         cube_vertex_buffer,
         cube_index_buffer,
         cube_index_count: CUBE_INDICES.len() as u32,
@@ -3145,7 +3211,10 @@ impl Renderer {
         let proj = perspective(60_f32.to_radians(), aspect, 0.1, 100.0);
         let view = look_at(eye, target, up);
         let view_proj = mul(proj, view);
-        let camera_uniform = CameraUniform { view_proj };
+        let camera_uniform = CameraUniform {
+            view_proj,
+            time: [snap.time, 0.0, 0.0, 0.0],
+        };
         state
             .queue
             .write_buffer(&state.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
@@ -3248,26 +3317,32 @@ impl Renderer {
         // because group 1's bind group changes between textures.
         // Within a group, instance order = queue order (preserves any
         // back-to-front ordering the script established).
-        let mut cube_groups: Vec<(u32, Vec<&DrawCall3d>)> = Vec::new();
-        let mut sphere_groups: Vec<(u32, Vec<&DrawCall3d>)> = Vec::new();
-        let mut mesh_groups: Vec<((u32, u32), Vec<&DrawCall3d>)> = Vec::new();
+        // web3d-M3: the material joins the key — a material draws with
+        // its own pipeline.
+        let mut cube_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
+        let mut sphere_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
+        let mut mesh_groups: Vec<(MeshKey, Vec<&DrawCall3d>)> = Vec::new();
         for d in queue {
             match d.primitive {
-                Primitive::Cube => match cube_groups.iter_mut().find(|(t, _)| *t == d.texture) {
-                    Some((_, list)) => list.push(d),
-                    None => cube_groups.push((d.texture, vec![d])),
-                },
-                Primitive::Sphere => {
-                    match sphere_groups.iter_mut().find(|(t, _)| *t == d.texture) {
+                Primitive::Cube => {
+                    let key = (d.texture, d.material);
+                    match cube_groups.iter_mut().find(|(k, _)| *k == key) {
                         Some((_, list)) => list.push(d),
-                        None => sphere_groups.push((d.texture, vec![d])),
+                        None => cube_groups.push((key, vec![d])),
+                    }
+                }
+                Primitive::Sphere => {
+                    let key = (d.texture, d.material);
+                    match sphere_groups.iter_mut().find(|(k, _)| *k == key) {
+                        Some((_, list)) => list.push(d),
+                        None => sphere_groups.push((key, vec![d])),
                     }
                 }
                 Primitive::Mesh(id) => {
                     if !state.mesh_cache.contains_key(&id) {
                         continue;
                     }
-                    let key = (id, d.texture);
+                    let key = (id, d.texture, d.material);
                     match mesh_groups.iter_mut().find(|(k, _)| *k == key) {
                         Some((_, list)) => list.push(d),
                         None => mesh_groups.push((key, vec![d])),
@@ -3323,15 +3398,15 @@ impl Renderer {
         let cube_radius = 0.8660254;
         // Sphere has radius 0.5 in mesh-local space.
         let sphere_radius = 0.5;
-        let cube_ranges: Vec<(u32, (u32, u32))> = cube_groups
+        let cube_ranges: Vec<(SurfaceKey, InstanceRange)> = cube_groups
             .iter()
-            .map(|(t, list)| (*t, push_group(list, &mut instances, cube_radius)))
+            .map(|(k, list)| (*k, push_group(list, &mut instances, cube_radius)))
             .collect();
-        let sphere_ranges: Vec<(u32, (u32, u32))> = sphere_groups
+        let sphere_ranges: Vec<(SurfaceKey, InstanceRange)> = sphere_groups
             .iter()
-            .map(|(t, list)| (*t, push_group(list, &mut instances, sphere_radius)))
+            .map(|(k, list)| (*k, push_group(list, &mut instances, sphere_radius)))
             .collect();
-        let mesh_ranges: Vec<((u32, u32), (u32, u32))> = mesh_groups
+        let mesh_ranges: Vec<(MeshKey, InstanceRange)> = mesh_groups
             .iter()
             .map(|(k, list)| {
                 let r = state
@@ -3374,7 +3449,7 @@ impl Renderer {
         //     matrices, uploads to the per-mesh joint UBO. Unskinned
         //     meshes skip this work.
         let mesh_ids_this_frame: HashSet<u32> =
-            mesh_groups.iter().map(|((id, _), _)| *id).collect();
+            mesh_groups.iter().map(|((id, _, _), _)| *id).collect();
         for mesh_id in mesh_ids_this_frame {
             let gpu_mesh = match state.mesh_cache.get(&mesh_id) {
                 Some(m) => m,
@@ -3389,6 +3464,31 @@ impl Renderer {
             state
                 .queue
                 .write_buffer(&skin.joint_buffer, 0, bytemuck::bytes_of(&joints_uniform));
+        }
+
+        // web3d-M3: a pipeline per material used this frame, built on
+        // first use from the visual's WGSL. An unknown id draws as the
+        // plain surface.
+        for d in queue {
+            let m = d.material;
+            let Some(pixel) = snap.materials.get(m as usize).filter(|_| m != 0) else {
+                continue;
+            };
+            if !state.material_pipelines.contains_key(pixel) {
+                let module = state
+                    .device
+                    .create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("twe-kernel material"),
+                        source: wgpu::ShaderSource::Wgsl(material_shader_source(pixel).into()),
+                    });
+                let pipeline = surface_pipeline(
+                    &state.device,
+                    &state.pipeline_layout,
+                    &module,
+                    "fs_material",
+                );
+                state.material_pipelines.insert(pixel.clone(), pipeline);
+            }
         }
 
         // 5. Acquire the target (swapchain frame, or the headless
@@ -3468,7 +3568,7 @@ impl Renderer {
                 spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
                 spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
                 // Cubes
-                for (_tex, range) in &cube_ranges {
+                for (_key, range) in &cube_ranges {
                     if range.1 <= range.0 {
                         continue;
                     }
@@ -3480,7 +3580,7 @@ impl Renderer {
                     spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
                 }
                 // Spheres
-                for (_tex, range) in &sphere_ranges {
+                for (_key, range) in &sphere_ranges {
                     if range.1 <= range.0 {
                         continue;
                     }
@@ -3492,7 +3592,7 @@ impl Renderer {
                     spass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
                 }
                 // Meshes (with per-mesh joints if skinned)
-                for ((mesh_id, _tex), range) in &mesh_ranges {
+                for ((mesh_id, _tex, _mat), range) in &mesh_ranges {
                     if range.1 <= range.0 {
                         continue;
                     }
@@ -3579,11 +3679,20 @@ impl Renderer {
                         .get(&tex_id)
                         .unwrap_or(&state.white_bind_group)
                 };
-                // Cube draws — one per (texture) group.
-                for (tex, range) in &cube_ranges {
+                // web3d-M3: the plain surface, or a material's pipeline.
+                let pipeline_for = |mat: u32| -> &wgpu::RenderPipeline {
+                    snap.materials
+                        .get(mat as usize)
+                        .filter(|_| mat != 0)
+                        .and_then(|src| state.material_pipelines.get(src))
+                        .unwrap_or(&state.pipeline)
+                };
+                // Cube draws — one per (texture, material) group.
+                for ((tex, mat), range) in &cube_ranges {
                     if range.1 <= range.0 {
                         continue;
                     }
+                    rpass.set_pipeline(pipeline_for(*mat));
                     rpass.set_bind_group(1, bind_for(*tex), &[]);
                     rpass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
                     rpass.set_index_buffer(
@@ -3592,11 +3701,12 @@ impl Renderer {
                     );
                     rpass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
                 }
-                // Sphere draws — one per (texture) group.
-                for (tex, range) in &sphere_ranges {
+                // Sphere draws — one per (texture, material) group.
+                for ((tex, mat), range) in &sphere_ranges {
                     if range.1 <= range.0 {
                         continue;
                     }
+                    rpass.set_pipeline(pipeline_for(*mat));
                     rpass.set_bind_group(1, bind_for(*tex), &[]);
                     rpass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
                     rpass.set_index_buffer(
@@ -3607,7 +3717,7 @@ impl Renderer {
                 }
                 // Mesh draws — one per (mesh id, texture) group. Each
                 // unique combination is its own instanced draw call.
-                for ((mesh_id, tex), range) in &mesh_ranges {
+                for ((mesh_id, tex, mat), range) in &mesh_ranges {
                     if range.1 <= range.0 {
                         continue;
                     }
@@ -3615,6 +3725,7 @@ impl Renderer {
                         Some(m) => m,
                         None => continue,
                     };
+                    rpass.set_pipeline(pipeline_for(*mat));
                     // Phase 17 finish: when the script's `mesh()` call
                     // didn't supply an explicit texture (tex == 0),
                     // prefer the mesh's auto-loaded baseColorTexture if
@@ -4112,6 +4223,44 @@ mod tests {
                  textureSampleCompare in non-uniform control flow)"
             );
         }
+    }
+
+    /// web3d-M3: every `visual` block in the examples, compiled as a
+    /// mesh material, gives a valid shader (and one Tint won't reject
+    /// for implicit-derivative sampling).
+    #[test]
+    fn example_visuals_compile_to_valid_material_shaders() {
+        let mut checked = 0;
+        for entry in std::fs::read_dir("examples").expect("examples dir") {
+            let path = entry.expect("entry").path();
+            if path.extension().is_none_or(|x| x != "twe") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("read");
+            let Ok(tokens) = crate::lexer::lex(&src) else {
+                continue;
+            };
+            let Ok(program) = crate::parser::parse(&tokens) else {
+                continue;
+            };
+            for stmt in &program.stmts {
+                if let crate::ast::Stmt::Decl {
+                    kind: crate::ast::DeclKind::Visual,
+                    name,
+                    members,
+                    ..
+                } = stmt
+                {
+                    let pixel = crate::visual_wgsl::compile_material(name, members)
+                        .unwrap_or_else(|e| panic!("{}: {name}: {}", path.display(), e.message));
+                    let full = material_shader_source(&pixel);
+                    validate_wgsl(name, &full);
+                    assert!(!full.contains("textureSampleCompare("));
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no visual blocks found in examples/");
     }
 
     #[test]

@@ -73,6 +73,7 @@ pub struct LookDef {
     pub tint: Option<LookSlot>,
     pub scale: Option<LookSlot>,
     pub facing: Option<LookSlot>,
+    pub material: Option<LookSlot>,
 }
 
 /// One look key: its expression, where it was written, and whether it
@@ -514,6 +515,18 @@ pub struct Env {
     /// web3d-M3: spare argument vectors for calls, so evaluating a
     /// call's arguments doesn't allocate (`eval::eval_args`).
     pub arg_pool: Vec<Vec<TaggedValue>>,
+    /// web3d-M3: simulation time in seconds — the sum of every tick's
+    /// `dt`. Deterministic (replays see the same value); materials
+    /// animate on it.
+    pub sim_time: f64,
+    /// web3d-M3: each `visual` block compiled as a mesh material
+    /// (`visual_wgsl::compile_material`), by name; `Err` holds why it
+    /// can't be one.
+    pub visual_materials: HashMap<String, Result<String, String>>,
+    /// Material id → WGSL, as the kernel's snapshot takes it; index 0
+    /// is the plain surface. See [`Env::intern_material`].
+    pub material_sources: Vec<String>,
+    material_names: Vec<String>,
     /// web3d-M1: the module object being initialised when this env runs
     /// a module's top level (`None` for the entry program). A function
     /// whose `home` is this module resolves globals in this env.
@@ -591,6 +604,10 @@ impl Env {
             frames: Vec::new(),
             frame_pool: Vec::new(),
             arg_pool: Vec::new(),
+            sim_time: 0.0,
+            visual_materials: HashMap::new(),
+            material_sources: vec![String::new()],
+            material_names: vec![String::new()],
             current_module: None,
             render_queue3d: Vec::new(),
             mesh_paths: Vec::new(),
@@ -608,6 +625,22 @@ impl Env {
     /// scan is fine — a Twe scene rarely uses more than a handful of
     /// distinct meshes, and this only runs in `mesh()` calls inside
     /// `on render():`.
+    /// web3d-M3: the material id for visual `name`, compiling it into
+    /// the snapshot's table on first use.
+    pub fn intern_material(&mut self, name: &str) -> Result<u32, String> {
+        if let Some(i) = self.material_names.iter().position(|n| n == name) {
+            return Ok(i as u32);
+        }
+        let wgsl = match self.visual_materials.get(name) {
+            Some(Ok(w)) => w.clone(),
+            Some(Err(e)) => return Err(e.clone()),
+            None => return Err(format!("`{name}` is not a visual block")),
+        };
+        self.material_names.push(name.to_string());
+        self.material_sources.push(wgsl);
+        Ok((self.material_names.len() - 1) as u32)
+    }
+
     pub fn intern_mesh_path(&mut self, path: &str) -> u32 {
         if let Some(idx) = self.mesh_paths.iter().position(|p| p == path) {
             return idx as u32;

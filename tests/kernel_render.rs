@@ -138,3 +138,40 @@ fn look_facing_rotates_the_mesh() {
         "a quarter turn of a cube should look the same"
     );
 }
+
+/// web3d-M3: a look's `material:` paints the mesh with a visual block,
+/// and the visual's alpha cuts the mesh out below 0.5.
+#[test]
+fn look_material_paints_and_cuts_out() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let scene = |pixel: &str| {
+        format!(
+            "camera.eye = vec3(0, 6, 0.001)\ncamera.target = vec3(0, 0, 0)\n\
+             visual Paint:\n    pixel(uv, time) -> color:\n        return {pixel}\n\
+             entity Box:\n    var pos = vec3(0, 0, 0)\n    look:\n        scale: 2.0\n\
+             \x20       material: Paint\nspawn Box\n"
+        )
+    };
+    let green = render_source(&mut renderer, "material_green", &scene("color.green"));
+    save_png("material_green", &green);
+    let [r, g, b] = pixel(&green, W / 2, H / 2);
+    assert!(
+        g > r + 60 && g > b + 60,
+        "centre should be green, got {:?}",
+        [r, g, b]
+    );
+
+    let cut = render_source(
+        &mut renderer,
+        "material_cutout",
+        &scene("color.transparent"),
+    );
+    let sky = pixel(&cut, 2, 2);
+    assert_eq!(
+        pixel(&cut, W / 2, H / 2),
+        sky,
+        "a fully transparent material cuts the mesh out"
+    );
+}

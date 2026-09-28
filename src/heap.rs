@@ -642,9 +642,15 @@ fn mark_class(class: &crate::value::ClassDef) {
             mark_value(v);
         }
         if let Some(look) = &c.look {
-            for slot in [&look.mesh, &look.tint, &look.scale, &look.facing]
-                .into_iter()
-                .flatten()
+            for slot in [
+                &look.mesh,
+                &look.tint,
+                &look.scale,
+                &look.facing,
+                &look.material,
+            ]
+            .into_iter()
+            .flatten()
             {
                 if let Some(h) = &slot.home {
                     mark_value(h);

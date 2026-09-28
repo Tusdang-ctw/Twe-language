@@ -11076,6 +11076,7 @@ fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         size,
         texture: 0,
         yaw: 0.0,
+        material: 0,
     });
     Ok(Value::NIL)
 }
@@ -11093,6 +11094,7 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         size,
         texture: 0,
         yaw: 0.0,
+        material: 0,
     });
     Ok(Value::NIL)
 }
@@ -11126,6 +11128,7 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         size,
         texture: 0,
         yaw: 0.0,
+        material: 0,
     });
     Ok(Value::NIL)
 }
@@ -11168,6 +11171,7 @@ fn mesh_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         size,
         texture: tex_id,
         yaw: 0.0,
+        material: 0,
     });
     Ok(Value::NIL)
 }
@@ -11187,6 +11191,7 @@ fn cube_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         size,
         texture: tex_id,
         yaw: 0.0,
+        material: 0,
     });
     Ok(Value::NIL)
 }

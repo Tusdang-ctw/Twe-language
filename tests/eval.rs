@@ -3121,11 +3121,45 @@ fn look_block_rejects_unknown_duplicate_and_unimplemented_keys() {
     let e = env_for(dup).err().expect("duplicate key errors");
     assert!(e.contains("`scale` is set twice"), "{e}");
 
-    let later = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        material: \"fire\"\n";
-    let e = env_for(later).err().expect("unimplemented key errors");
+    // `material:` must name a visual block; anything else is an error
+    // at draw time, pointed at the key.
+    let not_visual =
+        "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        material: \"fire\"\nspawn E\n";
+    let mut env = env_for(not_visual).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("string material");
     assert!(
-        e.contains("not implemented yet") && e.contains("stage 3"),
-        "{e}"
+        e.message.contains("must be a visual block") && e.line == 4,
+        "{e:?}"
+    );
+}
+
+#[test]
+fn look_material_uses_a_visual_block() {
+    // Two entities share one material id; the table carries its WGSL.
+    let src = "visual Glow:\n    pixel(uv, time) -> color:\n        return mix(color.red, color.yellow, uv.y)\n\
+               entity Lamp:\n    var pos = vec3(0, 0, 0)\n    look:\n        material: Glow\n\
+               spawn Lamp at vec3(1, 0, 0)\nspawn Lamp at vec3(2, 0, 0)\n";
+    let mut env = env_for(src).expect("runs");
+    eval::render_frame3d(&mut env).expect("render");
+    let q = &env.render_queue3d;
+    assert_eq!(q.len(), 2);
+    assert!(
+        q[0].material != 0 && q[0].material == q[1].material,
+        "{q:?}"
+    );
+    let wgsl = &env.material_sources[q[0].material as usize];
+    assert!(wgsl.contains("fn twe_pixel"), "{wgsl}");
+
+    // A visual that fails the GPU checks is reported when a look uses it.
+    let bad =
+        "visual Bad:\n    pixel(uv, time) -> color:\n        print(1)\n        return color.red\n\
+               entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        material: Bad\nspawn E\n";
+    let mut env = env_for(bad).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("bad visual");
+    assert!(
+        e.message.contains("can't be used as a material"),
+        "{}",
+        e.message
     );
 }
 

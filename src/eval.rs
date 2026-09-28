@@ -77,6 +77,7 @@ pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     // never collect, so without this a game whose work is all in
     // entity methods would only collect at scene-level statements.
     safepoint(env);
+    env.sim_time += dt;
     update_time_ambient(env, dt);
     // v1.0.1 session 6: when paused, the top-level `on update()` is
     // never persistent — it isn't bound to any state, so the global
@@ -657,6 +658,7 @@ struct LookValues {
     color: [f32; 4],
     size: f32,
     yaw: f32,
+    material: u32,
 }
 
 /// web3d-M3: queue a draw for every live entity whose class has a
@@ -715,6 +717,7 @@ fn draw_looks(env: &mut Env) -> Result<(), RuntimeError> {
             size: values.size,
             texture: 0,
             yaw: values.yaw,
+            material: values.material,
         });
     }
     Ok(())
@@ -727,6 +730,7 @@ impl LookValues {
             color: [1.0, 1.0, 1.0, 1.0],
             size: 1.0,
             yaw: 0.0,
+            material: 0,
         }
     }
 }
@@ -762,6 +766,10 @@ fn look_values(
     if let Some(slot) = wanted(&look.facing, per_entity) {
         let val = eval_look_slot(env, entity, slot)?;
         v.yaw = crate::stdlib::number(&val, "look facing").map_err(|e| at_slot(e, slot))? as f32;
+    }
+    if let Some(slot) = wanted(&look.material, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.material = look_material(env, val, slot)?;
     }
     Ok(v)
 }
@@ -813,6 +821,33 @@ fn look_mesh(
         "sphere" => crate::value::Primitive::Sphere,
         path if path.ends_with(".glb") => crate::value::Primitive::Mesh(env.intern_mesh_path(path)),
         other => return Err(bad(format!("\"{other}\""))),
+    })
+}
+
+/// A look's `material:` — a `visual` block, used as the mesh surface.
+fn look_material(
+    env: &mut Env,
+    v: Value,
+    slot: &crate::value::LookSlot,
+) -> Result<u32, RuntimeError> {
+    let err = |message: String, help: &str| RuntimeError {
+        line: slot.line,
+        col: slot.col,
+        message,
+        help: Some(help.to_string()),
+    };
+    if !(v.is_class() && v.as_class().kind == "visual") {
+        return Err(err(
+            format!("look material must be a visual block, got {}", v.type_name()),
+            "declare one with `visual Name:` and a `pixel(uv, time) -> color` method, then `material: Name`",
+        ));
+    }
+    let name = v.as_class().name.clone();
+    env.intern_material(&name).map_err(|e| {
+        err(
+            format!("visual `{name}` can't be used as a material: {e}"),
+            "a material's `pixel` must pass the visual-block checks (`twec verify`)",
+        )
     })
 }
 
@@ -3995,6 +4030,7 @@ fn build_look(
             "tint" => look.tint = Some(slot),
             "scale" => look.scale = Some(slot),
             "facing" => look.facing = Some(slot),
+            "material" => look.material = Some(slot),
             other => unreachable!("look_key_problem accepted `{other}`"),
         }
     }
@@ -4197,6 +4233,27 @@ fn eval_decl(
         }
     }
 
+    if matches!(kind, DeclKind::Visual) {
+        // web3d-M3: ready this visual for use as a mesh material. A
+        // failure is kept, and reported only if a look uses it.
+        let decl = Program {
+            stmts: vec![Stmt::Decl {
+                kind,
+                name: name.to_string(),
+                parent: None,
+                members: members.to_vec(),
+                deprecation: None,
+                line: 0,
+                col: 0,
+            }],
+        };
+        let checked = crate::visual_check::check_program(&decl);
+        let compiled = match checked.first() {
+            Some(e) => Err(e.message.clone()),
+            None => crate::visual_wgsl::compile_material(name, members).map_err(|e| e.message),
+        };
+        env.visual_materials.insert(name.to_string(), compiled);
+    }
     let look = build_look(env, parent_class.as_ref(), own_look, &field_defaults)?;
     let field_layout = field_layout(parent_class.as_ref(), &field_defaults);
     let class = Rc::new(ClassDef {

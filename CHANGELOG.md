@@ -13,6 +13,10 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **`look:` `material`** (web3d-M3): a `visual` block as a mesh's
+  surface — its `pixel(uv, time)` shades the mesh on the GPU, lit and
+  tinted, with alpha below 0.5 cut out. Visual blocks now reach the
+  3D game, not only the fullscreen `twec play_visual` viewer.
 - **`look:` `facing`** (web3d-M3): yaw in radians about +Y (0 faces +Z),
   applied on the GPU to the mesh and its shadow; and **`math.atan2(y, x)`**
   to turn a direction into a facing (`facing: math.atan2(dx, dz)`).

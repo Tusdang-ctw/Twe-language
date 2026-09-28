@@ -78,6 +78,9 @@ pub struct DrawCall3d {
     /// web3d-M3: rotation about +Y in radians (0 faces +Z), from a
     /// `look:`'s `facing`. The immediate-mode draw builtins pass 0.
     pub yaw: f32,
+    /// web3d-M3: material id (`Env::intern_material`) from a look's
+    /// `material:`, or 0 for the plain lit surface.
+    pub material: u32,
 }
 
 /// The mesh shape behind a `DrawCall3d`. Each variant has its own

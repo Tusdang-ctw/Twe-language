@@ -127,6 +127,8 @@ pub fn render_frame(
         draws: &draws,
         mesh_paths: &env.mesh_paths,
         texture_paths: &env.texture_paths,
+        time: env.sim_time as f32,
+        materials: &env.material_sources,
         anim: &anim,
     };
     let scripted = crate::clock::now_secs();

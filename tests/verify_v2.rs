@@ -233,10 +233,11 @@ fn look_block_diagnostics_and_fix_round_trip() {
             .collect()
     };
     let head = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n";
-    assert_eq!(
-        kinds(&format!("{head}        material: \"fire\"\n")),
-        ["look-error.not-yet"]
-    );
+    // Every planned key has shipped: `material` takes a visual block.
+    assert!(verify_program(&format!(
+        "visual Glow:\n    pixel(uv, time) -> color:\n        return color.red\n{head}        material: Glow\n"
+    ))
+    .ok());
     assert_eq!(
         kinds(&format!("{head}        mesh: \"cone\"\n")),
         ["look-error.mesh"]

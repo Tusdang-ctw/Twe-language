@@ -241,7 +241,7 @@ nested_block   := "state" identifier ":" indented_block
                 | look_block                      # entity only (§4.9a)
 
 look_block     := "look" ":" INDENT (look_key ":" expr NEWLINE)+ DEDENT
-look_key       := "mesh" | "tint" | "scale" | "facing"   # closed set; verify rejects others
+look_key       := "mesh" | "tint" | "scale" | "facing" | "material"   # closed set
 ```
 
 V0.1 ships with **six** core block keywords: `entity`, `state`, `visual`, `particles`, `scene`, `dialogue`. The other forms (`item`, `inventory`, `ai`, `tilemap`, `save`) are stdlib-defined patterns that desugar to `entity` plus convention. They may be promoted to keywords in v0.2 once their semantics are stable.
@@ -523,10 +523,16 @@ entity Enemy:
 | `tint` | color `(r, g, b)` or `(r, g, b, a)` | white |
 | `scale` | number (uniform size) | `1.0` |
 | `facing` | number: yaw in radians about +Y; `0` faces +Z, and `math.atan2(dx, dz)` faces the direction `(dx, dz)` | `0` |
+| `material` | a `visual` block (§4.9) | none (the plain lit surface) |
+
+**Materials.** With `material: Fire`, the mesh's surface colour is the visual's `pixel(uv, time)`, evaluated on the GPU at the mesh's texture coordinates. It is multiplied by `tint` and lit like any surface. `time` is simulation time in seconds, the sum of every tick's `dt`, so replays match.
+
+A pixel with alpha below 0.5 is cut out, so a visual can shape the mesh; a flame drawn on a quad is the typical use. Shadows still use the whole mesh.
+
+A visual that fails the GPU-safety checks (`twec verify`) is an error when a look first uses it.
 
 - **The key set is closed.** `twec verify` reports:
   - an unknown key (`look-error.unknown-key`, with a rename fix when one key is close);
-  - a planned key (`material`: `look-error.not-yet`);
   - a duplicate key (`look-error.duplicate`);
   - a literal mesh that is neither a shape nor a `.glb` path (`look-error.mesh`).
 

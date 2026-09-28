@@ -430,21 +430,23 @@ fn collect_look_issues(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> {
             let mut seen: Vec<&str> = Vec::new();
             for k in keys {
                 if let Some((message, help)) = crate::ast::look_key_problem(&k.key) {
-                    let (kind, fix) = if crate::ast::look_key_stage(&k.key).is_some() {
-                        ("look-error.not-yet", None)
-                    } else {
-                        let fix = extract_did_you_mean(&help).map(|sug| Fix {
-                            rationale: format!("rename look key `{}` to `{sug}`", k.key),
-                            edits: vec![Edit {
-                                line: k.line,
-                                col: k.col,
-                                len: k.key.len() as u32,
-                                replace: sug,
-                            }],
-                        });
-                        ("look-error.unknown-key", fix)
-                    };
-                    out.push(error(kind, k.line, k.col, message, help, fix));
+                    let fix = extract_did_you_mean(&help).map(|sug| Fix {
+                        rationale: format!("rename look key `{}` to `{sug}`", k.key),
+                        edits: vec![Edit {
+                            line: k.line,
+                            col: k.col,
+                            len: k.key.len() as u32,
+                            replace: sug,
+                        }],
+                    });
+                    out.push(error(
+                        "look-error.unknown-key",
+                        k.line,
+                        k.col,
+                        message,
+                        help,
+                        fix,
+                    ));
                     continue;
                 }
                 if seen.contains(&k.key.as_str()) {

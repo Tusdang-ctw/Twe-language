@@ -89,4 +89,7 @@ The update tick is unchanged by this stage: 9.4–10.5 ms per tick in Chrome, ag
 
 1. **Stage 1:** `mesh` / `tint` / `scale`, drawn through the existing instanced path. Full integration across the lexer, parser, printer, AST JSON, resolver, inference, verify, grammar export, tree-sitter and TextMate. `swarm_3d` moves to `look:`, and the baseline is re-measured.
 2. **Stage 2: done (2026-09-28).** `facing` is a yaw in radians about +Y, where `0` faces +Z. The kernel's instance data carries (sin, cos), and both the main and shadow vertex shaders rotate position and normal, so shadows turn with the mesh. `math.atan2(y, x)` was added so a script can turn a direction into a facing. `tests/kernel_render.rs::look_facing_rotates_the_mesh` checks it on the GPU: a cube turned 45° changes its footprint, and one turned 90° matches the unturned cube.
-3. **Stage 3:** `material` (`visual` blocks as mesh surfaces).
+3. **Stage 3: done (2026-09-28).** `material: V` uses `visual` block `V` as the mesh's surface. `visual_wgsl::compile_material` emits the visual's `twe_pixel(uv, time)`, and the kernel builds one pipeline per material: the main shader's vertex stage and lighting (`light_at`), plus a `fs_material` entry that shades with `twe_pixel(uv, time) * tint` and cuts out alpha below 0.5.
+   - **Time:** the camera uniform carries `Env::sim_time` (the sum of tick `dt`s, so replays match).
+   - **Pipeline cache:** keyed by WGSL source, not by id, because ids restart with each program. The render test caught the stale-pipeline bug this avoids.
+   - **Tests:** every example `visual` validates as a material shader under naga; `tests/kernel_render.rs` shows a material colouring a cube and a transparent one cutting it out.
