@@ -1,107 +1,107 @@
-//! Phase 29 session 4: input frame log + replay.
+//! Phase 29 session 4: input frame log + replay. web3d-M4: the input
+//! command stream.
 //!
-//! The play loop calls [`tick`] once per simulation step (after
-//! `update_key_state` has filled the input ambients, before
-//! `tick_frame` runs). When recording, [`tick`] reads the ambients
-//! and appends one line per frame to the active recording file.
-//! When playing, [`tick`] reads the next line and overwrites the
-//! ambients so the script sees synthetic input identical to the
-//! captured run.
+//! Every simulation tick consumes one [`InputCommand`]: the keys and
+//! mouse buttons held and newly pressed, and the mouse position,
+//! motion and wheel. The 3D shells build one per tick (see
+//! `host3d::InputState`) and pass it through [`step`]; the 2D play loop
+//! snapshots its ambients once per frame and calls [`tick`]. Either way
+//! the command goes through here, so:
 //!
-//! The file format is a small line-based text format chosen to be:
-//! - easily diff-friendly (humans can eyeball a regression),
-//! - cheap to parse (one `split('|')` per frame),
-//! - forwards-compatible (a `v1` header lets later versions stay
-//!   readable from a single parser),
-//! - free of external dependencies (no serde, no JSON crate; we
-//!   already have `src/json.rs` for places that need JSON, but
-//!   replay logs benefit from being grep-greppable).
+//! - **recording** (`replay.record(path)`) appends it to a log,
+//! - **playing** (`replay.play(path)`) swaps in the logged command, so
+//!   the script sees exactly the recorded input,
+//! - an always-on ring keeps the last 30 s for crash reports.
 //!
-//! ## Format (v1)
+//! Input is the only thing that enters the simulation from outside, so
+//! a log of commands reproduces a run (the net-ready hook: a remote
+//! peer's commands would arrive the same way). Logs are text, stored
+//! through `save::write_text`, so on the web they live in localStorage.
+//!
+//! ## Format
 //!
 //! ```text
-//! TWE-REPLAY v1
-//! <keys_held>|<keys_pressed>|<mouse_x>|<mouse_y>|<mb_held>|<mb_press>
-//! <keys_held>|<keys_pressed>|<mouse_x>|<mouse_y>|<mb_held>|<mb_press>
+//! TWE-REPLAY v2
+//! <keys_held>|<keys_pressed>|<mouse_x>|<mouse_y>|<mb_held>|<mb_press>|<mouse_dx>|<mouse_dy>|<wheel>
 //! ...
 //! ```
 //!
 //! Each `<keys_*>` and `<mb_*>` field is a comma-separated list of
-//! the names whose ambient flag was true that frame. `<mouse_x>` /
-//! `<mouse_y>` are decimal floats. Blank fields (no keys held) are
-//! the empty string between `|` separators — `||0|0||`.
+//! names; blank fields are empty strings between `|`s. v1 logs (the
+//! first six fields only, header `TWE-REPLAY v1`) still play.
 //!
 //! ## What's *not* recorded
 //!
-//! - Gamepad axes / buttons. v0.1 of replay only covers keyboard +
-//!   mouse — the pressure-test target (rhythm, fighting) doesn't use
-//!   gamepad in the canonical examples. A v2 line format slots in
-//!   when a contributor needs gamepad replay.
-//! - System time. Scripts that read wall-clock time (`os.now()` if
-//!   it ever ships) will diverge between record + replay; the
-//!   determinism contract is "same input → same output", and time
-//!   isn't input.
+//! - Gamepad axes / buttons (a v3 line format slots in when a game
+//!   needs them).
+//! - Wall-clock time. The determinism contract is "same input, same
+//!   output", and time isn't input.
 //! - Script-internal RNG state. `random.*` uses a fixed seed by
-//!   default; that's enough for replay determinism. Scripts that
-//!   reseed from a non-deterministic source break this contract.
+//!   default; scripts that reseed from a non-deterministic source
+//!   break the contract.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::value::{Env, Object, Value};
 
-const HEADER: &str = "TWE-REPLAY v1";
+const HEADER: &str = "TWE-REPLAY v2";
+const HEADER_V1: &str = "TWE-REPLAY v1";
 
-/// State the replay subsystem can be in. Three discrete modes —
-/// at most one recorder and at most one player are active at a time.
+/// A recording is written out every this many ticks (and on stop), so
+/// a game closed without `replay.stop()` keeps almost all of it.
+const FLUSH_EVERY: u32 = 300;
+
+/// State the replay subsystem can be in. At most one recorder and at
+/// most one player are active at a time.
 enum Mode {
     Idle,
     Recording {
-        /// Open file handle. Buffered writes; flushed on stop()
-        /// (or on Drop via implicit close).
-        file: std::io::BufWriter<fs::File>,
+        path: String,
+        /// The whole log so far (header included).
+        text: String,
+        since_flush: u32,
     },
     Playing {
-        /// All frames pre-loaded so `tick` is O(1) — record format
-        /// is small (~60 bytes per frame at typical input density).
-        frames: Vec<Frame>,
+        /// All frames pre-loaded so a step is O(1).
+        frames: Vec<InputCommand>,
         /// Index of the next frame to deliver.
         cursor: usize,
     },
 }
 
+/// Everything one simulation tick receives from outside.
 #[derive(Default, Clone, PartialEq, Debug)]
-struct Frame {
-    keys_held: Vec<String>,
-    keys_pressed: Vec<String>,
-    mouse_x: f64,
-    mouse_y: f64,
-    mb_held: Vec<String>,
-    mb_press: Vec<String>,
+pub struct InputCommand {
+    pub keys_held: Vec<String>,
+    pub keys_pressed: Vec<String>,
+    pub mouse_x: f64,
+    pub mouse_y: f64,
+    pub mb_held: Vec<String>,
+    pub mb_press: Vec<String>,
+    pub mouse_dx: f64,
+    pub mouse_dy: f64,
+    pub wheel: f64,
 }
+
+type Frame = InputCommand;
 
 thread_local! {
     static MODE: RefCell<Mode> = const { RefCell::new(Mode::Idle) };
 
     // v1.0.1 session 10: always-on input ring. Captures the last
-    // ~30s of input frames (at 60 Hz that's 1800 frames, ~110 KB
-    // on disk in v1 format). The play loop's `tick(env)` snapshots
-    // inputs once per frame; on crash, `dump_ring_to(path)` flushes
-    // the ring as a valid v1 replay log so the user can reproduce
-    // the bug with `twec replay <script> <log>`. The ring runs in
-    // parallel with Mode — explicit `replay.record(path)` writes
-    // both to disk *and* keeps populating the ring, so a crash
-    // during deliberate recording still gets the rolling snapshot.
+    // ~30s of commands (1800 at 60 Hz). On crash,
+    // `dump_ring_to(path)` writes it as a replay log so the bug can
+    // be reproduced with `twec replay <script> <log>`. It runs
+    // alongside Mode: a crash during a deliberate recording still
+    // gets the rolling snapshot.
     static RING: RefCell<Ring> = const { RefCell::new(Ring::new()) };
 }
 
-/// Bounded circular buffer of recent input frames. Size is fixed so
-/// the implementation needs no allocator beyond the initial Vec
-/// extension. Capacity matches the design target: 30 seconds at
-/// 60 Hz.
+/// Bounded circular buffer of recent input frames. Capacity matches
+/// the design target: 30 seconds at 60 Hz.
 pub const RING_CAPACITY: usize = 30 * 60;
 
 struct Ring {
@@ -155,23 +155,28 @@ impl Ring {
     }
 }
 
-/// Begin recording inputs to `path`. Truncates any pre-existing file.
-/// If a recording or replay was already in flight, it's stopped
-/// first so only one stream is active at a time.
+/// Begin recording commands to `path` (a file natively, a
+/// localStorage key on the web). Replaces anything stored there. A
+/// recording or replay already in flight is stopped first.
 pub fn start_recording(path: &str) -> Result<(), String> {
     stop();
-    let f = fs::File::create(path).map_err(|e| format!("replay.record: {e}"))?;
-    let mut w = std::io::BufWriter::new(f);
-    writeln!(w, "{HEADER}").map_err(|e| format!("replay.record: {e}"))?;
-    MODE.with(|m| *m.borrow_mut() = Mode::Recording { file: w });
+    let text = format!("{HEADER}\n");
+    crate::save::write_text(Path::new(path), &text).map_err(|e| format!("replay.record: {e}"))?;
+    MODE.with(|m| {
+        *m.borrow_mut() = Mode::Recording {
+            path: path.to_string(),
+            text,
+            since_flush: 0,
+        }
+    });
     Ok(())
 }
 
-/// Begin playing back inputs from `path`. Reads the entire file into
-/// memory eagerly so per-frame `tick` is allocation-free.
+/// Begin playing back commands from `path`. Reads the whole log up
+/// front so each step is allocation-free.
 pub fn start_playing(path: &str) -> Result<(), String> {
     stop();
-    let src = fs::read_to_string(path).map_err(|e| format!("replay.play: {e}"))?;
+    let src = crate::save::read_text(Path::new(path)).map_err(|e| format!("replay.play: {e}"))?;
     let frames = parse_log(&src)?;
     MODE.with(|m| {
         *m.borrow_mut() = Mode::Playing { frames, cursor: 0 };
@@ -179,76 +184,77 @@ pub fn start_playing(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// End any active recording or replay. Drops the file handle
-/// (flushes buffered writes) and returns to Idle.
+/// End any active recording (writing it out) or replay.
 pub fn stop() {
-    MODE.with(|m| {
-        let mut mode = m.borrow_mut();
-        if let Mode::Recording { file } = &mut *mode {
-            // Best-effort flush — if the disk is full or the file
-            // was unlinked, dropping the BufWriter still drains it
-            // but errors are swallowed.
-            let _ = file.flush();
-        }
-        *mode = Mode::Idle;
-    });
+    let finished = MODE.with(|m| std::mem::replace(&mut *m.borrow_mut(), Mode::Idle));
+    if let Mode::Recording { path, text, .. } = finished {
+        flush(&path, &text);
+    }
 }
 
-/// True when the replay subsystem is feeding synthetic input — used
-/// by the play loop to decide whether to skip the real
-/// `update_key_state` call.
+fn flush(path: &str, text: &str) {
+    // A debug recording that can't be written shouldn't stop the game.
+    if let Err(e) = crate::save::write_text(Path::new(path), text) {
+        eprintln!("[twec] replay record write failed: {e}");
+    }
+}
+
+/// True when the replay subsystem is feeding recorded input.
 pub fn is_playing() -> bool {
     MODE.with(|m| matches!(*m.borrow(), Mode::Playing { .. }))
 }
 
-/// True when the replay subsystem is capturing — used by tests +
-/// `replay.is_recording()` if it ever ships.
-#[allow(dead_code)]
+/// True when the replay subsystem is capturing.
 pub fn is_recording() -> bool {
     MODE.with(|m| matches!(*m.borrow(), Mode::Recording { .. }))
 }
 
-/// One simulation tick. Called by the play loop AFTER input
-/// ambients have been refreshed (or, in playback mode, BEFORE —
-/// see `is_playing`). When recording, snapshots the ambients to
-/// the log. When playing, overwrites them with the next frame
-/// from the log. When the log runs out of frames during playback,
-/// switches automatically back to Idle so the player can take over
-/// (the script keeps running with whatever real input arrives).
-pub fn tick(env: &mut Env) {
-    let snap = snapshot_inputs(env);
-    // v1.0.1 session 10: always populate the ring, regardless of
-    // Mode. The cost is one frame clone + a slot overwrite, and
-    // we get a free 30s reproducer for every crash that occurs
-    // during interactive play.
-    RING.with(|r| r.borrow_mut().push(snap.clone()));
-    let mut should_stop_after = false;
-    MODE.with(|m| {
-        let mut mode = m.borrow_mut();
-        match &mut *mode {
-            Mode::Idle => {}
-            Mode::Recording { file } => {
-                // Errors writing to the log are surfaced once and
-                // then ignored — the game shouldn't crash because
-                // a debug recording stream broke.
-                if let Err(e) = write_frame(file, &snap) {
-                    eprintln!("[twec] replay record write failed: {e}");
-                }
-            }
-            Mode::Playing { frames, cursor } => {
-                if let Some(f) = frames.get(*cursor).cloned() {
-                    apply_frame(env, &f);
-                    *cursor += 1;
-                } else {
-                    // End-of-log: stop replaying and let the next
-                    // frame's real input flow through normally.
-                    should_stop_after = true;
-                }
+/// One simulation tick's input. Returns the command the tick should
+/// see: `cmd` itself, or the logged one while playing. When the log
+/// runs out, playback stops and live input takes over.
+pub fn step(cmd: InputCommand) -> InputCommand {
+    RING.with(|r| r.borrow_mut().push(cmd.clone()));
+    let mut out = None;
+    let mut ended = false;
+    let mut to_flush = None;
+    MODE.with(|m| match &mut *m.borrow_mut() {
+        Mode::Idle => {}
+        Mode::Recording {
+            path,
+            text,
+            since_flush,
+        } => {
+            push_line(text, &cmd);
+            *since_flush += 1;
+            if *since_flush >= FLUSH_EVERY {
+                *since_flush = 0;
+                to_flush = Some((path.clone(), text.clone()));
             }
         }
+        Mode::Playing { frames, cursor } => match frames.get(*cursor) {
+            Some(f) => {
+                out = Some(f.clone());
+                *cursor += 1;
+            }
+            None => ended = true,
+        },
     });
-    if should_stop_after {
+    if let Some((path, text)) = to_flush {
+        flush(&path, &text);
+    }
+    if ended {
         stop();
+    }
+    out.unwrap_or(cmd)
+}
+
+/// The 2D play loop's per-frame hook, called after it has refreshed the
+/// input ambients: records them, or overwrites them while playing.
+pub fn tick(env: &mut Env) {
+    let live = snapshot_inputs(env);
+    let seen = step(live.clone());
+    if seen != live {
+        apply_frame(env, &seen);
     }
 }
 
@@ -256,10 +262,13 @@ fn snapshot_inputs(env: &Env) -> Frame {
     Frame {
         keys_held: collect_true_field_names(env, "key"),
         keys_pressed: collect_true_field_names(env, "key_press"),
-        mouse_x: read_mouse_axis(env, 0),
-        mouse_y: read_mouse_axis(env, 1),
+        mouse_x: read_mouse_axis(env, "x"),
+        mouse_y: read_mouse_axis(env, "y"),
         mb_held: collect_true_field_names(env, "mouse_held"),
         mb_press: collect_true_field_names(env, "mouse_press"),
+        mouse_dx: read_mouse_axis(env, "dx"),
+        mouse_dy: read_mouse_axis(env, "dy"),
+        wheel: read_mouse_axis(env, "wheel"),
     }
 }
 
@@ -288,7 +297,7 @@ fn collect_true_field_names(env: &Env, ambient: &str) -> Vec<String> {
     names
 }
 
-fn read_mouse_axis(env: &Env, axis: usize) -> f64 {
+fn read_mouse_axis(env: &Env, key: &str) -> f64 {
     let opt = env.get("mouse");
     let Some(v) = opt.as_ref() else {
         return 0.0;
@@ -298,7 +307,6 @@ fn read_mouse_axis(env: &Env, axis: usize) -> f64 {
     }
     let rc = v.as_object();
     let o = rc.borrow();
-    let key = if axis == 0 { "x" } else { "y" };
     if let Some(f) = o.fields.get(key) {
         if f.is_float() {
             return f.as_float();
@@ -315,7 +323,7 @@ fn apply_frame(env: &mut Env, f: &Frame) {
     set_bool_ambient(env, "key_press", &f.keys_pressed);
     set_bool_ambient(env, "mouse_held", &f.mb_held);
     set_bool_ambient(env, "mouse_press", &f.mb_press);
-    write_mouse_pos(env, f.mouse_x, f.mouse_y);
+    write_mouse(env, f);
 }
 
 fn set_bool_ambient(env: &mut Env, name: &str, true_keys: &[String]) {
@@ -325,9 +333,8 @@ fn set_bool_ambient(env: &mut Env, name: &str, true_keys: &[String]) {
             let rc = v.as_object();
             let mut o = rc.borrow_mut();
             // Reset every existing key to false, then set the
-            // recorded ones true. Ensures keys held in the previous
-            // frame but absent from the current frame go back to
-            // false (otherwise a held key would stay sticky).
+            // recorded ones true, so a key held last frame but not
+            // this one goes back to false.
             for (_, slot) in o.fields.iter_mut() {
                 if slot.is_bool() {
                     *slot = Value::from_bool(false);
@@ -353,24 +360,40 @@ fn set_bool_ambient(env: &mut Env, name: &str, true_keys: &[String]) {
     );
 }
 
-fn write_mouse_pos(env: &mut Env, x: f64, y: f64) {
+fn write_mouse(env: &mut Env, f: &Frame) {
+    let fields = [
+        ("x", f.mouse_x),
+        ("y", f.mouse_y),
+        ("dx", f.mouse_dx),
+        ("dy", f.mouse_dy),
+        ("wheel", f.wheel),
+    ];
     let opt = env.get("mouse");
     if let Some(v) = opt.as_ref() {
         if v.is_object() {
             let rc = v.as_object();
             let mut o = rc.borrow_mut();
-            o.insert_field("x", Value::from_float(x));
-            o.insert_field("y", Value::from_float(y));
+            for (k, x) in fields {
+                o.insert_field(k, Value::from_float(x));
+            }
+            o.insert_field(
+                "pos",
+                Value::from_tuple(vec![
+                    Value::from_float(f.mouse_x),
+                    Value::from_float(f.mouse_y),
+                ]),
+            );
             return;
         }
     }
-    let mut fields: HashMap<String, Value> = HashMap::new();
-    fields.insert("x".to_string(), Value::from_float(x));
-    fields.insert("y".to_string(), Value::from_float(y));
+    let map: HashMap<String, Value> = fields
+        .iter()
+        .map(|(k, x)| (k.to_string(), Value::from_float(*x)))
+        .collect();
     env.set(
         "mouse".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
-            fields,
+            fields: map,
             kind: "input",
         }))),
     );
@@ -378,20 +401,18 @@ fn write_mouse_pos(env: &mut Env, x: f64, y: f64) {
 
 // ---------- I/O ----------
 
-/// v1.0.1 session 10: flush the in-memory ring to a v1 replay log
-/// at `path`. Called by the crash-reporter hook in `cli::install_crash_reporter`.
-/// Returns the number of frames written, or an IO error. A zero-frame
-/// ring still writes a header so the file is recognisable as a Twe
-/// replay log; consumers see "playback ended" on the first tick.
-pub fn dump_ring_to(path: &std::path::Path) -> std::io::Result<usize> {
+/// v1.0.1 session 10: write the in-memory ring to a replay log at
+/// `path`. Called by the crash-reporter hook in
+/// `cli::install_crash_reporter`. Returns the number of frames
+/// written. An empty ring still writes a header so the file is
+/// recognisable as a Twe replay log.
+pub fn dump_ring_to(path: &Path) -> std::io::Result<usize> {
     let frames = RING.with(|r| r.borrow().snapshot());
-    let f = fs::File::create(path)?;
-    let mut w = std::io::BufWriter::new(f);
-    writeln!(w, "{HEADER}")?;
+    let mut text = format!("{HEADER}\n");
     for fr in &frames {
-        write_frame(&mut w, fr)?;
+        push_line(&mut text, fr);
     }
-    w.flush()?;
+    std::fs::write(path, text)?;
     Ok(frames.len())
 }
 
@@ -406,55 +427,67 @@ pub fn ring_len_for_test() -> usize {
     RING.with(|r| r.borrow().len)
 }
 
-fn write_frame(w: &mut std::io::BufWriter<fs::File>, f: &Frame) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "{}|{}|{}|{}|{}|{}",
+fn push_line(out: &mut String, f: &Frame) {
+    use std::fmt::Write;
+    let _ = writeln!(
+        out,
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
         f.keys_held.join(","),
         f.keys_pressed.join(","),
         f.mouse_x,
         f.mouse_y,
         f.mb_held.join(","),
         f.mb_press.join(","),
-    )
+        f.mouse_dx,
+        f.mouse_dy,
+        f.wheel,
+    );
 }
 
 fn parse_log(src: &str) -> Result<Vec<Frame>, String> {
     let mut lines = src.lines();
-    let header = lines.next().ok_or("replay.play: empty file")?;
-    if header.trim() != HEADER {
-        return Err(format!(
-            "replay.play: bad header (expected `{HEADER}`, got `{}`)",
-            header.trim()
-        ));
-    }
+    let header = lines.next().ok_or("replay.play: empty file")?.trim();
+    let fields = match header {
+        HEADER => 9,
+        HEADER_V1 => 6,
+        other => {
+            return Err(format!(
+                "replay.play: bad header (expected `{HEADER}`, got `{other}`)"
+            ))
+        }
+    };
+    let num = |s: &str, what: &str, line: usize| -> Result<f64, String> {
+        s.parse()
+            .map_err(|e| format!("replay.play: line {line}: bad {what} ({e})"))
+    };
     let mut frames = Vec::new();
     for (i, line) in lines.enumerate() {
         if line.is_empty() {
             continue;
         }
+        let n = i + 2;
         let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() != 6 {
+        if parts.len() != fields {
             return Err(format!(
-                "replay.play: line {} has {} fields, expected 6",
-                i + 2,
+                "replay.play: line {n} has {} fields, expected {fields}",
                 parts.len()
             ));
         }
-        let mouse_x: f64 = parts[2]
-            .parse()
-            .map_err(|e| format!("replay.play: line {}: bad mouse_x ({e})", i + 2))?;
-        let mouse_y: f64 = parts[3]
-            .parse()
-            .map_err(|e| format!("replay.play: line {}: bad mouse_y ({e})", i + 2))?;
-        frames.push(Frame {
+        let mut f = Frame {
             keys_held: split_csv(parts[0]),
             keys_pressed: split_csv(parts[1]),
-            mouse_x,
-            mouse_y,
+            mouse_x: num(parts[2], "mouse_x", n)?,
+            mouse_y: num(parts[3], "mouse_y", n)?,
             mb_held: split_csv(parts[4]),
             mb_press: split_csv(parts[5]),
-        });
+            ..Frame::default()
+        };
+        if fields == 9 {
+            f.mouse_dx = num(parts[6], "mouse_dx", n)?;
+            f.mouse_dy = num(parts[7], "mouse_dy", n)?;
+            f.wheel = num(parts[8], "wheel", n)?;
+        }
+        frames.push(f);
     }
     Ok(frames)
 }
@@ -475,7 +508,7 @@ mod tests {
         let path = std::env::temp_dir().join("twe-replay-rt-test.log");
         let path = path.to_str().unwrap();
         // Manually build a log file matching the format.
-        let body = format!("{HEADER}\nleft,space|space|123.5|45.0|left|left\n||320|240||\n");
+        let body = format!("{HEADER_V1}\nleft,space|space|123.5|45.0|left|left\n||320|240||\n");
         std::fs::write(path, body).unwrap();
         let frames = parse_log(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(frames.len(), 2);

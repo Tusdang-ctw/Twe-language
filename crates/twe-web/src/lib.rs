@@ -13,7 +13,6 @@
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 mod audio;
@@ -25,6 +24,7 @@ use wasm_bindgen::JsCast;
 /// Twe key names with their DOM `KeyboardEvent.code`: the same table
 /// the native shell reports (web3d-M4).
 use twec::host3d::KEY_CODES as KEYS;
+use twec::host3d::InputState;
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -132,8 +132,9 @@ struct Shell {
     assets: WebAssets,
     last_frame: f64,
     accumulator: f64,
-    held: Rc<RefCell<HashSet<String>>>,
-    pressed: Rc<RefCell<HashSet<String>>>,
+    /// Input since the last tick, fed by the DOM listeners; each tick
+    /// takes one command from it (`host3d::sim_tick`).
+    input: Rc<RefCell<InputState>>,
     audio: audio::WebAudio,
     /// Set by the first key press or click: browsers only let audio
     /// start after a user gesture.
@@ -169,7 +170,6 @@ async fn run() -> Result<(), String> {
     // focus for `auto_pause_on_blur`.
     twec::audio_host::enable();
     twec::save::install_web_storage(storage_get, storage_set);
-    listen_focus(&window, &document)?;
     let tokens = twec::lexer::lex(&source).map_err(|e| format!("main.twe:{e}"))?;
     let program = twec::parser::parse(&tokens).map_err(|e| format!("main.twe:{e}"))?;
     let mut env = twec::value::Env::new();
@@ -190,10 +190,10 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| format!("WebGPU is required to run this game ({e})"))?;
 
-    let held = Rc::new(RefCell::new(HashSet::new()));
-    let pressed = Rc::new(RefCell::new(HashSet::new()));
+    let input = Rc::new(RefCell::new(InputState::default()));
     let gestured = Rc::new(std::cell::Cell::new(false));
-    listen_keys(&window, held.clone(), pressed.clone(), gestured.clone())?;
+    listen_keys(&window, input.clone(), gestured.clone())?;
+    listen_focus(&window, &document, input.clone())?;
 
     let shell = Rc::new(RefCell::new(Shell {
         env,
@@ -201,8 +201,7 @@ async fn run() -> Result<(), String> {
         assets: WebAssets::default(),
         last_frame: now_secs(),
         accumulator: 0.0,
-        held,
-        pressed,
+        input,
         audio: audio::WebAudio::default(),
         gestured,
         unlocked: false,
@@ -220,21 +219,12 @@ fn frame(shell: &mut Shell) {
     let dt = (now - shell.last_frame).min(twec::eval::MAX_FRAME_DT);
     shell.last_frame = now;
 
-    {
-        let held = shell.held.borrow();
-        let pressed = shell.pressed.borrow();
-        let names: Vec<&str> = KEYS.iter().map(|(n, _)| *n).collect();
-        twec::host3d::apply_key_state(&mut shell.env, &names, &|n| held.contains(n), &|n| {
-            pressed.contains(n)
-        });
-    }
-    shell.pressed.borrow_mut().clear();
-
     shell.accumulator += dt;
     let tick_start = now_secs();
     let mut steps = 0;
     while shell.accumulator >= twec::eval::PHYSICS_DT && steps < twec::eval::MAX_SUBSTEPS {
-        if let Err(e) = twec::eval::tick_frame(&mut shell.env, twec::eval::PHYSICS_DT) {
+        let mut input = shell.input.borrow_mut();
+        if let Err(e) = twec::host3d::sim_tick(&mut shell.env, &mut input, twec::eval::PHYSICS_DT) {
             web_sys::console::error_1(&format!("on update: {e}").into());
         }
         shell.accumulator -= twec::eval::PHYSICS_DT;
@@ -303,8 +293,7 @@ fn request_frame(f: &Closure<dyn FnMut()>) {
 
 fn listen_keys(
     window: &web_sys::Window,
-    held: Rc<RefCell<HashSet<String>>>,
-    pressed: Rc<RefCell<HashSet<String>>>,
+    input: Rc<RefCell<InputState>>,
     gestured: Rc<std::cell::Cell<bool>>,
 ) -> Result<(), String> {
     let name_of = |code: &str| KEYS.iter().find(|(_, c)| *c == code).map(|(n, _)| *n);
@@ -316,15 +305,14 @@ fn listen_keys(
             "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Space" | "Tab" | "Backspace"
         )
     };
-    let (h, p) = (held.clone(), pressed);
+    let down_input = input.clone();
     let g = gestured.clone();
     let down =
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
             g.set(true);
             if let Some(name) = name_of(&e.code()) {
-                if h.borrow_mut().insert(name.to_string()) {
-                    p.borrow_mut().insert(name.to_string());
-                }
+                // A held key's auto-repeat is not a new press.
+                down_input.borrow_mut().key_down(name);
                 if captured(&e.code()) {
                     e.prevent_default();
                 }
@@ -332,7 +320,7 @@ fn listen_keys(
         });
     let up = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
         if let Some(name) = name_of(&e.code()) {
-            held.borrow_mut().remove(name);
+            input.borrow_mut().key_up(name);
         }
     });
     window
@@ -375,12 +363,20 @@ thread_local! {
 /// The page counts as focused while its tab is visible and the window
 /// has focus. `requestAnimationFrame` stops in hidden tabs anyway, so
 /// the transition is fed from the events, not the frame loop.
-fn listen_focus(window: &web_sys::Window, document: &web_sys::Document) -> Result<(), String> {
-    let update = Closure::<dyn FnMut()>::new(|| {
+fn listen_focus(
+    window: &web_sys::Window,
+    document: &web_sys::Document,
+    input: Rc<RefCell<InputState>>,
+) -> Result<(), String> {
+    let update = Closure::<dyn FnMut()>::new(move || {
         let focused = web_sys::window()
             .and_then(|w| w.document())
             .map(|d| !d.hidden() && d.has_focus().unwrap_or(true))
             .unwrap_or(true);
+        if !focused {
+            // Key-ups for keys held now go to another window.
+            input.borrow_mut().release_all();
+        }
         BLUR.with(|b| b.borrow_mut().tick(focused));
     });
     let f = update.as_ref().unchecked_ref();

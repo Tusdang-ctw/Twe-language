@@ -4,10 +4,11 @@
 //! `eval::render_frame3d` the native and web shells call each frame),
 //! with scripted key presses, and checks the loop a player goes
 //! through: fight, level up and pick an upgrade, pause and resume,
-//! die, restart.
+//! die, restart. Input goes through `host3d::InputState` and
+//! `host3d::sim_tick`, as in the shells, so a recorded run replays.
 
 use twec::eval;
-use twec::host3d::{apply_key_state, KEY_CODES};
+use twec::host3d::{sim_tick, InputState, KEY_CODES};
 use twec::render3d_types::HudItem;
 
 const DT: f64 = 1.0 / 60.0;
@@ -18,6 +19,7 @@ fn data_dir() -> std::path::PathBuf {
 
 struct Game {
     env: twec::value::Env,
+    input: InputState,
 }
 
 impl Game {
@@ -31,17 +33,41 @@ impl Game {
         let mut env = twec::value::Env::new();
         twec::stdlib::install(&mut env);
         eval::run_top_level(&mut env, &program).expect("top level");
-        Game { env }
+        Game {
+            env,
+            input: InputState::default(),
+        }
     }
 
-    /// One frame: input, a tick, a render. `held` / `pressed` are key names.
+    /// One frame: input, a tick, a render. `held` keys are down for the
+    /// frame; `pressed` keys go down this frame (and are released).
     fn frame(&mut self, held: &[&str], pressed: &[&str]) {
-        let names: Vec<&str> = KEY_CODES.iter().map(|(n, _)| *n).collect();
-        apply_key_state(&mut self.env, &names, &|n| held.contains(&n), &|n| {
-            pressed.contains(&n)
-        });
-        eval::tick_frame(&mut self.env, DT).expect("tick");
+        for (name, _) in KEY_CODES {
+            if pressed.contains(name) {
+                self.input.key_up(name);
+                self.input.key_down(name);
+            } else if held.contains(name) {
+                self.input.key_down(name);
+            } else {
+                self.input.key_up(name);
+            }
+        }
+        sim_tick(&mut self.env, &mut self.input, DT).expect("tick");
         eval::render_frame3d(&mut self.env).expect("render");
+        for name in pressed {
+            self.input.key_up(name);
+        }
+    }
+
+    /// A line summarising the run so far, for comparing two runs.
+    fn fingerprint(&mut self) -> String {
+        let probe = "print(\"{player.x} {player.z} {player_hp} {kills} {xp} {level} {entities.count(Slime)}\")";
+        let program = twec::parser::parse(&twec::lexer::lex(probe).expect("lex")).expect("parse");
+        self.env.out.clear();
+        eval::run_top_level(&mut self.env, &program).expect("probe");
+        let line = format!("{} {}", self.state(), self.env.out.trim());
+        self.env.out.clear();
+        line
     }
 
     fn state(&self) -> String {
@@ -154,4 +180,51 @@ fn survive3d_queues_its_sounds() {
         .collect();
     assert!(paths.iter().any(|p| p == "assets/shot.wav"), "{paths:?}");
     assert!(paths.iter().any(|p| p == "assets/hit.wav"), "{paths:?}");
+}
+
+/// web3d-M4: a run recorded through the input-command stream plays
+/// back identically in a fresh game fed no live input: input is the
+/// only thing that enters the simulation.
+#[test]
+fn survive3d_replays_a_recorded_run() {
+    let log = std::env::temp_dir().join(format!("twe-survive3d-{}.replay", std::process::id()));
+    let log = log.to_str().expect("utf-8 temp path").to_string();
+    const TICKS: usize = 60 * 45;
+
+    let mut live = Game::new();
+    twec::replay::start_recording(&log).expect("record");
+    let mut want = Vec::new();
+    for t in 0..TICKS {
+        if live.state() == "level_up" {
+            live.frame(&[], &["2"]);
+        } else {
+            let dir = ["w", "d", "s", "a"][(t / 70) % 4];
+            let also = if t % 200 < 40 { "d" } else { dir };
+            live.frame(&[dir, also], &[]);
+        }
+        if t % 60 == 0 {
+            want.push(live.fingerprint());
+        }
+    }
+    twec::replay::stop();
+    assert!(
+        live.fingerprint().split(' ').nth(4).is_some_and(|k| k != "0"),
+        "the recorded run should fight: {}",
+        live.fingerprint()
+    );
+
+    let mut replayed = Game::new();
+    twec::replay::start_playing(&log).expect("play");
+    let mut got = Vec::new();
+    for t in 0..TICKS {
+        replayed.frame(&[], &[]);
+        if t % 60 == 0 {
+            got.push(replayed.fingerprint());
+        }
+    }
+    twec::replay::stop();
+    let _ = std::fs::remove_file(&log);
+    for (i, (w, g)) in want.iter().zip(&got).enumerate() {
+        assert_eq!(w, g, "diverged by second {i}");
+    }
 }

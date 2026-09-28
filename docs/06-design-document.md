@@ -854,6 +854,8 @@ if mouse_held.left:     # held
 let scroll = mouse.wheel
 ```
 
+`mouse.x` / `mouse.y` are in the 640×480 canvas units that `text()` / `rect()` use, in 2D and (since web3d-M4) in 3D, whatever the window size, so hit-testing a HUD button is a plain rectangle check. `mouse.dx` / `mouse.dy` are raw pointer motion since the last tick.
+
 **Gamepad:**
 
 ```twe
@@ -1342,13 +1344,15 @@ replay.stop()                          # end either mode
 
 `replay.tick` runs once per simulation step inside the play loop, so user code doesn't observe the recorder. The deterministic-input contract from Phase 29 still holds: same script + same input log → byte-identical run.
 
+**The input-command stream** *(web3d-M4)*. In the 3D shells (`twec play3d` and web builds) input reaches the simulation only as one *input command* per fixed tick: keys and mouse buttons held and newly pressed, cursor position, pointer motion and wheel. The shell collects events between ticks (a press is seen by exactly one tick, however render frames and ticks interleave), and each command passes through the recorder / player before it is written into `key`, `key_press`, `mouse`, `mouse_held` and `mouse_press`. So a log replays a 3D run exactly, and the same stream is where a remote player's input would arrive. Logs are stored like saves (§7.11): a file natively, a localStorage key in the browser. The format is v2 (`TWE-REPLAY v2`, adding mouse motion and wheel to each line); v1 logs still play.
+
 **Always-on input ring.** v1.0.1 Session 10 adds a 30-second circular buffer that captures every frame's input regardless of explicit `replay.record` state. When the runtime crashes (any panic), the crash reporter writes a sibling `twec-crash-<secs>-<pid>.replay` next to its `.log`. Reproduce the bug with:
 
 ```bash
 twec replay <repro-script.twe> twec-crash-<secs>-<pid>.replay
 ```
 
-The replay halts automatically at end-of-file and the script continues with live input from then on. The ring file format is the same v1 line-based replay log; it's grep-friendly + diff-friendly + zero-dependency to parse.
+The replay halts automatically at end-of-file and the script continues with live input from then on. The ring file format is the same line-based replay log; it's grep-friendly + diff-friendly + zero-dependency to parse.
 
 ### 7.20 Open-world spatial + terrain  *(Phase 32 — `twec play3d` data side)*
 

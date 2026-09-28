@@ -33,10 +33,8 @@
 //! VM 3D path, mouse input, proper lighting (point / area / shadows),
 //! `mat4` / `quat` stdlib types.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
@@ -52,7 +50,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use crate::kernel::render::{
     parse_glb_bytes, AssetKind, AssetReady, AssetSource, LoadedGlb, Renderer,
 };
-use crate::value::{Env, Object, Value};
+use crate::value::Env;
 use crate::{eval, lexer, parser, stdlib};
 
 /// Twe-side key names ↔ winit physical key codes. Same name set
@@ -128,10 +126,6 @@ const KEYS: &[(&str, KeyCode)] = &[
     ("f11", KeyCode::F11),
     ("f12", KeyCode::F12),
 ];
-
-/// Mouse-button names exposed to Twe code. Same set the macroquad
-/// path uses. v0.2 session 3.
-const MOUSE_BUTTON_NAMES: &[&str] = &["left", "middle", "right"];
 
 /// Map a winit `MouseButton` to its Twe-side name. Buttons beyond
 /// left / middle / right (Back / Forward / Other) aren't surfaced
@@ -253,35 +247,10 @@ struct App {
     /// Source path + last-seen mtime for hot reload polling.
     path: String,
     last_mtime: Option<SystemTime>,
-    /// Currently-held physical keys — Twe `key.<name>` reads this.
-    /// Updated on every winit `KeyboardInput` event with state
-    /// `Pressed` / `Released`.
-    keys_held: HashSet<&'static str>,
-    /// Keys whose `Pressed` event arrived since the last frame —
-    /// drained into Twe `key_press.<name>` once per frame and
-    /// cleared. Matches the macroquad path's edge-triggered
-    /// semantics.
-    keys_pressed_this_frame: HashSet<&'static str>,
-    /// Mouse cursor position in window logical pixels. Updated on
-    /// `WindowEvent::CursorMoved`. v0.2 session 3.
-    mouse_x: f64,
-    mouse_y: f64,
-    /// Raw mouse delta accumulated since the last frame, in winit
-    /// device-relative units (NOT logical pixels — driver-defined).
-    /// Phase 17 session 3: lets a FPS camera read `mouse.dx`/`mouse.dy`
-    /// without sensitivity-killing cursor wraparound. Reset to 0 each
-    /// frame after the env update.
-    mouse_dx: f64,
-    mouse_dy: f64,
-    /// Wheel delta accumulated this frame (line-delta y, unitless
-    /// scroll-tick count for typical mice). Reset each frame after
-    /// the env update.
-    mouse_wheel_y: f32,
-    /// Mouse buttons currently held — Twe `mouse_held.<name>`.
-    mouse_buttons_held: HashSet<&'static str>,
-    /// Mouse buttons whose `Pressed` event arrived since the last
-    /// frame — Twe `mouse_press.<name>`. Edge-triggered.
-    mouse_buttons_pressed_this_frame: HashSet<&'static str>,
+    /// web3d-M4: keys, buttons, cursor, motion and wheel seen since
+    /// the last simulation tick; each tick takes one command from it
+    /// (`host3d::sim_tick`).
+    input: crate::host3d::InputState,
     /// Phase 29 session 1: fixed-timestep accumulator. Same Glenn
     /// Fiedler pattern as the 2D macroquad path in `src/play.rs`.
     /// We drain `eval::PHYSICS_DT`-sized slices through
@@ -370,15 +339,7 @@ impl App {
             started_at: Instant::now(),
             path,
             last_mtime,
-            keys_held: HashSet::new(),
-            keys_pressed_this_frame: HashSet::new(),
-            mouse_x: 0.0,
-            mouse_y: 0.0,
-            mouse_dx: 0.0,
-            mouse_dy: 0.0,
-            mouse_wheel_y: 0.0,
-            mouse_buttons_held: HashSet::new(),
-            mouse_buttons_pressed_this_frame: HashSet::new(),
+            input: crate::host3d::InputState::default(),
             sim_accumulator: 0.0,
             exit_code: 0,
             audio: NativeAudio::default(),
@@ -438,7 +399,12 @@ impl ApplicationHandler for App {
         };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Focused(focused) => self.blur.tick(focused),
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    self.input.release_all();
+                }
+                self.blur.tick(focused);
+            }
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
                     state.renderer.resize(size.width, size.height);
@@ -456,20 +422,10 @@ impl ApplicationHandler for App {
             } => {
                 if let Some(name) = Self::key_name(code) {
                     match key_state {
-                        ElementState::Pressed => {
-                            self.keys_held.insert(name);
-                            // Edge-triggered: only count the first
-                            // `Pressed` event in a held sequence as
-                            // a "press." OS auto-repeat fires
-                            // additional `Pressed` events with
-                            // `repeat = true` — drop those.
-                            if !repeat {
-                                self.keys_pressed_this_frame.insert(name);
-                            }
-                        }
-                        ElementState::Released => {
-                            self.keys_held.remove(name);
-                        }
+                        // OS auto-repeat is not a new press.
+                        ElementState::Pressed if !repeat => self.input.key_down(name),
+                        ElementState::Pressed => {}
+                        ElementState::Released => self.input.key_up(name),
                     }
                 }
                 // Esc closes the window — same convention as the
@@ -486,8 +442,12 @@ impl ApplicationHandler for App {
             // position; MouseInput tracks button held + edge-press;
             // MouseWheel accumulates the per-frame wheel delta.
             WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_x = position.x;
-                self.mouse_y = position.y;
+                // web3d-M4: in the HUD's 640×480 canvas units, as in 2D.
+                let size = state.window.inner_size();
+                self.input.mouse_move(
+                    position.x * f64::from(crate::kernel::hud::CANVAS_W) / f64::from(size.width.max(1)),
+                    position.y * f64::from(crate::kernel::hud::CANVAS_H) / f64::from(size.height.max(1)),
+                );
             }
             WindowEvent::MouseInput {
                 state: btn_state,
@@ -496,13 +456,8 @@ impl ApplicationHandler for App {
             } => {
                 if let Some(name) = mouse_button_name(button) {
                     match btn_state {
-                        ElementState::Pressed => {
-                            self.mouse_buttons_held.insert(name);
-                            self.mouse_buttons_pressed_this_frame.insert(name);
-                        }
-                        ElementState::Released => {
-                            self.mouse_buttons_held.remove(name);
-                        }
+                        ElementState::Pressed => self.input.button_down(name),
+                        ElementState::Released => self.input.button_up(name),
                     }
                 }
             }
@@ -517,7 +472,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_x, y) => y,
                     MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 120.0,
                 };
-                self.mouse_wheel_y += dy;
+                self.input.wheel(f64::from(dy));
             }
             WindowEvent::RedrawRequested => {
                 // Hot reload: poll the source's mtime, re-init env
@@ -553,36 +508,11 @@ impl ApplicationHandler for App {
                     self.last_mtime = cur_mtime;
                 }
 
-                // Push input state into the Twe-visible `key` /
-                // `key_press` Objects before running the frame.
-                update_key_state(
-                    &mut self.env,
-                    &self.keys_held,
-                    &self.keys_pressed_this_frame,
-                );
-                self.keys_pressed_this_frame.clear();
                 // v1.0.2 Session 7: tap-event diff. The 3D path can
                 // be a mobile target too (Phase 39 reference scene
                 // composes touch + virtual joystick); same hook as
                 // every `run_loop_*` in play.rs.
                 crate::stdlib::tick_touch_taps(self.started_at.elapsed().as_secs_f64());
-                // v0.2 session 3: same for mouse / mouse_held /
-                // mouse_press. Wheel + edge-press are reset here.
-                update_mouse_state(
-                    &mut self.env,
-                    self.mouse_x,
-                    self.mouse_y,
-                    self.mouse_dx,
-                    self.mouse_dy,
-                    self.mouse_wheel_y,
-                    &self.mouse_buttons_held,
-                    &self.mouse_buttons_pressed_this_frame,
-                );
-                self.mouse_wheel_y = 0.0;
-                self.mouse_dx = 0.0;
-                self.mouse_dy = 0.0;
-                self.mouse_buttons_pressed_this_frame.clear();
-
                 // Phase 17 session 3: drain any pending cursor-mode
                 // request from the script side. cursor.lock() /
                 // cursor.unlock() write a CursorMode here; we apply
@@ -606,7 +536,7 @@ impl ApplicationHandler for App {
                 while self.sim_accumulator >= crate::eval::PHYSICS_DT
                     && substeps < crate::eval::MAX_SUBSTEPS
                 {
-                    step_simulation_3d(&mut self.env, crate::eval::PHYSICS_DT as f32);
+                    step_simulation_3d(&mut self.env, &mut self.input, crate::eval::PHYSICS_DT as f32);
                     self.sim_accumulator -= crate::eval::PHYSICS_DT;
                     substeps += 1;
                 }
@@ -646,8 +576,7 @@ impl ApplicationHandler for App {
     /// pointer velocity.
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-            self.mouse_dx += dx;
-            self.mouse_dy += dy;
+            self.input.mouse_motion(dx, dy);
         }
     }
 }
@@ -673,92 +602,6 @@ fn apply_cursor_mode(window: &Window, locked: bool) {
     }
 }
 
-/// Write the current input state into the env's `key` and
-/// `key_press` Objects so Twe scripts see `key.right`, etc.
-/// Mirrors `src/play.rs::update_key_state` but reads from the
-/// winit-fed `HashSet`s rather than macroquad's `is_key_down` /
-/// `is_key_pressed`.
-fn update_key_state(env: &mut Env, held: &HashSet<&'static str>, pressed: &HashSet<&'static str>) {
-    if let Some(t) = env.get("key") {
-        if t.is_object() {
-            let rc = t.as_object();
-            let mut o = rc.borrow_mut();
-            for (name, _) in KEYS {
-                o.insert_field(*name, Value::from_bool(held.contains(name)));
-            }
-        }
-    }
-    let kp = env.get("key_press");
-    if kp.as_ref().is_some_and(|t| t.is_object()) {
-        let rc = kp.unwrap().as_object();
-        let mut o = rc.borrow_mut();
-        for (name, _) in KEYS {
-            o.insert_field(*name, Value::from_bool(pressed.contains(name)));
-        }
-    } else {
-        let mut press = Object {
-            fields: HashMap::new(),
-            kind: "input",
-        };
-        for (name, _) in KEYS {
-            press.insert_field(*name, Value::from_bool(pressed.contains(name)));
-        }
-        env.set(
-            "key_press".to_string(),
-            Value::from_object(Rc::new(RefCell::new(press))),
-        );
-    }
-}
-
-/// Write the current mouse state into the env's `mouse`,
-/// `mouse_held`, and `mouse_press` Objects. Mirror of
-/// `update_key_state` for cursor + buttons + wheel. v0.2 session 3.
-#[allow(clippy::too_many_arguments)]
-fn update_mouse_state(
-    env: &mut Env,
-    mouse_x: f64,
-    mouse_y: f64,
-    mouse_dx: f64,
-    mouse_dy: f64,
-    wheel_y: f32,
-    held: &HashSet<&'static str>,
-    pressed: &HashSet<&'static str>,
-) {
-    if let Some(t) = env.get("mouse") {
-        if t.is_object() {
-            let rc = t.as_object();
-            let mut o = rc.borrow_mut();
-            o.insert_field("x", Value::from_float(mouse_x));
-            o.insert_field("y", Value::from_float(mouse_y));
-            o.insert_field("dx", Value::from_float(mouse_dx));
-            o.insert_field("dy", Value::from_float(mouse_dy));
-            o.insert_field(
-                "pos",
-                Value::from_tuple(vec![Value::from_float(mouse_x), Value::from_float(mouse_y)]),
-            );
-            o.insert_field("wheel", Value::from_float(wheel_y as f64));
-        }
-    }
-    if let Some(t) = env.get("mouse_held") {
-        if t.is_object() {
-            let rc = t.as_object();
-            let mut o = rc.borrow_mut();
-            for name in MOUSE_BUTTON_NAMES {
-                o.insert_field(*name, Value::from_bool(held.contains(name)));
-            }
-        }
-    }
-    if let Some(t) = env.get("mouse_press") {
-        if t.is_object() {
-            let rc = t.as_object();
-            let mut o = rc.borrow_mut();
-            for name in MOUSE_BUTTON_NAMES {
-                o.insert_field(*name, Value::from_bool(pressed.contains(name)));
-            }
-        }
-    }
-}
-
 // ---------- wgpu setup ----------
 
 /// Decode a `.glb` (or `.gltf`) at `path`. Returns interleaved
@@ -777,7 +620,7 @@ pub(crate) fn load_glb(path: &str) -> Result<LoadedGlb, String> {
 /// rapier3d at the same rate as the script's `on update(dt)` body so
 /// physics state and script state advance in lockstep. Called zero
 /// or more times per render frame from the App event loop.
-fn step_simulation_3d(env: &mut Env, dt: f32) {
+fn step_simulation_3d(env: &mut Env, input: &mut crate::host3d::InputState, dt: f32) {
     // Phase 18: step the rapier3d world before the Twe `on update`
     // body runs, so script logic reads authoritative positions.
     // Scripts own intent (velocity / impulse), the integrator owns
@@ -789,7 +632,7 @@ fn step_simulation_3d(env: &mut Env, dt: f32) {
     // plus any active scene / entity tick. Without this the script's
     // `on update(dt):` never fires, so anything that reads
     // `key.*` to drive state stays frozen.
-    if let Err(e) = eval::tick_frame(env, dt as f64) {
+    if let Err(e) = crate::host3d::sim_tick(env, input, dt as f64) {
         eprintln!(
             "render error in `on update(dt)`: {}:{}: {}",
             e.line, e.col, e.message

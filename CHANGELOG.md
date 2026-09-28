@@ -13,6 +13,12 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Input-command stream** (web3d-M4): in `twec play3d` and web builds,
+  input enters the simulation as one command per fixed tick and passes
+  through the replay recorder, so `replay.record` / `replay.play` work
+  in 3D and in the browser (logs go to localStorage there). Replay logs
+  are now `TWE-REPLAY v2` (adds mouse motion and wheel); v1 logs still
+  play.
 - **Saves in the browser** (web3d-M4): `save.*` and `settings.*` use the
   page's localStorage in web builds (they were a runtime error). The
   save path is the key; `os.data_dir(app)` returns `app` on the web, so
@@ -91,6 +97,8 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **`mouse.x` / `mouse.y` in 3D** are in 640×480 canvas units (as in
+  2D and the HUD), not window pixels (web3d-M4).
 - **3D colours are sRGB (visible change).** Tints and `cube()` /
   `sphere()` colours are now decoded from sRGB before lighting, as
   authors pick them (Three.js does the same). Dark colours look dark
@@ -124,6 +132,11 @@ removal would be load-bearing.
   process. Touch queries report no touches headless.
 
 ### Fixed
+- **Lost and doubled key presses in 3D** (web3d-M4). The 3D shells
+  applied input once per rendered frame: on a high-refresh display a
+  frame that ran no simulation tick dropped `key_press`, and one that
+  ran two saw it twice. Each press now reaches exactly one tick. Keys
+  held when the window loses focus are released instead of sticking.
 - **`twec play3d` no longer crashes on its first frame.** Since 2026-06-01 the
   3D loop called macroquad's clock, which panics outside a macroquad window,
   so every 3D example aborted immediately. A source-level test now keeps

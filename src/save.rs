@@ -272,24 +272,42 @@ fn storage_key(path: &Path) -> String {
     format!("twe:{}", path.display())
 }
 
-#[cfg(target_arch = "wasm32")]
+/// Encode `value` as JSON and store it at `path`.
 pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
-    let (_, set) = web_storage()?;
     let json_value = encode(value)?;
-    set(&storage_key(path), &json::to_string(&json_value))
+    write_text(path, &json::to_string(&json_value))
 }
 
-#[cfg(target_arch = "wasm32")]
+/// Read the save at `path` and decode it. Errors carry the path and
+/// the underlying read / parse failure.
 pub fn load_from_path(path: &Path) -> Result<Value, String> {
-    let (get, _) = web_storage()?;
-    let text = get(&storage_key(path)).ok_or_else(|| format!("no save at {}", path.display()))?;
+    let text = read_text(path)?;
     let json_value = json::parse(&text)
-        .map_err(|e| format!("save at {} is not valid JSON: {e}", path.display()))?;
+        .map_err(|e| format!("save file at {} is not valid JSON: {e}", path.display()))?;
     Ok(decode(&json_value))
 }
 
-/// Whether a save exists at `path` (a file natively, a storage key in
-/// the browser). `save.try_read` / `settings.try_load` ask this first.
+// ─── Text storage: files natively, localStorage in the browser ──────────────
+//
+// Saves, settings and replay logs (web3d-M4) all persist through these
+// three functions, so each works the same on desktop and on the web.
+
+/// Store `text` at `path`, replacing what was there.
+#[cfg(target_arch = "wasm32")]
+pub fn write_text(path: &Path, text: &str) -> Result<(), String> {
+    let (_, set) = web_storage()?;
+    set(&storage_key(path), text)
+}
+
+/// Read the text stored at `path`.
+#[cfg(target_arch = "wasm32")]
+pub fn read_text(path: &Path) -> Result<String, String> {
+    let (get, _) = web_storage()?;
+    get(&storage_key(path)).ok_or_else(|| format!("nothing saved at {}", path.display()))
+}
+
+/// Whether anything is stored at `path`. `save.try_read` /
+/// `settings.try_load` ask this first.
 pub fn exists(path: &Path) -> bool {
     #[cfg(target_arch = "wasm32")]
     {
@@ -301,16 +319,12 @@ pub fn exists(path: &Path) -> bool {
     }
 }
 
-// ─── Native save / load (non-WASM) ───────────────────────────────────────────
-
-/// Atomic write: encode, write to `<path>.tmp`, rename to `<path>`.
+/// Atomic write: write to `<path>.tmp`, rename to `<path>`.
 /// `rename(2)` is atomic on POSIX and on NTFS via
 /// `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`. v0.2 session 4 —
 /// `fsync` is deferred to Phase 11 hardening.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
-    let json_value = encode(value)?;
-    let serialized = json::to_string(&json_value);
+pub fn write_text(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         // Skip mkdir for paths with no parent component (e.g. a
         // bare filename in the cwd). Otherwise create_dir_all is
@@ -330,7 +344,7 @@ pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
         p.set_file_name(name);
         p
     };
-    std::fs::write(&tmp_path, serialized.as_bytes())
+    std::fs::write(&tmp_path, text.as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, path).map_err(|e| {
         format!(
@@ -342,16 +356,11 @@ pub fn save_to_path(path: &Path, value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Read + parse + decode. Errors carry the path + the underlying
-/// IO / parse failure for debug-ability.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_from_path(path: &Path) -> Result<Value, String> {
+pub fn read_text(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|e| format!("save file at {} is not valid UTF-8: {e}", path.display()))?;
-    let json_value = json::parse(text)
-        .map_err(|e| format!("save file at {} is not valid JSON: {e}", path.display()))?;
-    Ok(decode(&json_value))
+    String::from_utf8(bytes)
+        .map_err(|e| format!("save file at {} is not valid UTF-8: {e}", path.display()))
 }
 
 /// Convert the `Result<(), String>` shape of save_to_path into a

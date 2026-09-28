@@ -10,7 +10,9 @@ use crate::eval;
 use crate::kernel::render::{
     AssetSource, Camera3d, PostFx, RenderSnapshot, Renderer, ShadowSettings,
 };
-use crate::value::{Env, Value};
+use crate::replay::InputCommand;
+use crate::value::{Env, RuntimeError, Value};
+use std::collections::BTreeSet;
 
 /// Extract `camera.eye` / `camera.target` / `camera.up` from the
 /// env's `camera` Object. Missing or malformed fields fall back to
@@ -239,6 +241,146 @@ pub fn apply_key_state(
     }
 }
 
+/// Mouse buttons the shells report, as Twe `mouse_held.<name>` /
+/// `mouse_press.<name>` names.
+pub const MOUSE_BUTTONS: &[&str] = &["left", "middle", "right"];
+
+/// web3d-M4: the input a shell has seen since the last simulation tick.
+///
+/// Shells feed it events as they arrive; each tick takes one
+/// [`InputCommand`] from it with [`sim_tick`]. A press is seen by
+/// exactly one tick however frames and ticks interleave: at 144 Hz
+/// most frames run no tick, and a press applied per frame (as before)
+/// was lost; a frame that ran two ticks saw it twice. Motion and wheel
+/// accumulate the same way.
+#[derive(Default)]
+pub struct InputState {
+    keys_held: BTreeSet<&'static str>,
+    keys_pressed: BTreeSet<&'static str>,
+    buttons_held: BTreeSet<&'static str>,
+    buttons_pressed: BTreeSet<&'static str>,
+    mouse: (f64, f64),
+    motion: (f64, f64),
+    wheel: f64,
+}
+
+impl InputState {
+    /// A key went down. Auto-repeat (already held) is not a new press.
+    pub fn key_down(&mut self, name: &'static str) {
+        if self.keys_held.insert(name) {
+            self.keys_pressed.insert(name);
+        }
+    }
+
+    pub fn key_up(&mut self, name: &str) {
+        self.keys_held.remove(name);
+    }
+
+    pub fn button_down(&mut self, name: &'static str) {
+        if self.buttons_held.insert(name) {
+            self.buttons_pressed.insert(name);
+        }
+    }
+
+    pub fn button_up(&mut self, name: &str) {
+        self.buttons_held.remove(name);
+    }
+
+    /// Cursor position, in the 640×480 canvas coordinates the HUD uses.
+    pub fn mouse_move(&mut self, x: f64, y: f64) {
+        self.mouse = (x, y);
+    }
+
+    /// Raw pointer motion (unaffected by cursor lock).
+    pub fn mouse_motion(&mut self, dx: f64, dy: f64) {
+        self.motion.0 += dx;
+        self.motion.1 += dy;
+    }
+
+    pub fn wheel(&mut self, dy: f64) {
+        self.wheel += dy;
+    }
+
+    /// The window lost focus: its key-up events will never arrive, so
+    /// let go of everything rather than leave keys stuck down.
+    pub fn release_all(&mut self) {
+        self.keys_held.clear();
+        self.buttons_held.clear();
+    }
+
+    /// The command for the next tick; presses, motion and wheel start
+    /// over.
+    pub fn take_command(&mut self) -> InputCommand {
+        let names = |s: &BTreeSet<&'static str>| s.iter().map(|n| n.to_string()).collect();
+        let cmd = InputCommand {
+            keys_held: names(&self.keys_held),
+            keys_pressed: names(&self.keys_pressed),
+            mouse_x: self.mouse.0,
+            mouse_y: self.mouse.1,
+            mb_held: names(&self.buttons_held),
+            mb_press: names(&self.buttons_pressed),
+            mouse_dx: self.motion.0,
+            mouse_dy: self.motion.1,
+            wheel: self.wheel,
+        };
+        self.keys_pressed.clear();
+        self.buttons_pressed.clear();
+        self.motion = (0.0, 0.0);
+        self.wheel = 0.0;
+        cmd
+    }
+}
+
+/// Write a command into the input ambients: `key` / `key_press` for
+/// every name in [`KEY_CODES`], `mouse` (`x`, `y`, `pos`, `dx`, `dy`,
+/// `wheel`), and `mouse_held` / `mouse_press` for [`MOUSE_BUTTONS`].
+pub fn apply_command(env: &mut Env, cmd: &InputCommand) {
+    let has = |list: &[String], name: &str| list.iter().any(|n| n == name);
+    let names: Vec<&str> = KEY_CODES.iter().map(|(n, _)| *n).collect();
+    apply_key_state(env, &names, &|n| has(&cmd.keys_held, n), &|n| {
+        has(&cmd.keys_pressed, n)
+    });
+    for (ambient, list) in [("mouse_held", &cmd.mb_held), ("mouse_press", &cmd.mb_press)] {
+        if let Some(t) = env.get(ambient) {
+            if t.is_object() {
+                let rc = t.as_object();
+                let mut o = rc.borrow_mut();
+                for name in MOUSE_BUTTONS {
+                    o.insert_field(*name, Value::from_bool(has(list, name)));
+                }
+            }
+        }
+    }
+    if let Some(t) = env.get("mouse") {
+        if t.is_object() {
+            let rc = t.as_object();
+            let mut o = rc.borrow_mut();
+            o.insert_field("x", Value::from_float(cmd.mouse_x));
+            o.insert_field("y", Value::from_float(cmd.mouse_y));
+            o.insert_field(
+                "pos",
+                Value::from_tuple(vec![
+                    Value::from_float(cmd.mouse_x),
+                    Value::from_float(cmd.mouse_y),
+                ]),
+            );
+            o.insert_field("dx", Value::from_float(cmd.mouse_dx));
+            o.insert_field("dy", Value::from_float(cmd.mouse_dy));
+            o.insert_field("wheel", Value::from_float(cmd.wheel));
+        }
+    }
+}
+
+/// One fixed simulation tick: take the tick's input command, let the
+/// replay recorder / player see it (`replay::step`), write it into the
+/// ambients, then run `eval::tick_frame`. Every 3D shell ticks through
+/// here, so input reaches the simulation one way only.
+pub fn sim_tick(env: &mut Env, input: &mut InputState, dt: f64) -> Result<(), RuntimeError> {
+    let cmd = crate::replay::step(input.take_command());
+    apply_command(env, &cmd);
+    eval::tick_frame(env, dt)
+}
+
 // Phase 11 follow-on (deeper): the real auto-pause-on-window-blur
 // machinery the Phase-11 closeout punted on. Each shell reports focus once per
 // frame (the 2D loop polls `window_focus::is_focused()`; the native 3D
@@ -328,5 +470,50 @@ mod blur_tests {
         assert!(is_paused());
         set_paused(false);
         crate::stdlib::set_auto_pause_on_blur(false);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::InputState;
+
+    #[test]
+    fn a_press_reaches_exactly_one_tick() {
+        let mut input = InputState::default();
+        input.key_down("space");
+        // Frames that run no tick don't consume it...
+        input.key_down("space"); // auto-repeat
+        let first = input.take_command();
+        assert_eq!(first.keys_pressed, vec!["space".to_string()]);
+        assert_eq!(first.keys_held, vec!["space".to_string()]);
+        // ...and the next tick doesn't see it again.
+        let second = input.take_command();
+        assert!(second.keys_pressed.is_empty());
+        assert_eq!(second.keys_held, vec!["space".to_string()]);
+        // A tap shorter than a tick still counts.
+        input.key_up("space");
+        input.key_down("x");
+        input.key_up("x");
+        let third = input.take_command();
+        assert_eq!(third.keys_pressed, vec!["x".to_string()]);
+        assert!(third.keys_held.is_empty());
+    }
+
+    #[test]
+    fn motion_and_wheel_accumulate_per_tick_and_blur_releases() {
+        let mut input = InputState::default();
+        input.mouse_motion(2.0, 1.0);
+        input.mouse_motion(3.0, -1.0);
+        input.wheel(1.0);
+        input.button_down("left");
+        let cmd = input.take_command();
+        assert_eq!((cmd.mouse_dx, cmd.mouse_dy, cmd.wheel), (5.0, 0.0, 1.0));
+        assert_eq!(cmd.mb_press, vec!["left".to_string()]);
+        let next = input.take_command();
+        assert_eq!((next.mouse_dx, next.wheel), (0.0, 0.0));
+        input.key_down("w");
+        input.release_all();
+        let after = input.take_command();
+        assert!(after.keys_held.is_empty() && after.mb_held.is_empty());
     }
 }
