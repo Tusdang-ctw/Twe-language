@@ -149,6 +149,8 @@ pub mod physics3d;
 pub mod kernel;
 // web3d-M2: interpreter-side 3D hosting shared by the native and web shells.
 pub mod host3d;
+// web3d-M4: the scripted-player soak harness (native tests + wasm export).
+pub mod soak;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play3d;
 #[cfg(not(target_arch = "wasm32"))]

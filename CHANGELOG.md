@@ -13,6 +13,12 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Soak harness** (web3d-M4): `twec::soak` plays a 3D game with a
+  scripted player (move, level up, pause, die, restart) through the
+  real input and render paths. `tests/soak.rs` runs it natively (a
+  1-minute smoke run always, the 10 × 10-minute and GC-stress soaks with
+  `--ignored`), and `web/soak.mjs` runs the same driver in the wasm
+  build under Node.
 - **Animated characters** (web3d-M4): `mesh_anim.play` / `stop` /
   `blend` / `current` take the mesh's path (the same string `look:` and
   `mesh()` use). Before, they took a numeric handle scripts could never

@@ -78,6 +78,39 @@ pub fn bench_ticks(source: &str, ticks: u32) -> Result<Vec<f64>, String> {
     Ok(out)
 }
 
+/// web3d-M4: the soak harness under Node (`web/soak.mjs`): mount a
+/// built game bundle, play `ticks` fixed ticks with `twec::soak`'s
+/// scripted player (optionally with the GC collecting at every
+/// safepoint), and return its report as JSON. Saves go to an in-memory
+/// store, since Node has no localStorage.
+#[wasm_bindgen]
+pub fn soak(bundle: &[u8], ticks: u32, variant: u32, gc_stress: bool) -> Result<String, String> {
+    let reader = twec::bundle::BundleReader::from_bytes(bundle.to_vec())
+        .map_err(|e| format!("bundle: {e}"))?;
+    twec::bundle::set_active_bundle(reader);
+    let source = twec::bundle::read_asset_bytes("main.twe").map_err(|e| format!("main.twe: {e}"))?;
+    let source = String::from_utf8(source).map_err(|_| "main.twe is not UTF-8")?;
+    twec::save::install_web_storage(memory_get, memory_set);
+    twec::heap::gc_set_stress(gc_stress);
+    let report = twec::soak::run(&source, u64::from(ticks), u64::from(variant));
+    twec::heap::gc_set_stress(false);
+    report.map(|r| r.to_json())
+}
+
+thread_local! {
+    static MEMORY_STORE: RefCell<std::collections::HashMap<String, String>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn memory_get(key: &str) -> Option<String> {
+    MEMORY_STORE.with(|m| m.borrow().get(key).cloned())
+}
+
+fn memory_set(key: &str, value: &str) -> Result<(), String> {
+    MEMORY_STORE.with(|m| m.borrow_mut().insert(key.to_string(), value.to_string()));
+    Ok(())
+}
+
 fn now_secs() -> f64 {
     PERFORMANCE.with(|p| p.as_ref().map(|p| p.now() / 1000.0).unwrap_or(0.0))
 }
