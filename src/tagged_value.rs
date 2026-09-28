@@ -118,6 +118,15 @@ pub enum HeapBody {
     /// web3d-M3: elements stored inline with the refcount (one
     /// allocation, not an `Rc` around a separately allocated `Vec`).
     Tuple(Rc<[TaggedValue]>),
+    /// web3d-M3: a tuple of at most three elements (every `vec3`, every
+    /// 2D position) stored inline in the heap object — one allocation
+    /// per tuple instead of two. Same value as [`HeapBody::Tuple`] in
+    /// every way a script can observe; read both through
+    /// [`HeapBody::tuple_elems`].
+    SmallTuple {
+        len: u8,
+        elems: [TaggedValue; 3],
+    },
     /// Mutable list. Same migration as Tuple.
     List(Rc<RefCell<Vec<TaggedValue>>>),
     /// Generic object — Twe stdlib's `key`, `mouse`, sprite/sound
@@ -162,6 +171,18 @@ pub enum HeapBodyKind {
     Builtin,
 }
 
+impl HeapBody {
+    /// A tuple's elements, whichever representation holds them.
+    #[inline]
+    pub fn tuple_elems(&self) -> Option<&[TaggedValue]> {
+        match self {
+            HeapBody::Tuple(rc) => Some(rc),
+            HeapBody::SmallTuple { len, elems } => Some(&elems[..usize::from(*len)]),
+            _ => None,
+        }
+    }
+}
+
 impl HeapBodyKind {
     pub fn of(body: &HeapBody) -> Self {
         match body {
@@ -170,7 +191,7 @@ impl HeapBodyKind {
             HeapBody::Percent(_) => Self::Percent,
             HeapBody::Quantity { .. } => Self::Quantity,
             HeapBody::Range { .. } => Self::Range,
-            HeapBody::Tuple(_) => Self::Tuple,
+            HeapBody::Tuple(_) | HeapBody::SmallTuple { .. } => Self::Tuple,
             HeapBody::List(_) => Self::List,
             HeapBody::Object(_) => Self::Object,
             HeapBody::Class(_) => Self::Class,
@@ -324,8 +345,17 @@ impl TaggedValue {
         })
     }
 
-    pub fn from_tuple(elems: impl Into<Rc<[TaggedValue]>>) -> Self {
-        Self::from_heap(HeapBody::Tuple(elems.into()))
+    pub fn from_tuple(elems: impl AsRef<[TaggedValue]>) -> Self {
+        let elems = elems.as_ref();
+        if elems.len() <= 3 {
+            let mut inline = [TaggedValue::NIL; 3];
+            inline[..elems.len()].copy_from_slice(elems);
+            return Self::from_heap(HeapBody::SmallTuple {
+                len: elems.len() as u8,
+                elems: inline,
+            });
+        }
+        Self::from_heap(HeapBody::Tuple(Rc::from(elems)))
     }
 
     pub fn from_list(elems: Rc<RefCell<Vec<TaggedValue>>>) -> Self {
@@ -547,7 +577,7 @@ impl TaggedValue {
                 HeapBody::Percent(_) => "percent",
                 HeapBody::Quantity { .. } => "quantity",
                 HeapBody::Range { .. } => "range",
-                HeapBody::Tuple(_) => "tuple",
+                HeapBody::Tuple(_) | HeapBody::SmallTuple { .. } => "tuple",
                 HeapBody::List(_) => "list",
                 HeapBody::Object(o) => o.borrow().kind,
                 HeapBody::Class(_) => "class",
@@ -589,7 +619,8 @@ impl TaggedValue {
                     let op = if *exclusive { "..<" } else { ".." };
                     format!("{start}{op}{end}")
                 }
-                HeapBody::Tuple(elems) => {
+                HeapBody::Tuple(_) | HeapBody::SmallTuple { .. } => {
+                    let elems = b.tuple_elems().expect("tuple");
                     let parts: Vec<String> = elems.iter().map(|t| t.display()).collect();
                     format!("({})", parts.join(", "))
                 }
@@ -659,7 +690,12 @@ impl TaggedValue {
                             exclusive: xb,
                         },
                     ) => sa == sb && ea == eb && xa == xb,
-                    (HeapBody::Tuple(ra), HeapBody::Tuple(rb)) => {
+                    (
+                        HeapBody::Tuple(_) | HeapBody::SmallTuple { .. },
+                        HeapBody::Tuple(_) | HeapBody::SmallTuple { .. },
+                    ) => {
+                        let ra = a.tuple_elems().expect("tuple");
+                        let rb = b.tuple_elems().expect("tuple");
                         ra.len() == rb.len() && ra.iter().zip(rb.iter()).all(|(x, y)| x.equals(y))
                     }
                     (HeapBody::List(ra), HeapBody::List(rb)) => {
@@ -745,6 +781,8 @@ impl TaggedValue {
     pub fn as_tuple(&self) -> Rc<[TaggedValue]> {
         self.with_obj_body(|b| match b {
             HeapBody::Tuple(rc) => rc.clone(),
+            // Slow path for inline tuples; hot readers use `with_tuple`.
+            HeapBody::SmallTuple { .. } => Rc::from(b.tuple_elems().expect("tuple")),
             other => panic!("as_tuple: not a tuple: {other:?}"),
         })
     }
@@ -762,10 +800,7 @@ impl TaggedValue {
             if o.body_kind != HeapBodyKind::Tuple {
                 return None;
             }
-            match &*o.body.borrow() {
-                HeapBody::Tuple(rc) => Some(f(rc)),
-                _ => None,
-            }
+            o.body.borrow().tuple_elems().map(f)
         })
     }
 

@@ -52,13 +52,14 @@ Each step is re-measured against the targets. Columnar storage returns only if t
 | Float-with-float arithmetic first; `is_tuple`/`is_instance`/… read the cached body kind instead of borrowing the body | 1,070 |
 | `tick_entities` reuses the last class's `update` lookup | 1,017 |
 | One heap decode per tuple component or `self`-field read (`with_tuple`, `try_with_instance`) | 1,010 |
+| Tuples of up to 3 elements stored inline in the heap object (`HeapBody::SmallTuple`): one allocation per `vec3` | 668 |
 
 ## Where it stands
 
 | Measure | Baseline | Now | M3 target |
 |---|---|---|---|
-| Native update (`swarm_3d`-style) | 2,459 ns | 1,010 ns | ≤ 300 ns |
-| wasm tick, `swarm_3d` (Node, median) | — (Chrome: 7.3–8.3 ms) | 4.6–4.9 ms (best 3.4 ms) | ≤ 4 ms |
+| Native update (`swarm_3d`-style) | 2,459 ns | 668 ns | ≤ 300 ns |
+| wasm tick, `swarm_3d` (Node, median) | — (Chrome: 7.3–8.3 ms) | 4.3 ms (best 3.05 ms) | ≤ 4 ms |
 | Chrome frame rate, 5,000 enemies | 39–49 fps | 134–141 fps (144 Hz cap) | 60 fps |
 
 The latest profile (Node, wasm) no longer shows hashing or clock reads. What remains is the tree-walk itself:
