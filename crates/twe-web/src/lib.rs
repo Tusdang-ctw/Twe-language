@@ -194,6 +194,7 @@ async fn run() -> Result<(), String> {
     let gestured = Rc::new(std::cell::Cell::new(false));
     listen_keys(&window, input.clone(), gestured.clone())?;
     listen_focus(&window, &document, input.clone())?;
+    listen_pointer(&canvas, input.clone(), gestured.clone())?;
 
     let shell = Rc::new(RefCell::new(Shell {
         env,
@@ -218,6 +219,12 @@ fn frame(shell: &mut Shell) {
     let now = now_secs();
     let dt = (now - shell.last_frame).min(twec::eval::MAX_FRAME_DT);
     shell.last_frame = now;
+
+    shell.input.borrow_mut().set_gamepad(
+        poll_gamepad()
+            .as_ref()
+            .map(|(buttons, axes)| (&buttons[..], *axes)),
+    );
 
     shell.accumulator += dt;
     let tick_start = now_secs();
@@ -391,6 +398,126 @@ fn listen_focus(
         .map_err(|_| "focus listener")?;
     update.forget();
     Ok(())
+}
+
+/// Mouse on the canvas: position in the HUD's 640×480 canvas units
+/// (whatever size the page draws the canvas), buttons, raw motion and
+/// wheel. The context menu is suppressed so right-click reaches the game.
+fn listen_pointer(
+    canvas: &web_sys::HtmlCanvasElement,
+    input: Rc<RefCell<InputState>>,
+    gestured: Rc<std::cell::Cell<bool>>,
+) -> Result<(), String> {
+    let to_canvas = {
+        let canvas = canvas.clone();
+        move |e: &web_sys::MouseEvent| {
+            let w = f64::from(canvas.client_width().max(1));
+            let h = f64::from(canvas.client_height().max(1));
+            (
+                f64::from(e.offset_x()) * f64::from(twec::kernel::hud::CANVAS_W) / w,
+                f64::from(e.offset_y()) * f64::from(twec::kernel::hud::CANVAS_H) / h,
+            )
+        }
+    };
+    let button_name = |b: i16| match b {
+        0 => Some("left"),
+        1 => Some("middle"),
+        2 => Some("right"),
+        _ => None,
+    };
+
+    let (i, pos) = (input.clone(), to_canvas.clone());
+    let moved = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
+        let (x, y) = pos(&e);
+        let mut input = i.borrow_mut();
+        input.mouse_move(x, y);
+        input.mouse_motion(f64::from(e.movement_x()), f64::from(e.movement_y()));
+    });
+    let (i, pos) = (input.clone(), to_canvas);
+    let down = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
+        gestured.set(true);
+        let (x, y) = pos(&e);
+        let mut input = i.borrow_mut();
+        input.mouse_move(x, y);
+        if let Some(name) = button_name(e.button()) {
+            input.button_down(name);
+        }
+    });
+    let i = input.clone();
+    let up = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
+        if let Some(name) = button_name(e.button()) {
+            i.borrow_mut().button_up(name);
+        }
+    });
+    // DOM wheel: +y scrolls down, in pixels or lines. Twe's `mouse.wheel`
+    // is ticks, +y up (as winit and macroquad report it).
+    let wheel = Closure::<dyn FnMut(web_sys::WheelEvent)>::new(move |e: web_sys::WheelEvent| {
+        e.prevent_default();
+        let ticks = match e.delta_mode() {
+            web_sys::WheelEvent::DOM_DELTA_PIXEL => e.delta_y() / 100.0,
+            _ => e.delta_y(),
+        };
+        input.borrow_mut().wheel(-ticks);
+    });
+    let no_menu = Closure::<dyn FnMut(web_sys::Event)>::new(|e: web_sys::Event| {
+        e.prevent_default();
+    });
+    let add = |name: &str, f: &js_sys::Function| {
+        canvas
+            .add_event_listener_with_callback(name, f)
+            .map_err(|_| format!("{name} listener"))
+    };
+    add("pointermove", moved.as_ref().unchecked_ref())?;
+    add("pointerdown", down.as_ref().unchecked_ref())?;
+    // On the window: a button released off the canvas still lets go.
+    web_sys::window()
+        .ok_or("no window")?
+        .add_event_listener_with_callback("pointerup", up.as_ref().unchecked_ref())
+        .map_err(|_| "pointerup listener")?;
+    add("contextmenu", no_menu.as_ref().unchecked_ref())?;
+    // Non-passive, so preventDefault keeps the page from scrolling.
+    let opts = web_sys::AddEventListenerOptions::new();
+    opts.set_passive(false);
+    canvas
+        .add_event_listener_with_callback_and_add_event_listener_options(
+            "wheel",
+            wheel.as_ref().unchecked_ref(),
+            &opts,
+        )
+        .map_err(|_| "wheel listener")?;
+    moved.forget();
+    down.forget();
+    up.forget();
+    wheel.forget();
+    no_menu.forget();
+    Ok(())
+}
+
+/// The first connected gamepad, read through the browser's "standard"
+/// mapping into `stdlib::GAMEPAD_BUTTON_NAMES` / `GAMEPAD_AXIS_NAMES`
+/// order. Sticks' y is flipped to +y up, as gilrs reports natively.
+fn poll_gamepad() -> Option<([bool; 14], [f64; 6])> {
+    // Standard-mapping indices for a, b, x, y, lb, rb, lt, rt, start,
+    // select, d-pad up / down / left / right.
+    const BUTTONS: [u32; 14] = [0, 1, 2, 3, 4, 5, 6, 7, 9, 8, 12, 13, 14, 15];
+    let pads = web_sys::window()?.navigator().get_gamepads().ok()?;
+    let pad: web_sys::Gamepad = pads
+        .iter()
+        .filter_map(|p| p.dyn_into::<web_sys::Gamepad>().ok())
+        .find(|p| p.connected())?;
+    let buttons = pad.buttons();
+    let button = |i: u32| buttons.get(i).dyn_into::<web_sys::GamepadButton>().ok();
+    let mut held = [false; 14];
+    for (slot, i) in held.iter_mut().zip(BUTTONS) {
+        *slot = button(i).is_some_and(|b| b.pressed());
+    }
+    let axes = pad.axes();
+    let axis = |i: u32| axes.get(i).as_f64().unwrap_or(0.0);
+    let trigger = |i: u32| button(i).map_or(0.0, |b| b.value());
+    Some((
+        held,
+        [axis(0), -axis(1), axis(2), -axis(3), trigger(6), trigger(7)],
+    ))
 }
 
 /// `fetch` a URL relative to the page and return its body.

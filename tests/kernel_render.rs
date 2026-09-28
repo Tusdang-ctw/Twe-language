@@ -30,12 +30,23 @@ fn headless() -> Option<Renderer> {
 /// Load `path`, run its top level, tick `frames` frames, then render
 /// one frame headless and return the RGBA8 pixels.
 fn render_script(renderer: &mut Renderer, path: &str, frames: u32) -> Vec<u8> {
+    render_script_with(renderer, path, frames, |_| {})
+}
+
+/// `render_script`, with `setup` run on the env after the top level.
+fn render_script_with(
+    renderer: &mut Renderer,
+    path: &str,
+    frames: u32,
+    setup: impl FnOnce(&mut twec::value::Env),
+) -> Vec<u8> {
     let src = std::fs::read_to_string(path).expect("read script");
     let tokens = twec::lexer::lex(&src).expect("lex");
     let program = twec::parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
     twec::eval::run_top_level(&mut env, &program).expect("top level");
+    setup(&mut env);
     for _ in 0..frames {
         twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
     }
@@ -225,4 +236,23 @@ fn survive3d_frame_renders() {
         colours.insert([px[0] / 16, px[1] / 16, px[2] / 16]);
     }
     assert!(colours.len() > 20, "only {} colours", colours.len());
+}
+
+/// web3d-M4: the level-up picker (cards, highlight, dimmed world).
+#[test]
+fn survive3d_level_up_renders() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    twec::bundle::set_asset_root(Some("examples/survive3d".into()));
+    let rgba = render_script_with(&mut renderer, "examples/survive3d/main.twe", 2, |env| {
+        env.set("xp".to_string(), twec::value::Value::from_int(50));
+    });
+    save_png("survive3d_level_up", &rgba);
+    // The highlighted card's yellow frame is on screen.
+    let yellow = rgba
+        .chunks(4)
+        .filter(|p| p[0] > 200 && p[1] > 200 && p[2] < 80)
+        .count();
+    assert!(yellow > 150, "only {yellow} yellow pixels");
 }

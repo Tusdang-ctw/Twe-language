@@ -1,9 +1,9 @@
 //! Phase 29 session 4: input frame log + replay. web3d-M4: the input
 //! command stream.
 //!
-//! Every simulation tick consumes one [`InputCommand`]: the keys and
-//! mouse buttons held and newly pressed, and the mouse position,
-//! motion and wheel. The 3D shells build one per tick (see
+//! Every simulation tick consumes one [`InputCommand`]: the keys,
+//! mouse buttons and gamepad buttons held and newly pressed, the mouse
+//! position, motion and wheel, and the gamepad's axes. The 3D shells build one per tick (see
 //! `host3d::InputState`) and pass it through [`step`]; the 2D play loop
 //! snapshots its ambients once per frame and calls [`tick`]. Either way
 //! the command goes through here, so:
@@ -22,18 +22,18 @@
 //!
 //! ```text
 //! TWE-REPLAY v2
-//! <keys_held>|<keys_pressed>|<mouse_x>|<mouse_y>|<mb_held>|<mb_press>|<mouse_dx>|<mouse_dy>|<wheel>
+//! <keys_held>|<keys_pressed>|<mouse_x>|<mouse_y>|<mb_held>|<mb_press>|<mouse_dx>|<mouse_dy>|<wheel>|<pad_held>|<pad_press>|<pad_axes>
 //! ...
 //! ```
 //!
-//! Each `<keys_*>` and `<mb_*>` field is a comma-separated list of
-//! names; blank fields are empty strings between `|`s. v1 logs (the
-//! first six fields only, header `TWE-REPLAY v1`) still play.
+//! Each `<keys_*>`, `<mb_*>` and `<pad_held/press>` field is a
+//! comma-separated list of names; blank fields are empty strings
+//! between `|`s. `<pad_axes>` is the six axes (`lx,ly,rx,ry,lt,rt`),
+//! or empty when no gamepad is connected. v1 logs (the first six
+//! fields only, header `TWE-REPLAY v1`) still play.
 //!
 //! ## What's *not* recorded
 //!
-//! - Gamepad axes / buttons (a v3 line format slots in when a game
-//!   needs them).
 //! - Wall-clock time. The determinism contract is "same input, same
 //!   output", and time isn't input.
 //! - Script-internal RNG state. `random.*` uses a fixed seed by
@@ -84,6 +84,11 @@ pub struct InputCommand {
     pub mouse_dx: f64,
     pub mouse_dy: f64,
     pub wheel: f64,
+    /// The first gamepad's axes (`lx, ly, rx, ry, lt, rt`, as in
+    /// `stdlib::GAMEPAD_AXIS_NAMES`), or `None` with no pad connected.
+    pub pad_axes: Option<[f64; 6]>,
+    pub pad_held: Vec<String>,
+    pub pad_pressed: Vec<String>,
 }
 
 type Frame = InputCommand;
@@ -269,7 +274,36 @@ fn snapshot_inputs(env: &Env) -> Frame {
         mouse_dx: read_mouse_axis(env, "dx"),
         mouse_dy: read_mouse_axis(env, "dy"),
         wheel: read_mouse_axis(env, "wheel"),
+        pad_axes: read_pad_axes(env),
+        pad_held: collect_true_field_names(env, "gamepad")
+            .into_iter()
+            .filter(|n| n != "connected")
+            .collect(),
+        pad_pressed: collect_true_field_names(env, "gamepad_press"),
     }
+}
+
+fn read_pad_axes(env: &Env) -> Option<[f64; 6]> {
+    let connected = env
+        .get("gamepad")
+        .filter(|g| g.is_object())
+        .and_then(|g| g.as_object().borrow().fields.get("connected").cloned())
+        .is_some_and(|c| c.is_bool() && c.as_bool());
+    if !connected {
+        return None;
+    }
+    let axes = env.get("gamepad_axis").filter(|a| a.is_object())?;
+    let rc = axes.as_object();
+    let o = rc.borrow();
+    let mut out = [0.0; 6];
+    for (slot, name) in out.iter_mut().zip(crate::stdlib::GAMEPAD_AXIS_NAMES) {
+        if let Some(v) = o.fields.get(*name) {
+            if v.is_float() {
+                *slot = v.as_float();
+            }
+        }
+    }
+    Some(out)
 }
 
 fn collect_true_field_names(env: &Env, ambient: &str) -> Vec<String> {
@@ -324,6 +358,26 @@ fn apply_frame(env: &mut Env, f: &Frame) {
     set_bool_ambient(env, "mouse_held", &f.mb_held);
     set_bool_ambient(env, "mouse_press", &f.mb_press);
     write_mouse(env, f);
+    set_bool_ambient(env, "gamepad", &f.pad_held);
+    set_bool_ambient(env, "gamepad_press", &f.pad_pressed);
+    write_pad(env, f.pad_axes);
+}
+
+/// Write `gamepad.connected` and the `gamepad_axis` fields.
+pub(crate) fn write_pad(env: &mut Env, axes: Option<[f64; 6]>) {
+    if let Some(g) = env.get("gamepad").filter(|g| g.is_object()) {
+        g.as_object()
+            .borrow_mut()
+            .insert_field("connected", Value::from_bool(axes.is_some()));
+    }
+    if let Some(a) = env.get("gamepad_axis").filter(|a| a.is_object()) {
+        let rc = a.as_object();
+        let mut o = rc.borrow_mut();
+        let values = axes.unwrap_or_default();
+        for (name, v) in crate::stdlib::GAMEPAD_AXIS_NAMES.iter().zip(values) {
+            o.insert_field(*name, Value::from_float(v));
+        }
+    }
 }
 
 fn set_bool_ambient(env: &mut Env, name: &str, true_keys: &[String]) {
@@ -431,7 +485,7 @@ fn push_line(out: &mut String, f: &Frame) {
     use std::fmt::Write;
     let _ = writeln!(
         out,
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         f.keys_held.join(","),
         f.keys_pressed.join(","),
         f.mouse_x,
@@ -441,6 +495,11 @@ fn push_line(out: &mut String, f: &Frame) {
         f.mouse_dx,
         f.mouse_dy,
         f.wheel,
+        f.pad_held.join(","),
+        f.pad_pressed.join(","),
+        f.pad_axes
+            .map(|a| a.map(|v| v.to_string()).join(","))
+            .unwrap_or_default(),
     );
 }
 
@@ -448,7 +507,7 @@ fn parse_log(src: &str) -> Result<Vec<Frame>, String> {
     let mut lines = src.lines();
     let header = lines.next().ok_or("replay.play: empty file")?.trim();
     let fields = match header {
-        HEADER => 9,
+        HEADER => 12,
         HEADER_V1 => 6,
         other => {
             return Err(format!(
@@ -482,10 +541,23 @@ fn parse_log(src: &str) -> Result<Vec<Frame>, String> {
             mb_press: split_csv(parts[5]),
             ..Frame::default()
         };
-        if fields == 9 {
+        if fields == 12 {
             f.mouse_dx = num(parts[6], "mouse_dx", n)?;
             f.mouse_dy = num(parts[7], "mouse_dy", n)?;
             f.wheel = num(parts[8], "wheel", n)?;
+            f.pad_held = split_csv(parts[9]);
+            f.pad_pressed = split_csv(parts[10]);
+            if !parts[11].is_empty() {
+                let mut axes = [0.0; 6];
+                let values: Vec<&str> = parts[11].split(',').collect();
+                if values.len() != 6 {
+                    return Err(format!("replay.play: line {n}: expected 6 pad axes"));
+                }
+                for (slot, v) in axes.iter_mut().zip(values) {
+                    *slot = num(v, "pad axis", n)?;
+                }
+                f.pad_axes = Some(axes);
+            }
         }
         frames.push(f);
     }

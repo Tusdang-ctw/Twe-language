@@ -262,6 +262,9 @@ pub struct InputState {
     mouse: (f64, f64),
     motion: (f64, f64),
     wheel: f64,
+    pad_axes: Option<[f64; 6]>,
+    pad_held: BTreeSet<&'static str>,
+    pad_pressed: BTreeSet<&'static str>,
 }
 
 impl InputState {
@@ -301,6 +304,32 @@ impl InputState {
         self.wheel += dy;
     }
 
+    /// The first gamepad as the shell polled it this frame: `buttons`
+    /// in `stdlib::GAMEPAD_BUTTON_NAMES` order, `axes` in
+    /// `GAMEPAD_AXIS_NAMES` order; `None` when no pad is connected.
+    /// A button that went down since the last poll is a press.
+    pub fn set_gamepad(&mut self, pad: Option<(&[bool], [f64; 6])>) {
+        let names = crate::stdlib::GAMEPAD_BUTTON_NAMES;
+        match pad {
+            Some((buttons, axes)) => {
+                self.pad_axes = Some(axes);
+                for (name, down) in names.iter().zip(buttons) {
+                    if *down {
+                        if self.pad_held.insert(name) {
+                            self.pad_pressed.insert(name);
+                        }
+                    } else {
+                        self.pad_held.remove(name);
+                    }
+                }
+            }
+            None => {
+                self.pad_axes = None;
+                self.pad_held.clear();
+            }
+        }
+    }
+
     /// The window lost focus: its key-up events will never arrive, so
     /// let go of everything rather than leave keys stuck down.
     pub fn release_all(&mut self) {
@@ -322,8 +351,12 @@ impl InputState {
             mouse_dx: self.motion.0,
             mouse_dy: self.motion.1,
             wheel: self.wheel,
+            pad_axes: self.pad_axes,
+            pad_held: names(&self.pad_held),
+            pad_pressed: names(&self.pad_pressed),
         };
         self.keys_pressed.clear();
+        self.pad_pressed.clear();
         self.buttons_pressed.clear();
         self.motion = (0.0, 0.0);
         self.wheel = 0.0;
@@ -333,24 +366,32 @@ impl InputState {
 
 /// Write a command into the input ambients: `key` / `key_press` for
 /// every name in [`KEY_CODES`], `mouse` (`x`, `y`, `pos`, `dx`, `dy`,
-/// `wheel`), and `mouse_held` / `mouse_press` for [`MOUSE_BUTTONS`].
+/// `wheel`), `mouse_held` / `mouse_press` for [`MOUSE_BUTTONS`], and
+/// `gamepad` / `gamepad_press` / `gamepad_axis`.
 pub fn apply_command(env: &mut Env, cmd: &InputCommand) {
     let has = |list: &[String], name: &str| list.iter().any(|n| n == name);
     let names: Vec<&str> = KEY_CODES.iter().map(|(n, _)| *n).collect();
     apply_key_state(env, &names, &|n| has(&cmd.keys_held, n), &|n| {
         has(&cmd.keys_pressed, n)
     });
-    for (ambient, list) in [("mouse_held", &cmd.mb_held), ("mouse_press", &cmd.mb_press)] {
+    let pads = crate::stdlib::GAMEPAD_BUTTON_NAMES;
+    for (ambient, list, names) in [
+        ("mouse_held", &cmd.mb_held, MOUSE_BUTTONS),
+        ("mouse_press", &cmd.mb_press, MOUSE_BUTTONS),
+        ("gamepad", &cmd.pad_held, pads),
+        ("gamepad_press", &cmd.pad_pressed, pads),
+    ] {
         if let Some(t) = env.get(ambient) {
             if t.is_object() {
                 let rc = t.as_object();
                 let mut o = rc.borrow_mut();
-                for name in MOUSE_BUTTONS {
+                for name in names {
                     o.insert_field(*name, Value::from_bool(has(list, name)));
                 }
             }
         }
     }
+    crate::replay::write_pad(env, cmd.pad_axes);
     if let Some(t) = env.get("mouse") {
         if t.is_object() {
             let rc = t.as_object();

@@ -259,6 +259,9 @@ struct App {
     exit_code: i32,
     /// web3d-M4: plays the script's queued `sound.*` commands.
     audio: NativeAudio,
+    /// web3d-M4: the gamepad, polled each frame into `input`. `None`
+    /// once gilrs failed to start (no input subsystem).
+    gilrs: Option<gilrs::Gilrs>,
     /// web3d-M4: `auto_pause_on_blur(true)` pauses when the window
     /// loses focus.
     blur: crate::host3d::BlurAutoPause,
@@ -344,6 +347,9 @@ impl App {
             exit_code: 0,
             audio: NativeAudio::default(),
             blur: crate::host3d::BlurAutoPause::new(),
+            gilrs: gilrs::Gilrs::new()
+                .map_err(|e| eprintln!("[twec] gamepad disabled: {e}"))
+                .ok(),
         }
     }
 
@@ -513,6 +519,12 @@ impl ApplicationHandler for App {
                 // composes touch + virtual joystick); same hook as
                 // every `run_loop_*` in play.rs.
                 crate::stdlib::tick_touch_taps(self.started_at.elapsed().as_secs_f64());
+                if let Some(g) = self.gilrs.as_mut() {
+                    let pad = crate::play::read_first_pad(g);
+                    self.input
+                        .set_gamepad(pad.as_ref().map(|(b, a)| (&b[..], *a)));
+                }
+
                 // Phase 17 session 3: drain any pending cursor-mode
                 // request from the script side. cursor.lock() /
                 // cursor.unlock() write a CursorMode here; we apply

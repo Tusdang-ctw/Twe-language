@@ -164,6 +164,25 @@ enum GilrsState {
     Failed,
 }
 
+/// web3d-M4: the first connected pad's buttons (in
+/// `stdlib::GAMEPAD_BUTTON_NAMES` order) and axes (in
+/// `GAMEPAD_AXIS_NAMES` order), for the 3D shell's input state. Drains
+/// gilrs's events first so its connection state is current.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_first_pad(gilrs: &mut gilrs::Gilrs) -> Option<([bool; 14], [f64; 6])> {
+    while gilrs.next_event().is_some() {}
+    let (_, pad) = gilrs.gamepads().next()?;
+    let mut buttons = [false; 14];
+    for (slot, (_, btn)) in buttons.iter_mut().zip(GAMEPAD_BUTTONS) {
+        *slot = pad.is_pressed(*btn);
+    }
+    let mut axes = [0.0; 6];
+    for (slot, (_, axis)) in axes.iter_mut().zip(GAMEPAD_AXES) {
+        *slot = f64::from(pad.value(*axis));
+    }
+    Some((buttons, axes))
+}
+
 /// Reset the previous-frame gamepad state so a hot reload doesn't
 /// produce phantom press events.
 #[cfg(not(target_arch = "wasm32"))]

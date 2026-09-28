@@ -870,6 +870,8 @@ if gamepad.connected:
 
 Available buttons: `a b x y lb rb lt rt start select dup ddown dleft dright`. Axes: `lx ly rx ry lt rt`.
 
+*web3d-M4:* the gamepad works in `twec play3d` (gilrs) and in web builds (the browser Gamepad API, "standard" mapping; the browser reports a pad only after its first button press). Stick `ly` / `ry` are +y up everywhere. In the browser the mouse is read on the game's canvas: right-click and the wheel go to the game, not the page.
+
 ### 7.7 Entities
 
 ```twe

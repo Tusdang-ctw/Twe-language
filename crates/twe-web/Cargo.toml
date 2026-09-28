@@ -36,6 +36,14 @@ web-sys = { version = "0.3", features = [
     "Request",
     "Response",
     "Storage",
+    "AddEventListenerOptions",
+    "Event",
+    "Gamepad",
+    "GamepadButton",
+    "MouseEvent",
+    "Navigator",
+    "PointerEvent",
+    "WheelEvent",
     "Window",
 ] }
 

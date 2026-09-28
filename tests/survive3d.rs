@@ -59,6 +59,15 @@ impl Game {
         }
     }
 
+    /// Move the mouse to canvas point (x, y) and click there.
+    fn click(&mut self, x: f64, y: f64) {
+        self.input.mouse_move(x, y);
+        self.input.mouse_motion(1.0, 0.0);
+        self.input.button_down("left");
+        self.frame(&[], &[]);
+        self.input.button_up("left");
+    }
+
     /// A line summarising the run so far, for comparing two runs.
     fn fingerprint(&mut self) -> String {
         let probe = "print(\"{player.x} {player.z} {player_hp} {kills} {xp} {level} {entities.count(Slime)}\")";
@@ -117,7 +126,13 @@ fn survive3d_plays_through_a_run() {
         let dir = ["w", "d", "s", "a"][(frames / 90) % 4];
         if g.state() == "level_up" {
             assert!(g.hud_text().contains("LEVEL UP"), "{}", g.hud_text());
-            g.frame(&[], &["1"]);
+            // Alternate: a key, then a click on the second card.
+            if level_ups % 2 == 0 {
+                g.frame(&[], &["1"]);
+            } else {
+                g.click(320.0, 238.0);
+            }
+            assert_eq!(g.state(), "playing", "the pick closes the picker");
             level_ups += 1;
         } else {
             g.frame(&[dir], &[]);
@@ -136,7 +151,7 @@ fn survive3d_plays_through_a_run() {
         frames += 1;
     }
     assert!(g.global("kills") > 10.0, "kills: {}", g.global("kills"));
-    assert!(level_ups >= 1, "never levelled up");
+    assert!(level_ups >= 2, "levelled up {level_ups} times");
     assert_eq!(
         g.state(),
         "game_over",
@@ -227,4 +242,30 @@ fn survive3d_replays_a_recorded_run() {
     for (i, (w, g)) in want.iter().zip(&got).enumerate() {
         assert_eq!(w, g, "diverged by second {i}");
     }
+}
+
+/// web3d-M4: the left stick moves the player; Start pauses.
+#[test]
+fn survive3d_plays_with_a_gamepad() {
+    let mut g = Game::new();
+    let mut buttons = [false; 14];
+    for _ in 0..60 {
+        g.input.set_gamepad(Some((&buttons, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0])));
+        g.frame(&[], &[]);
+    }
+    let x = g.fingerprint();
+    let px: f64 = x.split(' ').nth(1).unwrap().parse().unwrap();
+    assert!(px > 4.0, "stick right for 1 s: {x}");
+
+    buttons[8] = true; // start
+    g.input.set_gamepad(Some((&buttons, [0.0; 6])));
+    g.frame(&[], &[]);
+    assert_eq!(g.state(), "paused");
+    buttons[8] = false;
+    g.input.set_gamepad(Some((&buttons, [0.0; 6])));
+    g.frame(&[], &[]);
+    buttons[8] = true;
+    g.input.set_gamepad(Some((&buttons, [0.0; 6])));
+    g.frame(&[], &[]);
+    assert_eq!(g.state(), "playing");
 }

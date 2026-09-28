@@ -13,6 +13,11 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Mouse and gamepad in 3D and the browser** (web3d-M4): `mouse.*`
+  and `gamepad*` work in `twec play3d` and web builds (the Gamepad API
+  on the web) and are part of each tick's input command, so replays
+  cover them. `survive3d` plays with a pad (stick, Start to pause, A to
+  pick) and its level-up picker takes arrows + Enter or a click.
 - **Input-command stream** (web3d-M4): in `twec play3d` and web builds,
   input enters the simulation as one command per fixed tick and passes
   through the replay recorder, so `replay.record` / `replay.play` work
