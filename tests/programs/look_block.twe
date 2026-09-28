@@ -1,0 +1,52 @@
+# web3d-M3: the `look:` block (docs/06 §4.9a).
+# tests/eval.rs renders one frame and checks the draw queue.
+
+var flash = false
+
+entity Crate:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "cube"
+        scale: 0.5
+        tint: (0.5, 0.25, 0.0)
+
+# Per-entity key: `hurt` is a field, so each entity gets its own tint.
+entity Slime:
+    var pos = vec3(0, 0, 0)
+    var hurt = false
+    look:
+        mesh: "sphere"
+        tint: if hurt: color.white else: color.green
+
+# Overrides one key; mesh and tint come from Slime.
+entity BigSlime extends Slime:
+    look:
+        scale: 2.0
+
+# Shared key reading a global: the same for every Blinker each frame.
+entity Blinker:
+    var pos = vec3(0, 0, 0)
+    look:
+        tint: if flash: color.red else: color.blue
+
+spawn Crate at vec3(1, 0, 0)
+spawn Slime at vec3(2, 0, 0)
+spawn Slime at vec3(3, 0, 0)
+spawn BigSlime at vec3(4, 0, 0)
+spawn Blinker at vec3(5, 0, 0)
+spawn Crate at vec3(6, 0, 0)
+
+var tick = 0
+on update(dt):
+    tick += 1
+    if tick == 1:
+        flash = true
+        for s in entities.of(Slime):
+            if s.pos.x == 3:
+                s.hurt = true
+        for c in entities.of(Crate):
+            if c.pos.x == 6:
+                despawn c
+
+on render():
+    sphere(at: vec3(0, 5, 0), color: color.yellow, size: 1.0)

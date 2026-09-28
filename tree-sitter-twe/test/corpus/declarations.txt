@@ -243,3 +243,30 @@ on update(dt):
         (call_expression
           function: (identifier)
           (identifier))))))
+==================
+look block
+==================
+entity E:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "cube"
+        scale: 0.5
+---
+(source_file
+  (declaration
+    name: (identifier)
+    body: (declaration_body
+      (field_declaration
+        name: (identifier)
+        value: (call_expression
+          function: (identifier)
+          (integer_literal)
+          (integer_literal)
+          (integer_literal)))
+      (look_declaration
+        (look_key
+          key: (identifier)
+          value: (string_literal))
+        (look_key
+          key: (identifier)
+          value: (float_literal))))))

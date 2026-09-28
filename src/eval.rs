@@ -605,19 +605,212 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
 /// session (d).
 pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
     env.render_queue3d.clear();
-    let body = match env.top_on_render.clone() {
-        Some(b) => b,
-        None => return Ok(()),
+    if let Some(body) = env.top_on_render.clone() {
+        let prev_render = env.in_render;
+        env.in_render = true;
+        let result = run_frame_body(env, Vec::new(), &body);
+        env.in_render = prev_render;
+        // A `return` in the top-level on_render body just stops the
+        // current frame's draw composition; clear the flag so
+        // subsequent frames aren't affected.
+        env.returning.take();
+        result?;
+    }
+    draw_looks(env)
+}
+
+/// web3d-M3: `look:` is drawn by the 3D kernel only; the 2D macroquad
+/// player retires in web3d-M6. Rather than drawing nothing, it refuses.
+pub fn look_needs_3d(class: &str) -> RuntimeError {
+    RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("`{class}` has a look:, which only the 3D runtime draws"),
+        help: Some(
+            "run it with `twec play3d` or build it with `twec build --target web`; the 2D player gains look: in web3d-M6"
+                .to_string(),
+        ),
+    }
+}
+
+/// The first class defined in `env` whose (merged) look is set, for
+/// hosts that can't draw looks to refuse at startup.
+pub fn first_look_class(env: &Env) -> Option<String> {
+    let mut names: Vec<String> = env
+        .iter_bindings()
+        .filter(|(_, v)| v.is_class() && v.as_class().look.is_some())
+        .map(|(n, _)| n)
+        .collect();
+    names.sort();
+    names.into_iter().next()
+}
+
+/// What one look draws, after evaluating its keys.
+#[derive(Clone, Copy)]
+struct LookValues {
+    primitive: crate::value::Primitive,
+    color: [f32; 4],
+    size: f32,
+}
+
+/// web3d-M3: queue a draw for every live entity whose class has a
+/// `look:` (`docs/06` §4.9a). Shared keys are evaluated once per class;
+/// per-entity keys once per entity, with `self` bound to it.
+fn draw_looks(env: &mut Env) -> Result<(), RuntimeError> {
+    // Per-class shared values, keyed by class identity. Few classes
+    // have looks, so a linear scan beats hashing.
+    let mut shared: Vec<(*const ClassDef, LookValues)> = Vec::new();
+    // Index loop: a per-entity key may call a function that spawns.
+    let mut i = 0;
+    while i < env.active_entities.len() {
+        let entity = env.active_entities[i].clone();
+        i += 1;
+        let (class, pos) = {
+            let inst = entity.borrow();
+            if inst.despawned || inst.class.look.is_none() {
+                continue;
+            }
+            (inst.class.clone(), inst.get_field("pos"))
+        };
+        let look = class.look.clone().expect("checked above");
+        let key = Rc::as_ptr(&class);
+        let base = match shared.iter().find(|(k, _)| *k == key) {
+            Some((_, v)) => *v,
+            None => {
+                let v = look_values(env, &entity, &look, false, LookValues::default_look())?;
+                shared.push((key, v));
+                v
+            }
+        };
+        let values = look_values(env, &entity, &look, true, base)?;
+        let at = match pos {
+            Some(p) => crate::stdlib::xyz_of(&p, "pos").ok(),
+            None => None,
+        };
+        let Some(at) = at else {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!(
+                    "`{}` has a look: but its `pos` is not a vec3 (it is {})",
+                    class.name,
+                    pos.map(|p| p.type_name()).unwrap_or("missing")
+                ),
+                help: Some(format!(
+                    "give `{}` a field `var pos = vec3(0, 0, 0)`, or spawn it with `spawn {} at vec3(...)`",
+                    class.name, class.name
+                )),
+            });
+        };
+        env.render_queue3d.push(crate::value::DrawCall3d {
+            primitive: values.primitive,
+            at,
+            color: values.color,
+            size: values.size,
+            texture: 0,
+        });
+    }
+    Ok(())
+}
+
+impl LookValues {
+    fn default_look() -> Self {
+        LookValues {
+            primitive: crate::value::Primitive::Cube,
+            color: [1.0, 1.0, 1.0, 1.0],
+            size: 1.0,
+        }
+    }
+}
+
+/// Evaluate the look keys whose `per_entity` flag equals `per_entity`
+/// over `base` (keys of the other kind keep `base`'s values).
+fn look_values(
+    env: &mut Env,
+    entity: &Rc<RefCell<Instance>>,
+    look: &crate::value::LookDef,
+    per_entity: bool,
+    base: LookValues,
+) -> Result<LookValues, RuntimeError> {
+    let mut v = base;
+    fn wanted(
+        s: &Option<crate::value::LookSlot>,
+        per_entity: bool,
+    ) -> Option<&crate::value::LookSlot> {
+        s.as_ref().filter(|s| s.per_entity == per_entity)
+    }
+    if let Some(slot) = wanted(&look.mesh, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.primitive = look_mesh(env, val, slot)?;
+    }
+    if let Some(slot) = wanted(&look.tint, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.color = look_tint(val, slot)?;
+    }
+    if let Some(slot) = wanted(&look.scale, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.size = crate::stdlib::number(&val, "look scale").map_err(|e| at_slot(e, slot))? as f32;
+    }
+    Ok(v)
+}
+
+/// Evaluate one look key in the entity's scope, as a method body would.
+fn eval_look_slot(
+    env: &mut Env,
+    entity: &Rc<RefCell<Instance>>,
+    slot: &crate::value::LookSlot,
+) -> Result<Value, RuntimeError> {
+    let saved_self = env.self_value.replace(instance_value(entity));
+    let home = frame_home(env, &slot.home);
+    push_call_frame(env, &[], &[], home);
+    // Nonzero call depth: no GC safepoint while look values are held.
+    env.call_depth += 1;
+    let result = eval_expr(env, &slot.expr);
+    env.call_depth -= 1;
+    pop_frame(env);
+    env.self_value = saved_self;
+    result.map_err(|e| at_slot(e, slot))
+}
+
+/// Builtin errors carry no position; point them at the look key.
+fn at_slot(mut e: RuntimeError, slot: &crate::value::LookSlot) -> RuntimeError {
+    if e.line == 0 {
+        e.line = slot.line;
+        e.col = slot.col;
+    }
+    e
+}
+
+fn look_mesh(
+    env: &mut Env,
+    v: Value,
+    slot: &crate::value::LookSlot,
+) -> Result<crate::value::Primitive, RuntimeError> {
+    let bad = |got: String| RuntimeError {
+        line: slot.line,
+        col: slot.col,
+        message: format!("look mesh must be \"cube\", \"sphere\" or a .glb path, got {got}"),
+        help: Some("e.g. `mesh: \"cube\"` or `mesh: \"models/ship.glb\"`".to_string()),
     };
-    let prev_render = env.in_render;
-    env.in_render = true;
-    let result = run_frame_body(env, Vec::new(), &body);
-    env.in_render = prev_render;
-    // A `return` in the top-level on_render body just stops the
-    // current frame's draw composition; clear the flag so
-    // subsequent frames aren't affected.
-    env.returning.take();
-    result
+    if !v.is_str() {
+        return Err(bad(v.type_name().to_string()));
+    }
+    let s = v.as_string();
+    Ok(match s.as_str() {
+        "cube" => crate::value::Primitive::Cube,
+        "sphere" => crate::value::Primitive::Sphere,
+        path if path.ends_with(".glb") => crate::value::Primitive::Mesh(env.intern_mesh_path(path)),
+        other => return Err(bad(format!("\"{other}\""))),
+    })
+}
+
+fn look_tint(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 4], RuntimeError> {
+    if v.is_tuple() && v.as_tuple().len() == 3 {
+        let e = v.as_tuple();
+        let c = |x: &Value| crate::stdlib::number(x, "look tint").map(|n| n as f32);
+        return Ok([c(&e[0])?, c(&e[1])?, c(&e[2])?, 1.0]);
+    }
+    crate::stdlib::rgba_of(&v, "look tint").map_err(|e| at_slot(e, slot))
 }
 
 /// Run the active scene's current state's on-render handler, plus
@@ -658,6 +851,9 @@ pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
         if class.kind == "particles" {
             render_particle_emitter(env, &entity, &class)?;
             continue;
+        }
+        if class.look.is_some() {
+            return Err(look_needs_3d(&class.name));
         }
         let method = match find_method(&class, "render") {
             Some(m) => m,
@@ -3464,6 +3660,116 @@ fn run_for_iter<I: Iterator<Item = Value>>(
     Ok(())
 }
 
+/// web3d-M3: a class's merged `look:` — its own keys over its parent's
+/// (`docs/06` §4.9a). Rejects unknown and duplicate keys, and marks
+/// each key per-entity or shared (see [`look_reads_entity`]).
+fn build_look(
+    env: &Env,
+    parent: Option<&Rc<ClassDef>>,
+    keys: Option<&[crate::ast::LookKey]>,
+    own_fields: &HashMap<String, TaggedValue>,
+) -> Result<Option<Rc<crate::value::LookDef>>, RuntimeError> {
+    let inherited = parent.and_then(|p| p.look.clone());
+    let Some(keys) = keys else {
+        return Ok(inherited);
+    };
+    let mut look = inherited.as_deref().cloned().unwrap_or_default();
+    let is_field = |name: &str| {
+        if own_fields.contains_key(name) {
+            return true;
+        }
+        let mut c = parent.cloned();
+        while let Some(class) = c {
+            if class.field_defaults.contains_key(name) {
+                return true;
+            }
+            c = class.parent.clone();
+        }
+        false
+    };
+    let mut seen: Vec<&str> = Vec::new();
+    for k in keys {
+        if let Some((message, help)) = crate::ast::look_key_problem(&k.key) {
+            return Err(RuntimeError {
+                line: k.line,
+                col: k.col,
+                message,
+                help: Some(help),
+            });
+        }
+        if seen.contains(&k.key.as_str()) {
+            return Err(RuntimeError {
+                line: k.line,
+                col: k.col,
+                message: format!("look key `{}` is set twice", k.key),
+                help: Some("keep one line per key".to_string()),
+            });
+        }
+        seen.push(&k.key);
+        let slot = crate::value::LookSlot {
+            expr: k.value.clone(),
+            per_entity: look_reads_entity(&k.value, &is_field),
+            home: env.current_module,
+            line: k.line,
+            col: k.col,
+        };
+        match k.key.as_str() {
+            "mesh" => look.mesh = Some(slot),
+            "tint" => look.tint = Some(slot),
+            "scale" => look.scale = Some(slot),
+            other => unreachable!("look_key_problem accepted `{other}`"),
+        }
+    }
+    Ok(Some(Rc::new(look)))
+}
+
+/// Whether a look key must be evaluated per entity: it reads `self` or
+/// a field, or calls something (a call may be impure — `random.float()`
+/// must differ between entities). Anything else is the same for every
+/// entity of the class in a frame, so it is evaluated once per class.
+fn look_reads_entity(e: &Expr, is_field: &dyn Fn(&str) -> bool) -> bool {
+    let any = |xs: &[Expr]| xs.iter().any(|x| look_reads_entity(x, is_field));
+    match e {
+        Expr::Str { .. }
+        | Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Bool { .. }
+        | Expr::Percent { .. }
+        | Expr::Quantity { .. } => false,
+        Expr::Ident { name, .. } => is_field(name),
+        Expr::Interp { exprs, .. } => any(exprs),
+        Expr::Tuple { elems, .. } | Expr::List { elems, .. } => any(elems),
+        Expr::Field { object, .. } => look_reads_entity(object, is_field),
+        Expr::Index { object, index, .. } => {
+            look_reads_entity(object, is_field) || look_reads_entity(index, is_field)
+        }
+        Expr::Unary { operand, .. } => look_reads_entity(operand, is_field),
+        Expr::Binary { left, right, .. } => {
+            look_reads_entity(left, is_field) || look_reads_entity(right, is_field)
+        }
+        Expr::Range { start, end, .. } => {
+            look_reads_entity(start, is_field) || look_reads_entity(end, is_field)
+        }
+        Expr::IfExpr {
+            cond,
+            then_expr,
+            elifs,
+            else_expr,
+            ..
+        } => {
+            look_reads_entity(cond, is_field)
+                || look_reads_entity(then_expr, is_field)
+                || elifs
+                    .iter()
+                    .any(|(c, v)| look_reads_entity(c, is_field) || look_reads_entity(v, is_field))
+                || look_reads_entity(else_expr, is_field)
+        }
+        Expr::SelfRef { .. } | Expr::Call { .. } | Expr::ListComp { .. } | Expr::Hole { .. } => {
+            true
+        }
+    }
+}
+
 fn eval_decl(
     env: &mut Env,
     kind: DeclKind,
@@ -3511,6 +3817,7 @@ fn eval_decl(
     let mut methods = crate::value::NameMap::default();
     let mut states = HashMap::new();
     let mut initial_state: Option<String> = None;
+    let mut own_look: Option<&[crate::ast::LookKey]> = None;
     for member in members {
         match member {
             DeclMember::Field {
@@ -3519,6 +3826,7 @@ fn eval_decl(
                 let v = eval_expr(env, value)?;
                 field_defaults.insert(fname.clone(), v);
             }
+            DeclMember::Look { keys, .. } => own_look = Some(keys),
             DeclMember::Method {
                 name: mname,
                 params,
@@ -3611,6 +3919,7 @@ fn eval_decl(
         }
     }
 
+    let look = build_look(env, parent_class.as_ref(), own_look, &field_defaults)?;
     let class = Rc::new(ClassDef {
         kind: kind.as_str(),
         name: name.to_string(),
@@ -3619,6 +3928,7 @@ fn eval_decl(
         methods,
         states,
         initial_state,
+        look,
     });
     env.set(name.to_string(), Value::from_class(class.clone()));
 

@@ -63,7 +63,7 @@ pub const RULES: &[Rule] = &[
         body: "let_stmt | var_stmt | if_stmt | on_stmt | decl_stmt \
                                 | function_stmt | return_stmt | while_stmt | for_stmt \
                                 | break_stmt | continue_stmt | spawn_stmt | despawn_stmt \
-                                | wait_stmt | dialogue_stmt | say_stmt | choice_stmt \
+                                | wait_stmt | then_stmt | dialogue_stmt | say_stmt | choice_stmt \
                                 | import_stmt | annotated_stmt | transition_stmt | expr_stmt",
     },
     Rule {
@@ -114,7 +114,18 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         name: "decl_member",
-        body: "field_decl | function_stmt | state_block | initial_decl",
+        body: "field_decl | function_stmt | state_block | initial_decl | look_block",
+    },
+    // web3d-M3: an entity's declarative appearance. The key alphabet is
+    // closed (`ast::LOOK_KEYS`), so it is spelled out for constrained
+    // decoding; `tests/grammar.rs` keeps the two in sync.
+    Rule {
+        name: "look_block",
+        body: "'look' ':' INDENT look_key+ DEDENT",
+    },
+    Rule {
+        name: "look_key",
+        body: "('mesh' | 'tint' | 'scale') ':' expr NEWLINE",
     },
     Rule {
         name: "field_decl",
@@ -171,6 +182,12 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "wait_stmt",
         body: "'wait' expr NEWLINE",
+    },
+    // `<action> then` + an indented body: wait the action's duration,
+    // then run the body (docs/06 §4.8). No colon, as in the parser.
+    Rule {
+        name: "then_stmt",
+        body: "expr 'then' NEWLINE block",
     },
     Rule {
         name: "transition_stmt",
@@ -371,6 +388,8 @@ pub const KEYWORDS: &[&str] = &[
     "choice",
     "actor",
     "import",
+    "then",
+    "look",
     // Literal-position keywords that aren't TokenKind variants but appear
     // in the grammar (recognised as Ident at lex time, contextual-keyword
     // checked in the parser).

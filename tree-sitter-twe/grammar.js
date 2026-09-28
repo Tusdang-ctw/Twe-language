@@ -86,7 +86,7 @@ module.exports = grammar({
     // as a literal token here rather than reserving a keyword.
     import_statement: $ => seq(
       'import',
-      field('path', $.string),
+      field('path', $.string_literal),
       optional(seq('as', field('alias', $.identifier))),
       $._newline,
     ),
@@ -192,7 +192,7 @@ module.exports = grammar({
     // deprecated; bare `@deprecated` is also accepted.
     deprecated_annotation: $ => seq(
       '@', 'deprecated',
-      optional(seq('(', optional(field('since', $.string)), ')')),
+      optional(seq('(', optional(field('since', $.string_literal)), ')')),
       $._newline,
     ),
 
@@ -228,6 +228,7 @@ module.exports = grammar({
       $.method_declaration,
       $.initial_state_declaration,
       $.state_declaration,
+      $.look_declaration,
     ),
 
     // Field declarations come in two source-level forms:
@@ -267,6 +268,25 @@ module.exports = grammar({
       optional($._type_annotation),
       ':',
       field('body', $.block),
+    ),
+
+    // web3d-M3: `look:` — an entity's declarative appearance. Keys are
+    // identifiers here (a literal 'mesh' would reserve the word and break
+    // calls to the `mesh()` builtin); `twec verify` enforces the closed
+    // set in `ast::LOOK_KEYS`.
+    look_declaration: $ => seq(
+      'look',
+      ':',
+      $._indent,
+      repeat1($.look_key),
+      $._dedent,
+    ),
+
+    look_key: $ => seq(
+      field('key', $.identifier),
+      ':',
+      field('value', $._expression),
+      $._newline,
     ),
 
     initial_state_declaration: $ => seq(

@@ -769,6 +769,8 @@ fn collect_from_member(member: &DeclMember, out: &mut Vec<Symbol>) {
                 collect_from_stmt(s, out);
             }
         }
+        // A look's keys are not symbols.
+        DeclMember::Look { .. } => {}
         DeclMember::InitialState { name, line, col } => out.push(Symbol {
             name: name.clone(),
             kind: SymbolKind::InitialState,

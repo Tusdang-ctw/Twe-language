@@ -427,6 +427,23 @@ fn write_member(s: &mut String, m: &DeclMember) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        DeclMember::Look { keys, line, col } => {
+            s.push_str("{\"kind\":\"Look\",\"keys\":[");
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str("{\"key\":");
+                write_str_value(s, &k.key);
+                s.push_str(",\"value\":");
+                write_expr(s, &k.value);
+                write_pos(s, k.line, k.col);
+                s.push('}');
+            }
+            s.push(']');
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         DeclMember::InitialState { name, line, col } => {
             s.push_str("{\"kind\":\"InitialState\",\"name\":");
             write_str_value(s, name);

@@ -62,6 +62,9 @@ pub enum TokenKind {
     /// (read the referenced file, parse it, return its AST) is
     /// session 2; cross-module name resolution is session 3.
     Import,
+    /// `look:` — an entity's declarative appearance (mesh, tint, scale).
+    /// web3d-M3; see `docs/changes/2026-09-28-web3d-m3-look-block.md`.
+    Look,
     Ident(String),
     Int(i64),
     Float(f64),
@@ -1087,6 +1090,7 @@ impl<'a> Lexer<'a> {
             "choice" => TokenKind::Choice,
             "actor" => TokenKind::Actor,
             "import" => TokenKind::Import,
+            "look" => TokenKind::Look,
             _ => TokenKind::Ident(text.to_string()),
         };
         Token { kind, line, col }

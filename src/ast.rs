@@ -314,6 +314,57 @@ pub enum DeclMember {
         line: u32,
         col: u32,
     },
+    /// `look:` — the entity's declarative appearance (web3d-M3,
+    /// `docs/06` §4.9a). Keys are checked against [`LOOK_KEYS`] by
+    /// `verify`; the parser keeps whatever was written, in order.
+    Look {
+        keys: Vec<LookKey>,
+        line: u32,
+        col: u32,
+    },
+}
+
+/// One `key: expr` line of a `look:` block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LookKey {
+    pub key: String,
+    pub value: Expr,
+    pub line: u32,
+    pub col: u32,
+}
+
+/// The keys a `look:` block may set (web3d-M3 stage 1). `facing` and
+/// `material` join in later M3 stages; see [`look_key_stage`].
+pub const LOOK_KEYS: &[&str] = &["mesh", "tint", "scale"];
+
+/// For a key that is planned but not implemented yet, the M3 stage that
+/// adds it — so `verify` can say so instead of "unknown key".
+pub fn look_key_stage(key: &str) -> Option<&'static str> {
+    match key {
+        "facing" => Some("web3d-M3 stage 2 (per-instance rotation)"),
+        "material" => Some("web3d-M3 stage 3 (visual blocks as surfaces)"),
+        _ => None,
+    }
+}
+
+/// The problem with a `look:` key, if any, as `(message, help)`. Shared
+/// by `twec verify` and the runtime so both say the same thing.
+pub fn look_key_problem(key: &str) -> Option<(String, String)> {
+    if LOOK_KEYS.contains(&key) {
+        return None;
+    }
+    let known = LOOK_KEYS.join(", ");
+    if let Some(stage) = look_key_stage(key) {
+        return Some((
+            format!("look key `{key}` is not implemented yet"),
+            format!("it arrives in {stage}; the keys available now are {known}"),
+        ));
+    }
+    let help = match crate::value::did_you_mean(key, LOOK_KEYS.iter()) {
+        Some(s) => format!("did you mean `{s}`? look keys are {known}"),
+        None => format!("look keys are {known}"),
+    };
+    Some((format!("unknown look key `{key}`"), help))
 }
 
 impl DeclMember {
@@ -322,7 +373,8 @@ impl DeclMember {
             DeclMember::Field { line, .. }
             | DeclMember::Method { line, .. }
             | DeclMember::InitialState { line, .. }
-            | DeclMember::State { line, .. } => *line,
+            | DeclMember::State { line, .. }
+            | DeclMember::Look { line, .. } => *line,
         }
     }
 }

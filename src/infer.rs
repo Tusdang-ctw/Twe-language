@@ -635,6 +635,30 @@ impl Inferer {
                 self.pop_scope();
             }
         }
+
+        // Pass 4 (web3d-M3): `look:` keys are expressions in the same
+        // scope as a method body. Walk them so their names and
+        // operators are checked; `mesh` must be a string.
+        for m in members {
+            if let DeclMember::Look { keys, .. } = m {
+                self.push_scope();
+                let prev_class = self.current_class.take();
+                self.current_class = Some(class_name.to_string());
+                if let Some(shape) = self.class_shapes.get(class_name).cloned() {
+                    for (fname, fty) in shape {
+                        self.bind(fname, fty);
+                    }
+                }
+                for k in keys {
+                    let t = self.expr_type(&k.value);
+                    if k.key == "mesh" {
+                        self.try_unify(&t, &Type::Str, k.line, k.col, "look mesh");
+                    }
+                }
+                self.current_class = prev_class;
+                self.pop_scope();
+            }
+        }
     }
 
     /// True when `name` is bound in the innermost scope — used

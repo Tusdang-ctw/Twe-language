@@ -257,10 +257,23 @@ impl ReloadGate {
     }
 }
 
+/// Set when the script fails to start (read / parse / top-level error),
+/// so `launch*` can return a failing exit code: the macroquad window
+/// owns the loop, and its future can't return one itself.
+static STARTUP_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn startup_exit_code() -> i32 {
+    i32::from(STARTUP_FAILED.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn startup_failed() {
+    STARTUP_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn launch(path: String) -> i32 {
     let conf = window_conf();
     macroquad::Window::from_config(conf, run_loop(path));
-    0
+    startup_exit_code()
 }
 
 /// Phase 12 session 4: launch the runtime against an in-memory
@@ -271,7 +284,7 @@ pub fn launch(path: String) -> i32 {
 pub fn launch_embedded(source: String) -> i32 {
     let conf = window_conf();
     macroquad::Window::from_config(conf, run_loop_embedded(source));
-    0
+    startup_exit_code()
 }
 
 // ─── Phase 30 session 1: WASM entry ─────────────────────────────────────────
@@ -325,7 +338,7 @@ async fn run_loop_wasm() {
     };
     let mut env = match initialize_from_source(&source, LABEL) {
         Ok(e) => e,
-        Err(()) => return,
+        Err(()) => return startup_failed(),
     };
     let mut accumulator: f64 = 0.0;
     flush_output(&mut env);
@@ -461,7 +474,7 @@ async fn run_loop(path: String) {
     let path_ref = path.clone();
     let mut env = match initialize(&path_ref) {
         Ok(e) => e,
-        Err(()) => return,
+        Err(()) => return startup_failed(),
     };
     let mut gate = ReloadGate::new(current_mtime(&path_ref));
     let mut idle = IdleAutoPause::new();
@@ -1087,7 +1100,7 @@ async fn run_loop_embedded(source: String) {
     const LABEL: &str = "<embedded>main.twe";
     let mut env = match initialize_from_source(&source, LABEL) {
         Ok(e) => e,
-        Err(()) => return,
+        Err(()) => return startup_failed(),
     };
     let mut idle = IdleAutoPause::new();
     let mut blur = BlurAutoPause::new();
@@ -1257,11 +1270,28 @@ fn initialize(path: &str) -> Result<Env, ()> {
         .and_then(|t| crate::parser::parse(&t).ok())
         .is_some_and(|p| crate::module::has_imports(&p));
     if imports {
-        return crate::module::prepare_entry(Path::new(path), &src).map_err(|msg| {
+        let env = crate::module::prepare_entry(Path::new(path), &src).map_err(|msg| {
             eprintln!("{msg}");
-        });
+        })?;
+        return refuse_looks(env, path);
     }
     initialize_from_source(&src, path)
+}
+
+/// web3d-M3: the 2D player can't draw `look:`; say so up front instead
+/// of silently drawing nothing (see `eval::look_needs_3d`).
+fn refuse_looks(env: Env, label: &str) -> Result<Env, ()> {
+    match crate::eval::first_look_class(&env) {
+        Some(class) => {
+            let e = crate::eval::look_needs_3d(&class);
+            eprintln!("{label}: {}", e.message);
+            if let Some(help) = e.help {
+                eprintln!("  help: {help}");
+            }
+            Err(())
+        }
+        None => Ok(env),
+    }
 }
 
 /// Phase 12 session 4: shared init path for both file-backed and
@@ -1289,7 +1319,7 @@ fn initialize_from_source(src: &str, label: &str) -> Result<Env, ()> {
         eprintln!("{label}: runtime error: {e}");
         return Err(());
     }
-    Ok(env)
+    refuse_looks(env, label)
 }
 
 fn flush_output(env: &mut Env) {

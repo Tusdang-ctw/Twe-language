@@ -553,6 +553,15 @@ impl<'a> Resolver<'a> {
                 }
                 DeclMember::InitialState { .. } => {}
                 DeclMember::State { members, .. } => self.state(members),
+                // Look keys resolve like a method body with no
+                // parameters: fields and `self` are visible.
+                DeclMember::Look { keys, .. } => {
+                    self.push_frame([]);
+                    for k in keys {
+                        self.expr(&k.value);
+                    }
+                    self.pop();
+                }
             }
         }
         self.class_ctx.pop();

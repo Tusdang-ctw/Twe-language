@@ -579,7 +579,10 @@ fn print_decl_members(
 fn member_takes_blank_line(m: &DeclMember) -> bool {
     matches!(
         m,
-        DeclMember::Method { .. } | DeclMember::State { .. } | DeclMember::InitialState { .. }
+        DeclMember::Method { .. }
+            | DeclMember::State { .. }
+            | DeclMember::InitialState { .. }
+            | DeclMember::Look { .. }
     )
 }
 
@@ -647,6 +650,18 @@ fn print_decl_member(out: &mut String, m: &DeclMember, depth: usize, cursor: &mu
             out.push_str(name);
             out.push_str(":\n");
             print_state_members(out, members, depth + 1, cursor);
+        }
+        DeclMember::Look { keys, .. } => {
+            push_indent(out, depth);
+            out.push_str("look:\n");
+            for k in keys {
+                cursor.flush_through(out, k.line, depth + 1);
+                push_indent(out, depth + 1);
+                out.push_str(&k.key);
+                out.push_str(": ");
+                print_expr(out, &k.value, Prec::Lowest);
+                out.push('\n');
+            }
         }
     }
 }

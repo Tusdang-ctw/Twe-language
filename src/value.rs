@@ -65,6 +65,28 @@ pub struct FunctionDef {
     pub home: Option<TaggedValue>,
 }
 
+/// web3d-M3: an entity class's `look:` (`docs/06` §4.9a), with keys
+/// merged along the `extends` chain — a subclass overrides single keys.
+#[derive(Debug, Clone, Default)]
+pub struct LookDef {
+    pub mesh: Option<LookSlot>,
+    pub tint: Option<LookSlot>,
+    pub scale: Option<LookSlot>,
+}
+
+/// One look key: its expression, where it was written, and whether it
+/// reads the entity (so must be evaluated per entity) or is shared by
+/// every entity of the class in a frame.
+#[derive(Debug, Clone)]
+pub struct LookSlot {
+    pub expr: crate::ast::Expr,
+    pub per_entity: bool,
+    /// Defining module, as for [`MethodDef::home`].
+    pub home: Option<TaggedValue>,
+    pub line: u32,
+    pub col: u32,
+}
+
 #[derive(Debug)]
 pub struct ClassDef {
     pub kind: &'static str,
@@ -74,6 +96,8 @@ pub struct ClassDef {
     pub methods: NameMap<Rc<MethodDef>>,
     pub states: HashMap<String, Rc<StateDef>>,
     pub initial_state: Option<String>,
+    /// web3d-M3: the merged `look:`, if this class or an ancestor has one.
+    pub look: Option<Rc<LookDef>>,
 }
 
 #[derive(Debug)]

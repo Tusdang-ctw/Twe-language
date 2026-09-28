@@ -238,6 +238,10 @@ method         := "function"? identifier "(" param_list? ")" ":" block
 nested_block   := "state" identifier ":" indented_block
                 | "choice" ":" indented_block
                 | "every" duration ":" block
+                | look_block                      # entity only (§4.9a)
+
+look_block     := "look" ":" INDENT (look_key ":" expr NEWLINE)+ DEDENT
+look_key       := "mesh" | "tint" | "scale"      # closed set; verify rejects others
 ```
 
 V0.1 ships with **six** core block keywords: `entity`, `state`, `visual`, `particles`, `scene`, `dialogue`. The other forms (`item`, `inventory`, `ai`, `tilemap`, `save`) are stdlib-defined patterns that desugar to `entity` plus convention. They may be promoted to keywords in v0.2 once their semantics are stable.
@@ -498,6 +502,42 @@ Restrictions inside `pixel`:
 - No I/O, no entity manipulation.
 
 The compiler translates the `pixel` body to GLSL or WGSL depending on the runtime's GPU backend.
+
+### 4.9a Looks  *(web3d-M3; 3D only)*
+
+An `entity` may contain one `look:` block: how the runtime draws it. Every live entity whose class has a look is drawn each frame at its `pos`, which must be a `vec3`. No script runs per drawn entity unless a key reads the entity's own state. Design note: [`changes/2026-09-28-web3d-m3-look-block.md`](changes/2026-09-28-web3d-m3-look-block.md).
+
+```twe
+entity Enemy:
+    var pos = vec3(0, 0, 0)
+    var hurt = false
+    look:
+        mesh: "cube"
+        scale: 0.35
+        tint: if hurt: color.white else: color.red
+```
+
+| Key | Value | Default |
+|---|---|---|
+| `mesh` | `"cube"`, `"sphere"`, or a `.glb` path | `"cube"` |
+| `tint` | color `(r, g, b)` or `(r, g, b, a)` | white |
+| `scale` | number (uniform size) | `1.0` |
+
+- **The key set is closed.** `twec verify` reports:
+  - an unknown key (`look-error.unknown-key`, with a rename fix when one key is close);
+  - a planned key (`facing`, `material`: `look-error.not-yet`);
+  - a duplicate key (`look-error.duplicate`);
+  - a literal mesh that is neither a shape nor a `.glb` path (`look-error.mesh`).
+
+  The runtime rejects the first three when the class is defined.
+- **Scope.** Key expressions resolve like a method body: fields and `self` are visible, as are globals.
+- **Evaluation.**
+  - A key that reads `self`, a field, or calls anything is evaluated for each entity, each frame.
+  - Any other key is evaluated once per class per frame. It can read globals, so it can change over time, but not per entity.
+  - Both give the same result as evaluating every key for every entity. The split only removes redundant work.
+- **Inheritance.** Keys merge along `extends`: a subclass overrides individual keys.
+- **What is drawn.** Live entities are drawn, including while paused; despawned ones are not. The top-level `on render():` still runs and draws alongside looks. Per-entity `render()` methods are not called in 3D.
+- **In the 2D player** (`twec play`), a program that declares a look is refused at startup with an error pointing at `twec play3d` / `twec build --target web`, until the 2D player moves onto the kernel (web3d-M6).
 
 ### 4.10 Particles
 
@@ -1505,8 +1545,10 @@ choice    extends   import    modifier  save      var
 continue  false     in        nil       scene     visual
 dialogue  fn        inventory not       self      wait
 do        for       item      of        set       state
-true
+true      look
 ```
+
+`look` was added in web3d-M3 (§4.9a).
 
 Total: roughly 50 keywords. This is at the high end for a small language. Some (like `do`, `then`) may be cut after Phase 2 reveals which are unused.
 

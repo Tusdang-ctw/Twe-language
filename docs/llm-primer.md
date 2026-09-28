@@ -124,6 +124,23 @@ for s in entities.of(Slime):
 let n = entities.count(Slime)
 ```
 
+In 3D, an entity says how it is drawn with a `look:` block. There is no
+per-entity drawing code; `render()` methods are ignored in 3D.
+
+```twe
+entity Enemy:
+    var pos = vec3(0, 0, 0)        # a look draws at `pos`, which must be a vec3
+    var hurt = false
+    look:
+        mesh: "cube"               # "cube" | "sphere" | "path/to/model.glb"
+        scale: 0.35                # uniform size, default 1
+        tint: if hurt: color.white else: color.red   # may read fields
+```
+
+The keys are exactly `mesh`, `tint` and `scale`, and a subclass can
+override single keys. `look:` is 3D-only for now (`twec play3d`,
+`twec build --target web`).
+
 ## Stdlib map (call `stdlib_lookup` for exact signatures)
 
 `math.*` (sqrt, floor, clamp, sin, noise, mix, pi…) · `random.*` (float, int(0..<n), choice, shuffle) ·

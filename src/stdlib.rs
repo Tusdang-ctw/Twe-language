@@ -8932,7 +8932,7 @@ fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeErr
     }
 }
 
-fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
+pub(crate) fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
     if v.is_int_or_boxed_int() {
         let n = v.as_int();
         Ok(n as f64)
@@ -11746,7 +11746,7 @@ fn texture_handle_id(v: &Value, what: &str) -> Result<u32, RuntimeError> {
 
 /// Pull a 3-component float vector out of a Twe tuple. Used by the
 /// 3D builtins. Mirrors `xy_of` but for the third axis.
-fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
+pub(crate) fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
     if v.is_tuple() && {
         let elems = v.as_tuple();
         elems.len() == 3
@@ -11772,7 +11772,7 @@ fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
 }
 
 /// Pull an RGBA float quartet out of a Twe tuple.
-fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
+pub(crate) fn rgba_of(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
     if v.is_tuple() && {
         let elems = v.as_tuple();
         elems.len() == 4

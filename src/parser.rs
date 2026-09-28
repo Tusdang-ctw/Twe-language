@@ -1102,6 +1102,29 @@ impl<'a> Parser<'a> {
             &format!("expected ':' after `{} {}`", kind.as_str(), name),
         )?;
         let members = self.parse_decl_body()?;
+        if kind != DeclKind::Entity {
+            if let Some(look) = members
+                .iter()
+                .find(|m| matches!(m, DeclMember::Look { .. }))
+            {
+                let (line, col) = match look {
+                    DeclMember::Look { line, col, .. } => (*line, *col),
+                    _ => unreachable!(),
+                };
+                return Err(ParseError {
+                    line,
+                    col,
+                    message: format!(
+                        "`look:` is only allowed inside `entity`, not `{}`",
+                        kind.as_str()
+                    ),
+                    help: Some(
+                        "a look describes how an entity is drawn; declare it in an `entity` block"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
         Ok(Stmt::Decl {
             kind,
             name,
@@ -1150,9 +1173,77 @@ impl<'a> Parser<'a> {
         Ok(members)
     }
 
+    /// `look:` INDENT (key `:` expr NEWLINE)+ DEDENT — web3d-M3.
+    fn parse_look_member(&mut self) -> Result<DeclMember, ParseError> {
+        let kw = self.bump().clone();
+        self.expect(TokenKind::Colon, "expected ':' after `look`")?;
+        let body_err = |tok: &Token| ParseError {
+            line: tok.line,
+            col: tok.col,
+            message: "expected an indented block of `key: value` lines after `look:`".to_string(),
+            help: Some(
+                "e.g.
+    look:
+        mesh: \"cube\"
+        tint: color.red"
+                    .to_string(),
+            ),
+        };
+        if !matches!(self.peek().kind, TokenKind::Newline) {
+            return Err(body_err(self.peek()));
+        }
+        self.bump();
+        if !matches!(self.peek().kind, TokenKind::Indent) {
+            return Err(body_err(self.peek()));
+        }
+        self.bump();
+        let mut keys = Vec::new();
+        loop {
+            self.skip_newlines();
+            if matches!(self.peek().kind, TokenKind::Dedent | TokenKind::Eof) {
+                break;
+            }
+            let key_tok = self.bump().clone();
+            let TokenKind::Ident(key) = key_tok.kind else {
+                return Err(ParseError {
+                    line: key_tok.line,
+                    col: key_tok.col,
+                    message: format!("expected a look key such as `mesh`, got {:?}", key_tok.kind),
+                    help: Some(format!(
+                        "a look: block holds `key: value` lines; keys are {}",
+                        crate::ast::LOOK_KEYS.join(", ")
+                    )),
+                });
+            };
+            self.expect(
+                TokenKind::Colon,
+                &format!("expected ':' after look key `{key}`"),
+            )?;
+            let value = self.parse_expr()?;
+            self.expect_stmt_end()?;
+            keys.push(crate::ast::LookKey {
+                key,
+                value,
+                line: key_tok.line,
+                col: key_tok.col,
+            });
+        }
+        if matches!(self.peek().kind, TokenKind::Dedent) {
+            self.bump();
+        }
+        Ok(DeclMember::Look {
+            keys,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
     fn parse_decl_member(&mut self) -> Result<DeclMember, ParseError> {
         if matches!(self.peek().kind, TokenKind::State) {
             return self.parse_state_member();
+        }
+        if matches!(self.peek().kind, TokenKind::Look) {
+            return self.parse_look_member();
         }
         // Explicit `function` keyword inside a declarative-block body.
         // Same shape as the implicit `name(params): body` method form.
@@ -2658,6 +2749,7 @@ fn keyword_spelling(t: &TokenKind) -> Option<&'static str> {
         TokenKind::Say => "say",
         TokenKind::Choice => "choice",
         TokenKind::Actor => "actor",
+        TokenKind::Look => "look",
         _ => return None,
     })
 }

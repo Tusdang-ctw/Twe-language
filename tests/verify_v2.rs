@@ -209,3 +209,52 @@ fn verify_suggests_a_rename_for_an_undefined_name_inside_a_function() {
         (3, 12, 4)
     );
 }
+
+/// web3d-M3: `look:` problems are reported statically with stable
+/// kinds; a key typo carries a rename fix that round-trips to clean.
+#[test]
+fn look_block_diagnostics_and_fix_round_trip() {
+    let src = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        scal: 2\n";
+    let report = verify_program(src);
+    let d = report
+        .diagnostics
+        .iter()
+        .find(|d| d.kind == "look-error.unknown-key")
+        .expect("unknown key reported");
+    let fixed = apply_edits(src, &d.fix.as_ref().expect("rename fix").edits);
+    assert!(fixed.contains("scale: 2"), "{fixed}");
+    assert!(verify_program(&fixed).ok(), "fixed program verifies clean");
+
+    let kinds = |src: &str| -> Vec<String> {
+        verify_program(src)
+            .diagnostics
+            .into_iter()
+            .map(|d| d.kind)
+            .collect()
+    };
+    let head = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n";
+    assert_eq!(
+        kinds(&format!("{head}        facing: 1\n")),
+        ["look-error.not-yet"]
+    );
+    assert_eq!(
+        kinds(&format!("{head}        mesh: \"cone\"\n")),
+        ["look-error.mesh"]
+    );
+    assert_eq!(
+        kinds(&format!("{head}        scale: 1\n        scale: 2\n")),
+        ["look-error.duplicate"]
+    );
+    // Key expressions are resolved like a method body: fields are
+    // visible, an undefined name is not.
+    assert!(verify_program(&format!("{head}        scale: pos.x\n")).ok());
+    assert_eq!(
+        kinds(&format!("{head}        tint: colr.red\n")),
+        ["name-error.unknown"]
+    );
+    // The benchmark and test programs are clean.
+    for path in ["tests/programs/look_block.twe", "examples/swarm_3d.twe"] {
+        let r = verify_program(&std::fs::read_to_string(path).unwrap());
+        assert!(r.ok(), "{path}: {}", r.to_json());
+    }
+}

@@ -3046,3 +3046,130 @@ fn redeclaring_a_visible_name_is_an_error() {
     .expect_err("a local may not shadow a field");
     assert!(err.contains("'hp' is already declared here"), "got: {err}");
 }
+
+// ---------- web3d-M3: the `look:` block ----------
+
+fn env_for(src: &str) -> Result<twec::value::Env, String> {
+    let tokens = lexer::lex(src).map_err(|e| format!("lex: {e}"))?;
+    let program = parser::parse(&tokens).map_err(|e| format!("parse: {e}"))?;
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    eval::run_top_level(&mut env, &program).map_err(|e| format!("{e}"))?;
+    Ok(env)
+}
+
+#[test]
+fn look_block_draws_every_live_entity() {
+    use twec::value::Primitive;
+    let src = fs::read_to_string("tests/programs/look_block.twe").unwrap();
+    let mut env = env_for(&src).expect("program runs");
+    eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+    eval::render_frame3d(&mut env).expect("render");
+    let q = &env.render_queue3d;
+    // Top-level `on render():` still draws (first), then one draw per
+    // live look entity: the despawned crate at x = 6 is not drawn.
+    assert_eq!(q.len(), 6, "{q:#?}");
+    assert!(matches!(q[0].primitive, Primitive::Sphere) && q[0].at == [0.0, 5.0, 0.0]);
+    let at = |x: f32| {
+        q.iter()
+            .find(|d| d.at == [x, 0.0, 0.0])
+            .unwrap_or_else(|| panic!("no draw at x={x}"))
+    };
+    let crate_ = at(1.0);
+    assert!(matches!(crate_.primitive, Primitive::Cube));
+    assert_eq!(crate_.size, 0.5);
+    assert_eq!(
+        crate_.color,
+        [0.5, 0.25, 0.0, 1.0],
+        "3-component tint gets alpha 1"
+    );
+    // Per-entity key: only the hurt slime flashes white.
+    assert_eq!(at(2.0).color, [0.0, 1.0, 0.0, 1.0]);
+    assert_eq!(at(3.0).color, [1.0, 1.0, 1.0, 1.0]);
+    assert!(matches!(at(2.0).primitive, Primitive::Sphere));
+    assert_eq!(at(2.0).size, 1.0, "scale defaults to 1");
+    // Subclass overrides scale, inherits mesh + tint.
+    let big = at(4.0);
+    assert!(matches!(big.primitive, Primitive::Sphere));
+    assert_eq!(big.size, 2.0);
+    assert_eq!(big.color, [0.0, 1.0, 0.0, 1.0]);
+    // Shared key reading a global follows the global; mesh defaults to cube.
+    assert_eq!(at(5.0).color, [1.0, 0.0, 0.0, 1.0]);
+    assert!(matches!(at(5.0).primitive, Primitive::Cube));
+}
+
+#[test]
+fn look_block_rejects_unknown_duplicate_and_unimplemented_keys() {
+    let unknown = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        scal: 2\n";
+    let e = env_for(unknown).err().expect("unknown key errors");
+    assert!(
+        e.contains("unknown look key `scal`") && e.contains("did you mean `scale`?"),
+        "{e}"
+    );
+
+    let dup =
+        "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        scale: 1\n        scale: 2\n";
+    let e = env_for(dup).err().expect("duplicate key errors");
+    assert!(e.contains("`scale` is set twice"), "{e}");
+
+    let later = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        facing: 1.0\n";
+    let e = env_for(later).err().expect("unimplemented key errors");
+    assert!(
+        e.contains("not implemented yet") && e.contains("stage 2"),
+        "{e}"
+    );
+}
+
+#[test]
+fn look_block_is_entity_only() {
+    let src = "item Sword:\n    look:\n        mesh: \"cube\"\n";
+    let e = env_for(src)
+        .err()
+        .expect("look outside entity is a parse error");
+    assert!(e.contains("only allowed inside `entity`"), "{e}");
+}
+
+#[test]
+fn look_block_errors_name_the_problem() {
+    // No vec3 pos: the class is named, with a fix.
+    let src = "entity Ghost:\n    var hp = 1\n    look:\n        mesh: \"cube\"\nspawn Ghost\n";
+    let mut env = env_for(src).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("no pos");
+    assert!(
+        e.message
+            .contains("`Ghost` has a look: but its `pos` is not a vec3"),
+        "{}",
+        e.message
+    );
+
+    // A 2D position is not drawable either.
+    let src = "entity Flat:\n    var pos = (1, 2)\n    look:\n        mesh: \"cube\"\nspawn Flat\n";
+    let mut env = env_for(src).expect("runs");
+    assert!(eval::render_frame3d(&mut env).is_err());
+
+    // A mesh that is neither a shape nor a .glb path, pointed at its key.
+    let src =
+        "entity Odd:\n    var pos = vec3(0, 0, 0)\n    look:\n        mesh: \"cone\"\nspawn Odd\n";
+    let mut env = env_for(src).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("bad mesh");
+    assert!(e.message.contains("\"cone\"") && e.line == 4, "{e:?}");
+}
+
+#[test]
+fn look_block_is_refused_by_the_2d_player() {
+    // The 2D player can't draw looks until web3d-M6: it refuses at
+    // startup (`first_look_class`) and in its render pass, rather than
+    // silently drawing nothing.
+    let src = fs::read_to_string("tests/programs/look_block.twe").unwrap();
+    let mut env = env_for(&src).expect("program runs");
+    assert_eq!(eval::first_look_class(&env).as_deref(), Some("BigSlime"));
+    let e = eval::render_frame(&mut env).expect_err("2D render refuses looks");
+    assert!(
+        e.message.contains("only the 3D runtime draws"),
+        "{}",
+        e.message
+    );
+
+    let plain = env_for("entity E:\n    var hp = 1\n").expect("runs");
+    assert_eq!(eval::first_look_class(&plain), None);
+}

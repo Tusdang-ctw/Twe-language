@@ -330,6 +330,9 @@ pub fn verify_program_with_options(
     // does not gate exit code; `report.ok()` only counts errors.
     let mut hole_warnings = collect_holes(&program);
     diagnostics.append(&mut hole_warnings);
+    // web3d-M3: `look:` keys are checked at class definition when the
+    // program runs; report the same problems statically.
+    diagnostics.append(&mut collect_look_issues(&program));
     diagnostics.sort_by_key(|d| (d.line, d.col));
     VerifyReport {
         file,
@@ -400,6 +403,80 @@ fn collect_scope_issues(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> 
             }
         })
         .collect()
+}
+
+/// web3d-M3: problems in `look:` blocks — unknown keys (with a rename
+/// fix when one key is close), keys from a later M3 stage, duplicates,
+/// and a literal `mesh:` that is neither a shape nor a `.glb` path.
+fn collect_look_issues(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> {
+    let mut out = Vec::new();
+    let error = |kind: &str, line, col, message: String, help: String, fix| VerifyDiagnostic {
+        kind: kind.to_string(),
+        severity: Severity::Error,
+        line,
+        col,
+        message,
+        help: Some(help),
+        fix,
+    };
+    for stmt in &program.stmts {
+        let Stmt::Decl { members, .. } = stmt else {
+            continue;
+        };
+        for m in members {
+            let crate::ast::DeclMember::Look { keys, .. } = m else {
+                continue;
+            };
+            let mut seen: Vec<&str> = Vec::new();
+            for k in keys {
+                if let Some((message, help)) = crate::ast::look_key_problem(&k.key) {
+                    let (kind, fix) = if crate::ast::look_key_stage(&k.key).is_some() {
+                        ("look-error.not-yet", None)
+                    } else {
+                        let fix = extract_did_you_mean(&help).map(|sug| Fix {
+                            rationale: format!("rename look key `{}` to `{sug}`", k.key),
+                            edits: vec![Edit {
+                                line: k.line,
+                                col: k.col,
+                                len: k.key.len() as u32,
+                                replace: sug,
+                            }],
+                        });
+                        ("look-error.unknown-key", fix)
+                    };
+                    out.push(error(kind, k.line, k.col, message, help, fix));
+                    continue;
+                }
+                if seen.contains(&k.key.as_str()) {
+                    out.push(error(
+                        "look-error.duplicate",
+                        k.line,
+                        k.col,
+                        format!("look key `{}` is set twice", k.key),
+                        "keep one line per key".to_string(),
+                        None,
+                    ));
+                    continue;
+                }
+                seen.push(&k.key);
+                if let (true, Expr::Str { value, line, col }) = (k.key == "mesh", &k.value) {
+                    if value != "cube" && value != "sphere" && !value.ends_with(".glb") {
+                        out.push(error(
+                            "look-error.mesh",
+                            *line,
+                            *col,
+                            format!(
+                                "look mesh must be \"cube\", \"sphere\" or a .glb path, got \"{value}\""
+                            ),
+                            "e.g. `mesh: \"cube\"` or `mesh: \"models/ship.glb\"`".to_string(),
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Phase 33 session 9: walk `program` and emit a Warning diagnostic

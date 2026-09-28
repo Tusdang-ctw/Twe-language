@@ -76,7 +76,7 @@
         },
         {
           "name": "keyword.declaration.twe",
-          "match": "\\b(let|var|function|entity|item|modifier|inventory|scene|particles)\\b"
+          "match": "\\b(let|var|function|entity|item|modifier|inventory|scene|particles|look)\\b"
         },
         {
           "name": "keyword.operator.logical.twe",

@@ -45,6 +45,7 @@ const PROGRAMS: &[&str] = &[
     "tests/programs/lists.twe",
     "tests/programs/literals.twe",
     "tests/programs/loops.twe",
+    "tests/programs/look_block.twe",
     "tests/programs/math.twe",
     "tests/programs/methods.twe",
     "tests/programs/particles_block.twe",

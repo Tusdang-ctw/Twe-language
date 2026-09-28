@@ -5,10 +5,10 @@
 # @difficulty: medium
 #
 # web3d-M3's exit benchmark: 5,000 seeking enemies at 60 fps in Chrome.
-# It is written in today's Twe on purpose, so it measures what the
-# current entity model costs before M3 changes it: every enemy is an
-# instance with its own `update(dt)`, and the top-level `on render():`
-# draws each one (3D ignores per-entity `render()` methods today).
+# Each enemy steers in its own `update(dt)`; its `look:` says how it is
+# drawn, so no script runs per drawn enemy (docs/06 §4.9a). The M3
+# baseline (docs/changes/2026-09-28-web3d-m3-baseline.md) measured the
+# same scene drawn by a loop in `on render():`.
 
 let count = 5000
 let arena = 40.0
@@ -28,6 +28,11 @@ function rim_point():
 entity Enemy:
     var pos = vec3(0, 0, 0)
     var speed = 3.0
+
+    look:
+        mesh: "cube"
+        tint: color.red
+        scale: 0.35
 
     function update(dt):
         let dx = player.x - pos.x
@@ -59,5 +64,3 @@ on update(dt):
 
 on render():
     sphere(at: player, color: (0.95, 0.95, 0.95, 1.0), size: 0.8)
-    for e in entities.of(Enemy):
-        cube(at: e.pos, color: color.red, size: 0.35)

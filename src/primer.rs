@@ -53,7 +53,8 @@ EVENTS: `on update(dt):` (dt is fixed 1/60s), `on render():`, `on key_press.spac
 STATE MACHINES: a container sets `initial: <state>`; each `state X:` holds `on enter:`/\
 `on exit:`, handlers, `every` clocks; `-> Y` switches state.\n\
 ENTITIES: `entity Slime extends Enemy:` with fields, `function m(...):` (implicit `self`), \
-lifecycle handlers; `spawn Slime at (x, y)`, `for s in entities.of(Slime):`.";
+lifecycle handlers; `spawn Slime at (x, y)`, `for s in entities.of(Slime):`.
+3D LOOKS: an entity is drawn by a `look:` block (keys `mesh` \"cube\"|\"sphere\"|\"x.glb\", `tint` color, `scale` number; may read fields) at its vec3 `pos`; no per-entity draw code.";
 
 /// The full Markdown cheatsheet (`docs/llm-primer.md`). Served as the
 /// `twe://guide` resource and printed by `twec primer --full`.

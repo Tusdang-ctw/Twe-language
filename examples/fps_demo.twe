@@ -136,8 +136,8 @@ on update(dt):
     #     forward and print what was hit. Useful for debug; a real
     #     game would wire this to a "shoot" or "interact" action. ---
     if key_press.r:
-        let look = (look_x, look_y, look_z)
-        let hit = physics.raycast(eye, look, 50.0)
+        let aim = (look_x, look_y, look_z)
+        let hit = physics.raycast(eye, aim, 50.0)
         if hit:
             print("hit handle {hit.handle} at distance {hit.distance}")
         else:

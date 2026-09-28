@@ -13,6 +13,14 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **`look:` blocks** (web3d-M3; `docs/06` §4.9a). In 3D, an entity
+  declares how it is drawn (`mesh`, `tint`, `scale`) and the runtime
+  draws every live instance at its `pos`, with no per-entity draw code.
+  On the 5,000-enemy `swarm_3d` benchmark in Chrome, script-side
+  drawing fell from ~11 ms to ~1 ms per frame, and the frame rate rose
+  from 39–49 to 114–127 fps. `twec verify` checks the keys (with a
+  rename fix for typos). The 2D player refuses `look:` with an error
+  until web3d-M6.
 - **3D games run in the browser on WebGPU** (web3d-M2, in progress). The
   new `crates/twe-web` shell runs a Twe script in the page and draws it
   through the same renderer kernel as `twec play3d`; `examples/hello_3d.twe`
@@ -44,6 +52,10 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **`look` is a reserved word (breaking; web3d-M3).** A variable named
+  `look` must be renamed. `examples/fps_demo.twe` had one.
+- **`twec play` exits with status 1 when the script fails to start**
+  (read, parse or top-level error). It used to exit 0.
 - **Lexical scoping (breaking; web3d-M1,
   `docs/changes/2026-09-28-web3d-m1-lexical-scoping.md`).** Function /
   method / handler bodies have their own locals; a callee can't see its

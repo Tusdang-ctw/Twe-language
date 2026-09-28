@@ -115,6 +115,8 @@ fn check_visual_members(members: &[DeclMember], errors: &mut Vec<VisualError>) {
                     check_stmt(stmt, errors);
                 }
             }
+            // The parser rejects `look:` outside `entity`.
+            DeclMember::Look { .. } => {}
             // States / initial-state aren't valid inside visual blocks
             // (the parser accepts them generically because parse_decl
             // is shared with entity / scene). Surface a clear error.

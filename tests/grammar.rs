@@ -187,6 +187,37 @@ fn keyword_text(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Choice => "choice",
         TokenKind::Actor => "actor",
         TokenKind::Import => "import",
+        TokenKind::Then => "then",
+        TokenKind::Look => "look",
         _ => return None,
     })
+}
+
+/// web3d-M3: the grammar spells out the `look:` key alphabet for
+/// constrained decoding; it must match `ast::LOOK_KEYS` exactly.
+#[test]
+fn look_key_alphabet_matches_the_ast() {
+    let gbnf = grammar::export(Format::Gbnf);
+    let rule = gbnf
+        .lines()
+        .find(|l| l.trim_start().starts_with("look-key"))
+        .unwrap_or_else(|| panic!("no look_key rule in:\n{gbnf}"));
+    for key in twec::ast::LOOK_KEYS {
+        assert!(
+            rule.contains(&format!("\"{key}\"")),
+            "look_key rule lacks `{key}`: {rule}"
+        );
+    }
+    let quoted = rule.matches('"').count() / 2;
+    // The keys plus the ':' terminal.
+    assert_eq!(quoted, twec::ast::LOOK_KEYS.len() + 1, "{rule}");
+    // Both keywords the lexer added since the list was written.
+    for kw in ["then", "look"] {
+        assert!(KEYWORDS.contains(&kw), "KEYWORDS lacks `{kw}`");
+        let toks = lex(kw).unwrap();
+        assert!(
+            keyword_text(&toks[0].kind) == Some(kw),
+            "`{kw}` should lex as a keyword"
+        );
+    }
 }
