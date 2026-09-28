@@ -1,9 +1,5 @@
-//! End-to-end CLI tests for the `--vm bytecode` flag.
-//!
-//! These run the actual `twec` binary as a subprocess and compare
-//! its stdout against the tree-walker's stdout on the same input.
-//! That verifies both the flag plumbing in `cli.rs` and the
-//! end-to-end output of the bytecode VM driving real test programs.
+//! End-to-end CLI tests: run the actual `twec` binary as a
+//! subprocess and check its output and exit codes.
 
 use std::process::Command;
 
@@ -67,99 +63,28 @@ fn run_with_default_backend_uses_tree_walker() {
 }
 
 #[test]
-fn run_with_vm_bytecode_executes_via_vm() {
-    let out = run_cli(&["run", "--vm", "bytecode", "tests/programs/hello.twe"]);
-    assert_eq!(out, "hello, twe\n");
+fn vm_tree_flag_is_still_accepted() {
+    // web3d-M1 removed the bytecode VM; `--vm tree` stays a no-op so
+    // existing scripts / CI invocations keep working.
+    let out = run_cli(&["run", "--vm", "tree", "tests/programs/hello.twe"]);
+    assert_eq!(
+        out,
+        "hello, twe
+"
+    );
 }
 
 #[test]
-fn run_vm_bytecode_matches_tree_on_arithmetic() {
-    let tree = run_cli(&["run", "tests/programs/arithmetic.twe"]);
-    let bc = run_cli(&["run", "--vm", "bytecode", "tests/programs/arithmetic.twe"]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn run_vm_bytecode_matches_tree_on_methods() {
-    let tree = run_cli(&["run", "tests/programs/methods.twe"]);
-    let bc = run_cli(&["run", "--vm", "bytecode", "tests/programs/methods.twe"]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn run_vm_bytecode_matches_tree_on_lists() {
-    let tree = run_cli(&["run", "tests/programs/lists.twe"]);
-    let bc = run_cli(&["run", "--vm", "bytecode", "tests/programs/lists.twe"]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn run_vm_bytecode_matches_tree_on_for_loops() {
-    let tree = run_cli(&["run", "tests/programs/loops.twe"]);
-    let bc = run_cli(&["run", "--vm", "bytecode", "tests/programs/loops.twe"]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn run_vm_bytecode_matches_tree_on_functions() {
-    let tree = run_cli(&["run", "tests/programs/functions.twe"]);
-    let bc = run_cli(&["run", "--vm", "bytecode", "tests/programs/functions.twe"]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn run_vm_bytecode_matches_tree_on_math() {
-    let tree = run_cli(&["run", "tests/programs/math.twe"]);
-    let bc = run_cli(&["run", "--vm", "bytecode", "tests/programs/math.twe"]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn run_vm_bytecode_matches_tree_on_interpolation() {
-    let tree = run_cli(&["run", "tests/programs/interpolation.twe"]);
-    let bc = run_cli(&[
-        "run",
-        "--vm",
-        "bytecode",
-        "tests/programs/interpolation.twe",
-    ]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn run_vm_bytecode_with_frames_drives_scene() {
-    // scene_counter.twe: `every 100ms:` printing 1..3 then idling.
-    // Five frames of 100ms each should produce "1\n2\n3\n" via both.
-    let tree = run_cli(&["run", "--frames", "5", "tests/programs/scene_counter.twe"]);
-    let bc = run_cli(&[
-        "run",
-        "--vm",
-        "bytecode",
-        "--frames",
-        "5",
-        "tests/programs/scene_counter.twe",
-    ]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn vm_bytecode_with_frames_runs_spawn_entities() {
-    let tree = run_cli(&["run", "--frames", "5", "tests/programs/spawn_entities.twe"]);
-    let bc = run_cli(&[
-        "run",
-        "--vm",
-        "bytecode",
-        "--frames",
-        "5",
-        "tests/programs/spawn_entities.twe",
-    ]);
-    assert_eq!(tree, bc);
-}
-
-#[test]
-fn vm_alias_accepts_bc_shorthand() {
-    let out = run_cli(&["run", "--vm", "bc", "tests/programs/hello.twe"]);
-    assert_eq!(out, "hello, twe\n");
+fn vm_bytecode_flag_explains_the_removal() {
+    for value in ["bytecode", "bc", "vm"] {
+        let output = Command::new(twec_bin())
+            .args(["run", "--vm", value, "tests/programs/hello.twe"])
+            .output()
+            .expect("spawn twec");
+        assert_eq!(output.status.code(), Some(2));
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(err.contains("bytecode VM was removed"), "got: {err}");
+    }
 }
 
 #[test]
@@ -167,13 +92,11 @@ fn unknown_vm_value_errors() {
     let output = Command::new(twec_bin())
         .args(["run", "--vm", "haskell", "tests/programs/hello.twe"])
         .output()
-        .expect("spawn");
-    assert!(!output.status.success());
+        .expect("spawn twec");
+    assert_eq!(output.status.code(), Some(2));
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("--vm"), "stderr did not mention --vm: {err}");
 }
-
-// --- `twec types` (Phase 4a) ---
 
 #[test]
 fn types_subcommand_prints_let_int() {
@@ -387,29 +310,14 @@ fn doctor_subcommand_emits_text_report() {
 // web3d-M0: `world.*` / `terrain.*` ship only with `--features experimental`.
 #[cfg(feature = "experimental")]
 #[test]
-fn run_vm_bytecode_matches_tree_on_world_terrain_v1_0_2_session_9() {
-    // v1.0.2 Session 9: the 35 builtins in `world.*` and `terrain.*`
-    // ship reachable from both backends. The VM's `new()` installs
-    // them via the same `crate::stdlib::install` path the
-    // tree-walker uses, so a Twe program exercising the namespaces
-    // produces identical output under either backend. This test
-    // pins that path so a regression that drops the install chain
-    // (or shadows one of the namespace Objects with a VM-tagged
-    // empty one) breaks here.
-    let tree = run_cli(&[
+fn world_terrain_program_runs_v1_0_2_session_9() {
+    // The `world.*` / `terrain.*` namespaces (experimental) run end to
+    // end. (This used to cross-check the bytecode VM, removed in M1.)
+    let out = run_cli(&[
         "run",
         "tests/programs/experimental/world_terrain_vm_mirror.twe",
     ]);
-    let bc = run_cli(&[
-        "run",
-        "--vm",
-        "bytecode",
-        "tests/programs/experimental/world_terrain_vm_mirror.twe",
-    ]);
-    assert_eq!(tree, bc);
-    // Sanity floor: both must report at least one expected output
-    // line so a parity-passing-but-both-empty result still fails.
-    assert!(tree.contains("high.glb"), "tree output: {tree}");
+    assert!(out.contains("high.glb"), "output: {out}");
 }
 
 #[test]

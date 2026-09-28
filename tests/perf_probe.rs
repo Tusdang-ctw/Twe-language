@@ -25,7 +25,7 @@ fn min_ms(n: usize, mut f: impl FnMut()) -> f64 {
 #[ignore = "timing probe; run manually with --ignored --nocapture"]
 fn probe() {
     let sum = parse("var s = 0\nfor i in 0..100000:\n    s += i\nprint(s)\n");
-    let ent_src = std::fs::read_to_string("benches/vm.rs").unwrap();
+    let ent_src = std::fs::read_to_string("benches/interp.rs").unwrap();
     let a = ent_src.find("const ENTITY_UPDATE: &str = r#\"").unwrap()
         + "const ENTITY_UPDATE: &str = r#\"".len();
     let b = a + ent_src[a..].find("\"#;").unwrap();

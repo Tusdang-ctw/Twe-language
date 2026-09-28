@@ -664,42 +664,6 @@ fn mark_body(body: &HeapBody) {
                 crate::value::mark_fiber_frame(frame);
             }
         }
-        HeapBody::BcClass(c) => {
-            for v in c.field_defaults.values() {
-                mark_value(v);
-            }
-            // 8h: methods + states own `Rc<BcFunction>`s whose chunks
-            // hold the only path to nested string / function / class
-            // constants. Without walking them every constant gets swept.
-            for f in c.methods.values() {
-                mark_bc_function_constants(f);
-            }
-            for s in c.states.values() {
-                mark_bc_state(s);
-            }
-        }
-        HeapBody::BcInstance(rc) => {
-            let inst = rc.borrow();
-            for v in inst.fields.values() {
-                mark_value(v);
-            }
-            for v in &inst.fiber_stack {
-                mark_value(v);
-            }
-            // 8h: suspended-fiber frames hold their resumption function
-            // — that function's constants must survive across the
-            // suspension boundary.
-            for frame in &inst.fiber_frames {
-                mark_bc_function_constants(&frame.function);
-            }
-        }
-        // 8h: bytecode function chunks carry a constants pool whose
-        // string / function / class entries are TaggedValues. The
-        // constants are reachable only through this BcFunction's
-        // chunk, so mark them now.
-        HeapBody::BcFunction(rc) => {
-            mark_bc_function_constants(rc);
-        }
         // Tree-walker FunctionDef bodies are AST statements (literals
         // stored as `ast::Lit`, not `TaggedValue`); nothing to scan.
         // Builtin captures are pure function pointers + names.
@@ -716,39 +680,6 @@ fn mark_body(body: &HeapBody) {
         | HeapBody::Percent(_)
         | HeapBody::Quantity { .. }
         | HeapBody::Range { .. } => {}
-    }
-}
-
-/// Walk a `BcFunction`'s chunk constants and mark each `TaggedValue`.
-/// Used by `mark_body` (when reaching a BcFunction through a
-/// TaggedValue) and by `VM::scan_roots` (when walking active
-/// CallFrames whose function is held as a naked `Rc<BcFunction>`).
-/// v0.2 Phase 8.5 session 8h.
-pub fn mark_bc_function_constants(f: &crate::bytecode::BcFunction) {
-    for v in &f.chunk.constants {
-        mark_value(v);
-    }
-}
-
-/// Walk every `Rc<BcFunction>` reachable through a `BcStateDef` and
-/// mark its chunk constants. Called from `mark_body` for BcClass.
-fn mark_bc_state(s: &crate::bytecode::BcStateDef) {
-    mark_bc_function_constants(&s.on_entry);
-    for (_, f) in &s.every_clocks {
-        mark_bc_function_constants(f);
-    }
-    if let Some(f) = &s.on_update {
-        mark_bc_function_constants(f);
-    }
-    if let Some(f) = &s.on_render {
-        mark_bc_function_constants(f);
-    }
-    for f in s.on_key_press.values() {
-        mark_bc_function_constants(f);
-    }
-    for (pred, body) in &s.on_predicates {
-        mark_bc_function_constants(pred);
-        mark_bc_function_constants(body);
     }
 }
 

@@ -79,8 +79,8 @@ pub struct TaggedValue(u64);
 /// Heap-allocated body for any value too big to fit inline.
 ///
 /// Session 8a covered `String` only; session 8b expands to the
-/// commonly-used heap variants. **Function / BcFunction / Class /
-/// BcClass / Instance / BcInstance / Builtin defer to session
+/// commonly-used heap variants. **Function / Class / Instance /
+/// Builtin defer to session
 /// 8c+** — those are tightly coupled to eval/vm and migrate
 /// alongside their callers (adding them now without migration
 /// would mean dead code).
@@ -127,12 +127,6 @@ pub enum HeapBody {
     Function(Rc<crate::value::FunctionDef>),
     /// Tree-walker class instance. Mutable per `Rc<RefCell<_>>`.
     Instance(Rc<RefCell<crate::value::Instance>>),
-    /// Bytecode-VM compiled function.
-    BcFunction(Rc<crate::bytecode::BcFunction>),
-    /// Bytecode-VM class definition.
-    BcClass(Rc<crate::bytecode::BcClassDef>),
-    /// Bytecode-VM instance.
-    BcInstance(Rc<RefCell<crate::bytecode::BcInstance>>),
     /// Builtin function. The `func` pointer is `Copy`; we store
     /// the legacy `BuiltinFn` signature unchanged so stdlib
     /// dispatchers don't rebind during the migration.
@@ -163,9 +157,6 @@ pub enum HeapBodyKind {
     Class,
     Function,
     Instance,
-    BcFunction,
-    BcClass,
-    BcInstance,
     Builtin,
 }
 
@@ -183,9 +174,6 @@ impl HeapBodyKind {
             HeapBody::Class(_) => Self::Class,
             HeapBody::Function(_) => Self::Function,
             HeapBody::Instance(_) => Self::Instance,
-            HeapBody::BcFunction(_) => Self::BcFunction,
-            HeapBody::BcClass(_) => Self::BcClass,
-            HeapBody::BcInstance(_) => Self::BcInstance,
             HeapBody::Builtin { .. } => Self::Builtin,
         }
     }
@@ -356,18 +344,6 @@ impl TaggedValue {
 
     pub fn from_instance(i: Rc<RefCell<crate::value::Instance>>) -> Self {
         Self::from_heap(HeapBody::Instance(i))
-    }
-
-    pub fn from_bc_function(f: Rc<crate::bytecode::BcFunction>) -> Self {
-        Self::from_heap(HeapBody::BcFunction(f))
-    }
-
-    pub fn from_bc_class(c: Rc<crate::bytecode::BcClassDef>) -> Self {
-        Self::from_heap(HeapBody::BcClass(c))
-    }
-
-    pub fn from_bc_instance(i: Rc<RefCell<crate::bytecode::BcInstance>>) -> Self {
-        Self::from_heap(HeapBody::BcInstance(i))
     }
 
     pub fn from_builtin(
@@ -569,11 +545,9 @@ impl TaggedValue {
                 HeapBody::Tuple(_) => "tuple",
                 HeapBody::List(_) => "list",
                 HeapBody::Object(o) => o.borrow().kind,
-                HeapBody::Class(_) | HeapBody::BcClass(_) => "class",
-                HeapBody::Instance(_) | HeapBody::BcInstance(_) => "instance",
-                HeapBody::Function(_) | HeapBody::BcFunction(_) | HeapBody::Builtin { .. } => {
-                    "function"
-                }
+                HeapBody::Class(_) => "class",
+                HeapBody::Instance(_) => "instance",
+                HeapBody::Function(_) | HeapBody::Builtin { .. } => "function",
                 HeapBody::String(_) => unreachable!("strings live behind TAG_STR"),
                 HeapBody::BoxedInt(_) => "int",
             });
@@ -622,9 +596,6 @@ impl TaggedValue {
                 HeapBody::Class(c) => format!("<{} {}>", c.kind, c.name),
                 HeapBody::Instance(i) => format!("<{}>", i.borrow().class.name),
                 HeapBody::Function(func) => format!("<function {}>", func.name),
-                HeapBody::BcFunction(func) => format!("<function {}>", func.name),
-                HeapBody::BcClass(c) => format!("<{} {}>", c.kind, c.name),
-                HeapBody::BcInstance(i) => format!("<{}>", i.borrow().class.name),
                 HeapBody::Builtin { name, .. } => format!("<builtin {name}>"),
                 HeapBody::String(_) => unreachable!("strings live behind TAG_STR"),
                 HeapBody::BoxedInt(n) => n.to_string(),
@@ -695,9 +666,6 @@ impl TaggedValue {
                     (HeapBody::Class(ra), HeapBody::Class(rb)) => Rc::ptr_eq(ra, rb),
                     (HeapBody::Instance(ra), HeapBody::Instance(rb)) => Rc::ptr_eq(ra, rb),
                     (HeapBody::Function(ra), HeapBody::Function(rb)) => Rc::ptr_eq(ra, rb),
-                    (HeapBody::BcFunction(ra), HeapBody::BcFunction(rb)) => Rc::ptr_eq(ra, rb),
-                    (HeapBody::BcClass(ra), HeapBody::BcClass(rb)) => Rc::ptr_eq(ra, rb),
-                    (HeapBody::BcInstance(ra), HeapBody::BcInstance(rb)) => Rc::ptr_eq(ra, rb),
                     (HeapBody::Builtin { func: fa, .. }, HeapBody::Builtin { func: fb, .. }) => {
                         std::ptr::eq(*fa as *const (), *fb as *const ())
                     }
@@ -736,20 +704,11 @@ impl TaggedValue {
     pub fn is_function(&self) -> bool {
         self.is_obj_body_kind(HeapBodyKind::Function)
     }
-    pub fn is_bc_function(&self) -> bool {
-        self.is_obj_body_kind(HeapBodyKind::BcFunction)
-    }
-    pub fn is_bc_class(&self) -> bool {
-        self.is_obj_body_kind(HeapBodyKind::BcClass)
-    }
-    pub fn is_bc_instance(&self) -> bool {
-        self.is_obj_body_kind(HeapBodyKind::BcInstance)
-    }
     pub fn is_builtin(&self) -> bool {
         self.is_obj_body_kind(HeapBodyKind::Builtin)
     }
     pub fn is_callable(&self) -> bool {
-        self.is_function() || self.is_bc_function() || self.is_builtin()
+        self.is_function() || self.is_builtin()
     }
 
     // ---- per-heap-variant extractors (panic on mismatch) ----
@@ -827,27 +786,6 @@ impl TaggedValue {
         self.with_obj_body(|b| match b {
             HeapBody::Function(rc) => rc.clone(),
             other => panic!("as_function: not a function: {other:?}"),
-        })
-    }
-
-    pub fn as_bc_function(&self) -> Rc<crate::bytecode::BcFunction> {
-        self.with_obj_body(|b| match b {
-            HeapBody::BcFunction(rc) => rc.clone(),
-            other => panic!("as_bc_function: not a bc_function: {other:?}"),
-        })
-    }
-
-    pub fn as_bc_class(&self) -> Rc<crate::bytecode::BcClassDef> {
-        self.with_obj_body(|b| match b {
-            HeapBody::BcClass(rc) => rc.clone(),
-            other => panic!("as_bc_class: not a bc_class: {other:?}"),
-        })
-    }
-
-    pub fn as_bc_instance(&self) -> Rc<RefCell<crate::bytecode::BcInstance>> {
-        self.with_obj_body(|b| match b {
-            HeapBody::BcInstance(rc) => rc.clone(),
-            other => panic!("as_bc_instance: not a bc_instance: {other:?}"),
         })
     }
 

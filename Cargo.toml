@@ -144,5 +144,5 @@ naga = { version = "22", default-features = false, features = ["wgsl-in"] }
 criterion = { version = "0.5", default-features = false, features = ["html_reports", "cargo_bench_support"] }
 
 [[bench]]
-name = "vm"
+name = "interp"
 harness = false

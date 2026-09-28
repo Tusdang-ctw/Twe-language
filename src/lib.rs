@@ -5,8 +5,6 @@
 pub mod api_snapshot;
 pub mod ast;
 pub mod ast_json;
-pub mod bytecode;
-pub mod compiler;
 pub mod eval;
 // v1.0.1 session 1: procedural VFX library. Pure macroquad — no
 // platform deps, no cfg gate. State is thread_local; visual fx
@@ -83,7 +81,6 @@ pub mod value;
 pub mod verify;
 pub mod visual_check;
 pub mod visual_wgsl;
-pub mod vm;
 pub mod window_focus;
 
 // bundle.rs compiles on all targets; its zstd / std::fs paths are

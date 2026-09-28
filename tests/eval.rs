@@ -270,29 +270,6 @@ fn math_mod_by_zero_errors() {
 }
 
 #[test]
-fn vm_death_event_handler_fires_once() {
-    // Phase 11 session 10: bytecode-VM mirror of the tree-walker
-    // death-event hook. Uses a plain entity that despawns itself
-    // (the v0.1 VM compiler rejects `lifetime: 0.1s` particle
-    // defaults, hence the separate-from-eval test program).
-    use twec::{compiler, lexer, parser, vm};
-    let src = fs::read_to_string("tests/programs/death_event_vm.twe").expect("read");
-    let tokens = lexer::lex(&src).expect("lex");
-    let program = parser::parse(&tokens).expect("parse");
-    let chunk = compiler::compile_program(&program).expect("compile");
-    let mut machine = vm::VM::new();
-    machine.run(&chunk).expect("vm boot");
-    let dt = 0.05;
-    for _ in 0..3 {
-        machine.tick(dt).expect("tick");
-    }
-    let out = machine.take_out();
-    // Handler fires exactly once even though the entity stays
-    // marked despawned across multiple frames before pruning.
-    assert_eq!(out, "doomed died\n", "VM output: {out:?}");
-}
-
-#[test]
 fn runs_death_event_phase9_handler_fires_once() {
     // Phase 9 session 7b: `on <Class>.death(e):` fires when the
     // entity transitions despawned → pruned. We tick frames until
@@ -2053,29 +2030,6 @@ fn scene_methods_callable_by_bare_name() {
 }
 
 #[test]
-fn vm_scene_methods_callable_by_bare_name() {
-    // craft-hardening: the bytecode VM used to compile a bare sibling-
-    // method call (`bump()` inside a state's `every` body) to
-    // OP_GET_GLOBAL and fail at runtime with "name not defined". The
-    // compiler now lowers it to `self.bump(args)` via OP_INVOKE,
-    // matching the tree-walker exactly (see the tree-walker assertion
-    // above). Covers both the no-arg (`bump`) and with-arg (`bump_by`)
-    // forms, and both state transitions.
-    use twec::{compiler, lexer, parser, vm};
-    let src = fs::read_to_string("tests/programs/scene_methods.twe").expect("read");
-    let tokens = lexer::lex(&src).expect("lex");
-    let program = parser::parse(&tokens).expect("parse");
-    let chunk = compiler::compile_program(&program).expect("compile");
-    let mut machine = vm::VM::new();
-    machine.run(&chunk).expect("vm boot");
-    for _ in 0..20 {
-        machine.tick(0.1).expect("tick");
-    }
-    let out = machine.take_out();
-    assert_eq!(out, "1\n2\n3\n13\n23\n33\n", "VM output: {out:?}");
-}
-
-#[test]
 fn snake_advances_right_by_default() {
     let src = std::fs::read_to_string("examples/snake.twe").expect("examples/snake.twe must exist");
     let tokens = twec::lexer::lex(&src).expect("lex");
@@ -2134,37 +2088,6 @@ fn snake_dies_into_a_wall() {
     let inst = scene.borrow();
     let score = inst.get_field("score").expect("score field");
     assert!(score.is_int_or_boxed_int(), "got: {score:?}");
-}
-
-// v0.2 Phase 8.5 session 8h: stress-test the bytecode VM safepoint
-// and roots wiring. Spawn entities, tick, and force collect on every
-// bytecode-instruction safepoint. If VM::scan_roots misses the
-// stack / globals / active_entities / active_scene / fiber_stack, a
-// still-live TaggedValue gets swept and the tick crashes or produces
-// wrong output.
-#[test]
-fn vm_entity_tick_runs_under_aggressive_gc() {
-    let src = "entity Mob:\n\
-               \x20   var n = 0\n\
-               \x20   update(dt):\n\
-               \x20       n += 1\n\
-               \n\
-               var i = 0\n\
-               while i < 50:\n\
-               \x20   spawn Mob at (0, 0)\n\
-               \x20   i += 1\n";
-    let tokens = twec::lexer::lex(src).expect("lex");
-    let program = twec::parser::parse(&tokens).expect("parse");
-    let chunk = twec::compiler::compile_program(&program).expect("compile");
-    let mut vm = twec::vm::VM::new();
-    vm.run(&chunk).expect("run");
-
-    // Force collect on every safepoint.
-    twec::heap::gc_set_threshold(0);
-
-    for _ in 0..10 {
-        vm.tick(0.016).expect("tick under aggressive GC");
-    }
 }
 
 // v0.2 Phase 8.5 session 8h: stress-test the safepoint and roots

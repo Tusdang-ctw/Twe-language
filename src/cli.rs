@@ -2,8 +2,8 @@ use std::env;
 use std::fs;
 use std::process;
 
-const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> | \
-     play [--vm tree|bytecode] <file> | \
+const USAGE: &str = "usage: twec [run [--frames N] <file> | \
+     play <file> | \
      play3d <file> | \
      play_visual <file> | \
      replay <script.twe> <replay-file> | \
@@ -25,27 +25,13 @@ const USAGE: &str = "usage: twec [run [--vm tree|bytecode] [--frames N] <file> |
      fmt [--in-place|--check] <file> | \
      types <file> | lsp | parse <file> | version]";
 
-/// Which interpreter the CLI dispatches to. The tree-walker is the
-/// default for backwards compatibility — it's been the production
-/// interpreter since Phase 1 and runs every example end-to-end.
-/// The bytecode VM (sessions 5–13) is opt-in via `--vm bytecode`
-/// while it earns equivalent confidence in the wild. Tests cross-
-/// check the two on every meaningful program.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Backend {
-    Tree,
-    Bytecode,
-}
-
-impl Backend {
-    fn parse(s: &str) -> Option<Self> {
-        match s {
-            "tree" | "walker" => Some(Backend::Tree),
-            "bytecode" | "bc" | "vm" => Some(Backend::Bytecode),
-            _ => None,
-        }
-    }
-}
+/// web3d-M1: the bytecode VM was removed (see
+/// docs/changes/2026-09-28-web3d-m1-closeout.md). `--vm tree` is still
+/// accepted as a no-op so existing scripts and CI invocations keep
+/// working; `--vm bytecode` explains the removal.
+const VM_REMOVED: &str = "error: the bytecode VM was removed in web3d-M1 \
+     (docs/changes/2026-09-28-web3d-m1-closeout.md); the tree-walker is Twe's only runtime \
+     — drop `--vm bytecode`";
 
 pub fn run() {
     install_crash_reporter();
@@ -194,10 +180,7 @@ fn handle_play(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let code = match parsed.backend {
-        Backend::Tree => crate::play::launch(path),
-        Backend::Bytecode => crate::play::launch_bytecode(path),
-    };
+    let code = crate::play::launch(path);
     crate::play::shutdown_gilrs();
     code
 }
@@ -1667,7 +1650,6 @@ fn print_version() {
 }
 
 struct CommonFlags {
-    backend: Backend,
     frames: u32,
     path: Option<String>,
 }
@@ -1676,7 +1658,6 @@ struct CommonFlags {
 /// gates the `--frames N` flag (only `run` accepts it; `play` drives
 /// frames from the macroquad clock).
 fn parse_common_flags(args: &[String], allow_frames: bool) -> Result<CommonFlags, i32> {
-    let mut backend = Backend::Tree;
     let mut frames: u32 = 0;
     let mut path: Option<String> = None;
     let mut i = 0;
@@ -1684,19 +1665,20 @@ fn parse_common_flags(args: &[String], allow_frames: bool) -> Result<CommonFlags
         match args[i].as_str() {
             "--vm" => {
                 if i + 1 >= args.len() {
-                    eprintln!("error: --vm requires a backend (tree or bytecode)");
+                    eprintln!("error: --vm requires a value (only `tree` remains)");
                     return Err(2);
                 }
-                backend = match Backend::parse(&args[i + 1]) {
-                    Some(b) => b,
-                    None => {
-                        eprintln!(
-                            "error: --vm value must be 'tree' or 'bytecode', got '{}'",
-                            args[i + 1]
-                        );
+                match args[i + 1].as_str() {
+                    "tree" | "walker" => {}
+                    "bytecode" | "bc" | "vm" => {
+                        eprintln!("{VM_REMOVED}");
                         return Err(2);
                     }
-                };
+                    other => {
+                        eprintln!("error: --vm value must be 'tree', got '{other}'");
+                        return Err(2);
+                    }
+                }
                 i += 2;
             }
             "--frames" => {
@@ -1732,11 +1714,7 @@ fn parse_common_flags(args: &[String], allow_frames: bool) -> Result<CommonFlags
             }
         }
     }
-    Ok(CommonFlags {
-        backend,
-        frames,
-        path,
-    })
+    Ok(CommonFlags { frames, path })
 }
 
 /// `twec profile [--frames N] [-o trace.json] <file>` — run the
@@ -1883,10 +1861,7 @@ fn handle_run(args: &[String]) -> i32 {
     if std::path::Path::new(&path).is_dir() {
         return run_project_dir(&path, parsed.frames);
     }
-    match parsed.backend {
-        Backend::Tree => run_file_tree(&path, parsed.frames),
-        Backend::Bytecode => run_file_bytecode(&path, parsed.frames),
-    }
+    run_file_tree(&path, parsed.frames)
 }
 
 /// v1.0.2 Session 6: run a multi-file project from a directory by
@@ -1961,51 +1936,6 @@ fn run_file_tree(path: &str, frames: u32) -> i32 {
             1
         }
     }
-}
-
-fn run_file_bytecode(path: &str, frames: u32) -> i32 {
-    let src = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not read '{path}': {e}");
-            return 2;
-        }
-    };
-    let tokens = match crate::lexer::lex(&src) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{path}:{e}");
-            return 1;
-        }
-    };
-    let program = match crate::parser::parse(&tokens) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{path}:{e}");
-            return 1;
-        }
-    };
-    let chunk = match crate::compiler::compile_program(&program) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{path}: compile error: {e}");
-            return 1;
-        }
-    };
-    let mut vm = crate::vm::VM::new();
-    if let Err(e) = vm.run(&chunk) {
-        eprintln!("{path}: runtime error: {e}");
-        return 1;
-    }
-    let dt = 1.0 / 60.0;
-    for _ in 0..frames {
-        if let Err(e) = vm.tick(dt) {
-            eprintln!("{path}: runtime error: {e}");
-            return 1;
-        }
-    }
-    print!("{}", vm.out);
-    0
 }
 
 /// Phase 11 session 3: crash reporter. Replace the default panic

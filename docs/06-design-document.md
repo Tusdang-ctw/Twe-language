@@ -412,7 +412,7 @@ Fibers cannot escape their declaring scope (no first-class fiber values in v0.1;
 **v0.1 implementation status (Phase 5 task 2).** `wait <duration>` is implemented as a *direct* statement of a state's on-entry body in **both backends**:
 
 - **Tree-walker:** the runtime stores a resume index + remaining seconds on the instance; `tick_scene` decrements the timer and resumes the body when it elapses.
-- **Bytecode VM:** `OP_WAIT` pops a duration, saves the chunk + resume IP + remaining seconds on the `BcInstance`, then collapses the call frame (synthetic Nil return). `tick_scene` re-pushes the saved frame and continues dispatch from the saved IP once the timer elapses.
+- The suspended body's local variables are parked on the fiber and restored on resume, so locals survive a `wait` (web3d-M1). *(A bytecode-VM implementation also existed until web3d-M1 removed the VM.)*
 
 While suspended, the state's `every`-clocks and `on update(dt):` are paused — the state is "asleep" until the wait fires. Outstanding work (later Phase 5 sessions): function-body `wait`, fiber-backed `every` rewrite, `wait` inside `dialogue`. Using `wait` outside a state on-entry surfaces a clear error (compile-time on the bytecode VM, runtime on the tree-walker) pointing at the limitation.
 
@@ -458,7 +458,7 @@ Semantics:
 - `every <duration>:` blocks are scheduled when entering, cancelled on exit.
 - `-> <state>` transitions immediately. Code after the transition is dead.
 - Statement-level `wait` inside a state suspends without leaving the state.
-- `<action> then <body>` (Example 10) sequences a timed action: it evaluates `<action>` (an expression yielding a duration — e.g. a call like `telegraph(...)` that returns `0.5s`, or a literal `0.5s`), waits that duration, then runs `<body>`. It is `wait <action>` followed by the body, so — like `wait` — it only suspends inside a state on-entry body, and it's a tree-walker feature (the frozen bytecode VM rejects it). Distinct from `;`/newline (immediate) and from a bare `wait` (which doesn't bind a preceding action).
+- `<action> then <body>` (Example 10) sequences a timed action: it evaluates `<action>` (an expression yielding a duration — e.g. a call like `telegraph(...)` that returns `0.5s`, or a literal `0.5s`), waits that duration, then runs `<body>`. It is `wait <action>` followed by the body, so — like `wait` — it only suspends inside a state on-entry body, and it runs on the tree-walker, Twe's only runtime. Distinct from `;`/newline (immediate) and from a bare `wait` (which doesn't bind a preceding action).
 - `on <predicate>:` registers an edge-triggered handler scoped to the state. The runtime evaluates the predicate each frame and fires the body on the false → true transition. The body is *not* re-fired while the predicate stays true (Phase 5 task 4 — both backends ship this).
 
 #### 4.8a Lifecycle hooks: `on enter:` / `on exit:`  *(Snake NP9)*
@@ -478,7 +478,7 @@ state alert:
 - **`on enter:`** runs when the state becomes active. It is *the same on-entry mechanism* as the bare state body — both run on entry, in source order — so there is one entry concept, not two (Principle 2). Use `on enter:` purely to separate entry code visually from the handlers when a state has many.
 - **`on exit:`** runs when the state is left, immediately *before* the next state's entry, so cleanup observes the state it's leaving as still active. It is synchronous — it cannot `wait`, and a `-> <state>` raised inside it is ignored (exit is cleanup, not control flow). It does not run on the initial state's first activation (there is no prior state to leave).
 
-`on exit:` is a tree-walker feature; the bytecode VM rejects it at compile time (tree-walker-first, per the 2026-06-01 VM-strategy decision). `on enter:` works on both backends (it lowers into the on-entry body).
+`on exit:` runs on the tree-walker, Twe's only runtime since web3d-M1 removed the bytecode VM. `on enter:` lowers into the on-entry body.
 
 ### 4.9 Visual blocks
 
@@ -527,7 +527,7 @@ dialogue MeetMerchant:
 - `choice:` — an indented list of `<label>:` branches. The runtime prints each label (numbered `[1]`, `[2]`, …) and runs the **first** branch's body. Real interactive selection is a follow-on once the UI surface (input modality, prompt rendering) is designed.
 - `wait` inside a dialogue body raises a runtime error in v0.1 — per-dialogue suspension needs a separate scheduler from the per-state-instance one, planned for a Phase 5 follow-on.
 
-The bytecode VM rejects `dialogue` / `say` / `choice` at compile time with a pointer at `--vm tree`; the tree-walker is the canonical execution path for this surface in v0.1.
+Dialogue runs on the tree-walker, Twe's only runtime (the bytecode VM, which rejected this surface, was removed in web3d-M1).
 
 ### 4.11 Tilemaps
 
@@ -626,7 +626,7 @@ let evens   = [x for x in 0..10 if x > 5]      # [6, 7, 8, 9, 10]
 let names    = [e.name for e in entities.of(Slime)]
 ```
 
-The iterable is a range, list, or tuple (the same set `for` loops accept). The loop variable is scoped to the comprehension — it does not leak into the surrounding scope, and shadows any outer binding of the same name for the duration. Filtering follows Twe's truthiness rule (only `false` is falsy). List comprehensions are a tree-walker feature; the frozen bytecode VM rejects them at compile time (tree-walker-first per the 2026-06-01 VM-strategy decision).
+The iterable is a range, list, or tuple (the same set `for` loops accept). The loop variable is scoped to the comprehension — it does not leak into the surrounding scope, and shadows any outer binding of the same name for the duration. Filtering follows Twe's truthiness rule (only `false` is falsy). The loop variable may shadow an existing binding; it is restored afterwards.
 
 ---
 

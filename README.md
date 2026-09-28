@@ -33,7 +33,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | Feature | Status |
 |---------|--------|
 | Hand-written recursive-descent parser | v0.1 |
-| Tree-walking interpreter + bytecode VM | v0.1 / v0.2 |
+| Tree-walking interpreter (lexical scoping, NaN-tagged values, tracing GC) | v0.1 → web3d-M1 |
 | NaN-tagged 64-bit values + tracing GC | v0.2 |
 | `twec play` (2D macroquad runtime) | v0.1 |
 | `twec play3d` (3D wgpu runtime) | v0.1 |

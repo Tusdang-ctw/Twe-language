@@ -76,18 +76,6 @@ fn running_program_with_hole_errors_at_runtime_with_location() {
 }
 
 #[test]
-fn bytecode_compile_rejects_hole_with_clear_message() {
-    use twec::compiler::compile_program;
-    let tokens = lex("let x = ???\n").unwrap();
-    let program = parse(&tokens).unwrap();
-    let err = compile_program(&program).expect_err("bytecode compile should reject holes");
-    assert!(
-        err.message.contains("???") || err.message.contains("hole"),
-        "compile error should mention holes; got: {err:?}"
-    );
-}
-
-#[test]
 fn hole_round_trips_through_formatter() {
     use twec::printer::print_program;
     let tokens = lex("let x = ???\n").unwrap();

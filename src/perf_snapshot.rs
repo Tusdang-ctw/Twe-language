@@ -8,7 +8,7 @@
 //!
 //! ## Workflow
 //!
-//! 1. Run `cargo bench` (Phase 11 session 6 / `benches/vm.rs`). Criterion
+//! 1. Run `cargo bench` (Phase 11 session 6 / `benches/interp.rs`). Criterion
 //!    writes `target/criterion/<group>/<id>/<base|new>/estimates.json`.
 //! 2. Run `twec perf-snapshot -o current.json` to scrape the criterion
 //!    output into the canonical JSON.

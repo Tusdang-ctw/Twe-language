@@ -16,7 +16,7 @@ v1.0.1 session 11 — checked-in baseline + format reference for the
 
 ```bash
 # 1. Run the criterion bench suite.
-cargo bench --bench vm
+cargo bench --bench interp
 
 # 2. Scrape criterion's output into a snapshot JSON.
 twec perf-snapshot -o current.json
@@ -35,14 +35,14 @@ A maintainer who confirms current numbers are an acceptable new
 baseline:
 
 ```bash
-cargo bench --bench vm
+cargo bench --bench interp
 twec perf-snapshot -o docs/perf-snapshots/v1.0.1-baseline.json
 git add docs/perf-snapshots/v1.0.1-baseline.json
 git commit -m "perf: recapture v1.0.1 baseline"
 ```
 
 The schema is a deterministic JSON object so the diff in PR review
-is greppable. New benches added to `benches/vm.rs` automatically
+is greppable. New benches added to `benches/interp.rs` automatically
 appear in subsequent snapshots — the gate only fires on benches
 present in *both* baseline and current, so an additive bench
 doesn't break CI.

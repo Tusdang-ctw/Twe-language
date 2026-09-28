@@ -14,7 +14,7 @@
 //!   serializable).
 //!
 //! What's not (errors at save_to time):
-//! - Class, Instance, BcInstance, Function, BcFunction, Builtin.
+//! - Class, Instance, Function, Builtin.
 //!   Saves are data, not code; saving a function reference would
 //!   capture a closure over the host env that isn't reconstructible.
 //!
@@ -132,29 +132,11 @@ pub fn encode(value: &Value) -> Result<json::Value, String> {
             "cannot save instance of `{}` — saves hold data, not live objects (extract the fields you want into a tuple or a plain Object first)",
             rc.borrow().class.name
         ))
-    } else if value.is_bc_instance() {
-        let rc = value.as_bc_instance();
-        Err(format!(
-            "cannot save bytecode instance of `{}` — same restriction as `Instance`",
-            rc.borrow().class.name
-        ))
     } else if value.is_function() {
         let f = value.as_function();
         Err(format!(
             "cannot save function '{}' — saves hold data, not code",
             f.name
-        ))
-    } else if value.is_bc_function() {
-        let f = value.as_bc_function();
-        Err(format!(
-            "cannot save bytecode function '{}' — saves hold data, not code",
-            f.name
-        ))
-    } else if value.is_bc_class() {
-        let c = value.as_bc_class();
-        Err(format!(
-            "cannot save bytecode class '{}' — saves hold data, not declarations",
-            c.name
         ))
     } else if value.is_builtin() {
         let (name, _, _) = value.as_builtin();

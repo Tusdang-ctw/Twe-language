@@ -153,7 +153,7 @@ state alert:
     -> chase
 ```
 
-`wait` only works as a *direct* statement of a state body in v0.1. Inside `if`, `while`, function calls, or dialogue blocks, you'll get a clear runtime error pointing at the limitation. The bytecode VM and the tree-walker both support state-body `wait`; pick whichever interpreter you prefer (`--vm tree` is the default; `--vm bytecode` is faster on hot paths).
+`wait` suspends a state's entry body — directly, inside `if` / `while`, or inside a function called from it as a statement — and local variables survive the wait. Elsewhere (a `for` body, an `every` clock, `on update`) you'll get a clear runtime error pointing at the limitation.
 
 ## Dialogue
 
