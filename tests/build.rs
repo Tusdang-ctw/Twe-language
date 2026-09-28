@@ -1126,3 +1126,34 @@ fn web_target_parses_with_legacy_alias() {
     assert_eq!(BuildTarget::Web.label(), "web");
     assert_eq!(BuildTarget::parse("wasm32"), Some(BuildTarget::Wasm32));
 }
+
+/// web3d-M2 (M0 carry-over): scaffolding targets are behind
+/// `--features experimental`; a default build refuses them before
+/// writing anything.
+#[cfg(not(feature = "experimental"))]
+#[test]
+fn scaffolding_targets_need_the_experimental_feature() {
+    for target in [
+        BuildTarget::LinuxServer,
+        BuildTarget::IosAarch64,
+        BuildTarget::AndroidAarch64,
+    ] {
+        assert!(target.is_experimental());
+        let dir = temp_project(&format!("gated_{}", target.label()));
+        fs::write(dir.join("main.twe"), "print(1)\n").unwrap();
+        let args = BuildArgs {
+            project_dir: dir.clone(),
+            target,
+            target_explicit: true,
+            config: BuildConfig::Release,
+            config_explicit: true,
+            out: Some(dir.join("out")),
+            dry_run: false,
+            steam: false,
+        };
+        assert_eq!(twec::build::run(args), 2, "{target:?} should be refused");
+        assert!(!dir.join("out").exists(), "{target:?} wrote output");
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(!BuildTarget::Web.is_experimental());
+}

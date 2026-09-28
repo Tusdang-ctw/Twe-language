@@ -153,6 +153,16 @@ impl BuildTarget {
             BuildTarget::AndroidAarch64 => "android-aarch64",
         }
     }
+
+    /// Scaffolding targets that write a directory layout with no working
+    /// runtime behind it. `twec build` accepts them only when built with
+    /// `--features experimental` (web3d-M0 pivot; enforced from M2).
+    pub fn is_experimental(self) -> bool {
+        matches!(
+            self,
+            BuildTarget::LinuxServer | BuildTarget::IosAarch64 | BuildTarget::AndroidAarch64
+        )
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -633,6 +643,15 @@ pub fn run(mut args: BuildArgs) -> i32 {
                 args.config = c;
             }
         }
+    }
+    if args.target.is_experimental() && !cfg!(feature = "experimental") {
+        eprintln!(
+            "error: target '{}' only writes a directory layout (no working runtime yet), \
+             so it is behind the experimental feature\n\
+             hint: rebuild twec with `cargo build --features experimental` to use it",
+            args.target.label()
+        );
+        return 2;
     }
     let resolved = resolve_config(manifest.as_ref(), args.config);
     let out_path = match resolve_out_path(&project, &args) {
