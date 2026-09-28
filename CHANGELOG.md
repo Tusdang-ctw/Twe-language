@@ -52,6 +52,11 @@ removal would be load-bearing.
   process. Touch queries report no touches headless.
 
 ### Fixed
+- **`twec play3d` no longer crashes on its first frame.** Since 2026-06-01 the
+  3D loop called macroquad's clock, which panics outside a macroquad window,
+  so every 3D example aborted immediately. A source-level test now keeps
+  macroquad out of the 3D shell, and a headless render test
+  (`tests/kernel_render.rs`) renders `hello_3d` through the real pipeline.
 - **GC use-after-free** (web3d-M0; `docs/changes/2026-09-27-web3d-m0-gc-soundness.md`):
   a `for` loop over a temporary list (e.g. a list comprehension) could
   corrupt the heap and crash (`STATUS_HEAP_CORRUPTION`) once the body

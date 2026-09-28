@@ -442,35 +442,9 @@ pub struct Env {
     pub current_source: Option<std::path::PathBuf>,
 }
 
-/// One queued 3D primitive. Phase 6 session 7 added the `Primitive`
-/// tag — a single render queue can now mix cubes and spheres,
-/// dispatched as separate instanced draw calls in `play3d::render`.
-#[derive(Debug, Clone, Copy)]
-pub struct DrawCall3d {
-    pub primitive: Primitive,
-    pub at: [f32; 3],
-    pub color: [f32; 4],
-    pub size: f32,
-    /// Phase 17 session 3: interned texture path id, or 0 for the
-    /// white fallback (an untextured / tint-only draw). Applies to
-    /// cube / sphere / mesh uniformly.
-    pub texture: u32,
-}
-
-/// The mesh shape behind a `DrawCall3d`. Each variant has its own
-/// vertex/index buffer in `play3d`; a frame's queue is partitioned
-/// per-primitive and each subset becomes one instanced draw call.
-///
-/// `Mesh(id)` carries an interned-path id assigned by
-/// `Env::intern_mesh_path`. The render side keeps a parallel
-/// `HashMap<u32, GpuMesh>` cache; first sight of an id triggers a
-/// lazy `.glb` load + GPU upload. v0.2 session 1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Primitive {
-    Cube,
-    Sphere,
-    Mesh(u32),
-}
+// web3d-M2: `DrawCall3d` / `Primitive` are renderer-kernel data; they
+// live in `render3d_types` and are re-exported here for existing paths.
+pub use crate::render3d_types::{DrawCall3d, Primitive};
 
 #[derive(Clone, Debug)]
 pub struct OnUpdateHandler {

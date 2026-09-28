@@ -143,6 +143,10 @@ pub mod build;
 pub mod cli;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod physics3d;
+// web3d-M2: renderer kernel (native-only until its deps move to the
+// shared dependency section for the web shell).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod kernel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play3d;
 #[cfg(not(target_arch = "wasm32"))]
