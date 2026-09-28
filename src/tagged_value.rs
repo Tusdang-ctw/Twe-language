@@ -503,11 +503,14 @@ impl TaggedValue {
     /// `HeapBody` discriminant (variant, ignoring payload). v0.2
     /// Phase 8.5 session 8b — convenience predicate so callers
     /// don't have to write `with_obj_body(|b| matches!(b, ...))`.
+    #[inline]
     pub fn is_obj_body_kind(&self, kind: HeapBodyKind) -> bool {
         if !self.is_obj() {
             return false;
         }
-        self.with_obj_body(|b| HeapBodyKind::of(b) == kind)
+        // web3d-M3: the cached discriminant — no borrow of the body
+        // (this sits behind every `is_tuple` / `is_instance` / … check).
+        self.with_heap_object(|o| o.body_kind == kind)
     }
 
     /// Twe truthiness: only `false` is falsy. Per Principle 3 +

@@ -129,6 +129,9 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     // pre-state-machine default) freeze with the rest of the world.
     let paused = crate::stdlib::is_paused();
     let entities = env.active_entities.clone();
+    // web3d-M3: consecutive entities are usually the same class; reuse
+    // its `update` lookup instead of hashing the method name per entity.
+    let mut last: Option<(*const ClassDef, Option<Rc<MethodDef>>)> = None;
     for entity in entities {
         if entity.borrow().despawned {
             continue;
@@ -149,9 +152,17 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
                 continue;
             }
         }
-        let method = match find_method(&class, "update") {
-            Some(m) => m,
-            None => continue,
+        let key = Rc::as_ptr(&class);
+        let method = match &last {
+            Some((k, m)) if *k == key => m.clone(),
+            _ => {
+                let m = find_method(&class, "update");
+                last = Some((key, m.clone()));
+                m
+            }
+        };
+        let Some(method) = method else {
+            continue;
         };
         call_method(
             env,
@@ -4302,6 +4313,18 @@ fn apply_arith(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
+    // web3d-M3: float with float first — the common case in game code,
+    // and the same result the general path below computes.
+    if l.is_float() && r.is_float() {
+        let (a, b) = (l.as_float(), r.as_float());
+        return Ok(Value::from_float(match op {
+            BinOp::Add => a + b,
+            BinOp::Sub => a - b,
+            BinOp::Mul => a * b,
+            BinOp::Div => a / b,
+            _ => unreachable!(),
+        }));
+    }
     let op_str = match op {
         BinOp::Add => "+",
         BinOp::Sub => "-",
