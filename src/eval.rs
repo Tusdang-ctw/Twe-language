@@ -3026,7 +3026,7 @@ fn eval_call(
                 if let Some(method) = find_method(&class, name) {
                     let arg_vals = eval_args(env, args)?;
                     let kwarg_vals = eval_kwargs(env, kwargs)?;
-                    return call_method(
+                    let r = call_method(
                         env,
                         Value::from_instance(rc),
                         &method,
@@ -3035,6 +3035,8 @@ fn eval_call(
                         line,
                         col,
                     );
+                    recycle_args(env, arg_vals);
+                    return r;
                 }
             }
         }
@@ -3070,7 +3072,9 @@ fn eval_call(
             if let Some(method) = find_method(&class, name) {
                 let arg_vals = eval_args(env, args)?;
                 let kwarg_vals = eval_kwargs(env, kwargs)?;
-                return call_method(env, recv, &method, &arg_vals, &kwarg_vals, line, col);
+                let r = call_method(env, recv, &method, &arg_vals, &kwarg_vals, line, col);
+                recycle_args(env, arg_vals);
+                return r;
             }
             // Fall through to a normal field_get -> Call path, which will
             // produce a "field not defined" error below.
@@ -3079,20 +3083,39 @@ fn eval_call(
         let arg_vals = eval_args(env, args)?;
         let kwarg_vals = eval_kwargs(env, kwargs)?;
         let f = field_get(&recv, name, line, col)?;
-        return apply_call(env, f, &arg_vals, &kwarg_vals, line, col);
+        let r = apply_call(env, f, &arg_vals, &kwarg_vals, line, col);
+        recycle_args(env, arg_vals);
+        return r;
     }
     let f = eval_expr(env, callee)?;
     let arg_vals = eval_args(env, args)?;
     let kwarg_vals = eval_kwargs(env, kwargs)?;
-    apply_call(env, f, &arg_vals, &kwarg_vals, line, col)
+    let r = apply_call(env, f, &arg_vals, &kwarg_vals, line, col);
+    recycle_args(env, arg_vals);
+    r
 }
 
+/// Evaluate call arguments into a pooled vector; hand it back with
+/// [`recycle_args`] once the call returns.
 fn eval_args(env: &mut Env, args: &[Expr]) -> Result<Vec<Value>, RuntimeError> {
-    let mut out = Vec::with_capacity(args.len());
+    let mut out = env.arg_pool.pop().unwrap_or_default();
     for a in args {
-        out.push(eval_expr(env, a)?);
+        match eval_expr(env, a) {
+            Ok(v) => out.push(v),
+            Err(e) => {
+                recycle_args(env, out);
+                return Err(e);
+            }
+        }
     }
     Ok(out)
+}
+
+fn recycle_args(env: &mut Env, mut v: Vec<Value>) {
+    v.clear();
+    if env.arg_pool.len() < 64 {
+        env.arg_pool.push(v);
+    }
 }
 
 fn eval_kwargs(
@@ -3365,6 +3388,11 @@ fn apply_call(
                 return Err(no_kwargs_error(name, line, col));
             }
             func(env, args)
+        } else if kwargs.is_empty() && args.len() == params.len() {
+            // All positional, one per parameter: nothing to bind, so
+            // don't copy the arguments (the common case — `vec3(x, y, z)`,
+            // `math.sqrt(d)`).
+            func(env, args)
         } else {
             let bound = bind_kwargs(params, name, args.to_vec(), kwargs.to_vec(), line, col)?;
             func(env, &bound)
@@ -3425,17 +3453,17 @@ pub(crate) fn call_function(
                 help: None,
             });
         }
-        args.to_vec()
+        std::borrow::Cow::Borrowed(args)
     } else {
         let param_refs: Vec<&str> = def.params.iter().map(|s| &**s).collect();
-        bind_kwargs(
+        std::borrow::Cow::Owned(bind_kwargs(
             &param_refs,
             &def.name,
             args.to_vec(),
             kwargs.to_vec(),
             line,
             col,
-        )?
+        )?)
     };
     // web3d-M1: parameters are locals of a fresh frame; free names
     // resolve lexically (never in the caller's frame).
@@ -3513,17 +3541,17 @@ fn call_method(
                 help: None,
             });
         }
-        args.to_vec()
+        std::borrow::Cow::Borrowed(args)
     } else {
         let param_refs: Vec<&str> = method.params.iter().map(|s| &**s).collect();
-        bind_kwargs(
+        std::borrow::Cow::Owned(bind_kwargs(
             &param_refs,
             "method",
             args.to_vec(),
             kwargs.to_vec(),
             line,
             col,
-        )?
+        )?)
     };
     let saved_self = env.self_value.replace(recv);
     let saved_returning = env.returning.take();

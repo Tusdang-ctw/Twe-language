@@ -431,6 +431,9 @@ pub struct Env {
     /// web3d-M1: cleared locals vectors from finished frames, reused by
     /// the next call so a call doesn't allocate its frame.
     pub frame_pool: Vec<Vec<(Rc<str>, TaggedValue)>>,
+    /// web3d-M3: spare argument vectors for calls, so evaluating a
+    /// call's arguments doesn't allocate (`eval::eval_args`).
+    pub arg_pool: Vec<Vec<TaggedValue>>,
     /// web3d-M1: the module object being initialised when this env runs
     /// a module's top level (`None` for the entry program). A function
     /// whose `home` is this module resolves globals in this env.
@@ -505,6 +508,7 @@ impl Env {
             call_depth: 0,
             frames: Vec::new(),
             frame_pool: Vec::new(),
+            arg_pool: Vec::new(),
             current_module: None,
             render_queue3d: Vec::new(),
             mesh_paths: Vec::new(),
