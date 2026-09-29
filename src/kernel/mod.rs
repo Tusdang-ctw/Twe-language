@@ -4,5 +4,6 @@
 //! adapt interpreter state into kernel inputs. Becomes the
 //! `twe-kernel` crate when the workspace splits.
 
+pub mod graph;
 pub mod hud;
 pub mod render;

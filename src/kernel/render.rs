@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::kernel::graph::{Access, Extent, FrameGraph, TextureDesc, TexturePool};
+
 pub use crate::render3d_types::{AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive};
 
 /// Camera placement for a frame.
@@ -1216,7 +1218,6 @@ pub struct Renderer {
     /// Per-cascade depth-attachment views (one layer each) for
     /// the three shadow passes.
     shadow_layer_views: [wgpu::TextureView; CASCADE_COUNT],
-    depth_view: wgpu::TextureView,
     /// Phase 26: post-FX pipeline — fullscreen triangle that
     /// reads the HDR offscreen texture, applies ACES tone
     /// mapping + optional vignette, writes to the swapchain.
@@ -1231,17 +1232,12 @@ pub struct Renderer {
     tonemap_sampler: wgpu::Sampler,
     /// Per-frame tonemap params buffer (vignette strength).
     tonemap_params_buffer: wgpu::Buffer,
-    /// HDR offscreen texture + view, resized with the window.
-    /// `None` until first allocated; allocated lazily on the first
-    /// frame that actually uses tone mapping.
-    hdr_texture: Option<wgpu::Texture>,
-    hdr_view: Option<wgpu::TextureView>,
-    /// Bind group binding the current HDR view + sampler + params
-    /// buffer. Re-created when `hdr_texture` is re-allocated.
-    tonemap_bind_group: Option<wgpu::BindGroup>,
-    /// Cached size used to allocate the HDR texture; if the
-    /// surface resizes we re-allocate.
-    hdr_size: (u32, u32),
+    /// web3d-M7: the render graph's transient targets (HDR colour,
+    /// depth, …), kept across frames.
+    pool: TexturePool,
+    /// Bind group over the HDR target + sampler + params, tagged with
+    /// the pool generation of the HDR texture it binds.
+    tonemap_bind_group: Option<(u64, wgpu::BindGroup)>,
     /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
     /// `Env::mesh_paths` interned id (the `u32` payload of
     /// `Primitive::Mesh`). Populated on first sight of a new id in
@@ -1403,8 +1399,8 @@ impl Renderer {
         init_renderer(&instance, None, width, height).await
     }
 
-    /// Reconfigure for a new drawable size (the HDR target follows on
-    /// the next frame).
+    /// Reconfigure for a new drawable size (the graph's targets follow
+    /// on the next frame).
     pub fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
@@ -1412,7 +1408,6 @@ impl Renderer {
             Some(surface) => surface.configure(&self.device, &self.config),
             None => self.offscreen = Some(create_offscreen(&self.device, &self.config)),
         }
-        self.depth_view = create_depth_view(&self.device, self.config.width, self.config.height);
     }
 
     /// Drop every cached / pending mesh and texture (hot reload).
@@ -1781,8 +1776,6 @@ async fn init_renderer(
     });
     let pipeline = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main");
 
-    let depth_view = create_depth_view(&device, config.width, config.height);
-
     // Phase 28 session 2: cascaded shadow maps. The shadow texture
     // is a 2D array with `CASCADE_COUNT` layers; each shadow pass
     // renders one cascade into its own layer. The main fragment
@@ -2065,15 +2058,12 @@ async fn init_renderer(
         shadow_combined_bg,
         shadow_texture,
         shadow_layer_views,
-        depth_view,
         tonemap_pipeline,
         tonemap_bgl,
         tonemap_sampler,
         tonemap_params_buffer,
-        hdr_texture: None,
-        hdr_view: None,
+        pool: TexturePool::default(),
         tonemap_bind_group: None,
-        hdr_size: (0, 0),
         mesh_cache: HashMap::new(),
         mesh_load_failures: HashSet::new(),
         mesh_pending: HashSet::new(),
@@ -2205,24 +2195,6 @@ fn upload_texture_with_mips(
         }
     }
     texture
-}
-
-fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("twec-play3d depth"),
-        size: wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 // ---------- glTF 2.0 mesh loader ----------
@@ -3578,231 +3550,53 @@ impl Renderer {
         // light space. Runs `CASCADE_COUNT` times (3) per frame; cost
         // scales with the visible draw call count, not the geometry
         // count, since each call uses the same vertex buffers.
-        if shadow_uniform.flags[3] > 0.5 && !instances.is_empty() {
+        // web3d-M7: the frame is a render graph (`kernel/graph.rs`).
+        // Passes declare what they read and write; the graph orders
+        // and culls them, and the HDR colour and depth targets come
+        // from its pool (reallocated only on resize).
+        let shadows_on = shadow_uniform.flags[3] > 0.5 && !instances.is_empty();
+        let mut graph = FrameGraph::new();
+        let target = graph.import("target", true);
+        let shadow_map = graph.import("shadow map", false);
+        let hdr = graph.create(TextureDesc::new("hdr colour", Extent::FULL, HDR_FORMAT));
+        let depth = graph.create(TextureDesc::new("depth", Extent::FULL, DEPTH_FORMAT));
+        if shadows_on {
             for cascade in 0..CASCADE_COUNT {
-                // Push the active cascade's matrix into the per-pass
-                // uniform. queue.write_buffer is recorded as a copy
-                // command; sequential write_buffer + render_pass pairs
-                // execute in order at submission time.
-                let pass_uniform = ShadowPassUniform {
-                    light_space_matrix: shadow_uniform.light_space_matrices[cascade],
-                };
-                state.queue.write_buffer(
-                    &state.shadow_pass_buffers[cascade],
-                    0,
-                    bytemuck::bytes_of(&pass_uniform),
+                graph.add_pass(
+                    FramePass::Shadow(cascade),
+                    "shadow cascade",
+                    &[],
+                    &[(shadow_map, Access::Attach)],
                 );
-                let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("twec-play3d shadow pass"),
-                    color_attachments: &[],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &state.shadow_layer_views[cascade],
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                spass.set_pipeline(&state.shadow_pipeline);
-                spass.set_bind_group(0, &state.shadow_pass_bgs[cascade], &[]);
-                spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
-                spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-                // Cubes
-                for (_key, range) in &cube_ranges {
-                    if range.1 <= range.0 {
-                        continue;
-                    }
-                    spass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                    spass.set_index_buffer(
-                        state.cube_index_buffer.slice(..),
-                        wgpu::IndexFormat::Uint16,
-                    );
-                    spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
-                }
-                // Spheres
-                for (_key, range) in &sphere_ranges {
-                    if range.1 <= range.0 {
-                        continue;
-                    }
-                    spass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-                    spass.set_index_buffer(
-                        state.sphere_index_buffer.slice(..),
-                        wgpu::IndexFormat::Uint16,
-                    );
-                    spass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
-                }
-                // Meshes (with per-mesh joints if skinned)
-                for ((mesh_id, _tex, _mat), range) in &mesh_ranges {
-                    if range.1 <= range.0 {
-                        continue;
-                    }
-                    let gpu_mesh = match state.mesh_cache.get(mesh_id) {
-                        Some(m) => m,
-                        None => continue,
-                    };
-                    if let Some(skin) = &gpu_mesh.skin {
-                        spass.set_bind_group(1, &skin.joint_bind_group, &[]);
-                    }
-                    spass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                    spass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
-                    spass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
-                    if gpu_mesh.skin.is_some() {
-                        spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
-                    }
-                }
             }
         }
-
-        // Phase 26: HDR pipeline. The main pipeline always targets a
-        // 16-bit float offscreen, and a fullscreen tonemap pass
-        // converts to sRGB for the swapchain. The `postfx.tonemap`
-        // toggle selects ACES vs straight linear→sRGB inside the
-        // tonemap shader (via a flag); both routes keep gamma
-        // correctness regardless of the script's choice.
-        ensure_hdr_target(state);
-        let main_color_view: &wgpu::TextureView = state
-            .hdr_view
-            .as_ref()
-            .expect("ensure_hdr_target should have allocated the HDR view");
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("twec-play3d main pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: main_color_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.06,
-                            g: 0.10,
-                            b: 0.16,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &state.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if !instances.is_empty() {
-                rpass.set_pipeline(&state.pipeline);
-                rpass.set_bind_group(0, &state.frame_bind_group, &[]);
-                // Phase 24: bind the shared identity joint UBO as the
-                // default for unskinned draws (cube, sphere, glb
-                // without a skin). Skinned mesh draws override slot 3
-                // with their per-mesh joint bind group below.
-                rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
-                // Phase 25: shadow combined bind group at slot 4 —
-                // shadow uniform + texture + comparison sampler. The
-                // shader short-circuits when flags.w == 0.
-                rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
-                rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-                // Phase 17 session 3: helper closure that picks the
-                // right texture bind group for a given texture id.
-                // 0 = white fallback; loaded ids look up texture_cache;
-                // missing/failed ids fall through to white.
-                let bind_for = |tex_id: u32| -> &wgpu::BindGroup {
-                    if tex_id == 0 {
-                        return &state.white_bind_group;
-                    }
-                    state
-                        .texture_cache
-                        .get(&tex_id)
-                        .unwrap_or(&state.white_bind_group)
-                };
-                // web3d-M3: the plain surface, or a material's pipeline.
-                let pipeline_for = |mat: u32| -> &wgpu::RenderPipeline {
-                    snap.materials
-                        .get(mat as usize)
-                        .filter(|_| mat != 0)
-                        .and_then(|src| state.material_pipelines.get(src))
-                        .unwrap_or(&state.pipeline)
-                };
-                // Cube draws — one per (texture, material) group.
-                for ((tex, mat), range) in &cube_ranges {
-                    if range.1 <= range.0 {
-                        continue;
-                    }
-                    rpass.set_pipeline(pipeline_for(*mat));
-                    rpass.set_bind_group(1, bind_for(*tex), &[]);
-                    rpass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                    rpass.set_index_buffer(
-                        state.cube_index_buffer.slice(..),
-                        wgpu::IndexFormat::Uint16,
-                    );
-                    rpass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
-                }
-                // Sphere draws — one per (texture, material) group.
-                for ((tex, mat), range) in &sphere_ranges {
-                    if range.1 <= range.0 {
-                        continue;
-                    }
-                    rpass.set_pipeline(pipeline_for(*mat));
-                    rpass.set_bind_group(1, bind_for(*tex), &[]);
-                    rpass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-                    rpass.set_index_buffer(
-                        state.sphere_index_buffer.slice(..),
-                        wgpu::IndexFormat::Uint16,
-                    );
-                    rpass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
-                }
-                // Mesh draws — one per (mesh id, texture) group. Each
-                // unique combination is its own instanced draw call.
-                for ((mesh_id, tex, mat), range) in &mesh_ranges {
-                    if range.1 <= range.0 {
-                        continue;
-                    }
-                    let gpu_mesh = match state.mesh_cache.get(mesh_id) {
-                        Some(m) => m,
-                        None => continue,
-                    };
-                    rpass.set_pipeline(pipeline_for(*mat));
-                    // Phase 17 finish: when the script's `mesh()` call
-                    // didn't supply an explicit texture (tex == 0),
-                    // prefer the mesh's auto-loaded baseColorTexture if
-                    // it has one. Falls through to white when neither
-                    // is present.
-                    let bind = if *tex == 0 {
-                        gpu_mesh
-                            .auto_texture
-                            .as_ref()
-                            .unwrap_or(&state.white_bind_group)
-                    } else {
-                        bind_for(*tex)
-                    };
-                    rpass.set_bind_group(1, bind, &[]);
-                    // Phase 24: bind per-mesh joint UBO when the mesh
-                    // has a skin; the joint matrices were uploaded in
-                    // step 4c above. Unskinned meshes leave slot 3
-                    // bound to the identity UBO from the outer setup.
-                    if let Some(skin) = &gpu_mesh.skin {
-                        rpass.set_bind_group(2, &skin.joint_bind_group, &[]);
-                    }
-                    rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                    rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
-                    rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
-                    // Re-bind the identity joints for the next draw if
-                    // we just used a skinned bind group, so subsequent
-                    // unskinned draws don't accidentally read this
-                    // mesh's joint matrices.
-                    if gpu_mesh.skin.is_some() {
-                        rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
-                    }
-                }
-            }
+        graph.add_pass(
+            FramePass::Main,
+            "main",
+            &[(shadow_map, Access::Sample)],
+            &[(hdr, Access::Attach), (depth, Access::Attach)],
+        );
+        graph.add_pass(
+            FramePass::Tonemap,
+            "tonemap + hud",
+            &[(hdr, Access::Sample)],
+            &[(target, Access::Attach)],
+        );
+        let plan = graph.compile().map_err(|e| e.to_string())?;
+        state
+            .pool
+            .prepare(&state.device, &plan, state.config.width, state.config.height);
+        let hdr_generation = state.pool.generation(&plan, hdr);
+        if state.tonemap_bind_group.as_ref().map(|(g, _)| *g) != Some(hdr_generation) {
+            let view = state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?;
+            let bg = tonemap_bind_group(
+                &state.device,
+                &state.tonemap_bgl,
+                view,
+                &state.tonemap_sampler,
+                &state.tonemap_params_buffer,
+            );
+            state.tonemap_bind_group = Some((hdr_generation, bg));
         }
         // Phase 26: fullscreen tonemap pass — reads the HDR offscreen,
         // applies ACES (or pass-through, per script flag) plus
@@ -3834,28 +3628,251 @@ impl Renderer {
                 0.0,
             ]),
         );
-        if let Some(bg) = &state.tonemap_bind_group {
-            let mut tmpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("twec-play3d tonemap pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view_target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            tmpass.set_pipeline(&state.tonemap_pipeline);
-            tmpass.set_bind_group(0, bg, &[]);
-            tmpass.draw(0..3, 0..1);
-            // web3d-M3: the HUD, over the finished scene.
-            state.hud.draw(&mut tmpass);
+        let state = &*state;
+        let main_color_view = state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?;
+        let depth_view = state.pool.view(&plan, depth).ok_or("render graph: no depth target")?;
+        for pass in &plan.passes {
+            match *pass {
+                FramePass::Shadow(cascade) => {
+                    // Push the active cascade's matrix into the per-pass
+                    // uniform. queue.write_buffer is recorded as a copy
+                    // command; sequential write_buffer + render_pass pairs
+                    // execute in order at submission time.
+                    let pass_uniform = ShadowPassUniform {
+                        light_space_matrix: shadow_uniform.light_space_matrices[cascade],
+                    };
+                    state.queue.write_buffer(
+                        &state.shadow_pass_buffers[cascade],
+                        0,
+                        bytemuck::bytes_of(&pass_uniform),
+                    );
+                    let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("twec-play3d shadow pass"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &state.shadow_layer_views[cascade],
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    spass.set_pipeline(&state.shadow_pipeline);
+                    spass.set_bind_group(0, &state.shadow_pass_bgs[cascade], &[]);
+                    spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+                    spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+                    // Cubes
+                    for (_key, range) in &cube_ranges {
+                        if range.1 <= range.0 {
+                            continue;
+                        }
+                        spass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
+                        spass.set_index_buffer(
+                            state.cube_index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint16,
+                        );
+                        spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
+                    }
+                    // Spheres
+                    for (_key, range) in &sphere_ranges {
+                        if range.1 <= range.0 {
+                            continue;
+                        }
+                        spass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
+                        spass.set_index_buffer(
+                            state.sphere_index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint16,
+                        );
+                        spass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
+                    }
+                    // Meshes (with per-mesh joints if skinned)
+                    for ((mesh_id, _tex, _mat), range) in &mesh_ranges {
+                        if range.1 <= range.0 {
+                            continue;
+                        }
+                        let gpu_mesh = match state.mesh_cache.get(mesh_id) {
+                            Some(m) => m,
+                            None => continue,
+                        };
+                        if let Some(skin) = &gpu_mesh.skin {
+                            spass.set_bind_group(1, &skin.joint_bind_group, &[]);
+                        }
+                        spass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+                        spass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
+                        spass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+                        if gpu_mesh.skin.is_some() {
+                            spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+                        }
+                    }
+                }
+                FramePass::Main => {
+                    {
+                        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("twec-play3d main pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: main_color_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 0.06,
+                                        g: 0.10,
+                                        b: 0.16,
+                                        a: 1.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                                view: depth_view,
+                                depth_ops: Some(wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(1.0),
+                                    store: wgpu::StoreOp::Store,
+                                }),
+                                stencil_ops: None,
+                            }),
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        if !instances.is_empty() {
+                            rpass.set_pipeline(&state.pipeline);
+                            rpass.set_bind_group(0, &state.frame_bind_group, &[]);
+                            // Phase 24: bind the shared identity joint UBO as the
+                            // default for unskinned draws (cube, sphere, glb
+                            // without a skin). Skinned mesh draws override slot 3
+                            // with their per-mesh joint bind group below.
+                            rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+                            // Phase 25: shadow combined bind group at slot 4 —
+                            // shadow uniform + texture + comparison sampler. The
+                            // shader short-circuits when flags.w == 0.
+                            rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
+                            rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+                            // Phase 17 session 3: helper closure that picks the
+                            // right texture bind group for a given texture id.
+                            // 0 = white fallback; loaded ids look up texture_cache;
+                            // missing/failed ids fall through to white.
+                            let bind_for = |tex_id: u32| -> &wgpu::BindGroup {
+                                if tex_id == 0 {
+                                    return &state.white_bind_group;
+                                }
+                                state
+                                    .texture_cache
+                                    .get(&tex_id)
+                                    .unwrap_or(&state.white_bind_group)
+                            };
+                            // web3d-M3: the plain surface, or a material's pipeline.
+                            let pipeline_for = |mat: u32| -> &wgpu::RenderPipeline {
+                                snap.materials
+                                    .get(mat as usize)
+                                    .filter(|_| mat != 0)
+                                    .and_then(|src| state.material_pipelines.get(src))
+                                    .unwrap_or(&state.pipeline)
+                            };
+                            // Cube draws — one per (texture, material) group.
+                            for ((tex, mat), range) in &cube_ranges {
+                                if range.1 <= range.0 {
+                                    continue;
+                                }
+                                rpass.set_pipeline(pipeline_for(*mat));
+                                rpass.set_bind_group(1, bind_for(*tex), &[]);
+                                rpass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
+                                rpass.set_index_buffer(
+                                    state.cube_index_buffer.slice(..),
+                                    wgpu::IndexFormat::Uint16,
+                                );
+                                rpass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
+                            }
+                            // Sphere draws — one per (texture, material) group.
+                            for ((tex, mat), range) in &sphere_ranges {
+                                if range.1 <= range.0 {
+                                    continue;
+                                }
+                                rpass.set_pipeline(pipeline_for(*mat));
+                                rpass.set_bind_group(1, bind_for(*tex), &[]);
+                                rpass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
+                                rpass.set_index_buffer(
+                                    state.sphere_index_buffer.slice(..),
+                                    wgpu::IndexFormat::Uint16,
+                                );
+                                rpass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
+                            }
+                            // Mesh draws — one per (mesh id, texture) group. Each
+                            // unique combination is its own instanced draw call.
+                            for ((mesh_id, tex, mat), range) in &mesh_ranges {
+                                if range.1 <= range.0 {
+                                    continue;
+                                }
+                                let gpu_mesh = match state.mesh_cache.get(mesh_id) {
+                                    Some(m) => m,
+                                    None => continue,
+                                };
+                                rpass.set_pipeline(pipeline_for(*mat));
+                                // Phase 17 finish: when the script's `mesh()` call
+                                // didn't supply an explicit texture (tex == 0),
+                                // prefer the mesh's auto-loaded baseColorTexture if
+                                // it has one. Falls through to white when neither
+                                // is present.
+                                let bind = if *tex == 0 {
+                                    gpu_mesh
+                                        .auto_texture
+                                        .as_ref()
+                                        .unwrap_or(&state.white_bind_group)
+                                } else {
+                                    bind_for(*tex)
+                                };
+                                rpass.set_bind_group(1, bind, &[]);
+                                // Phase 24: bind per-mesh joint UBO when the mesh
+                                // has a skin; the joint matrices were uploaded in
+                                // step 4c above. Unskinned meshes leave slot 3
+                                // bound to the identity UBO from the outer setup.
+                                if let Some(skin) = &gpu_mesh.skin {
+                                    rpass.set_bind_group(2, &skin.joint_bind_group, &[]);
+                                }
+                                rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+                                rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
+                                rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+                                // Re-bind the identity joints for the next draw if
+                                // we just used a skinned bind group, so subsequent
+                                // unskinned draws don't accidentally read this
+                                // mesh's joint matrices.
+                                if gpu_mesh.skin.is_some() {
+                                    rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+                                }
+                            }
+                        }
+                    }
+                }
+                FramePass::Tonemap => {
+                    if let Some((_, bg)) = &state.tonemap_bind_group {
+                        let mut tmpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("twec-play3d tonemap pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &view_target,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        tmpass.set_pipeline(&state.tonemap_pipeline);
+                        tmpass.set_bind_group(0, bg, &[]);
+                        tmpass.draw(0..3, 0..1);
+                        // web3d-M3: the HUD, over the finished scene.
+                        state.hud.draw(&mut tmpass);
+                    }
+                }
+            }
         }
 
         state.queue.submit(Some(encoder.finish()));
@@ -3925,6 +3942,17 @@ impl Renderer {
     }
 }
 
+/// web3d-M7: the passes of a frame, as the render graph schedules them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FramePass {
+    /// Depth from the sun, into one cascade layer of the shadow map.
+    Shadow(usize),
+    /// The lit scene into the HDR target.
+    Main,
+    /// HDR to the display (tonemap, bloom, vignette), then the HUD.
+    Tonemap,
+}
+
 /// Headless colour target matching `config`'s size + format.
 fn create_offscreen(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
@@ -3943,51 +3971,33 @@ fn create_offscreen(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) 
     })
 }
 
-/// Phase 26: ensure the HDR offscreen color target matches the
-/// current surface size. Re-allocates on first use and on every
-/// resize. Updates `tonemap_bind_group` to bind the new view.
-fn ensure_hdr_target(state: &mut Renderer) {
-    let want = (state.config.width.max(1), state.config.height.max(1));
-    if state.hdr_size == want && state.hdr_texture.is_some() {
-        return;
-    }
-    let texture = state.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("twec-play3d hdr target"),
-        size: wgpu::Extent3d {
-            width: want.0,
-            height: want.1,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: HDR_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bg = state.device.create_bind_group(&wgpu::BindGroupDescriptor {
+/// The tonemap pass's inputs: the HDR target, its sampler and the
+/// per-frame params.
+fn tonemap_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    hdr: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    params: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twec-play3d tonemap bg"),
-        layout: &state.tonemap_bgl,
+        layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
+                resource: wgpu::BindingResource::TextureView(hdr),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Sampler(&state.tonemap_sampler),
+                resource: wgpu::BindingResource::Sampler(sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: state.tonemap_params_buffer.as_entire_binding(),
+                resource: params.as_entire_binding(),
             },
         ],
-    });
-    state.hdr_texture = Some(texture);
-    state.hdr_view = Some(view);
-    state.tonemap_bind_group = Some(bg);
-    state.hdr_size = want;
+    })
 }
 
 fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
