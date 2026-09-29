@@ -120,6 +120,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: M7 opens with the engine's plumbing.** Before adding any of the effects that should beat Three.js, the renderer was rebuilt around a *render graph*: each frame declares its passes and what they read and write, and the engine works out order, drops unused work, and shares GPU memory between passes. The proof it changed nothing: every test image came out byte-for-byte identical. The plan puts a measurement harness next, so every later graphics feature is scored against Three.js with numbers, not screenshots.
 
+- **2026-09-29: the scoreboard.** Before improving a single pixel, Twe got an honest scoreboard. Twelve standard 3D test scenes from the Khronos group are rendered by Twe and by Three.js from identical files, and each image is scored against a Hollywood-grade path-traced reference with NVIDIA's ꟻLIP image metric. The starting score: **Twe 0.348, Three.js 0.186** (lower is better); Twe's error is about twice Three.js's. The table is committed, so every future improvement shows up as a number in the project history. Its first run already caught a real Twe bug: models with many materials were painted with just one.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

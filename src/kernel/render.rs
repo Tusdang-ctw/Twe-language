@@ -23,6 +23,24 @@ pub struct Camera3d {
     pub eye: [f32; 3],
     pub target: [f32; 3],
     pub up: [f32; 3],
+    /// web3d-M7: vertical field of view (radians) and clip planes.
+    pub fov_y: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+impl Camera3d {
+    /// The game camera's lens: 60° vertical, 0.1 m to 100 m.
+    pub fn new(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Self {
+        Camera3d {
+            eye,
+            target,
+            up,
+            fov_y: 60_f32.to_radians(),
+            near: 0.1,
+            far: 100.0,
+        }
+    }
 }
 
 /// Sun-shadow settings for a frame.
@@ -47,6 +65,9 @@ pub struct PostFx {
 /// Everything the renderer needs from the host for one frame.
 pub struct RenderSnapshot<'a> {
     pub camera: Camera3d,
+    /// web3d-M7: what the scene is drawn over (linear RGB), where no
+    /// geometry covers the frame.
+    pub background: [f32; 3],
     pub lights: LightsUniform,
     pub shadow: ShadowSettings,
     pub post: PostFx,
@@ -2233,6 +2254,35 @@ pub(crate) struct LoadedSkinData {
 /// [`AssetReady::Mesh`].
 pub struct LoadedGlb(GlbParts);
 
+impl LoadedGlb {
+    /// web3d-M7: a sphere around every vertex (bounding-box centre, then
+    /// the farthest vertex), in the model's own units. The graphics
+    /// harness places cameras and clip planes with it.
+    pub fn bounding_sphere(&self) -> ([f32; 3], f32) {
+        let verts = &self.0 .0;
+        if verts.is_empty() {
+            return ([0.0; 3], 0.0);
+        }
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for v in verts {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v.position[k]);
+                hi[k] = hi[k].max(v.position[k]);
+            }
+        }
+        let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
+        let r = verts
+            .iter()
+            .map(|v| {
+                let d = sub(v.position, c);
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+            })
+            .fold(0.0, f32::max);
+        (c, r)
+    }
+}
+
 /// Phase 24: the glb loader's parts — (vertices, indices, optional
 /// auto-loaded base color texture, optional skin + animation data).
 type GlbParts = (
@@ -3209,9 +3259,16 @@ impl Renderer {
         assets: &mut dyn AssetSource,
     ) -> Result<(), String> {
         let state = self;
-        let Camera3d { eye, target, up } = snap.camera;
+        let Camera3d {
+            eye,
+            target,
+            up,
+            fov_y,
+            near,
+            far,
+        } = snap.camera;
         let aspect = state.config.width as f32 / state.config.height.max(1) as f32;
-        let proj = perspective(60_f32.to_radians(), aspect, 0.1, 100.0);
+        let proj = perspective(fov_y, aspect, near, far);
         let view = look_at(eye, target, up);
         let view_proj = mul(proj, view);
         let camera_uniform = CameraUniform {
@@ -3719,9 +3776,9 @@ impl Renderer {
                                 resolve_target: None,
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                                        r: 0.06,
-                                        g: 0.10,
-                                        b: 0.16,
+                                        r: f64::from(snap.background[0]),
+                                        g: f64::from(snap.background[1]),
+                                        b: f64::from(snap.background[2]),
                                         a: 1.0,
                                     }),
                                     store: wgpu::StoreOp::Store,

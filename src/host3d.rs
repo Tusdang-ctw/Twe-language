@@ -112,7 +112,8 @@ pub fn render_frame(
     let draws = std::mem::take(&mut env.render_queue3d);
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let snap = RenderSnapshot {
-        camera: Camera3d { eye, target, up },
+        camera: Camera3d::new(eye, target, up),
+        background: [0.06, 0.10, 0.16],
         lights: crate::stdlib::lights_snapshot(),
         shadow: ShadowSettings {
             enabled: crate::stdlib::shadow_enabled(),

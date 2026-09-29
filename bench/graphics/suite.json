@@ -1,0 +1,35 @@
+{
+  "comment": "web3d-M7 graphics comparison suite. Scenarios, cameras, environments and path-traced goldens come from the Khronos glTF Render Fidelity generator at a pinned commit; models from glTF-Sample-Assets at the commit that generator pins. See README.md.",
+  "generator": {
+    "repo": "KhronosGroup/glTF-Render-Fidelity-Generator",
+    "commit": "deaaba0b6c87b2a8627eb1ff809eedac6b11a5be"
+  },
+  "sampleAssets": {
+    "repo": "KhronosGroup/glTF-Sample-Assets",
+    "commit": "cfbe2f9ac259490855940ff85feb5b4b02386046"
+  },
+  "reference": "blender-cycles",
+  "alsoScored": [
+    "model-viewer",
+    "gltf-sample-viewer",
+    "filament",
+    "babylon"
+  ],
+  "scenarios": [
+    "khronos-DamagedHelmet",
+    "khronos-MetalRoughSpheres",
+    "khronos-FlightHelmet",
+    "khronos-Sponza",
+    "khronos-ClearCoatTest",
+    "khronos-TransmissionTest",
+    "khronos-SheenChair",
+    "khronos-IridescenceLamp",
+    "khronos-AnisotropyBarnLamp",
+    "khronos-EmissiveStrengthTest",
+    "khronos-TextureTransformTest",
+    "khronos-AlphaBlendModeTest"
+  ],
+  "notes": {
+    "khronos-Sponza": "the Cycles reference is lit only by sky through the courtyard opening, so it is very dark; real-time engines without occlusion light the interior far more. Twe's low error here comes from its dim default lighting, not accuracy (it also textures every surface with one material, a loader defect fixed in M7 session 3). Not a meaningful win until image-based lighting and ambient occlusion land."
+  }
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Three.js reference render</title>
+<!-- web3d-M7: renders one scenario of the graphics suite with the pinned
+     Three.js, set up like the Render Fidelity goldens: HDR environment
+     through PMREM, ACES Filmic at exposure 1, sRGB output, the
+     scenario's orbit camera and vertical field of view. -->
+<script type="importmap">
+{ "imports": {
+  "three": "/node_modules/three/build/three.module.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
+} }
+</script>
+<style>html, body { margin: 0; background: transparent; }</style>
+</head>
+<body>
+<script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+  import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
+
+  async function render(name) {
+    const base = `/cache/${name}/`;
+    const scene = await (await fetch(base + "scene.json")).json();
+    const { width, height } = scene.pixels;
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      preserveDrawingBuffer: true,
+    });
+    renderer.setPixelRatio(1);
+    renderer.setSize(width, height);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x000000, 0);
+    document.body.appendChild(renderer.domElement);
+
+    const world = new THREE.Scene();
+    const hdr = await new HDRLoader().loadAsync(base + scene.environment);
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    world.environment = pmrem.fromEquirectangular(hdr).texture;
+    if (scene.renderSkybox) world.background = hdr;
+
+    const gltf = await new GLTFLoader().loadAsync(base + scene.model);
+    world.add(gltf.scene);
+
+    // The generator's orbit camera: theta around +Y from +Z, phi down
+    // from +Y. Clip planes as the Cycles reference sets them, from the
+    // model's bounding sphere.
+    const t = new THREE.Vector3(scene.target.x, scene.target.y, scene.target.z);
+    const th = THREE.MathUtils.degToRad(scene.orbit.theta);
+    const ph = THREE.MathUtils.degToRad(scene.orbit.phi);
+    const r = scene.orbit.radius;
+    const sphere = new THREE.Box3().setFromObject(gltf.scene).getBoundingSphere(new THREE.Sphere());
+    const reach = Math.max(r, sphere.radius, 1e-5);
+    const camera = new THREE.PerspectiveCamera(scene.verticalFoV, width / height, (2 * reach) / 1000, 2 * reach + r);
+    // Look along -orbit direction rather than *at* the target: the same
+    // view for r > 0, and still defined when r = 0 (Sponza's camera
+    // stands at its target).
+    const dir = new THREE.Vector3(Math.sin(ph) * Math.sin(th), Math.cos(ph), Math.sin(ph) * Math.cos(th));
+    camera.position.copy(t).addScaledVector(dir, r);
+    camera.lookAt(camera.position.clone().sub(dir));
+
+    // Let textures finish uploading before the capture.
+    for (let i = 0; i < 4; i++) {
+      renderer.render(world, camera);
+      await new Promise(requestAnimationFrame);
+    }
+    renderer.render(world, camera);
+    return renderer.domElement.toDataURL("image/png");
+  }
+
+  window.renderScene = render;
+  window.threeRevision = THREE.REVISION;
+</script>
+</body>
+</html>

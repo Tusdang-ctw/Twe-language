@@ -58,7 +58,9 @@ wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 # v0.2 session 1: glTF 2.0 mesh import. Pure-Rust crate but only
 # referenced by play3d / physics3d which are excluded from WASM.
-gltf = { version = "1", default-features = false, features = ["import", "utils", "names"] }
+# web3d-M7: "KHR_texture_transform" lets models that require the extension load
+# (e.g. SheenChair); the renderer applies it from M7 session 3.
+gltf = { version = "1", default-features = false, features = ["import", "utils", "names", "KHR_texture_transform"] }
 # Phase 17 session 3: PNG/JPEG texture loading for the 3D pipeline.
 # Transitively available via macroquad on WASM, but the explicit dep
 # is only needed by play3d which is native-only.
