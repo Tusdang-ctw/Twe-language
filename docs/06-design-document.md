@@ -921,7 +921,32 @@ The HDR pipeline always runs; `postfx.tonemap(false)` switches the final pass fr
 - the history is reprojected with the camera's motion and clamped to the new frame's neighbourhood, so moving the camera doesn't leave ghosts;
 - objects that move on their own are kept sharp by the clamp, but can look slightly soft in fast motion (per-object motion vectors aren't implemented yet).
 
-TAA is off by default, because it trades a little sharpness for stability. `bloom` is a single-pass inline kernel — small radius (~12 pixels), no multi-tier downsample chain. Cascaded shadow maps (3 cascades, 2K each layer, PCF) ship under the existing `sun.shadow(true)` switch.
+TAA is off by default, because it trades a little sharpness for stability. `bloom` is a single-pass inline kernel — small radius (~12 pixels), no multi-tier downsample chain. Shadows are covered in §7.7c.
+
+### 7.7c 3D lights and shadows  *(`twec play3d` and web builds)*
+
+```twe
+light.ambient((0.05, 0.05, 0.05, 1.0))    # flat fill light
+sun.direction(vec3(0.5, 1.0, 0.2))        # toward the sun
+sun.intensity(1.0)
+sun.shadow(true)                          # soft cascaded sun shadows
+sun.shadow_extent(10.0)                   # metres; see below
+let torch = light.add((2, 2, 0), color.orange, 8.0)   # at, color, radius -> handle
+light.set(torch, (2, 2.2, 0), color.orange, 8.0)      # move / recolour
+light.set_radius(torch, 9.0)
+light.shadow(torch, true)                 # this light casts shadows
+light.remove(torch)
+light.clear()                             # remove every point light
+```
+
+- There are 8 point-light slots; `light.add` errors when all are taken.
+- `light.shadow(h, true)` makes a point light cast shadows (web3d-M7). Up to 4 shadowed lights are drawn per frame, each with a 512² cube map; beyond 4, the first four in slot order keep their shadows and the rest light without them. A new or removed light starts without shadows.
+- **Sun shadows** *(web3d-M7)* use three cascades fitted to the camera's view:
+  - they reach `4 × sun.shadow_extent` metres from the camera;
+  - casters up to `sun.shadow_extent` outside the view still cast into it;
+  - they are snapped to whole texels, so edges don't shimmer as the camera moves.
+- Sun shadows are soft (PCSS): sharp where an object meets the ground, softer the further the shadow falls from its caster. The sun's apparent size is fixed.
+- The environment map (§7.7b's IBL) casts no shadows.
 
 ### 7.8 Camera
 

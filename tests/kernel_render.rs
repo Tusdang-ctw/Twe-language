@@ -588,3 +588,100 @@ on render():
         / taa.len() as f64;
     assert!(diff < 4.0, "TAA under camera motion is {diff:.2} away from the plain frame");
 }
+
+/// Render `src` once headless (after its top level), for the shadow
+/// tests' on / off comparisons.
+fn render_once(src: &str) -> Vec<u8> {
+    let mut renderer = headless().expect("gpu");
+    let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    let mut assets = twec::play3d::NativeAssets::default();
+    twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+    renderer.read_pixels().expect("read pixels")
+}
+
+/// Pixels (of W × H) whose brightness drops by more than `by` from
+/// `lit` to `shadowed`, and those that brighten by more than `by`.
+fn darkened(lit: &[u8], shadowed: &[u8], by: i32) -> (usize, usize) {
+    let luma = |p: &[u8]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+    let (mut darker, mut brighter) = (0, 0);
+    for (a, b) in lit.chunks(4).zip(shadowed.chunks(4)) {
+        let d = luma(a) - luma(b);
+        if d > by {
+            darker += 1;
+        } else if d < -by {
+            brighter += 1;
+        }
+    }
+    (darker, brighter)
+}
+
+/// web3d-M7: `light.shadow(h, true)` makes a point light cast shadows
+/// (cube shadow maps): a block beside the light darkens the floor
+/// behind it, and nothing gets brighter.
+#[test]
+fn point_lights_cast_shadows() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |shadow: bool| {
+        format!(
+            r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((0.02, 0.02, 0.02, 1.0))
+let lamp = light.add((1.5, 1.2, 0.0), (1.0, 0.9, 0.7, 1.0), 12.0)
+light.shadow(lamp, {shadow})
+camera.eye = vec3(0, 6, 7)
+camera.target = vec3(0, -0.5, 0)
+on render():
+    cube(at: vec3(0, -5.5, 0), color: (0.8, 0.8, 0.8, 1), size: 10.0)
+    cube(at: vec3(0, 0.0, 0), color: (0.9, 0.3, 0.2, 1), size: 1.0)
+"#
+        )
+    };
+    let lit = render_once(&scene(false));
+    let shadowed = render_once(&scene(true));
+    save_png("point_shadow", &shadowed);
+    let (darker, brighter) = darkened(&lit, &shadowed, 30);
+    assert!(darker > 1500, "only {darker} pixels fell into shadow");
+    assert!(brighter < 50, "{brighter} pixels got brighter");
+}
+
+/// web3d-M7: the sun's cascaded shadows, fitted to the view and soft
+/// (PCSS): a block 4 m up shadows the ground, and the shadow has a
+/// penumbra (pixels partly darkened) rather than a hard edge.
+#[test]
+fn sun_shadows_are_soft() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |shadow: bool| {
+        format!(
+            r#"
+light.clear()
+sun.direction(vec3(0.5, 1.0, 0.2))
+sun.intensity(1.0)
+light.ambient((0.05, 0.05, 0.05, 1.0))
+sun.shadow({shadow})
+sun.shadow_extent(10.0)
+camera.eye = vec3(0, 6, 7)
+camera.target = vec3(0, -0.5, 0)
+on render():
+    cube(at: vec3(0, -5.5, 0), color: (0.8, 0.8, 0.8, 1), size: 10.0)
+    cube(at: vec3(0, 4.0, 0), color: (0.9, 0.3, 0.2, 1), size: 1.0)
+"#
+        )
+    };
+    let lit = render_once(&scene(false));
+    let shadowed = render_once(&scene(true));
+    save_png("sun_shadow", &shadowed);
+    let (hard, brighter) = darkened(&lit, &shadowed, 60);
+    let (any, _) = darkened(&lit, &shadowed, 8);
+    assert!(hard > 300, "only {hard} pixels in shadow");
+    assert!(brighter < 50, "{brighter} pixels got brighter");
+    // Soft edge: a band of partly darkened pixels around the umbra.
+    assert!(any - hard > 150, "penumbra of only {} pixels", any - hard);
+}

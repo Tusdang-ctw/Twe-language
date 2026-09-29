@@ -286,6 +286,9 @@ pub struct ShadowUniform {
     pub split_distances: [f32; 4],
     /// xyz unused, w = 1.0 if shadows are enabled this frame.
     pub flags: [f32; 4],
+    /// web3d-M7, per cascade: (world units across the map, light-space
+    /// depth range in world units, _, _), for soft-shadow sizing.
+    pub cascade_params: [[f32; 4]; CASCADE_COUNT],
 }
 
 impl ShadowUniform {
@@ -300,6 +303,7 @@ impl ShadowUniform {
             light_space_matrices: [id; CASCADE_COUNT],
             split_distances: [0.0; 4],
             flags: [0.0; 4],
+            cascade_params: [[0.0; 4]; CASCADE_COUNT],
         }
     }
 }
@@ -470,10 +474,14 @@ struct Shadow {
     light_space_matrices: array<mat4x4<f32>, 3>,
     split_distances: vec4<f32>,
     flags: vec4<f32>,
+    // web3d-M7: per cascade (world units across the map, depth range).
+    cascade_params: array<vec4<f32>, 3>,
 };
 @group(3) @binding(0) var<uniform> shadow_u: Shadow;
 @group(3) @binding(1) var t_shadow: texture_depth_2d_array;
 @group(3) @binding(2) var s_shadow: sampler_comparison;
+// web3d-M7: point-light shadow cubes (layer = light slot's pos.w - 1).
+@group(3) @binding(3) var t_point_shadow: texture_depth_cube_array;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -545,16 +553,21 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     return out;
 }
 
-// Phase 28 session 2: cascaded 3x3 PCF shadow sample.
+// web3d-M7: soft sun shadows (PCSS, Fernando 2005).
 //
-// Cascade selection is by view-space forward depth: pixels close
-// to the camera fall into cascade 0 (tightest ortho, sharpest
-// texels); pixels further out land in cascade 1 or 2.
+// Cascades are picked by view depth. A blocker search over a Poisson
+// disk finds the average depth of whatever shadows this point; the gap
+// between it and the receiver sets the penumbra (a wider gap, a softer
+// edge: contact-hardening), and a rotated Poisson PCF filters over it.
+// The disk is rotated per pixel (interleaved gradient noise) so the
+// pattern breaks up into fine noise, which TAA averages away.
 //
-// Returns 1.0 = fully lit, 0.0 = fully in shadow. The bias scales
-// per-cascade so the looser cascades don't shadow-acne — wider
-// orthos have larger world-space texels and need a bigger bias.
-fn sample_shadow(world_pos: vec3<f32>, view_z: f32) -> f32 {
+// SUN_TAN is the tangent of the sun's apparent radius: how quickly
+// shadows soften with distance from their caster. 0.04 (≈2.3°) is a
+// little softer than the real sun, which reads better at game scale.
+const SUN_TAN: f32 = 0.04;
+
+fn sample_shadow(world_pos: vec3<f32>, view_z: f32, n: vec3<f32>, frag: vec2<f32>) -> f32 {
     if (shadow_u.flags.w < 0.5) {
         return 1.0;
     }
@@ -567,51 +580,89 @@ fn sample_shadow(world_pos: vec3<f32>, view_z: f32) -> f32 {
         // Beyond the last cascade: no shadow.
         return 1.0;
     }
-    let light_pos = shadow_u.light_space_matrices[cascade] * vec4<f32>(world_pos, 1.0);
-    var shadow_uv = light_pos.xyz / light_pos.w;
-    shadow_uv = vec3<f32>(
-        shadow_uv.x * 0.5 + 0.5,
-        shadow_uv.y * -0.5 + 0.5,
-        shadow_uv.z,
-    );
-    if (shadow_uv.x < 0.0 || shadow_uv.x > 1.0
-     || shadow_uv.y < 0.0 || shadow_uv.y > 1.0
-     || shadow_uv.z < 0.0 || shadow_uv.z > 1.0) {
+    let params = shadow_u.cascade_params[cascade];
+    let world_per_uv = params.x;
+    let depth_range = params.y;
+    let dim = vec2<f32>(textureDimensions(t_shadow));
+    let texel_world = world_per_uv / dim.x;
+    // Normal offset: step off the surface by about a texel so it can't
+    // shadow itself (acne), scaled with the cascade.
+    let p = world_pos + n * (texel_world * 1.5);
+    let lp = shadow_u.light_space_matrices[cascade] * vec4<f32>(p, 1.0);
+    let suv = vec3<f32>(lp.x / lp.w * 0.5 + 0.5, lp.y / lp.w * -0.5 + 0.5, lp.z / lp.w);
+    if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0 || suv.z < 0.0 || suv.z > 1.0) {
         return 1.0;
     }
-    // Cascade-scaled bias. Cascade 0 wants the tight 0.0008 the
-    // single-cascade path used; cascades 1/2 cover larger world
-    // areas per texel and need proportionally larger biases or
-    // they shadow-acne. Cascade scale ratios are 4× per step
-    // (extent goes 0.25 → 1.0 → 4.0 in compute_shadow_uniform),
-    // so biases follow roughly the same ratio.
-    var cascade_bias: f32 = 0.0008;
-    if (cascade == 1) {
-        cascade_bias = 0.003;
-    } else if (cascade == 2) {
-        cascade_bias = 0.012;
-    }
-    let ref_depth = shadow_uv.z - cascade_bias;
-    let dim = vec2<f32>(textureDimensions(t_shadow));
-    let inv = vec2<f32>(1.0 / dim.x, 1.0 / dim.y);
-    var sum = 0.0;
-    // `...CompareLevel`, not `textureSampleCompare`: the early return
-    // and cascade choice above make this non-uniform control flow,
-    // where WebGPU (Tint) rejects implicit-derivative sampling. The
-    // shadow map has one mip, so the result is identical.
-    for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
-        for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
-            let off = vec2<f32>(f32(dx), f32(dy)) * inv;
-            sum = sum + textureSampleCompareLevel(
-                t_shadow,
-                s_shadow,
-                shadow_uv.xy + off,
-                cascade,
-                ref_depth,
-            );
+    let receiver = suv.z - 0.5 * texel_world / depth_range;
+
+    var disk = array<vec2<f32>, 16>(
+        vec2<f32>(-0.9420, -0.3991), vec2<f32>(0.9456, -0.7689),
+        vec2<f32>(-0.0942, -0.9294), vec2<f32>(0.3450, 0.2939),
+        vec2<f32>(-0.9159, 0.4577), vec2<f32>(-0.8154, -0.8791),
+        vec2<f32>(-0.3828, 0.2768), vec2<f32>(0.9748, 0.7565),
+        vec2<f32>(0.4432, -0.9751), vec2<f32>(0.5374, -0.4737),
+        vec2<f32>(-0.2650, -0.4190), vec2<f32>(0.7920, 0.1909),
+        vec2<f32>(-0.2419, 0.9971), vec2<f32>(-0.8141, 0.9144),
+        vec2<f32>(0.1998, 0.7864), vec2<f32>(0.1438, -0.1410),
+    );
+    let angle = 6.2831853 * fract(52.9829189 * fract(dot(frag, vec2<f32>(0.06711056, 0.00583715))));
+    let rot = mat2x2<f32>(cos(angle), sin(angle), -sin(angle), cos(angle));
+
+    // Blocker search: casters up to ~4 m away can soften this point.
+    let search = clamp(4.0 * SUN_TAN / world_per_uv, 2.0 / dim.x, 24.0 / dim.x);
+    let max_texel = vec2<i32>(dim) - vec2<i32>(1);
+    var blockers = 0.0;
+    var blocker_depth = 0.0;
+    for (var i: i32 = 0; i < 16; i = i + 1) {
+        let q = suv.xy + rot * disk[i] * search;
+        let t = clamp(vec2<i32>(q * dim), vec2<i32>(0), max_texel);
+        let d = textureLoad(t_shadow, t, cascade, 0);
+        if (d < receiver) {
+            blockers = blockers + 1.0;
+            blocker_depth = blocker_depth + d;
         }
     }
-    return sum / 9.0;
+    if (blockers < 0.5) {
+        return 1.0;
+    }
+    let gap = (receiver - blocker_depth / blockers) * depth_range;
+    let filter_radius = clamp(gap * SUN_TAN / world_per_uv, 1.5 / dim.x, 32.0 / dim.x);
+
+    // PCF over the penumbra. `...CompareLevel`: this runs in non-uniform
+    // control flow, where WebGPU rejects implicit-derivative sampling.
+    var lit = 0.0;
+    for (var i: i32 = 0; i < 16; i = i + 1) {
+        let q = suv.xy + rot * disk[i] * filter_radius;
+        lit = lit + textureSampleCompareLevel(t_shadow, s_shadow, q, cascade, receiver);
+    }
+    return lit / 16.0;
+}
+
+// web3d-M7: a point light's shadow from its cube map. The stored depth
+// is each face camera's perspective depth, so the receiver's is
+// rebuilt from its distance along the dominant axis; five taps around
+// the direction soften the edge.
+fn point_shadow(layer: i32, world_pos: vec3<f32>, light_pos: vec3<f32>, far: f32, n: vec3<f32>) -> f32 {
+    let near = 0.05;
+    let to_point = world_pos - light_pos;
+    let dist = length(to_point);
+    // Normal offset grows with distance (texels widen with it).
+    let d = to_point + n * (0.01 * dist + 0.01);
+    let a = abs(d);
+    let major = max(a.x, max(a.y, a.z));
+    let receiver = far * (major - near) / (major * (far - near)) - 0.0005;
+    var side = vec3<f32>(0.0, 1.0, 0.0);
+    if (abs(d.y) > 0.9 * length(d)) {
+        side = vec3<f32>(1.0, 0.0, 0.0);
+    }
+    let t1 = normalize(cross(d, side)) * (0.015 * major);
+    let t2 = normalize(cross(d, t1)) * (0.015 * major);
+    var lit = textureSampleCompareLevel(t_point_shadow, s_shadow, d, layer, receiver);
+    lit = lit + textureSampleCompareLevel(t_point_shadow, s_shadow, d + t1, layer, receiver);
+    lit = lit + textureSampleCompareLevel(t_point_shadow, s_shadow, d - t1, layer, receiver);
+    lit = lit + textureSampleCompareLevel(t_point_shadow, s_shadow, d + t2, layer, receiver);
+    lit = lit + textureSampleCompareLevel(t_point_shadow, s_shadow, d - t2, layer, receiver);
+    return lit / 5.0;
 }
 
 // ---- web3d-M7: physically based shading -------------------------------
@@ -725,7 +776,7 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     // attenuate only the sun.
     if (lights.sun_dir.w > 0.0) {
         let l = normalize(lights.sun_dir.xyz);
-        let shadow = sample_shadow(in.world_pos, in.view_z);
+        let shadow = sample_shadow(in.world_pos, in.view_z, n, in.clip_position.xy);
         color = color + direct_light(n, v, l, vec3<f32>(lights.sun_dir.w * shadow), f0, diffuse_color, a, energy);
     }
     // Up to 8 point lights, radius 0 = off; a smooth-edged falloff that
@@ -742,7 +793,12 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
             continue;
         }
         let t = 1.0 - (dist / r);
-        color = color + direct_light(n, v, to_light / dist, pl.color_radius.rgb * (t * t), f0, diffuse_color, a, energy);
+        var visible = 1.0;
+        let layer = i32(pl.pos.w + 0.5) - 1;
+        if (layer >= 0) {
+            visible = point_shadow(layer, in.world_pos, pl.pos.xyz, r, n);
+        }
+        color = color + direct_light(n, v, to_light / dist, pl.color_radius.rgb * (t * t * visible), f0, diffuse_color, a, energy);
     }
     return color + s.emissive;
 }
@@ -1610,6 +1666,8 @@ pub struct Renderer {
     env: EnvState,
     /// web3d-M7: temporal anti-aliasing (history, jitter, resolve).
     taa: crate::kernel::taa::Taa,
+    /// web3d-M7: point-light shadow cubes.
+    point_shadows: PointShadows,
     /// Phase 20: lighting uniform buffer, written once per frame from
     /// the snapshot.
     lights_buffer: wgpu::Buffer,
@@ -2123,6 +2181,17 @@ async fn init_renderer(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 count: None,
             },
+            // web3d-M7: point-light shadow cubes.
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::CubeArray,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -2224,6 +2293,11 @@ async fn init_renderer(
         compare: Some(wgpu::CompareFunction::LessEqual),
         ..Default::default()
     });
+    let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("twec-play3d shadow shader"),
+        source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER_SRC.into()),
+    });
+    let point_shadows = PointShadows::new(&device, &shadow_uniform_bgl, &joints_bgl, &shadow_shader);
     let shadow_combined_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twec-play3d shadow combined bg"),
         layout: &shadow_combined_bgl,
@@ -2240,15 +2314,15 @@ async fn init_renderer(
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(&shadow_sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&point_shadows.cube_array),
+            },
         ],
     });
     // Shadow pipeline: depth-only. Binds shadow uniform at @group(0)
     // (acting as the camera) and joints UBO at @group(1) (so
     // skinned characters cast correct shadows).
-    let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("twec-play3d shadow shader"),
-        source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER_SRC.into()),
-    });
     let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("twec-play3d shadow pipeline layout"),
         bind_group_layouts: &[Some(&shadow_uniform_bgl), Some(&joints_bgl)],
@@ -2415,6 +2489,7 @@ async fn init_renderer(
         frame_bgl,
         env,
         taa,
+        point_shadows,
         lights_buffer,
         joints_bgl,
         identity_joints_bind_group,
@@ -3021,58 +3096,151 @@ fn compute_skinned_joint_matrices(skin: &MeshSkin, anim: &AnimSnapshot) -> Joint
 /// from the focal target, expect lower-than-ideal cascade-0
 /// resolution. A view-frustum-corner CSM upgrade is a follow-on
 /// if someone pressures the gap.
+/// web3d-M7: point lights that cast shadows (`light.shadow(h, true)`),
+/// at most this many per frame, each a cube of this size.
+pub(crate) const POINT_SHADOW_LIGHTS: usize = 4;
+pub(crate) const POINT_SHADOW_SIZE: u32 = 512;
+/// Near plane of the point-shadow face cameras (the far plane is the
+/// light's radius).
+const POINT_SHADOW_NEAR: f32 = 0.05;
+
+/// The camera as cascade fitting needs it: a unit basis, the half-angle
+/// tangents of the view, and the clip planes.
+struct CascadeCamera {
+    eye: [f32; 3],
+    forward: [f32; 3],
+    right: [f32; 3],
+    up: [f32; 3],
+    tan_x: f32,
+    tan_y: f32,
+    near: f32,
+    far: f32,
+}
+
+/// Cascade boundaries from `near` to `far`: the "practical" split
+/// scheme (Zhang et al. 2006), a blend of logarithmic and uniform
+/// splits (λ = 0.75) so near cascades stay dense without starving the
+/// far ones.
+fn cascade_splits(near: f32, far: f32) -> [f32; CASCADE_COUNT + 1] {
+    const LAMBDA: f32 = 0.75;
+    let mut out = [near; CASCADE_COUNT + 1];
+    for (i, split) in out.iter_mut().enumerate().skip(1) {
+        let k = i as f32 / CASCADE_COUNT as f32;
+        let log = near * (far / near).powf(k);
+        let uniform = near + (far - near) * k;
+        *split = LAMBDA * log + (1.0 - LAMBDA) * uniform;
+    }
+    out
+}
+
+/// web3d-M7: sun shadow cascades fitted to the camera.
+///
+/// The view frustum from the near plane to `4 × extent` is split into
+/// `CASCADE_COUNT` slices. Each slice is wrapped in a bounding sphere,
+/// so the cascade's size doesn't change as the camera turns, and its
+/// orthographic window is snapped to whole shadow-map texels in a fixed
+/// light view, so shadow edges don't crawl as the camera moves. Casters
+/// up to `extent` beyond a slice toward the sun still land in it.
 fn compute_shadow_uniform(
     lights: &LightsUniform,
-    _eye: [f32; 3],
-    target: [f32; 3],
+    cam: &CascadeCamera,
     shadow: ShadowSettings,
 ) -> ShadowUniform {
     if !shadow.enabled || lights.sun_dir[3] <= 0.0 {
         return ShadowUniform::disabled();
     }
-    let extent = shadow.extent;
-    let sun_dir = normalize([lights.sun_dir[0], lights.sun_dir[1], lights.sun_dir[2]]);
-    let up_guess = if sun_dir[1].abs() > 0.99 {
+    let sun = normalize([lights.sun_dir[0], lights.sun_dir[1], lights.sun_dir[2]]);
+    let up_guess = if sun[1].abs() > 0.99 {
         [0.0, 0.0, 1.0]
     } else {
         [0.0, 1.0, 0.0]
     };
-    // Cascade scale factors. Cascade 1 uses the user's `extent`;
-    // cascade 0 is 1/4 (~6× higher texel density), cascade 2 is
-    // 4× the extent for distant scenery.
-    const CASCADE_SCALES: [f32; CASCADE_COUNT] = [0.25, 1.0, 4.0];
-    // View-space forward distances at which to switch cascades.
-    // Tuned for the standard 0.1..100 perspective frustum: surfaces
-    // closer than ~12.5m use cascade 0, mid-range cascade 1, the
-    // rest cascade 2.
-    let split_distances = [
-        extent * 0.25,
-        extent,
-        extent * 4.0,
-        0.0, // padding
-    ];
+    // A fixed light view through the origin, looking along the light.
+    let light_view = look_at([0.0; 3], [-sun[0], -sun[1], -sun[2]], up_guess);
+    let far = (shadow.extent * 4.0).min(cam.far).max(cam.near * 2.0);
+    let splits = cascade_splits(cam.near, far);
+
     let mut light_space_matrices = [[[0.0; 4]; 4]; CASCADE_COUNT];
+    let mut cascade_params = [[0.0; 4]; CASCADE_COUNT];
     for i in 0..CASCADE_COUNT {
-        let e = extent * CASCADE_SCALES[i];
-        // Pull the light's eye back along the sun direction far
-        // enough that the cascade's ortho frustum encloses
-        // occluders behind the target. 1.5× e is the same factor
-        // the single-cascade path used.
-        let pull = e * 1.5;
-        let light_eye = [
-            target[0] + sun_dir[0] * pull,
-            target[1] + sun_dir[1] * pull,
-            target[2] + sun_dir[2] * pull,
-        ];
-        let view = look_at(light_eye, target, up_guess);
-        let proj = ortho(-e, e, -e, e, 0.1, pull * 2.0 + e);
-        light_space_matrices[i] = mul(proj, view);
+        // The slice's eight corners, their centroid, and the sphere
+        // around them.
+        let mut corners = Vec::with_capacity(8);
+        for d in [splits[i], splits[i + 1]] {
+            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                corners.push([
+                    cam.eye[0] + cam.forward[0] * d + cam.right[0] * sx * cam.tan_x * d + cam.up[0] * sy * cam.tan_y * d,
+                    cam.eye[1] + cam.forward[1] * d + cam.right[1] * sx * cam.tan_x * d + cam.up[1] * sy * cam.tan_y * d,
+                    cam.eye[2] + cam.forward[2] * d + cam.right[2] * sx * cam.tan_x * d + cam.up[2] * sy * cam.tan_y * d,
+                ]);
+            }
+        }
+        let mut center = [0.0f32; 3];
+        for c in &corners {
+            for k in 0..3 {
+                center[k] += c[k] / 8.0;
+            }
+        }
+        let mut radius = corners
+            .iter()
+            .map(|c| {
+                let d = sub(*c, center);
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+            })
+            .fold(0.0f32, f32::max);
+        // Quantise the radius so the texel size only changes in steps.
+        radius = (radius * 16.0).ceil() / 16.0;
+        let texel = 2.0 * radius / SHADOW_MAP_SIZE as f32;
+        let c = mat4_transform_point(light_view, center);
+        let (cx, cy) = ((c[0] / texel).floor() * texel, (c[1] / texel).floor() * texel);
+        let dist = -c[2];
+        let pull = radius + shadow.extent;
+        let proj = ortho(
+            cx - radius,
+            cx + radius,
+            cy - radius,
+            cy + radius,
+            dist - radius - pull,
+            dist + radius,
+        );
+        light_space_matrices[i] = mul(proj, light_view);
+        cascade_params[i] = [2.0 * radius, 2.0 * radius + pull, 0.0, 0.0];
     }
     ShadowUniform {
         light_space_matrices,
-        split_distances,
+        split_distances: [splits[1], splits[2], splits[3], 0.0],
         flags: [0.0, 0.0, 0.0, 1.0],
+        cascade_params,
     }
+}
+
+/// web3d-M7: the view-projection of face `face` of a point light's
+/// shadow cube, reaching `far` (the light's radius). Each face camera's
+/// (right, up, forward) is the standard cube-map layout that samplers
+/// use (the same table `environment.rs` renders with), so a direction
+/// sampled from the cube lands on the texel this camera drew.
+fn point_face_view_proj(light: [f32; 3], face: usize, far: f32) -> [[f32; 4]; 4] {
+    let (r, u, f): ([f32; 3], [f32; 3], [f32; 3]) = match face {
+        0 => ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        1 => ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]),
+        2 => ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        3 => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]),
+        4 => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+        _ => ([-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]),
+    };
+    let dot_light = |a: [f32; 3]| a[0] * light[0] + a[1] * light[1] + a[2] * light[2];
+    // Rows (right, up, -forward), translated to the light: the camera
+    // looks down its -z like every other view in this file.
+    let view = [
+        [r[0], u[0], -f[0], 0.0],
+        [r[1], u[1], -f[1], 0.0],
+        [r[2], u[2], -f[2], 0.0],
+        [-dot_light(r), -dot_light(u), dot_light(f), 1.0],
+    ];
+    mul(
+        perspective(std::f32::consts::FRAC_PI_2, 1.0, POINT_SHADOW_NEAR, far),
+        view,
+    )
 }
 
 /// Phase 26: extract the 6 frustum planes from a column-major
@@ -3513,7 +3681,28 @@ impl Renderer {
             .queue
             .write_buffer(&state.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
 
-        let lights_uniform = snap.lights;
+        let mut lights_uniform = snap.lights;
+        let mut point_shadow_lights: Vec<([f32; 3], f32)> = Vec::new();
+        for pl in lights_uniform.point_lights.iter_mut() {
+            let wants = pl.pos[3] > 0.5 && pl.color_radius[3] > 0.0;
+            pl.pos[3] = 0.0;
+            if wants && point_shadow_lights.len() < POINT_SHADOW_LIGHTS {
+                point_shadow_lights.push(([pl.pos[0], pl.pos[1], pl.pos[2]], pl.color_radius[3]));
+                pl.pos[3] = point_shadow_lights.len() as f32;
+            }
+        }
+        for (light, (pos, radius)) in point_shadow_lights.iter().enumerate() {
+            for face in 0..6 {
+                let pass_uniform = ShadowPassUniform {
+                    light_space_matrix: point_face_view_proj(*pos, face, *radius),
+                };
+                state.queue.write_buffer(
+                    &state.point_shadows.pass_buffers[light * 6 + face],
+                    0,
+                    bytemuck::bytes_of(&pass_uniform),
+                );
+            }
+        }
         state
             .queue
             .write_buffer(&state.lights_buffer, 0, bytemuck::bytes_of(&lights_uniform));
@@ -3544,7 +3733,19 @@ impl Renderer {
             .queue
             .write_buffer(&state.env.uniform, 0, bytemuck::bytes_of(&env_uniform));
 
-        let shadow_uniform = compute_shadow_uniform(&lights_uniform, eye, target, snap.shadow);
+        let forward = normalize(sub(target, eye));
+        let right = normalize(cross(forward, up));
+        let cascade_camera = CascadeCamera {
+            eye,
+            forward,
+            right,
+            up: cross(right, forward),
+            tan_y: (fov_y * 0.5).tan(),
+            tan_x: (fov_y * 0.5).tan() * aspect,
+            near,
+            far,
+        };
+        let shadow_uniform = compute_shadow_uniform(&lights_uniform, &cascade_camera, snap.shadow);
         state
             .queue
             .write_buffer(&state.shadow_buffer, 0, bytemuck::bytes_of(&shadow_uniform));
@@ -3894,6 +4095,7 @@ impl Renderer {
         let mut graph = FrameGraph::new();
         let target = graph.import("target", true);
         let shadow_map = graph.import("shadow map", false);
+        let point_shadow_map = graph.import("point shadow cube array", false);
         let hdr = graph.create(TextureDesc::new("hdr colour", Extent::FULL, HDR_FORMAT));
         // web3d-M7: the main pass draws into multisampled colour and
         // depth, and resolves the colour into `hdr`.
@@ -3915,10 +4117,20 @@ impl Renderer {
                 );
             }
         }
+        for light in 0..point_shadow_lights.len() {
+            for face in 0..6 {
+                graph.add_pass(
+                    FramePass::PointShadow(light * 6 + face),
+                    "point shadow face",
+                    &[],
+                    &[(point_shadow_map, Access::Attach)],
+                );
+            }
+        }
         graph.add_pass(
             FramePass::Main,
             "main",
-            &[(shadow_map, Access::Sample)],
+            &[(shadow_map, Access::Sample), (point_shadow_map, Access::Sample)],
             &[
                 (hdr_msaa, Access::Attach),
                 (depth, Access::Attach),
@@ -4051,49 +4263,29 @@ impl Renderer {
                     spass.set_bind_group(0, &state.shadow_pass_bgs[cascade], &[]);
                     spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
                     spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-                    // Cubes
-                    for (_key, range) in &cube_ranges {
-                        if range.1 <= range.0 {
-                            continue;
-                        }
-                        spass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                        spass.set_index_buffer(
-                            state.cube_index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint16,
-                        );
-                        spass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
-                    }
-                    // Spheres
-                    for (_key, range) in &sphere_ranges {
-                        if range.1 <= range.0 {
-                            continue;
-                        }
-                        spass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-                        spass.set_index_buffer(
-                            state.sphere_index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint16,
-                        );
-                        spass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
-                    }
-                    // Meshes (with per-mesh joints if skinned)
-                    for ((mesh_id, _tex, _mat), range) in &mesh_ranges {
-                        if range.1 <= range.0 {
-                            continue;
-                        }
-                        let gpu_mesh = match state.mesh_cache.get(mesh_id) {
-                            Some(m) => m,
-                            None => continue,
-                        };
-                        if let Some(skin) = &gpu_mesh.skin {
-                            spass.set_bind_group(1, &skin.joint_bind_group, &[]);
-                        }
-                        spass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                        spass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
-                        spass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
-                        if gpu_mesh.skin.is_some() {
-                            spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
-                        }
-                    }
+                    draw_depth(&mut spass, state, &cube_ranges, &sphere_ranges, &mesh_ranges);
+                }
+                FramePass::PointShadow(layer) => {
+                    let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("twe-kernel point shadow face"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &state.point_shadows.layer_views[layer],
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    spass.set_pipeline(&state.point_shadows.pipeline);
+                    spass.set_bind_group(0, &state.point_shadows.pass_bgs[layer], &[]);
+                    spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+                    spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+                    draw_depth(&mut spass, state, &cube_ranges, &sphere_ranges, &mesh_ranges);
                 }
                 FramePass::Main => {
                     {
@@ -4494,11 +4686,170 @@ fn frame_bind_group(
     })
 }
 
+/// Draw every opaque instance into a depth-only shadow pass (group 0 =
+/// the pass's light matrix, group 1 = joints), skinned meshes with
+/// their own joint matrices.
+fn draw_depth(
+    pass: &mut wgpu::RenderPass<'_>,
+    state: &Renderer,
+    cubes: &[(SurfaceKey, InstanceRange)],
+    spheres: &[(SurfaceKey, InstanceRange)],
+    meshes: &[(MeshKey, InstanceRange)],
+) {
+    for (_, range) in cubes {
+        if range.1 > range.0 {
+            pass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
+            pass.set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
+        }
+    }
+    for (_, range) in spheres {
+        if range.1 > range.0 {
+            pass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
+            pass.set_index_buffer(state.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
+        }
+    }
+    for ((mesh_id, _, _), range) in meshes {
+        if range.1 <= range.0 {
+            continue;
+        }
+        let Some(gpu_mesh) = state.mesh_cache.get(mesh_id) else {
+            continue;
+        };
+        if let Some(skin) = &gpu_mesh.skin {
+            pass.set_bind_group(1, &skin.joint_bind_group, &[]);
+        }
+        pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+        pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
+        pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+        if gpu_mesh.skin.is_some() {
+            pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+        }
+    }
+}
+
+/// web3d-M7: point-light shadow resources — a cube-array depth map
+/// (POINT_SHADOW_LIGHTS cubes of POINT_SHADOW_SIZE² faces), one pass
+/// uniform per face, and a depth pipeline without face culling (the
+/// face cameras are mirrored to match cube-map sampling, which flips
+/// winding).
+struct PointShadows {
+    layer_views: Vec<wgpu::TextureView>,
+    pass_buffers: Vec<wgpu::Buffer>,
+    pass_bgs: Vec<wgpu::BindGroup>,
+    cube_array: wgpu::TextureView,
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl PointShadows {
+    fn new(
+        device: &wgpu::Device,
+        pass_bgl: &wgpu::BindGroupLayout,
+        joints_bgl: &wgpu::BindGroupLayout,
+        shader: &wgpu::ShaderModule,
+    ) -> Self {
+        let layers = (POINT_SHADOW_LIGHTS * 6) as u32;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("twe-kernel point shadow cubes"),
+            size: wgpu::Extent3d {
+                width: POINT_SHADOW_SIZE,
+                height: POINT_SHADOW_SIZE,
+                depth_or_array_layers: layers,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let layer_views = (0..layers)
+            .map(|i| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("twe-kernel point shadow face"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: i,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let pass_buffers: Vec<wgpu::Buffer> = (0..layers)
+            .map(|_| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("twe-kernel point shadow pass"),
+                    contents: bytemuck::bytes_of(&ShadowPassUniform::identity()),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+            })
+            .collect();
+        let pass_bgs = pass_buffers
+            .iter()
+            .map(|b| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("twe-kernel point shadow pass bg"),
+                    layout: pass_bgl,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: b.as_entire_binding(),
+                    }],
+                })
+            })
+            .collect();
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("twe-kernel point shadow layout"),
+            bind_group_layouts: &[Some(pass_bgl), Some(joints_bgl)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("twe-kernel point shadow"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_shadow"),
+                buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
+                compilation_options: Default::default(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        PointShadows {
+            layer_views,
+            pass_buffers,
+            pass_bgs,
+            cube_array: texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("twe-kernel point shadow cube array"),
+                dimension: Some(wgpu::TextureViewDimension::CubeArray),
+                ..Default::default()
+            }),
+            pipeline,
+        }
+    }
+}
+
 /// web3d-M7: the passes of a frame, as the render graph schedules them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum FramePass {
     /// Depth from the sun, into one cascade layer of the shadow map.
     Shadow(usize),
+    /// web3d-M7: depth from a point light into one face (light × 6 +
+    /// face) of the point-shadow cube array.
+    PointShadow(usize),
     /// The lit scene into the HDR target.
     Main,
     /// web3d-M7: temporal anti-aliasing resolve into the history.
@@ -5002,6 +5353,133 @@ mod tests {
     #[test]
     fn shadow_shader_parses_and_validates() {
         validate_wgsl("SHADOW_SHADER_SRC", SHADOW_SHADER_SRC);
+    }
+
+    fn test_camera(eye: [f32; 3], target: [f32; 3]) -> CascadeCamera {
+        let forward = normalize(sub(target, eye));
+        let right = normalize(cross(forward, [0.0, 1.0, 0.0]));
+        CascadeCamera {
+            eye,
+            forward,
+            right,
+            up: cross(right, forward),
+            tan_y: (30_f32).to_radians().tan(),
+            tan_x: (30_f32).to_radians().tan() * 1.5,
+            near: 0.1,
+            far: 100.0,
+        }
+    }
+
+    fn sun_lights() -> LightsUniform {
+        let mut l: LightsUniform = bytemuck::Zeroable::zeroed();
+        let d = normalize([0.4, 1.0, 0.3]);
+        l.sun_dir = [d[0], d[1], d[2], 1.0];
+        l
+    }
+
+    fn clip(m: [[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+        let mut c = [0.0f32; 4];
+        for (col, v) in m.iter().zip([p[0], p[1], p[2], 1.0]) {
+            for r in 0..4 {
+                c[r] += col[r] * v;
+            }
+        }
+        [c[0] / c[3], c[1] / c[3], c[2] / c[3]]
+    }
+
+    /// web3d-M7: cascades cover their slice of the camera frustum.
+    #[test]
+    fn cascades_are_fitted_to_the_view() {
+        let splits = cascade_splits(0.1, 40.0);
+        assert_eq!(splits[0], 0.1);
+        assert!((splits[CASCADE_COUNT] - 40.0).abs() < 1e-3);
+        assert!(splits.windows(2).all(|w| w[0] < w[1]), "{splits:?}");
+
+        let cam = test_camera([3.0, 6.0, 9.0], [0.0, 0.0, 0.0]);
+        let shadow = ShadowSettings {
+            enabled: true,
+            extent: 10.0,
+        };
+        let u = compute_shadow_uniform(&sun_lights(), &cam, shadow);
+        let splits = cascade_splits(cam.near, 40.0);
+        for i in 0..CASCADE_COUNT {
+            assert!((u.split_distances[i] - splits[i + 1]).abs() < 1e-4);
+            for d in [splits[i], splits[i + 1]] {
+                for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                    let p: [f32; 3] = std::array::from_fn(|k| {
+                        cam.eye[k]
+                            + cam.forward[k] * d
+                            + cam.right[k] * sx * cam.tan_x * d
+                            + cam.up[k] * sy * cam.tan_y * d
+                    });
+                    let q = clip(u.light_space_matrices[i], p);
+                    assert!(
+                        q[0].abs() <= 1.0 && q[1].abs() <= 1.0 && (0.0..=1.0).contains(&q[2]),
+                        "cascade {i}: corner at depth {d} maps to {q:?}"
+                    );
+                }
+            }
+        }
+        // Nearer cascades are denser.
+        assert!(u.cascade_params[0][0] < u.cascade_params[1][0]);
+        assert!(u.cascade_params[1][0] < u.cascade_params[2][0]);
+    }
+
+    /// web3d-M7: moving the camera slides each cascade by whole texels,
+    /// so static shadow edges land on the same texels (no shimmer).
+    #[test]
+    fn cascades_move_in_whole_texels() {
+        let shadow = ShadowSettings {
+            enabled: true,
+            extent: 10.0,
+        };
+        let a = compute_shadow_uniform(&sun_lights(), &test_camera([3.0, 6.0, 9.0], [0.0; 3]), shadow);
+        let b = compute_shadow_uniform(
+            &sun_lights(),
+            &test_camera([3.013, 6.0, 9.021], [0.013, 0.0, 0.021]),
+            shadow,
+        );
+        for i in 0..CASCADE_COUNT {
+            assert_eq!(a.cascade_params[i][0], b.cascade_params[i][0], "same size");
+            // A world point's shadow-map texel coordinate shifts by an
+            // integer between the two frames.
+            let p = [1.0, 0.0, -2.0];
+            let (qa, qb) = (clip(a.light_space_matrices[i], p), clip(b.light_space_matrices[i], p));
+            for k in 0..2 {
+                let shift = (qa[k] - qb[k]) * 0.5 * SHADOW_MAP_SIZE as f32;
+                assert!((shift - shift.round()).abs() < 0.02, "cascade {i}: {shift} texels");
+            }
+        }
+    }
+
+    /// web3d-M7: each point-shadow face camera draws the direction a
+    /// cube sampler reads at that texel (the standard face table, as in
+    /// kernel/environment.rs).
+    #[test]
+    fn point_shadow_faces_match_cube_sampling() {
+        let face_dir = |face: usize, u: f32, v: f32| -> [f32; 3] {
+            let (s, t) = (u * 2.0 - 1.0, v * 2.0 - 1.0);
+            match face {
+                0 => [1.0, -t, -s],
+                1 => [-1.0, -t, s],
+                2 => [s, 1.0, t],
+                3 => [s, -1.0, -t],
+                4 => [s, -t, 1.0],
+                _ => [-s, -t, -1.0],
+            }
+        };
+        let light = [1.0, 2.0, 3.0];
+        for face in 0..6 {
+            let m = point_face_view_proj(light, face, 20.0);
+            for (u, v) in [(0.25, 0.25), (0.8, 0.3), (0.5, 0.9)] {
+                let d = face_dir(face, u, v);
+                let p = [light[0] + d[0] * 2.0, light[1] + d[1] * 2.0, light[2] + d[2] * 2.0];
+                let q = clip(m, p);
+                assert!((q[0] - (u * 2.0 - 1.0)).abs() < 1e-4, "face {face} u: {q:?}");
+                assert!((q[1] - (1.0 - v * 2.0)).abs() < 1e-4, "face {face} v: {q:?}");
+                assert!((0.0..1.0).contains(&q[2]));
+            }
+        }
     }
 
     /// web3d-M7: the backdrop and the environment precompute shaders.

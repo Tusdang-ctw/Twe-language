@@ -128,6 +128,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: smooth edges, and an honest non-result.** Twe's 3D now renders with anti-aliasing (4× MSAA always, plus optional temporal AA that also calms shimmering highlights). The surprise was on the scoreboard: MSAA moved the score by essentially nothing, because at the benchmark's resolution edges are a sliver of the image. The notes say so plainly. Error maps showed the real remaining gap is in glossy reflections and missing material types, which set the agenda for the next sessions.
 
+- **2026-09-29: shadows that behave like light.** Shadows in Twe used to be hard-edged and fixed around the camera's target. Now the sun's shadows are soft the way real ones are: crisp where a crate meets the floor, blurring as they stretch away. They're also fitted to what the camera sees, so they stay sharp up close and don't shimmer as the camera moves. Torches and lamps can cast shadows too, in every direction. The scoreboard didn't move, and the notes explain why: the benchmark scenes are lit by their surroundings, not by lamps. This one is judged by tests and by eye.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

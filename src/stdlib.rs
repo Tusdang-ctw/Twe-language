@@ -340,6 +340,12 @@ pub fn install(env: &mut Env) {
             light_set_radius_impl,
         ),
     );
+    // web3d-M7: `light.shadow(h, true)` makes a point light cast shadows
+    // (at most 4 at once; the renderer shadows the first four that ask).
+    light_fields.insert(
+        "shadow".to_string(),
+        Value::from_builtin("light.shadow", &["handle", "enabled"], light_shadow_impl),
+    );
     light_fields.insert(
         "clear".to_string(),
         Value::from_builtin("light.clear", &[], light_clear_impl),
@@ -11411,8 +11417,29 @@ fn light_set_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     LIGHTS_STATE.with(|s| {
         let mut st = s.borrow_mut();
         if let Some(slot) = st.point_lights.get_mut((handle - 1) as usize) {
-            slot.pos = [at[0], at[1], at[2], 0.0];
+            // pos.w is the light's shadow flag (`light.shadow`): kept.
+            slot.pos = [at[0], at[1], at[2], slot.pos[3]];
             slot.color_radius = [color[0], color[1], color[2], radius];
+        }
+    });
+    Ok(Value::NIL)
+}
+
+fn light_shadow_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "light.shadow")?;
+    let handle = handle_int(&args[0], "light.shadow")?;
+    if !args[1].is_bool() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "light.shadow expects a bool".to_string(),
+            help: Some("`light.shadow(torch, true)` turns the light's shadows on".to_string()),
+        });
+    }
+    let on = args[1].as_bool();
+    LIGHTS_STATE.with(|s| {
+        if let Some(slot) = s.borrow_mut().point_lights.get_mut((handle - 1) as usize) {
+            slot.pos[3] = if on { 1.0 } else { 0.0 };
         }
     });
     Ok(Value::NIL)

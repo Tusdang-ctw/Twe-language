@@ -13,6 +13,9 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Shadows in 3D** (web3d-M7): `light.shadow(handle, true)` makes a
+  point light cast shadows (up to 4 per frame). Sun shadows are now
+  soft (PCSS) and use cascades fitted to the camera.
 - **Anti-aliasing in 3D** (web3d-M7): 4× MSAA is always on, and
   `postfx.taa(true)` adds temporal anti-aliasing (jittered frames,
   camera-motion reprojection, neighbourhood clamping).
@@ -134,6 +137,9 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- `sun.shadow_extent(r)` now means shadows reach `4 × r` from the camera,
+  including casters up to `r` outside the view (it used to be the radius
+  of a fixed square around the camera target).
 - **3D tone curve and shading (visible change).** ACES now uses the
   fitted RRT+ODT curve Three.js and the glTF references use (was a
   darker approximation), and cubes / spheres shade as a physically based
