@@ -9,3 +9,4 @@ pub mod graph;
 pub mod hud;
 pub(crate) mod material;
 pub mod render;
+pub(crate) mod taa;

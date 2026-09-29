@@ -59,6 +59,8 @@ pub struct ShadowSettings {
 #[derive(Debug, Clone, Copy)]
 pub struct PostFx {
     pub tonemap_aces: bool,
+    /// web3d-M7: temporal anti-aliasing (on top of the main pass's MSAA).
+    pub taa: bool,
     pub vignette: f32,
     pub vignette_color: [f32; 3],
     pub bloom_intensity: f32,
@@ -1056,6 +1058,10 @@ fn fs_tonemap(in: VOut) -> @location(0) vec4<f32> {
 /// HDR headroom while staying well within mainstream GPU support.
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// web3d-M7: samples per pixel in the main pass (MSAA). The multisampled
+/// colour resolves into the single-sample HDR target the tonemap reads.
+pub(crate) const MSAA_SAMPLES: u32 = 4;
+
 /// Phase 25: separate shadow shader — depth-only, no fragment
 /// stage needed, just the vertex pass that emits clip-space
 /// positions in *light space* so the depth buffer captures
@@ -1158,7 +1164,11 @@ fn surface_pipeline(
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState::default(),
+        // web3d-M7: the main pass renders at MSAA_SAMPLES samples.
+        multisample: wgpu::MultisampleState {
+            count: MSAA_SAMPLES,
+            ..Default::default()
+        },
         multiview_mask: None,
         cache: None,
     })
@@ -1598,6 +1608,8 @@ pub struct Renderer {
     frame_bgl: wgpu::BindGroupLayout,
     /// web3d-M7: image-based lighting state.
     env: EnvState,
+    /// web3d-M7: temporal anti-aliasing (history, jitter, resolve).
+    taa: crate::kernel::taa::Taa,
     /// Phase 20: lighting uniform buffer, written once per frame from
     /// the snapshot.
     lights_buffer: wgpu::Buffer,
@@ -2020,6 +2032,7 @@ async fn init_renderer(
         ],
     });
     let env = EnvState::new(&device, &queue, &frame_bgl);
+    let taa = crate::kernel::taa::Taa::new(&device);
     let frame_bind_group = frame_bind_group(&device, &frame_bgl, &camera_buffer, &lights_buffer, &env);
 
     // Phase 24: joint UBO bind group layout, plus a shared
@@ -2401,6 +2414,7 @@ async fn init_renderer(
         frame_bind_group,
         frame_bgl,
         env,
+        taa,
         lights_buffer,
         joints_bgl,
         identity_joints_bind_group,
@@ -3477,7 +3491,18 @@ impl Renderer {
         let aspect = state.config.width as f32 / state.config.height.max(1) as f32;
         let proj = perspective(fov_y, aspect, near, far);
         let view = look_at(eye, target, up);
-        let view_proj = mul(proj, view);
+        // web3d-M7: with TAA the projection is jittered by a sub-pixel
+        // offset each frame; the resolve reprojects with the unjittered
+        // matrices.
+        let taa_on = snap.post.taa;
+        let unjittered_view_proj = mul(proj, view);
+        let view_proj = if taa_on {
+            let j = state.taa.jitter(state.config.width, state.config.height);
+            mul(crate::kernel::taa::jitter_projection(proj, j), view)
+        } else {
+            state.taa.reset();
+            unjittered_view_proj
+        };
         let camera_uniform = CameraUniform {
             view_proj,
             time: [snap.time, 0.0, 0.0, 0.0],
@@ -3870,7 +3895,16 @@ impl Renderer {
         let target = graph.import("target", true);
         let shadow_map = graph.import("shadow map", false);
         let hdr = graph.create(TextureDesc::new("hdr colour", Extent::FULL, HDR_FORMAT));
-        let depth = graph.create(TextureDesc::new("depth", Extent::FULL, DEPTH_FORMAT));
+        // web3d-M7: the main pass draws into multisampled colour and
+        // depth, and resolves the colour into `hdr`.
+        let hdr_msaa = graph.create(TextureDesc {
+            samples: MSAA_SAMPLES,
+            ..TextureDesc::new("hdr colour (msaa)", Extent::FULL, HDR_FORMAT)
+        });
+        let depth = graph.create(TextureDesc {
+            samples: MSAA_SAMPLES,
+            ..TextureDesc::new("depth (msaa)", Extent::FULL, DEPTH_FORMAT)
+        });
         if shadows_on {
             for cascade in 0..CASCADE_COUNT {
                 graph.add_pass(
@@ -3885,20 +3919,57 @@ impl Renderer {
             FramePass::Main,
             "main",
             &[(shadow_map, Access::Sample)],
-            &[(hdr, Access::Attach), (depth, Access::Attach)],
+            &[
+                (hdr_msaa, Access::Attach),
+                (depth, Access::Attach),
+                (hdr, Access::Attach),
+            ],
         );
+        // web3d-M7: TAA resolves `hdr` into the persistent history the
+        // tonemap then reads.
+        let tonemap_input = if taa_on {
+            let history = graph.import("taa history", false);
+            graph.add_pass(
+                FramePass::Taa,
+                "taa resolve",
+                &[(hdr, Access::Sample), (depth, Access::Sample)],
+                &[(history, Access::Attach)],
+            );
+            history
+        } else {
+            hdr
+        };
         graph.add_pass(
             FramePass::Tonemap,
             "tonemap + hud",
-            &[(hdr, Access::Sample)],
+            &[(tonemap_input, Access::Sample)],
             &[(target, Access::Attach)],
         );
         let plan = graph.compile().map_err(|e| e.to_string())?;
         state
             .pool
             .prepare(&state.device, &plan, state.config.width, state.config.height);
+        if taa_on {
+            state.taa.prepare(
+                &state.device,
+                &state.queue,
+                state.config.width,
+                state.config.height,
+                unjittered_view_proj,
+                invert4(unjittered_view_proj),
+            );
+            // The history written this frame alternates: bind it fresh.
+            let bg = tonemap_bind_group(
+                &state.device,
+                &state.tonemap_bgl,
+                state.taa.output(),
+                &state.tonemap_sampler,
+                &state.tonemap_params_buffer,
+            );
+            state.tonemap_bind_group = Some((u64::MAX, bg));
+        }
         let hdr_generation = state.pool.generation(&plan, hdr);
-        if state.tonemap_bind_group.as_ref().map(|(g, _)| *g) != Some(hdr_generation) {
+        if !taa_on && state.tonemap_bind_group.as_ref().map(|(g, _)| *g) != Some(hdr_generation) {
             let view = state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?;
             let bg = tonemap_bind_group(
                 &state.device,
@@ -3942,6 +4013,10 @@ impl Renderer {
         let state = &*state;
         let main_color_view = state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?;
         let depth_view = state.pool.view(&plan, depth).ok_or("render graph: no depth target")?;
+        let msaa_view = state
+            .pool
+            .view(&plan, hdr_msaa)
+            .ok_or("render graph: no msaa target")?;
         for pass in &plan.passes {
             match *pass {
                 FramePass::Shadow(cascade) => {
@@ -4025,9 +4100,9 @@ impl Renderer {
                         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("twec-play3d main pass"),
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: main_color_view,
+                                view: msaa_view,
                                 depth_slice: None,
-                                resolve_target: None,
+                                resolve_target: Some(main_color_view),
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(wgpu::Color {
                                         r: f64::from(snap.background[0]),
@@ -4035,14 +4110,18 @@ impl Renderer {
                                         b: f64::from(snap.background[2]),
                                         a: 1.0,
                                     }),
-                                    store: wgpu::StoreOp::Store,
+                                    store: wgpu::StoreOp::Discard,
                                 },
                             })],
                             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                                 view: depth_view,
                                 depth_ops: Some(wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(1.0),
-                                    store: wgpu::StoreOp::Store,
+                                    store: if taa_on {
+                                        wgpu::StoreOp::Store
+                                    } else {
+                                        wgpu::StoreOp::Discard
+                                    },
                                 }),
                                 stencil_ops: None,
                             }),
@@ -4172,6 +4251,11 @@ impl Renderer {
                         }
                     }
                 }
+                FramePass::Taa => {
+                    state
+                        .taa
+                        .record(&state.device, &mut encoder, main_color_view, depth_view);
+                }
                 FramePass::Tonemap => {
                     if let Some((_, bg)) = &state.tonemap_bind_group {
                         let mut tmpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4201,6 +4285,9 @@ impl Renderer {
         }
 
         state.queue.submit(Some(encoder.finish()));
+        if taa_on {
+            state.taa.advance();
+        }
         if let Some(frame) = frame {
             state.queue.present(frame);
         }
@@ -4334,7 +4421,10 @@ impl EnvState {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLES,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -4411,6 +4501,8 @@ enum FramePass {
     Shadow(usize),
     /// The lit scene into the HDR target.
     Main,
+    /// web3d-M7: temporal anti-aliasing resolve into the history.
+    Taa,
     /// HDR to the display (tonemap, bloom, vignette), then the HUD.
     Tonemap,
 }
@@ -4916,6 +5008,7 @@ mod tests {
     #[test]
     fn environment_shaders_parse_and_validate() {
         validate_wgsl("SKY_SHADER_SRC", SKY_SHADER_SRC);
+        validate_wgsl("TAA", crate::kernel::taa::shader_source());
         validate_wgsl(
             "PRECOMPUTE_SHADER",
             crate::kernel::environment::PRECOMPUTE_SHADER,

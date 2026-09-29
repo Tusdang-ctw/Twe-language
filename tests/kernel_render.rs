@@ -459,6 +459,7 @@ fn environment_lights_and_backs_the_scene() {
             },
             post: PostFx {
                 tonemap_aces: true,
+                taa: false,
                 vignette: 0.0,
                 vignette_color: [0.0; 3],
                 bloom_intensity: 0.0,
@@ -484,4 +485,106 @@ fn environment_lights_and_backs_the_scene() {
     assert!(top[2] > top[0], "the sky is blue: {top:?}");
     let sky = pixel(&rgba, W / 2, 5);
     assert!(sky[2] > 150, "the backdrop shows the sky: {sky:?}");
+}
+
+/// web3d-M7: temporal anti-aliasing. With `postfx.taa(true)` a still
+/// scene converges: the picture is the scene (close to the MSAA-only
+/// image, not black or smeared) and consecutive frames barely differ.
+#[test]
+fn taa_converges_on_a_still_scene() {
+    let src = r#"
+camera.eye = vec3(3, 2.5, 4)
+camera.target = vec3(0, 0, 0)
+on render():
+    cube(at: vec3(0, 0, 0), color: (0.9, 0.3, 0.2, 1), size: 1.2)
+    sphere(at: vec3(1.4, 0.2, -0.6), color: (0.2, 0.5, 0.95, 1), size: 0.8)
+"#;
+    let frames = |taa: bool, count: usize| -> Vec<Vec<u8>> {
+        let mut renderer = headless().expect("gpu");
+        let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+        let mut env = twec::value::Env::new();
+        twec::stdlib::install(&mut env);
+        twec::eval::run_top_level(&mut env, &program).expect("top level");
+        let toggle = format!("postfx.taa({taa})\n");
+        let toggle = twec::parser::parse(&twec::lexer::lex(&toggle).expect("lex")).expect("parse");
+        twec::eval::run_top_level(&mut env, &toggle).expect("toggle");
+        let mut assets = twec::play3d::NativeAssets::default();
+        (0..count)
+            .map(|_| {
+                twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+                renderer.read_pixels().expect("read pixels")
+            })
+            .collect()
+    };
+    if headless().is_none() {
+        return;
+    }
+    let mean_diff = |a: &[u8], b: &[u8]| {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| f64::from(x.abs_diff(*y)))
+            .sum::<f64>()
+            / a.len() as f64
+    };
+    let taa = frames(true, 24);
+    let msaa = frames(false, 1).pop().unwrap();
+    let last = &taa[23];
+    save_png("taa", last);
+    let settle = mean_diff(&taa[22], last);
+    assert!(settle < 1.0, "converged frames still differ by {settle:.2}");
+    let versus_msaa = mean_diff(last, &msaa);
+    assert!(
+        versus_msaa < 4.0,
+        "TAA drifted from the scene: mean difference {versus_msaa:.2} from MSAA"
+    );
+    // Not a blank frame.
+    let lit = last.chunks(4).filter(|p| p[0] > 150).count();
+    assert!(lit > 500, "only {lit} bright pixels");
+}
+
+/// web3d-M7: TAA under camera motion. The camera orbits for 24 frames;
+/// reprojection keeps the history attached to the scene, so the final
+/// TAA frame stays close to a plain frame from the same camera (a
+/// wrong reprojection smears ghosts across the image).
+#[test]
+fn taa_follows_a_moving_camera() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |taa: bool| {
+        format!(
+            r#"
+postfx.taa({taa})
+var t = 0.0
+on render():
+    t += 0.05
+    camera.eye = vec3(4 * math.sin(t), 2.5, 4 * math.cos(t))
+    camera.target = vec3(0, 0, 0)
+    cube(at: vec3(0, 0, 0), color: (0.9, 0.3, 0.2, 1), size: 1.2)
+    sphere(at: vec3(1.4, 0.2, -0.6), color: (0.2, 0.5, 0.95, 1), size: 0.8)
+"#
+        )
+    };
+    let last_frame = |src: &str, frames: usize| {
+        let mut renderer = headless().expect("gpu");
+        let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+        let mut env = twec::value::Env::new();
+        twec::stdlib::install(&mut env);
+        twec::eval::run_top_level(&mut env, &program).expect("top level");
+        let mut assets = twec::play3d::NativeAssets::default();
+        for _ in 0..frames {
+            twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+        }
+        renderer.read_pixels().expect("read pixels")
+    };
+    let taa = last_frame(&scene(true), 24);
+    let plain = last_frame(&scene(false), 24);
+    save_png("taa_moving", &taa);
+    let diff = taa
+        .iter()
+        .zip(&plain)
+        .map(|(a, b)| f64::from(a.abs_diff(*b)))
+        .sum::<f64>()
+        / taa.len() as f64;
+    assert!(diff < 4.0, "TAA under camera motion is {diff:.2} away from the plain frame");
 }

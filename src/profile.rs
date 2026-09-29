@@ -139,8 +139,18 @@ fn render_chrome_trace() -> String {
 mod tests {
     use super::*;
 
+    /// The enable flag is process-global: tests that flip it hold this
+    /// lock, or one test's `disable()` lands mid-way through another's
+    /// trace (seen as an intermittent failure in the full suite).
+    static PROFILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        PROFILE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn disabled_scope_emits_no_events() {
+        let _guard = lock();
         disable();
         EVENTS.with(|c| c.borrow_mut().clear());
         {
@@ -151,6 +161,7 @@ mod tests {
 
     #[test]
     fn enabled_scope_records_event() {
+        let _guard = lock();
         enable();
         {
             let _s = scope("hot");
@@ -162,6 +173,7 @@ mod tests {
 
     #[test]
     fn dump_renders_chrome_trace_json_envelope() {
+        let _guard = lock();
         enable();
         {
             let _s = scope("alpha");

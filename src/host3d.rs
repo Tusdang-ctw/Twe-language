@@ -122,6 +122,7 @@ pub fn render_frame(
         },
         post: PostFx {
             tonemap_aces: crate::stdlib::tonemap_enabled(),
+            taa: crate::stdlib::taa_enabled(),
             vignette: crate::stdlib::vignette_strength(),
             vignette_color: crate::stdlib::vignette_color(),
             bloom_intensity: crate::stdlib::bloom_intensity(),

@@ -384,6 +384,11 @@ pub fn install(env: &mut Env) {
         "tonemap".to_string(),
         Value::from_builtin("postfx.tonemap", &["enabled"], postfx_tonemap_impl),
     );
+    // web3d-M7: temporal anti-aliasing on top of the built-in 4x MSAA.
+    postfx_fields.insert(
+        "taa".to_string(),
+        Value::from_builtin("postfx.taa", &["enabled"], postfx_taa_impl),
+    );
     postfx_fields.insert(
         "vignette".to_string(),
         Value::from_builtin("postfx.vignette", &["strength"], postfx_vignette_impl),
@@ -1041,6 +1046,8 @@ thread_local! {
     /// applies the ACES curve (default on, commercial-grade)
     /// versus a straight linear→sRGB pass (off).
     static TONEMAP_ENABLED: RefCell<bool> = const { RefCell::new(true) };
+    /// web3d-M7: temporal anti-aliasing (`postfx.taa`), off by default.
+    static TAA_ENABLED: RefCell<bool> = const { RefCell::new(false) };
     /// Phase 26: vignette strength, 0.0 (off) to 1.0 (full).
     /// Applied during the tonemap pass. Default off; opt-in via
     /// `postfx.vignette(strength)`.
@@ -1092,6 +1099,11 @@ pub fn shadow_extent() -> f32 {
 /// Phase 26: read the script-controlled frustum-cull toggle.
 pub fn frustum_culling_enabled() -> bool {
     FRUSTUM_CULL_ENABLED.with(|s| *s.borrow())
+}
+
+/// web3d-M7: read the script-controlled TAA toggle.
+pub fn taa_enabled() -> bool {
+    TAA_ENABLED.with(|s| *s.borrow())
 }
 
 /// Phase 26: read the script-controlled ACES tonemap toggle.
@@ -11499,6 +11511,20 @@ fn postfx_tonemap_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
         });
     };
     TONEMAP_ENABLED.with(|s| *s.borrow_mut() = on);
+    Ok(Value::NIL)
+}
+
+fn postfx_taa_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.taa")?;
+    if !args[0].is_bool() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "postfx.taa expects a bool".to_string(),
+            help: Some("`postfx.taa(true)` turns temporal anti-aliasing on".to_string()),
+        });
+    }
+    TAA_ENABLED.with(|s| *s.borrow_mut() = args[0].as_bool());
     Ok(Value::NIL)
 }
 

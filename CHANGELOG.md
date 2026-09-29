@@ -13,6 +13,9 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Anti-aliasing in 3D** (web3d-M7): 4× MSAA is always on, and
+  `postfx.taa(true)` adds temporal anti-aliasing (jittered frames,
+  camera-motion reprojection, neighbourhood clamping).
 - **Image-based lighting** (web3d-M7, kernel): an HDR environment map
   lights scenes (GGX-prefiltered specular cube, SH9 irradiance, DFG
   lookup table) and can be drawn as the backdrop. Kernel and harness

@@ -126,6 +126,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: lit by the world around it.** Twe learned image-based lighting: a panoramic HDR photo of a room or a sky now lights the scene, with shiny surfaces reflecting it and rough ones glowing with its colours, the technique behind every modern game and product viewer. The scoreboard went from 0.295 to **0.198**; Three.js scores 0.186. The gap that started at 0.162 is now 0.012, and on one scene Twe scores better than Three.js. The scoreboard also caught a quiet bug: models without surface normals had been lit as if every face pointed at the ceiling.
 
+- **2026-09-29: smooth edges, and an honest non-result.** Twe's 3D now renders with anti-aliasing (4× MSAA always, plus optional temporal AA that also calms shimmering highlights). The surprise was on the scoreboard: MSAA moved the score by essentially nothing, because at the benchmark's resolution edges are a sliver of the image. The notes say so plainly. Error maps showed the real remaining gap is in glossy reflections and missing material types, which set the agenda for the next sessions.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

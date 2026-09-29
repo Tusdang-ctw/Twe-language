@@ -23,6 +23,10 @@ use twec::kernel::render::{
 };
 use twec::render3d_types::{DrawCall3d, Primitive};
 
+/// Twe's anti-aliasing for the comparison: 4x MSAA always, plus TAA
+/// (`TWE_BENCH_TAA=0` turns it off), converged over the settle frames.
+const SETTLE_FRAMES: u32 = 24;
+
 fn num(v: &Value, key: &str) -> f32 {
     match v.get(key) {
         Some(Value::Int(i)) => *i as f32,
@@ -110,6 +114,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
     let mesh_paths = vec!["model.glb".to_string()];
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
+    let mut settled = 0;
     for frame in 0.. {
         let snap = RenderSnapshot {
             camera,
@@ -126,6 +131,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
             },
             post: PostFx {
                 tonemap_aces: true,
+                taa: std::env::var("TWE_BENCH_TAA").map_or(true, |v| v != "0"),
                 vignette: 0.0,
                 vignette_color: [0.0; 3],
                 bloom_intensity: 0.0,
@@ -141,9 +147,14 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
             anim: &anim,
         };
         renderer.render(&snap, &mut assets)?;
-        // Draw until the model has loaded, then once more.
+        // Draw until the model has loaded, then let TAA's history fill
+        // (a still scene converges to a supersampled image).
         if assets.pending() == 0 && frame > 0 {
-            break;
+            settled += 1;
+            if settled >= SETTLE_FRAMES {
+                break;
+            }
+            continue;
         }
         if frame > 3000 {
             return Err("model never finished loading".into());
