@@ -65,7 +65,8 @@ gltf = { version = "1", default-features = false, features = ["import", "utils",
 # Phase 17 session 3: PNG/JPEG texture loading for the 3D pipeline.
 # Transitively available via macroquad on WASM, but the explicit dep
 # is only needed by play3d which is native-only.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# web3d-M7: "hdr" decodes Radiance environment maps (image-based lighting).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
 
 [features]
 # web3d-M0: scaffolding namespaces (console / platform services / mmo /

@@ -699,10 +699,14 @@ impl AssetSource for NativeAssets {
                         .push(AssetReady::Mesh(id, Err(format!("spawn loader: {e}")))),
                 }
             }
-            AssetKind::Texture => {
+            AssetKind::Texture | AssetKind::Environment => {
                 let bytes =
                     crate::bundle::read_asset_bytes(path).map_err(|e| format!("`{path}`: {e}"));
-                self.ready.push(AssetReady::Texture(id, bytes));
+                self.ready.push(if kind == AssetKind::Texture {
+                    AssetReady::Texture(id, bytes)
+                } else {
+                    AssetReady::Environment(id, bytes)
+                });
             }
         }
     }

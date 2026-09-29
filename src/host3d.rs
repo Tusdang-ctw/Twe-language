@@ -113,6 +113,7 @@ pub fn render_frame(
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let snap = RenderSnapshot {
         camera: Camera3d::new(eye, target, up),
+        environment: None,
         background: [0.06, 0.10, 0.16],
         lights: crate::stdlib::lights_snapshot(),
         shadow: ShadowSettings {

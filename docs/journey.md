@@ -124,6 +124,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: real materials.** Twe's renderer learned physically based materials: metal that looks like metal, bumpy surfaces from normal maps, glowing parts, textures that tile and rotate as the model's author intended, and a separate material for every part of a model (before, a whole model wore one texture). On the scoreboard Twe went from 0.348 to **0.295** (Three.js: 0.186), about a third of the gap closed, and on one test scene it now ties Three.js. What's left is mostly lighting from the environment, the next step.
 
+- **2026-09-29: lit by the world around it.** Twe learned image-based lighting: a panoramic HDR photo of a room or a sky now lights the scene, with shiny surfaces reflecting it and rough ones glowing with its colours, the technique behind every modern game and product viewer. The scoreboard went from 0.295 to **0.198**; Three.js scores 0.186. The gap that started at 0.162 is now 0.012, and on one scene Twe scores better than Three.js. The scoreboard also caught a quiet bug: models without surface normals had been lit as if every face pointed at the ceiling.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

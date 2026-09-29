@@ -10,15 +10,16 @@
 //!
 //! The scene is what the Khronos Render Fidelity goldens use: the
 //! scenario's orbit camera and vertical field of view, clip planes from
-//! the model's bounding sphere, a black background. Lighting is Twe's
-//! default (the renderer has no environment lighting yet: M7 session
-//! 4), so these images are the baseline M7 improves on.
+//! the model's bounding sphere, the scenario's HDR environment as the
+//! only light (image-based lighting, M7 session 4; no sun, no ambient,
+//! no shadows), drawn as the backdrop when the scenario asks for it,
+//! else a black background.
 
 use std::path::{Path, PathBuf};
 
 use twec::json::Value;
 use twec::kernel::render::{
-    Camera3d, PostFx, RenderSnapshot, Renderer, ShadowSettings,
+    Camera3d, EnvironmentSettings, PostFx, RenderSnapshot, Renderer, ShadowSettings,
 };
 use twec::render3d_types::{DrawCall3d, Primitive};
 
@@ -40,6 +41,9 @@ struct Scene {
     phi: f32,
     radius: f32,
     fov_y: f32,
+    /// The environment map, relative to the scene directory.
+    environment: String,
+    backdrop: bool,
 }
 
 fn read_scene(dir: &Path) -> Scene {
@@ -56,6 +60,8 @@ fn read_scene(dir: &Path) -> Scene {
         theta: num(o, "theta").to_radians(),
         phi: num(o, "phi").to_radians(),
         radius: num(o, "radius"),
+        environment: get("environment").as_str().expect("environment").to_string(),
+        backdrop: matches!(v.get("renderSkybox"), Some(Value::Bool(true))),
         fov_y: match v.get("verticalFoV") {
             Some(Value::Int(i)) => (*i as f32).to_radians(),
             Some(Value::Float(f)) => (*f as f32).to_radians(),
@@ -108,9 +114,14 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
         let snap = RenderSnapshot {
             camera,
             background: [0.0, 0.0, 0.0],
-            lights: twec::stdlib::lights_snapshot(),
+            environment: Some(EnvironmentSettings {
+                path: &scene.environment,
+                intensity: 1.0,
+                backdrop: scene.backdrop,
+            }),
+            lights: bytemuck::Zeroable::zeroed(),
             shadow: ShadowSettings {
-                enabled: twec::stdlib::shadow_enabled(),
+                enabled: false,
                 extent: twec::stdlib::shadow_extent(),
             },
             post: PostFx {

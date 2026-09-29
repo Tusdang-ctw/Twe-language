@@ -13,6 +13,10 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Image-based lighting** (web3d-M7, kernel): an HDR environment map
+  lights scenes (GGX-prefiltered specular cube, SH9 irradiance, DFG
+  lookup table) and can be drawn as the backdrop. Kernel and harness
+  only for now; the script-side setting arrives with `survive3d`.
 - **Physically based materials** (web3d-M7): glTF models draw each
   primitive with its own metallic-roughness material — base colour,
   metal-rough, normal, occlusion and emissive maps, texture transforms,
@@ -166,6 +170,9 @@ removal would be load-bearing.
   process. Touch queries report no touches headless.
 
 ### Fixed
+- **glTF models without normals** are now shaded with flat face normals,
+  as the glTF spec requires; the loader used to point them all straight
+  up, lighting every such surface like a floor (web3d-M7).
 - **Lost and doubled key presses in 3D** (web3d-M4). The 3D shells
   applied input once per rendered frame: on a high-refresh display a
   frame that ran no simulation tick dropped `key_press`, and one that

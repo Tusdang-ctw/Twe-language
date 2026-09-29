@@ -384,3 +384,104 @@ on render():
     assert!(lr > lg + 40 && lr > lb + 40, "left quad red: {:?}", [lr, lg, lb]);
     assert!(rb > rr + 60 && rb > 150, "right quad glows blue: {:?}", [rr, rg, rb]);
 }
+
+/// A Radiance .hdr (flat RGBE scanlines) of `w × h`, colour per row.
+fn hdr_file(w: usize, h: usize, row_color: impl Fn(usize) -> [f32; 3]) -> Vec<u8> {
+    let mut out = format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {h} +X {w}\n").into_bytes();
+    for y in 0..h {
+        let c = row_color(y);
+        let max = c[0].max(c[1]).max(c[2]);
+        let texel = if max < 1e-32 {
+            [0, 0, 0, 0]
+        } else {
+            let e = max.log2().floor() as i32 + 1;
+            let scale = 256.0 / 2f32.powi(e);
+            [
+                (c[0] * scale) as u8,
+                (c[1] * scale) as u8,
+                (c[2] * scale) as u8,
+                (e + 128) as u8,
+            ]
+        };
+        for _ in 0..w {
+            out.extend_from_slice(&texel);
+        }
+    }
+    out
+}
+
+/// web3d-M7: image-based lighting. A sphere lit only by an environment
+/// map (bright blue sky above, dark ground below) is bright and blue
+/// on top and dark underneath, and the environment is the backdrop.
+#[test]
+fn environment_lights_and_backs_the_scene() {
+    use twec::kernel::render::{
+        Camera3d, EnvironmentSettings, PostFx, RenderSnapshot, ShadowSettings,
+    };
+    use twec::render3d_types::{DrawCall3d, Primitive};
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let dir = std::path::Path::new("target/kernel-render");
+    std::fs::create_dir_all(dir).expect("create output dir");
+    std::fs::write(
+        dir.join("sky.hdr"),
+        hdr_file(64, 32, |y| if y < 16 { [0.4, 0.7, 2.0] } else { [0.02, 0.02, 0.02] }),
+    )
+    .expect("write hdr");
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some(dir.into()));
+
+    let draws = [DrawCall3d {
+        primitive: Primitive::Sphere,
+        at: [0.0, 0.0, 0.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+        size: 1.6,
+        texture: 0,
+        yaw: 0.0,
+        material: 0,
+    }];
+    let anim = |_: u32| Default::default();
+    let mut assets = twec::play3d::NativeAssets::default();
+    for _ in 0..3 {
+        let snap = RenderSnapshot {
+            camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            environment: Some(EnvironmentSettings {
+                path: "sky.hdr",
+                intensity: 1.0,
+                backdrop: true,
+            }),
+            background: [0.0; 3],
+            lights: bytemuck::Zeroable::zeroed(),
+            shadow: ShadowSettings {
+                enabled: false,
+                extent: 10.0,
+            },
+            post: PostFx {
+                tonemap_aces: true,
+                vignette: 0.0,
+                vignette_color: [0.0; 3],
+                bloom_intensity: 0.0,
+                bloom_threshold: 1.0,
+                frustum_cull: false,
+            },
+            draws: &draws,
+            mesh_paths: &[],
+            texture_paths: &[],
+            time: 0.0,
+            materials: &[],
+            hud: &[],
+            anim: &anim,
+        };
+        renderer.render(&snap, &mut assets).expect("render");
+    }
+    let rgba = renderer.read_pixels().expect("read pixels");
+    save_png("environment", &rgba);
+    let luma = |[r, g, b]: [u8; 3]| u32::from(r) + u32::from(g) + u32::from(b);
+    let top = pixel(&rgba, W / 2, H / 2 - 50);
+    let bottom = pixel(&rgba, W / 2, H / 2 + 50);
+    assert!(luma(top) > luma(bottom) + 150, "sky-lit top {top:?} vs ground-lit bottom {bottom:?}");
+    assert!(top[2] > top[0], "the sky is blue: {top:?}");
+    let sky = pixel(&rgba, W / 2, 5);
+    assert!(sky[2] > 150, "the backdrop shows the sky: {sky:?}");
+}

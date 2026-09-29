@@ -603,6 +603,7 @@ impl AssetSource for WebAssets {
             self.ready.borrow_mut().push(match kind {
                 AssetKind::Mesh => AssetReady::Mesh(id, bytes.and_then(|b| parse_glb_bytes(&b))),
                 AssetKind::Texture => AssetReady::Texture(id, bytes),
+                AssetKind::Environment => AssetReady::Environment(id, bytes),
             });
             return;
         }
@@ -613,6 +614,7 @@ impl AssetSource for WebAssets {
             let done = match kind {
                 AssetKind::Mesh => AssetReady::Mesh(id, bytes.and_then(|b| parse_glb_bytes(&b))),
                 AssetKind::Texture => AssetReady::Texture(id, bytes),
+                AssetKind::Environment => AssetReady::Environment(id, bytes),
             };
             ready.borrow_mut().push(done);
         });

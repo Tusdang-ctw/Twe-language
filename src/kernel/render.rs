@@ -14,6 +14,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::kernel::graph::{Access, Extent, FrameGraph, TextureDesc, TexturePool};
+use crate::kernel::environment::EnvUniform;
 use crate::kernel::material::{
     upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS, SRGB_SLOT,
 };
@@ -66,8 +67,22 @@ pub struct PostFx {
 }
 
 /// Everything the renderer needs from the host for one frame.
+/// web3d-M7: image-based lighting for a frame.
+#[derive(Debug, Clone, Copy)]
+pub struct EnvironmentSettings<'a> {
+    /// Asset path of an equirectangular HDR map (Radiance `.hdr`).
+    pub path: &'a str,
+    /// Multiplier on the environment's light (and backdrop).
+    pub intensity: f32,
+    /// Draw the environment behind the scene instead of `background`.
+    pub backdrop: bool,
+}
+
 pub struct RenderSnapshot<'a> {
     pub camera: Camera3d,
+    /// web3d-M7: image-based lighting; `None` lights with the uniform
+    /// ambient colour instead.
+    pub environment: Option<EnvironmentSettings<'a>>,
     /// web3d-M7: what the scene is drawn over (linear RGB), where no
     /// geometry covers the frame.
     pub background: [f32; 3],
@@ -95,6 +110,9 @@ pub struct RenderSnapshot<'a> {
 pub enum AssetKind {
     Mesh,
     Texture,
+    /// web3d-M7: an HDR environment map (equirect `.hdr`); delivered as
+    /// raw bytes like a texture.
+    Environment,
 }
 
 /// A finished asset load.
@@ -103,6 +121,8 @@ pub enum AssetReady {
     Mesh(u32, Result<LoadedGlb, String>),
     /// Encoded image bytes (PNG / JPEG).
     Texture(u32, Result<Vec<u8>, String>),
+    /// web3d-M7: encoded HDR environment bytes.
+    Environment(u32, Result<Vec<u8>, String>),
 }
 
 /// How the renderer gets asset data. Requests are fire-and-forget;
@@ -236,6 +256,8 @@ struct CameraUniform {
     time: [f32; 4],
     /// web3d-M7: the eye position (xyz), for view-dependent shading.
     eye: [f32; 4],
+    /// web3d-M7: inverse of `view_proj` (the backdrop's view rays).
+    inv_view_proj: [[f32; 4]; 4],
 }
 
 // web3d-M0: `PointLightU`, `LightsUniform` and `AnimSnapshot` live in
@@ -365,6 +387,7 @@ struct Camera {
     time: vec4<f32>,
     // web3d-M7: xyz = eye position.
     eye: vec4<f32>,
+    inv_view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -407,6 +430,20 @@ struct Lights {
 };
 
 @group(0) @binding(1) var<uniform> lights: Lights;
+
+// web3d-M7: image-based lighting (kernel/environment.rs). `sh` is the
+// cosine-convolved irradiance SH9; params = (intensity, max specular
+// LOD, has environment, backdrop). The DFG table is always bound.
+struct Env {
+    sh: array<vec4<f32>, 9>,
+    params: vec4<f32>,
+};
+@group(0) @binding(2) var<uniform> env: Env;
+@group(0) @binding(3) var t_env_specular: texture_cube<f32>;
+@group(0) @binding(4) var t_env_equirect: texture_2d<f32>;
+@group(0) @binding(5) var t_dfg: texture_2d<f32>;
+@group(0) @binding(6) var s_env: sampler;
+@group(0) @binding(7) var s_clamp: sampler;
 
 // Phase 24: per-mesh joint matrix UBO. Up to 128 joints per
 // skinned mesh. Unskinned meshes (cube, sphere, glb without a
@@ -585,8 +622,9 @@ fn sample_shadow(world_pos: vec3<f32>, view_z: f32) -> f32 {
 // 1 makes a white Lambert surface facing it reflect 1 (irradiance x pi),
 // which keeps the game's existing lights at their old brightness.
 //
-// Until image-based lighting (M7 session 4), the ambient colour acts as
-// a uniform environment for both the diffuse and the specular lobe.
+// Indirect light comes from the environment map when the frame has one
+// (image-based lighting, kernel/environment.rs), else from the ambient
+// colour treated as a uniform environment.
 
 const PI: f32 = 3.14159265;
 
@@ -616,15 +654,17 @@ fn f_schlick(f0: vec3<f32>, voh: f32) -> vec3<f32> {
     return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - voh, 5.0);
 }
 
-// Karis 2014's analytic fit of the split-sum DFG integral: returns
-// (scale, bias) so that the directional albedo of the specular lobe is
-// f0 * x + y. Replaced by a LUT with IBL in session 4.
-fn env_brdf_approx(roughness: f32, nov: f32) -> vec2<f32> {
-    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
-    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
-    let r = roughness * c0 + c1;
-    let a004 = min(r.x * r.x, exp2(-9.28 * nov)) * r.x + r.y;
-    return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+// Irradiance from the environment's SH9 at normal n.
+fn sh_irradiance(n: vec3<f32>) -> vec3<f32> {
+    let x = n.x;
+    let y = n.y;
+    let z = n.z;
+    var e = env.sh[0].xyz * 0.282095;
+    e = e + env.sh[1].xyz * (0.488603 * y) + env.sh[2].xyz * (0.488603 * z) + env.sh[3].xyz * (0.488603 * x);
+    e = e + env.sh[4].xyz * (1.092548 * x * y) + env.sh[5].xyz * (1.092548 * y * z);
+    e = e + env.sh[6].xyz * (0.315392 * (3.0 * z * z - 1.0));
+    e = e + env.sh[7].xyz * (1.092548 * x * z) + env.sh[8].xyz * (0.546274 * (x * x - y * y));
+    return max(e, vec3<f32>(0.0));
 }
 
 // One light's reflected radiance.
@@ -661,12 +701,23 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     let a = roughness * roughness;
     let f0 = mix(vec3<f32>(0.04), s.albedo, s.metallic);
     let diffuse_color = s.albedo * (1.0 - s.metallic);
-    let ab = env_brdf_approx(roughness, nov);
+    // The split sum's DFG terms (A, B): specular albedo = f0·A + B.
+    let ab = textureSampleLevel(t_dfg, s_clamp, vec2<f32>(nov, roughness), 0.0).xy;
     let energy = vec3<f32>(1.0) + f0 * (1.0 / max(ab.x + ab.y, 1e-4) - 1.0);
+    let specular_albedo = (f0 * ab.x + ab.y) * energy;
 
-    // Ambient as a uniform environment; occlusion applies here only
-    // (glTF: it describes indirect light).
-    var color = lights.ambient.rgb * (diffuse_color + (f0 * ab.x + ab.y) * energy) * s.occlusion;
+    // Indirect light; occlusion applies here only (glTF: it describes
+    // indirect light), on the specular lobe through Lagarde's fit.
+    var color: vec3<f32>;
+    if (env.params.z > 0.5) {
+        let r = reflect(-v, n);
+        let prefiltered = textureSampleLevel(t_env_specular, s_env, r, roughness * env.params.y).rgb;
+        let spec_ao = clamp(pow(nov + s.occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + s.occlusion, 0.0, 1.0);
+        color = (diffuse_color * sh_irradiance(n) / PI * s.occlusion + prefiltered * specular_albedo * spec_ao) * env.params.x;
+    } else {
+        // No environment: the ambient colour as a uniform one.
+        color = lights.ambient.rgb * (diffuse_color + specular_albedo) * s.occlusion;
+    }
 
     // Directional sun. w = intensity; 0 disables the sun. Shadows
     // attenuate only the sun.
@@ -771,6 +822,47 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
         material.emissive.rgb * emissive_t.rgb,
     );
     return vec4<f32>(shade(in, s), 1.0);
+}
+"#;
+
+/// web3d-M7: the environment as the backdrop — a fullscreen triangle at
+/// the far plane, drawn after opaque geometry where nothing covers it.
+pub(crate) const SKY_SHADER_SRC: &str = r#"
+struct Camera {
+    view_proj: mat4x4<f32>,
+    time: vec4<f32>,
+    eye: vec4<f32>,
+    inv_view_proj: mat4x4<f32>,
+};
+struct Env {
+    sh: array<vec4<f32>, 9>,
+    params: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(2) var<uniform> env: Env;
+@group(0) @binding(4) var t_env_equirect: texture_2d<f32>;
+@group(0) @binding(6) var s_env: sampler;
+
+struct SkyOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+};
+
+@vertex
+fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
+    var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    var out: SkyOut;
+    out.pos = vec4<f32>(p[i], 1.0, 1.0);
+    out.ndc = p[i];
+    return out;
+}
+
+@fragment
+fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
+    let far = camera.inv_view_proj * vec4<f32>(in.ndc, 1.0, 1.0);
+    let d = normalize(far.xyz / far.w - camera.eye.xyz);
+    let uv = vec2<f32>(atan2(d.z, d.x) / (2.0 * 3.14159265) + 0.5, 0.5 - asin(clamp(d.y, -1.0, 1.0)) / 3.14159265);
+    return vec4<f32>(textureSampleLevel(t_env_equirect, s_env, uv, 0.0).rgb * env.params.x, 1.0);
 }
 "#;
 
@@ -1500,8 +1592,12 @@ pub struct Renderer {
     /// (by doubling) when a frame's instance count exceeds this.
     instance_capacity: u64,
     camera_buffer: wgpu::Buffer,
-    /// Bind group 0: camera (binding 0) + lights (binding 1).
+    /// Bind group 0: camera (0), lights (1), and web3d-M7's
+    /// environment (2–7). Rebuilt when the environment changes.
     frame_bind_group: wgpu::BindGroup,
+    frame_bgl: wgpu::BindGroupLayout,
+    /// web3d-M7: image-based lighting state.
+    env: EnvState,
     /// Phase 20: lighting uniform buffer, written once per frame from
     /// the snapshot.
     lights_buffer: wgpu::Buffer,
@@ -1892,28 +1988,39 @@ async fn init_renderer(
         },
         count: None,
     };
+    let texture_entry = |binding: u32, dim: wgpu::TextureViewDimension| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: dim,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let sampler_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    };
     let frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("twe-kernel frame bgl (camera + lights)"),
+        label: Some("twe-kernel frame bgl"),
         entries: &[
             // web3d-M3: fragments read `camera.time` (materials).
             uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
             uniform_entry(1, wgpu::ShaderStages::FRAGMENT),
+            // web3d-M7: the environment.
+            uniform_entry(2, wgpu::ShaderStages::FRAGMENT),
+            texture_entry(3, wgpu::TextureViewDimension::Cube),
+            texture_entry(4, wgpu::TextureViewDimension::D2),
+            texture_entry(5, wgpu::TextureViewDimension::D2),
+            sampler_entry(6),
+            sampler_entry(7),
         ],
     });
-    let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("twe-kernel frame bg (camera + lights)"),
-        layout: &frame_bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: lights_buffer.as_entire_binding(),
-            },
-        ],
-    });
+    let env = EnvState::new(&device, &queue, &frame_bgl);
+    let frame_bind_group = frame_bind_group(&device, &frame_bgl, &camera_buffer, &lights_buffer, &env);
 
     // Phase 24: joint UBO bind group layout, plus a shared
     // identity-only UBO bound for unskinned draws (cube, sphere,
@@ -2292,6 +2399,8 @@ async fn init_renderer(
         instance_capacity,
         camera_buffer,
         frame_bind_group,
+        frame_bgl,
+        env,
         lights_buffer,
         joints_bgl,
         identity_joints_bind_group,
@@ -3105,7 +3214,6 @@ fn flatten_primitive(
             _ => vec![default; count],
         }
     }
-    let normals = or_default(reader.read_normals().map(|i| i.collect()), count, [0.0, 1.0, 0.0]);
     let uvs = or_default(
         reader.read_tex_coords(0).map(|i| i.into_f32().collect()),
         count,
@@ -3133,20 +3241,47 @@ fn flatten_primitive(
         count,
         UNSKINNED_W,
     );
+    let mut indices: Vec<u32> = match reader.read_indices() {
+        Some(idx) => idx.into_u32().collect(),
+        None => (0..count as u32).collect(),
+    };
+    indices.truncate(indices.len() / 3 * 3);
+
+    // web3d-M7: glTF says a primitive without normals is shaded with flat
+    // normals. Give every triangle corner its own vertex carrying the
+    // face normal (the loader used to point them all straight up, which
+    // lit every such surface like a floor).
+    let normals: Vec<[f32; 3]> = match reader.read_normals() {
+        Some(n) => n.collect(),
+        None => Vec::new(),
+    };
+    let (order, normals): (Vec<usize>, Vec<[f32; 3]>) = if normals.len() == count {
+        ((0..count).collect(), normals)
+    } else {
+        let mut flat = Vec::with_capacity(indices.len());
+        for tri in indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| positions[tri[k] as usize]);
+            let n = normalize(cross(sub(b, a), sub(c, a)));
+            flat.extend([n, n, n]);
+        }
+        let order = indices.iter().map(|&i| i as usize).collect();
+        indices = (0..flat.len() as u32).collect();
+        (order, flat)
+    };
 
     // Phase 24: per glTF 2.0, a skinned mesh's node transform is not
     // applied (the joints carry it), so skinned primitives stay in
     // mesh-local space; unskinned ones bake the world transform.
     let base_index = out.vertices.len() as u32;
-    for i in 0..count {
+    for (k, &i) in order.iter().enumerate() {
         let (position, normal, tangent) = if is_skinned {
-            (positions[i], normals[i], tangents[i])
+            (positions[i], normals[k], tangents[i])
         } else {
             let t = tangents[i];
             let tt = mat4_transform_dir(world, [t[0], t[1], t[2]]);
             (
                 mat4_transform_point(world, positions[i]),
-                mat4_transform_dir(world, normals[i]),
+                mat4_transform_dir(world, normals[k]),
                 [tt[0], tt[1], tt[2], t[3]],
             )
         };
@@ -3163,10 +3298,7 @@ fn flatten_primitive(
     }
 
     let first = out.indices.len() as u32;
-    match reader.read_indices() {
-        Some(idx) => out.indices.extend(idx.into_u32().map(|i| base_index + i)),
-        None => out.indices.extend(base_index..base_index + count as u32),
-    }
+    out.indices.extend(indices.iter().map(|i| base_index + i));
     // web3d-M7: the primitive's material; glTF's default (the last
     // entry) when it names none.
     let material = primitive
@@ -3350,6 +3482,7 @@ impl Renderer {
             view_proj,
             time: [snap.time, 0.0, 0.0, 0.0],
             eye: [eye[0], eye[1], eye[2], 1.0],
+            inv_view_proj: invert4(view_proj),
         };
         state
             .queue
@@ -3359,6 +3492,32 @@ impl Renderer {
         state
             .queue
             .write_buffer(&state.lights_buffer, 0, bytemuck::bytes_of(&lights_uniform));
+
+        // web3d-M7: the frame's environment — ask for a new one, adopt
+        // one that finished loading, and describe it to the shaders.
+        let wanted = snap.environment.map(|e| e.path.to_string());
+        if wanted.is_some() && wanted != state.env.requested {
+            state.env.requested = wanted.clone();
+            if let Some(path) = &wanted {
+                assets.request(AssetKind::Environment, 0, path);
+            }
+        }
+        let env_ready = snap.environment.is_some() && state.env.loaded == state.env.requested;
+        let env_uniform = match snap.environment {
+            Some(e) if env_ready => EnvUniform {
+                sh: state.env.current.sh,
+                params: [
+                    e.intensity,
+                    (crate::kernel::environment::SPECULAR_MIPS - 1) as f32,
+                    1.0,
+                    if e.backdrop { 1.0 } else { 0.0 },
+                ],
+            },
+            _ => EnvUniform::none(),
+        };
+        state
+            .queue
+            .write_buffer(&state.env.uniform, 0, bytemuck::bytes_of(&env_uniform));
 
         let shadow_uniform = compute_shadow_uniform(&lights_uniform, eye, target, snap.shadow);
         state
@@ -3421,6 +3580,26 @@ impl Renderer {
                             log_error(&format!("mesh load: {e}"));
                             state.mesh_load_failures.insert(id);
                         }
+                    }
+                }
+                AssetReady::Environment(_, result) => {
+                    let built = result.and_then(|bytes| {
+                        crate::kernel::environment::decode_hdr(&bytes)
+                            .map(|img| crate::kernel::environment::build(&state.device, &state.queue, &img))
+                    });
+                    match built {
+                        Ok(env) => {
+                            state.env.current = env;
+                            state.env.loaded = state.env.requested.clone();
+                            state.frame_bind_group = frame_bind_group(
+                                &state.device,
+                                &state.frame_bgl,
+                                &state.camera_buffer,
+                                &state.lights_buffer,
+                                &state.env,
+                            );
+                        }
+                        Err(e) => log_error(&format!("environment load: {e}")),
                     }
                 }
                 AssetReady::Texture(id, result) => {
@@ -3984,6 +4163,13 @@ impl Renderer {
                                 }
                             }
                         }
+                        // web3d-M7: the environment as the backdrop,
+                        // wherever no geometry was drawn.
+                        if env_uniform.params[3] > 0.5 {
+                            rpass.set_pipeline(&state.env.sky_pipeline);
+                            rpass.set_bind_group(0, &state.frame_bind_group, &[]);
+                            rpass.draw(0..3, 0..1);
+                        }
                     }
                 }
                 FramePass::Tonemap => {
@@ -4081,6 +4267,143 @@ impl Renderer {
     }
 }
 
+/// web3d-M7: image-based lighting state: the current environment (a
+/// black placeholder until one loads), its uniform, the DFG table, the
+/// samplers, and the backdrop pipeline.
+struct EnvState {
+    uniform: wgpu::Buffer,
+    current: crate::kernel::environment::GpuEnvironment,
+    /// The path last requested from the asset source, and the one
+    /// `current` was built from.
+    requested: Option<String>,
+    loaded: Option<String>,
+    dfg: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+    clamp_sampler: wgpu::Sampler,
+    sky_pipeline: wgpu::RenderPipeline,
+}
+
+impl EnvState {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, frame_bgl: &wgpu::BindGroupLayout) -> Self {
+        let linear = |mode_u, label| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(label),
+                address_mode_u: mode_u,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            })
+        };
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("twe-kernel sky"),
+            source: wgpu::ShaderSource::Wgsl(SKY_SHADER_SRC.into()),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("twe-kernel sky layout"),
+            bind_group_layouts: &[Some(frame_bgl)],
+            immediate_size: 0,
+        });
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("twe-kernel sky"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_sky"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_sky"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            // At the far plane, only where the depth buffer is still clear.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        EnvState {
+            uniform: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("twe-kernel env uniform"),
+                contents: bytemuck::bytes_of(&EnvUniform::none()),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }),
+            current: crate::kernel::environment::placeholder(device, queue),
+            requested: None,
+            loaded: None,
+            dfg: crate::kernel::environment::dfg_texture(device, queue),
+            sampler: linear(wgpu::AddressMode::Repeat, "twe-kernel env sampler"),
+            clamp_sampler: linear(wgpu::AddressMode::ClampToEdge, "twe-kernel clamp sampler"),
+            sky_pipeline,
+        }
+    }
+}
+
+/// Bind group 0: camera, lights and the environment.
+fn frame_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    camera: &wgpu::Buffer,
+    lights: &wgpu::Buffer,
+    env: &EnvState,
+) -> wgpu::BindGroup {
+    let view = |v| wgpu::BindingResource::TextureView(v);
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twe-kernel frame bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: lights.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: env.uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: view(&env.current.specular),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: view(&env.current.equirect),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: view(&env.dfg),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::Sampler(&env.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::Sampler(&env.clamp_sampler),
+            },
+        ],
+    })
+}
+
 /// web3d-M7: the passes of a frame, as the render graph schedules them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum FramePass {
@@ -4137,6 +4460,43 @@ fn tonemap_bind_group(
             },
         ],
     })
+}
+
+/// Inverse of a 4×4 matrix (cofactor expansion; column-major, like the
+/// rest of this file). Returns the identity for a singular matrix.
+fn invert4(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let a: Vec<f64> = m.iter().flatten().map(|v| f64::from(*v)).collect();
+    let mut inv = [0.0f64; 16];
+    inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15] + a[9] * a[7] * a[14] + a[13] * a[6] * a[11] - a[13] * a[7] * a[10];
+    inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15] - a[8] * a[7] * a[14] - a[12] * a[6] * a[11] + a[12] * a[7] * a[10];
+    inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15] + a[8] * a[7] * a[13] + a[12] * a[5] * a[11] - a[12] * a[7] * a[9];
+    inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14] - a[8] * a[6] * a[13] - a[12] * a[5] * a[10] + a[12] * a[6] * a[9];
+    inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15] - a[9] * a[3] * a[14] - a[13] * a[2] * a[11] + a[13] * a[3] * a[10];
+    inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15] + a[8] * a[3] * a[14] + a[12] * a[2] * a[11] - a[12] * a[3] * a[10];
+    inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15] - a[8] * a[3] * a[13] - a[12] * a[1] * a[11] + a[12] * a[3] * a[9];
+    inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14] + a[8] * a[2] * a[13] + a[12] * a[1] * a[10] - a[12] * a[2] * a[9];
+    inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15] + a[5] * a[3] * a[14] + a[13] * a[2] * a[7] - a[13] * a[3] * a[6];
+    inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15] - a[4] * a[3] * a[14] - a[12] * a[2] * a[7] + a[12] * a[3] * a[6];
+    inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15] + a[4] * a[3] * a[13] + a[12] * a[1] * a[7] - a[12] * a[3] * a[5];
+    inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14] - a[4] * a[2] * a[13] - a[12] * a[1] * a[6] + a[12] * a[2] * a[5];
+    inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11] - a[5] * a[3] * a[10] - a[9] * a[2] * a[7] + a[9] * a[3] * a[6];
+    inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11] + a[4] * a[3] * a[10] + a[8] * a[2] * a[7] - a[8] * a[3] * a[6];
+    inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11] - a[4] * a[3] * a[9] - a[8] * a[1] * a[7] + a[8] * a[3] * a[5];
+    inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10] + a[4] * a[2] * a[9] + a[8] * a[1] * a[6] - a[8] * a[2] * a[5];
+    let det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
+    if det.abs() < 1e-30 {
+        return [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+    }
+    let mut out = [[0.0f32; 4]; 4];
+    for (i, v) in inv.iter().enumerate() {
+        out[i / 4][i % 4] = (v / det) as f32;
+    }
+    out
 }
 
 fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
@@ -4410,12 +4770,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_glb_fills_missing_normals_with_up() {
-        // The fixture omits NORMAL — loader fills with [0, 1, 0]
-        // so the mesh still shades against the directional light.
+    fn parse_glb_gives_missing_normals_flat_face_normals() {
+        // The fixture omits NORMAL: glTF requires flat normals, so the
+        // CCW triangle in the z = 0 plane faces +z (web3d-M7; it used
+        // to get [0, 1, 0]).
         let bytes = make_minimal_glb();
         let vertices = parse_glb_bytes(&bytes).expect("decode").0.vertices;
-        assert_eq!(vertices[0].normal, [0.0, 1.0, 0.0]);
+        for v in &vertices {
+            assert_eq!(v.normal, [0.0, 0.0, 1.0]);
+        }
     }
 
     #[test]
@@ -4547,6 +4910,16 @@ mod tests {
     #[test]
     fn shadow_shader_parses_and_validates() {
         validate_wgsl("SHADOW_SHADER_SRC", SHADOW_SHADER_SRC);
+    }
+
+    /// web3d-M7: the backdrop and the environment precompute shaders.
+    #[test]
+    fn environment_shaders_parse_and_validate() {
+        validate_wgsl("SKY_SHADER_SRC", SKY_SHADER_SRC);
+        validate_wgsl(
+            "PRECOMPUTE_SHADER",
+            crate::kernel::environment::PRECOMPUTE_SHADER,
+        );
     }
 
     #[test]
