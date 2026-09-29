@@ -445,6 +445,7 @@ fn environment_lights_and_backs_the_scene() {
     let mut assets = twec::play3d::NativeAssets::default();
     for _ in 0..3 {
         let snap = RenderSnapshot {
+            lut: None,
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: Some(EnvironmentSettings {
                 path: "sky.hdr",
@@ -702,6 +703,7 @@ fn backdrop_pixel(
     let mut assets = twec::play3d::NativeAssets::default();
     for i in 0..frames {
         let snap = RenderSnapshot {
+            lut: None,
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: None,
             background,
@@ -929,4 +931,150 @@ on render():
         let (a, b) = (pixel(&off, x, y), pixel(&on, x, y));
         assert!((luma(a) - luma(b)).abs() <= 6, "open floor at ({x}, {y}): off {a:?}, on {b:?}");
     }
+}
+
+/// Render `frames` frames of `src` (ticking 1/60 s between them) and
+/// return the last.
+fn render_frames(src: &str, frames: u32) -> Vec<u8> {
+    let mut renderer = headless().expect("gpu");
+    let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    let mut assets = twec::play3d::NativeAssets::default();
+    for _ in 0..frames {
+        twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+        twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+    }
+    renderer.read_pixels().expect("read pixels")
+}
+
+fn inverse_srgb8(v: f32) -> f32 {
+    let c = v / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// web3d-M7: `postfx.lut` grades through a `.cube` LUT in display space:
+/// an inverting LUT turns each channel v into 255 - v, and strength 0.5
+/// mixes the two halfway (in linear light).
+#[test]
+fn color_lut_grades_the_frame() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let dir = std::path::Path::new("target/kernel-render");
+    std::fs::create_dir_all(dir).expect("create output dir");
+    let mut cube = String::from("TITLE \"invert\"\nLUT_3D_SIZE 2\n");
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                cube.push_str(&format!("{} {} {}\n", 1 - r, 1 - g, 1 - b));
+            }
+        }
+    }
+    std::fs::write(dir.join("invert.cube"), cube).expect("write lut");
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some(dir.into()));
+    let scene = |strength: f32| {
+        format!("light.clear()\npostfx.tonemap(\"none\")\npostfx.lut(\"invert.cube\", {strength})\n")
+    };
+    let plain = pixel(&render_source(&mut renderer, "lut_off", &scene(0.0)), W / 2, H / 2);
+    let full = pixel(&render_source(&mut renderer, "lut_full", &scene(1.0)), W / 2, H / 2);
+    let half = pixel(&render_source(&mut renderer, "lut_half", &scene(0.5)), W / 2, H / 2);
+    twec::bundle::set_asset_root(None);
+    for c in 0..3 {
+        let v = f32::from(plain[c]);
+        assert!((f32::from(full[c]) - (255.0 - v)).abs() <= 3.0, "inverted {full:?} vs plain {plain:?}");
+        let mixed = 0.5 * inverse_srgb8(v) + 0.5 * inverse_srgb8(255.0 - v);
+        assert!((f32::from(half[c]) - srgb8(mixed)).abs() <= 3.0, "half {half:?} vs plain {plain:?}");
+    }
+}
+
+/// web3d-M7: depth of field blurs what's out of focus and leaves the
+/// focused object sharp.
+#[test]
+fn depth_of_field_blurs_out_of_focus() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |f_stop: f32| {
+        format!(
+            r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((1.0, 1.0, 1.0, 1.0))
+postfx.dof(5, {f_stop})
+camera.eye = vec3(0, 0, 5)
+camera.target = vec3(0, 0, 0)
+on render():
+    cube(at: vec3(-1, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+    cube(at: vec3(3, 0, -20), color: (1, 1, 1, 1), size: 4.0)
+"#
+        )
+    };
+    let sharp = render_once(&scene(0.0));
+    let blurred = render_once(&scene(0.1));
+    save_png("depth_of_field", &blurred);
+    save_png("depth_of_field_sharp", &sharp);
+    let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+    let (mut near, mut far) = (0, 0);
+    for y in 0..H {
+        for x in 0..W {
+            if (luma(pixel(&sharp, x, y)) - luma(pixel(&blurred, x, y))).abs() > 30 {
+                if x < W / 2 - 5 {
+                    near += 1;
+                } else {
+                    far += 1;
+                }
+            }
+        }
+    }
+    assert!(far > 60, "the far block's edges barely changed: {far} pixels");
+    assert!(near < 10, "the focused block changed: {near} pixels");
+}
+
+/// web3d-M7: camera motion blur smears the frame along the camera's
+/// motion, and changes nothing while the camera is still.
+#[test]
+fn motion_blur_follows_the_camera() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |shutter: f32, speed: f32| {
+        format!(
+            r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((1.0, 1.0, 1.0, 1.0))
+postfx.motion_blur({shutter})
+var x = 0.0
+on update(dt):
+    x += {speed} * dt
+on render():
+    camera.eye = vec3(x, 0, 5)
+    camera.target = vec3(x, 0, 0)
+    cube(at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+"#
+        )
+    };
+    let changed = |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
+    let still_off = render_frames(&scene(0.0, 0.0), 3);
+    let still_on = render_frames(&scene(1.0, 0.0), 3);
+    assert_eq!(changed(&still_off, &still_on), 0, "a still camera blurs nothing");
+    let moving_off = render_frames(&scene(0.0, 20.0), 3);
+    let moving_on = render_frames(&scene(1.0, 20.0), 3);
+    save_png("motion_blur", &moving_on);
+    // The block's left and right edges streak sideways onto the
+    // background; its top and bottom edges (the block's centre column,
+    // x = 118 with the camera 1 unit right) stay sharp.
+    let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+    let differ = |a: [u8; 3], b: [u8; 3]| (luma(a) - luma(b)).abs() > 30;
+    let row = (0..W).filter(|&x| differ(pixel(&moving_off, x, H / 2), pixel(&moving_on, x, H / 2))).count();
+    let column = (0..H).filter(|&y| differ(pixel(&moving_off, 118, y), pixel(&moving_on, 118, y))).count();
+    assert!(row >= 8, "only {row} pixels of the centre row streaked");
+    assert!(column <= 2, "{column} pixels of the block's top and bottom edges blurred");
 }

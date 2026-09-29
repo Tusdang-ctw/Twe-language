@@ -13,6 +13,7 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Depth of field, motion blur and colour grading in 3D** (web3d-M7): `postfx.dof(focus, f_stop)` (a physical thin lens), `postfx.motion_blur(shutter)` (camera motion) and `postfx.lut(path, strength)` (`.cube` 3D LUTs).
 - **Post-processing in 3D** (web3d-M7):
   - `postfx.ao(strength)` / `postfx.ao_radius(r)`: ground-truth ambient occlusion (GTAO) on indirect light;
   - `postfx.exposure(stops)` and `postfx.auto_exposure(true)`;

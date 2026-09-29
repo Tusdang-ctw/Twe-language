@@ -604,6 +604,7 @@ impl AssetSource for WebAssets {
                 AssetKind::Mesh => AssetReady::Mesh(id, bytes.and_then(|b| parse_glb_bytes(&b))),
                 AssetKind::Texture => AssetReady::Texture(id, bytes),
                 AssetKind::Environment => AssetReady::Environment(id, bytes),
+                AssetKind::Lut => AssetReady::Lut(id, bytes),
             });
             return;
         }
@@ -615,6 +616,7 @@ impl AssetSource for WebAssets {
                 AssetKind::Mesh => AssetReady::Mesh(id, bytes.and_then(|b| parse_glb_bytes(&b))),
                 AssetKind::Texture => AssetReady::Texture(id, bytes),
                 AssetKind::Environment => AssetReady::Environment(id, bytes),
+                AssetKind::Lut => AssetReady::Lut(id, bytes),
             };
             ready.borrow_mut().push(done);
         });

@@ -915,10 +915,21 @@ postfx.vignette(0.4)              # radial darkening, 0 (off) to 1 (full)
 postfx.vignette_color(color.purple) # tint instead of darken (default black)
 postfx.bloom(0.6)                 # bloom intensity, 0 (off, default)
 postfx.bloom_threshold(1.0)       # HDR brightness where bloom starts; 0 = everything glows a little
+postfx.dof(8, 1.4)                # depth of field: focus distance, f-number; (0, 0) = off
+postfx.motion_blur(0.5)           # camera motion blur, shutter as a fraction of a frame; 0 = off
+postfx.lut("looks/warm.cube", 1)  # colour grading: a .cube 3D LUT and its strength; 0 = off
 postfx.frustum_cull(true)         # skip culled draw calls (default on)
 ```
 
 The HDR pipeline always runs. The steps from scene light to the display, in order *(web3d-M7)*:
+
+- **Depth of field** simulates a real lens: a thin lens focused `focus` world units away at aperture f/`f_stop`. The focal length comes from the camera's field of view on a full-frame (24 mm tall) sensor.
+  - Blur grows with distance from the focus plane, as a photograph's does. Blurry foreground spreads over sharp background, and a sharp object keeps its edges against a blurred background.
+  - The blur is capped at 1.5% of the frame height.
+  - A wide game camera has a short focal length, so realistic f-numbers (f/1.4 and up) blur little. Use f-numbers below 1 for a stylised shallow focus.
+- **Motion blur** streaks the image along the camera's motion during the frame. `0.5` is a film camera's 180° shutter. Moving edges streak over a still background, as in a real exposure.
+  - The streak is capped at 2.5% of the frame width.
+  - Only camera motion blurs: objects that move on their own stay sharp (per-object motion vectors aren't implemented yet).
 
 - **Exposure.** The frame is scaled by 2^`exposure`. With `auto_exposure(true)` it is also scaled so the scene's average brightness (a histogram of the frame, ignoring the darkest 40% and brightest 5% of pixels) lands on middle grey; the adaptation takes about a second, like an eye. `exposure` then shifts that result.
 - **Bloom** (Jimenez 2014, as in Unreal, Unity HDRP and Blender Eevee). The bright parts of the frame are blurred through a chain of halving resolutions and summed, which gives glare a tight core and a wide, soft falloff, then added before the curve. Light above `bloom_threshold` blooms, with a soft knee; `bloom_threshold(0)` makes every surface glow slightly, as a real lens does.
@@ -929,6 +940,7 @@ The HDR pipeline always runs. The steps from scene light to the display, in orde
   - `"none"` is a straight clamp.
 
   `postfx.tonemap(true)` / `(false)` still mean ACES / none. An unknown name is an error listing the valid ones.
+- **Colour grading** (`postfx.lut`) passes the displayed colour through a 3D look-up table in the `.cube` format that DaVinci Resolve, Photoshop and most grading tools export. It is applied in display (sRGB) space, as those tools author it. Only 3D LUTs over the default 0–1 domain load; any other file is reported with the reason. `strength` blends the ungraded and graded images.
 - **Vignette** last.
 
 **Ambient occlusion** *(web3d-M7)*. `postfx.ao(1.0)` darkens light from the environment (IBL or `light.ambient`) where surfaces are hemmed in: corners, contact with the ground, the inside of a helmet. It is ground-truth ambient occlusion (GTAO):

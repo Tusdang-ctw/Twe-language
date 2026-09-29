@@ -111,8 +111,13 @@ pub fn render_frame(
     let (eye, target, up) = read_camera(env);
     let draws = std::mem::take(&mut env.render_queue3d);
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
+    let lut = crate::stdlib::color_lut();
     let snap = RenderSnapshot {
         camera: Camera3d::new(eye, target, up),
+        lut: lut.as_ref().map(|(path, strength)| crate::kernel::render::LutSettings {
+            path,
+            strength: *strength,
+        }),
         environment: None,
         background: [0.06, 0.10, 0.16],
         lights: crate::stdlib::lights_snapshot(),
@@ -132,6 +137,9 @@ pub fn render_frame(
             auto_exposure: crate::stdlib::auto_exposure_enabled(),
             ao: crate::stdlib::ao_settings().0,
             ao_radius: crate::stdlib::ao_settings().1,
+            dof_focus: crate::stdlib::dof_settings().0,
+            dof_f_stop: crate::stdlib::dof_settings().1,
+            motion_blur: crate::stdlib::motion_blur_shutter(),
         },
         draws: &draws,
         mesh_paths: &env.mesh_paths,

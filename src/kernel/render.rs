@@ -105,6 +105,13 @@ pub struct PostFx {
     pub ao: f32,
     /// web3d-M7: how far (world units) occluders reach.
     pub ao_radius: f32,
+    /// web3d-M7: depth of field — the distance in focus (world units)
+    /// and the lens's f-number; off when either is 0.
+    pub dof_focus: f32,
+    pub dof_f_stop: f32,
+    /// web3d-M7: camera motion blur, as the fraction of the frame the
+    /// shutter is open (0.5 = a film camera's 180°); 0 = off.
+    pub motion_blur: f32,
 }
 
 impl Default for PostFx {
@@ -121,6 +128,9 @@ impl Default for PostFx {
             auto_exposure: false,
             ao: 0.0,
             ao_radius: 0.5,
+            dof_focus: 0.0,
+            dof_f_stop: 0.0,
+            motion_blur: 0.0,
         }
     }
 }
@@ -137,8 +147,19 @@ pub struct EnvironmentSettings<'a> {
     pub backdrop: bool,
 }
 
+/// web3d-M7: a colour-grading look for a frame.
+#[derive(Debug, Clone, Copy)]
+pub struct LutSettings<'a> {
+    /// Asset path of a `.cube` 3D LUT (display-referred, [0, 1] domain).
+    pub path: &'a str,
+    /// 0 = ungraded, 1 = fully graded.
+    pub strength: f32,
+}
+
 pub struct RenderSnapshot<'a> {
     pub camera: Camera3d,
+    /// web3d-M7: colour grading, applied after the tonemap curve.
+    pub lut: Option<LutSettings<'a>>,
     /// web3d-M7: image-based lighting; `None` lights with the uniform
     /// ambient colour instead.
     pub environment: Option<EnvironmentSettings<'a>>,
@@ -172,6 +193,8 @@ pub enum AssetKind {
     /// web3d-M7: an HDR environment map (equirect `.hdr`); delivered as
     /// raw bytes like a texture.
     Environment,
+    /// web3d-M7: a `.cube` colour-grading LUT (raw bytes).
+    Lut,
 }
 
 /// A finished asset load.
@@ -182,6 +205,8 @@ pub enum AssetReady {
     Texture(u32, Result<Vec<u8>, String>),
     /// web3d-M7: encoded HDR environment bytes.
     Environment(u32, Result<Vec<u8>, String>),
+    /// web3d-M7: `.cube` LUT text.
+    Lut(u32, Result<Vec<u8>, String>),
 }
 
 /// How the renderer gets asset data. Requests are fire-and-forget;
@@ -1053,6 +1078,8 @@ struct Params {
     flags: vec4<f32>,
     /// xyz = vignette tint; w = auto exposure on (1/0).
     vignette_color: vec4<f32>,
+    /// x = grading strength (0 = off), y = LUT size.
+    lut: vec4<f32>,
 };
 
 @group(0) @binding(0) var t_hdr: texture_2d<f32>;
@@ -1061,6 +1088,20 @@ struct Params {
 @group(0) @binding(3) var t_bloom: texture_2d<f32>;
 // x = adapted log2 exposure (kernel/post.rs).
 @group(0) @binding(4) var<storage, read> exposure_state: vec4<f32>;
+// web3d-M7: colour grading, a 3D LUT in display (sRGB-encoded) space.
+@group(0) @binding(5) var t_lut: texture_3d<f32>;
+
+fn to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
+fn from_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
 
 struct VOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -1202,6 +1243,14 @@ fn fs_tonemap(in: VOut) -> @location(0) vec4<f32> {
         col = aces(hdr);
     } else {
         col = clamp(hdr, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    // web3d-M7: grade through the LUT (sampled at texel centres), in
+    // the display encoding grading tools author LUTs in.
+    if (params.lut.x > 0.0) {
+        let n = params.lut.y;
+        let coord = to_srgb(clamp(col, vec3<f32>(0.0), vec3<f32>(1.0))) * ((n - 1.0) / n) + 0.5 / n;
+        let graded = from_srgb(textureSampleLevel(t_lut, s_hdr, coord, 0.0).rgb);
+        col = mix(col, graded, params.lut.x);
     }
     // Phase 28 session 4: colour-tinted vignette. Smooth radial
     // lerp from the LDR color toward `vignette_color` — strength 0
@@ -1871,6 +1920,10 @@ pub struct Renderer {
     ao: crate::kernel::ao::Ao,
     bloom: crate::kernel::post::Bloom,
     exposure: crate::kernel::post::AutoExposure,
+    /// web3d-M7 session 8: depth of field, motion blur and grading.
+    dof: crate::kernel::post::Dof,
+    motion: crate::kernel::post::MotionBlur,
+    lut: LutState,
     /// The AO texture the frame bind group was built with
     /// (`Ao::key`), and a frame counter (AO pattern rotation).
     frame_ao_key: u64,
@@ -1936,7 +1989,7 @@ pub struct Renderer {
     /// Bind group over the HDR target + sampler + params + bloom +
     /// exposure, tagged with the HDR texture's pool generation and the
     /// bloom texture's key.
-    tonemap_bind_group: Option<((u64, u64), wgpu::BindGroup)>,
+    tonemap_bind_group: Option<((u64, u64, u64), wgpu::BindGroup)>,
     /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
     /// `Env::mesh_paths` interned id (the `u32` payload of
     /// `Primitive::Mesh`). Populated on first sight of a new id in
@@ -2308,6 +2361,15 @@ async fn init_renderer(
     let ao = crate::kernel::ao::Ao::new(&device, &queue);
     let bloom = crate::kernel::post::Bloom::new(&device, &queue);
     let exposure = crate::kernel::post::AutoExposure::new(&device);
+    let dof = crate::kernel::post::Dof::new(&device);
+    let motion = crate::kernel::post::MotionBlur::new(&device);
+    let lut = LutState {
+        view: crate::kernel::post::identity_lut(&device, &queue),
+        size: 2,
+        requested: None,
+        loaded: None,
+        generation: 0,
+    };
     let frame_bind_group = frame_bind_group(
         &device,
         &frame_bgl,
@@ -2645,6 +2707,17 @@ async fn init_renderer(
                 },
                 count: None,
             },
+            // web3d-M7: the colour-grading LUT.
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
     let tonemap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2657,17 +2730,17 @@ async fn init_renderer(
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
-    // Tonemap params, two vec4s (32 B): see `TONEMAP_SHADER_SRC`.
+    // Tonemap params, three vec4s (48 B): see `TONEMAP_SHADER_SRC`.
     let tonemap_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("twec-play3d tonemap params"),
-        size: 32,
+        size: 48,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     queue.write_buffer(
         &tonemap_params_buffer,
         0,
-        bytemuck::cast_slice(&[0.0_f32; 8]),
+        bytemuck::cast_slice(&[0.0_f32; 12]),
     );
     let tonemap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("twec-play3d tonemap shader"),
@@ -2737,6 +2810,9 @@ async fn init_renderer(
         ao,
         bloom,
         exposure,
+        dof,
+        motion,
+        lut,
         frame_ao_key: 0,
         frame_index: std::cell::Cell::new(0),
         point_shadows,
@@ -3958,6 +4034,15 @@ impl Renderer {
             .queue
             .write_buffer(&state.lights_buffer, 0, bytemuck::bytes_of(&lights_uniform));
 
+        // web3d-M7: the colour-grading LUT — ask for a new one.
+        let wanted_lut = snap.lut.map(|l| l.path.to_string());
+        if wanted_lut.is_some() && wanted_lut != state.lut.requested {
+            state.lut.requested = wanted_lut.clone();
+            if let Some(path) = &wanted_lut {
+                assets.request(AssetKind::Lut, 0, path);
+            }
+        }
+
         // web3d-M7: the frame's environment — ask for a new one, adopt
         // one that finished loading, and describe it to the shaders.
         let wanted = snap.environment.map(|e| e.path.to_string());
@@ -4057,6 +4142,21 @@ impl Renderer {
                             log_error(&format!("mesh load: {e}"));
                             state.mesh_load_failures.insert(id);
                         }
+                    }
+                }
+                AssetReady::Lut(_, result) => {
+                    let parsed = result.and_then(|bytes| {
+                        let text = String::from_utf8(bytes).map_err(|_| "a .cube file is text".to_string())?;
+                        crate::kernel::post::parse_cube(&text)
+                    });
+                    match parsed {
+                        Ok(lut) => {
+                            state.lut.view = crate::kernel::post::upload_lut(&state.device, &state.queue, &lut);
+                            state.lut.size = lut.size;
+                            state.lut.loaded = state.lut.requested.clone();
+                            state.lut.generation += 1;
+                        }
+                        Err(e) => log_error(&format!("colour LUT `{}`: {e}", state.lut.requested.as_deref().unwrap_or(""))),
                     }
                 }
                 AssetReady::Environment(_, result) => {
@@ -4425,6 +4525,69 @@ impl Renderer {
         } else {
             hdr
         };
+        // web3d-M7: depth of field, then motion blur, each a new HDR
+        // target read by the next step.
+        let (width, height) = (state.config.width, state.config.height);
+        let dof_on = snap.post.dof_focus > 0.0
+            && !instances.is_empty()
+            && state.dof.prepare(
+                &state.device,
+                &state.queue,
+                width,
+                height,
+                &crate::kernel::post::DofFrame {
+                    focus: snap.post.dof_focus,
+                    f_stop: snap.post.dof_f_stop,
+                    fov_y,
+                    near,
+                    far,
+                },
+            );
+        let motion_on = snap.post.motion_blur > 0.0;
+        if motion_on {
+            state.motion.prepare(
+                &state.device,
+                &state.queue,
+                width,
+                height,
+                &crate::kernel::post::MotionFrame {
+                    view_proj: unjittered_view_proj,
+                    inv_view_proj: invert4(unjittered_view_proj),
+                    near,
+                    far,
+                    shutter: snap.post.motion_blur,
+                },
+            );
+        } else {
+            state.motion.reset();
+        }
+        let taa_history = taa_on.then_some(tonemap_input);
+        let mut post_res = tonemap_input;
+        let mut dof_io = None;
+        let mut motion_io = None;
+        if dof_on {
+            let out = graph.create(TextureDesc::new("depth of field", Extent::FULL, HDR_FORMAT));
+            graph.add_pass(
+                FramePass::Dof,
+                "depth of field",
+                &[(post_res, Access::Sample), (depth, Access::Sample)],
+                &[(out, Access::Attach)],
+            );
+            dof_io = Some((post_res, out));
+            post_res = out;
+        }
+        if motion_on {
+            let out = graph.create(TextureDesc::new("motion blur", Extent::FULL, HDR_FORMAT));
+            graph.add_pass(
+                FramePass::MotionBlur,
+                "motion blur",
+                &[(post_res, Access::Sample), (depth, Access::Sample)],
+                &[(out, Access::Attach)],
+            );
+            motion_io = Some((post_res, out));
+            post_res = out;
+        }
+        let tonemap_input = post_res;
         // web3d-M7: bloom and exposure measure the anti-aliased frame.
         let bloom_on = snap.post.bloom_intensity > 0.0;
         let auto_exposure = snap.post.auto_exposure;
@@ -4469,7 +4632,6 @@ impl Renderer {
                 invert4(unjittered_view_proj),
             );
         }
-        let (width, height) = (state.config.width, state.config.height);
         if ao_on {
             let (device, queue) = (&state.device, &state.queue);
             state.prepass.write(queue, view_proj);
@@ -4513,21 +4675,31 @@ impl Renderer {
         }
         // The history written this frame alternates: with TAA the
         // tonemap's input is bound fresh every frame.
-        let input_key = if taa_on {
+        let from_history = taa_history == Some(tonemap_input);
+        let input_key = if from_history {
             u64::MAX
         } else {
-            state.pool.generation(&plan, hdr)
+            state.pool.generation(&plan, tonemap_input)
         };
-        let key = (input_key, state.bloom.key(bloom_on));
-        if taa_on || state.tonemap_bind_group.as_ref().map(|(k, _)| *k) != Some(key) {
-            let input = if taa_on {
+        let key = (input_key, state.bloom.key(bloom_on), state.lut.generation);
+        if from_history || state.tonemap_bind_group.as_ref().map(|(k, _)| *k) != Some(key) {
+            let input = if from_history {
                 state.taa.output()
             } else {
-                state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?
+                state
+                    .pool
+                    .view(&plan, tonemap_input)
+                    .ok_or("render graph: no tonemap input")?
             };
             let bg = tonemap_bind_group(state, input, state.bloom.view(bloom_on));
             state.tonemap_bind_group = Some((key, bg));
         }
+        let lut_strength = match snap.lut {
+            Some(l) if state.lut.loaded.is_some() && state.lut.loaded == state.lut.requested => {
+                l.strength.clamp(0.0, 1.0)
+            }
+            _ => 0.0,
+        };
         // Phase 26: fullscreen tonemap pass — reads the HDR offscreen,
         // applies ACES (or pass-through, per script flag) plus
         // optional vignette, writes to the swapchain. Always runs:
@@ -4559,6 +4731,10 @@ impl Renderer {
                 vc_g,
                 vc_b,
                 if auto_exposure { 1.0 } else { 0.0 },
+                lut_strength,
+                state.lut.size as f32,
+                0.0,
+                0.0,
             ]),
         );
         let state = &*state;
@@ -4568,7 +4744,15 @@ impl Renderer {
             .pool
             .view(&plan, hdr_msaa)
             .ok_or("render graph: no msaa target")?;
-        let post_input = if taa_on { state.taa.output() } else { main_color_view };
+        // A graph texture's view: TAA's history, or a pooled target.
+        let view_of = |r| {
+            if taa_history == Some(r) {
+                Some(state.taa.output())
+            } else {
+                state.pool.view(&plan, r)
+            }
+        };
+        let post_input = view_of(tonemap_input).ok_or("render graph: no post input")?;
         for pass in &plan.passes {
             match *pass {
                 FramePass::Prepass => {
@@ -4597,6 +4781,18 @@ impl Renderer {
                         .and_then(|d| state.pool.view(&plan, d))
                         .ok_or("render graph: no prepass depth")?;
                     state.ao.record(&state.device, &mut encoder, view);
+                }
+                FramePass::Dof => {
+                    let (input, output) = dof_io.ok_or("render graph: dof without targets")?;
+                    let input = view_of(input).ok_or("render graph: no dof input")?;
+                    let output = view_of(output).ok_or("render graph: no dof output")?;
+                    state.dof.record(&state.device, &mut encoder, input, depth_view, output);
+                }
+                FramePass::MotionBlur => {
+                    let (input, output) = motion_io.ok_or("render graph: motion blur without targets")?;
+                    let input = view_of(input).ok_or("render graph: no motion blur input")?;
+                    let output = view_of(output).ok_or("render graph: no motion blur output")?;
+                    state.motion.record(&state.device, &mut encoder, input, depth_view, output);
                 }
                 FramePass::Bloom => {
                     state.bloom.record(&state.device, &mut encoder, post_input);
@@ -4684,7 +4880,7 @@ impl Renderer {
                                 view: depth_view,
                                 depth_ops: Some(wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(1.0),
-                                    store: if taa_on {
+                                    store: if taa_on || dof_on || motion_on {
                                         wgpu::StoreOp::Store
                                     } else {
                                         wgpu::StoreOp::Discard
@@ -4920,6 +5116,17 @@ impl Renderer {
         }
         Ok(out)
     }
+}
+
+/// web3d-M7: the colour-grading LUT: the current one (identity until a
+/// `.cube` loads), its size, and which path was asked for / loaded.
+struct LutState {
+    view: wgpu::TextureView,
+    size: u32,
+    requested: Option<String>,
+    loaded: Option<String>,
+    /// Bumped when `view` changes (the tonemap bind group rebuilds).
+    generation: u64,
 }
 
 /// web3d-M7: image-based lighting state: the current environment (a
@@ -5424,6 +5631,10 @@ enum FramePass {
     Main,
     /// web3d-M7: temporal anti-aliasing resolve into the history.
     Taa,
+    /// web3d-M7: depth of field (bokeh gather + composite).
+    Dof,
+    /// web3d-M7: camera motion blur.
+    MotionBlur,
     /// web3d-M7: the bloom chain, from the (anti-aliased) HDR frame.
     Bloom,
     /// web3d-M7: measure the frame and adapt the exposure.
@@ -5486,6 +5697,10 @@ fn tonemap_bind_group(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: state.exposure.state().as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&state.lut.view),
             },
         ],
     })
@@ -6116,6 +6331,8 @@ mod tests {
         validate_wgsl("AO", crate::kernel::ao::shader_source());
         validate_wgsl("BLOOM", crate::kernel::post::bloom_shader_source());
         validate_wgsl("EXPOSURE", crate::kernel::post::exposure_shader_source());
+        validate_wgsl("DOF", crate::kernel::post::dof_shader_source());
+        validate_wgsl("MOTION", crate::kernel::post::motion_shader_source());
     }
 
     /// Phase 27: the Vertex layout's stride must match what the

@@ -132,6 +132,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: level with Three.js.** Twe learned ambient occlusion, the soft darkening where surfaces crowd together: under a helmet's brim, where a pillar meets the floor. It also gained lens-like glow around bright lights, eye-like adaptation to dark and bright scenes, and two more film curves. On the scoreboard, Twe's average error dipped below Three.js's for the first time: 0.1850 against 0.1857. The notes call it what it is, a tie within noise, measured with a feature switched on that the Three.js setup doesn't use. The same session caught a bug that had hidden for four sessions: every built-in sphere was being drawn inside out.
 
+- **2026-09-29: a camera, not just a renderer.** Twe's 3D can now behave like a camera: it focuses at a distance and blurs the rest as a real lens of that size would, streaks the image when the camera whips around, and takes a colour grade from the same `.cube` files film colourists use. Each of these has an easy wrong version, and the tests caught two: blur leaking around a sharp object's edges, and motion streaks that smeared inward instead of across the background.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

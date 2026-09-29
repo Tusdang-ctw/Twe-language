@@ -1313,6 +1313,25 @@ fn postfx_exposure_and_ao_setters() {
     assert!(run_program_str("postfx.auto_exposure(1)\n").is_err(), "auto_exposure takes a bool");
 }
 
+/// web3d-M7: depth of field, motion blur and colour-grading setters.
+#[test]
+fn postfx_dof_motion_blur_and_lut_setters() {
+    run_program_str("postfx.dof(8, 1.4)
+postfx.motion_blur(0.5)
+postfx.lut(\"looks/warm.cube\", 0.75)
+").expect("should run");
+    assert_eq!(twec::stdlib::dof_settings(), (8.0, 1.4));
+    assert_eq!(twec::stdlib::motion_blur_shutter(), 0.5);
+    assert_eq!(twec::stdlib::color_lut(), Some(("looks/warm.cube".to_string(), 0.75)));
+    run_program_str("postfx.lut(\"looks/warm.cube\", 0)
+").expect("should run");
+    assert_eq!(twec::stdlib::color_lut(), None, "strength 0 turns grading off");
+    assert!(run_program_str("postfx.dof(-1, 2)
+").is_err(), "negative focus is rejected");
+    assert!(run_program_str("postfx.lut(3, 1)
+").is_err(), "the LUT is a path");
+}
+
 #[test]
 fn postfx_bloom_clamps_negative_intensity_to_zero() {
     let _ = run_program_str("postfx.bloom(-0.5)\n").expect("should run");

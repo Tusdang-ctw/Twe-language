@@ -408,6 +408,19 @@ pub fn install(env: &mut Env) {
         "ao_radius".to_string(),
         Value::from_builtin("postfx.ao_radius", &["radius"], postfx_ao_radius_impl),
     );
+    // web3d-M7 session 8: depth of field, motion blur, colour grading.
+    postfx_fields.insert(
+        "dof".to_string(),
+        Value::from_builtin("postfx.dof", &["focus", "f_stop"], postfx_dof_impl),
+    );
+    postfx_fields.insert(
+        "motion_blur".to_string(),
+        Value::from_builtin("postfx.motion_blur", &["shutter"], postfx_motion_blur_impl),
+    );
+    postfx_fields.insert(
+        "lut".to_string(),
+        Value::from_builtin("postfx.lut", &["path", "strength"], postfx_lut_impl),
+    );
     // web3d-M7: temporal anti-aliasing on top of the built-in 4x MSAA.
     postfx_fields.insert(
         "taa".to_string(),
@@ -1078,6 +1091,11 @@ thread_local! {
     static AUTO_EXPOSURE: RefCell<bool> = const { RefCell::new(false) };
     static AO_INTENSITY: RefCell<f32> = const { RefCell::new(0.0) };
     static AO_RADIUS: RefCell<f32> = const { RefCell::new(0.5) };
+    /// web3d-M7 session 8: depth of field (focus distance, f-number),
+    /// motion blur shutter, and the colour-grading LUT (path, strength).
+    static DOF: RefCell<(f32, f32)> = const { RefCell::new((0.0, 0.0)) };
+    static MOTION_BLUR: RefCell<f32> = const { RefCell::new(0.0) };
+    static COLOR_LUT: RefCell<Option<(String, f32)>> = const { RefCell::new(None) };
     /// web3d-M7: temporal anti-aliasing (`postfx.taa`), off by default.
     static TAA_ENABLED: RefCell<bool> = const { RefCell::new(false) };
     /// Phase 26: vignette strength, 0.0 (off) to 1.0 (full).
@@ -1157,6 +1175,21 @@ pub fn auto_exposure_enabled() -> bool {
 /// `postfx.ao_radius`).
 pub fn ao_settings() -> (f32, f32) {
     (AO_INTENSITY.with(|s| *s.borrow()), AO_RADIUS.with(|s| *s.borrow()))
+}
+
+/// web3d-M7: depth of field as (focus distance, f-number); (0, 0) = off.
+pub fn dof_settings() -> (f32, f32) {
+    DOF.with(|s| *s.borrow())
+}
+
+/// web3d-M7: the motion-blur shutter fraction (0 = off).
+pub fn motion_blur_shutter() -> f32 {
+    MOTION_BLUR.with(|s| *s.borrow())
+}
+
+/// web3d-M7: the colour-grading LUT (path, strength), if any.
+pub fn color_lut() -> Option<(String, f32)> {
+    COLOR_LUT.with(|s| s.borrow().clone())
 }
 
 /// Phase 26: read the script-controlled vignette strength.
@@ -11627,6 +11660,53 @@ fn postfx_ao_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     arity(args, 1, "postfx.ao")?;
     let v = (number(&args[0], "postfx.ao.intensity")? as f32).clamp(0.0, 4.0);
     AO_INTENSITY.with(|s| *s.borrow_mut() = v);
+    Ok(Value::NIL)
+}
+
+// web3d-M7: `postfx.dof(focus, f_stop)` — a thin lens focused at
+// `focus` world units with aperture f/`f_stop` on a full-frame sensor
+// (focal length from the camera's field of view). `postfx.dof(0, 0)`
+// turns it off.
+fn postfx_dof_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "postfx.dof")?;
+    let focus = number(&args[0], "postfx.dof.focus")? as f32;
+    let f_stop = number(&args[1], "postfx.dof.f_stop")? as f32;
+    if focus < 0.0 || f_stop < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "postfx.dof: focus and f_stop can't be negative".to_string(),
+            help: Some("e.g. `postfx.dof(8, 1.4)` focuses 8 m away at f/1.4; `postfx.dof(0, 0)` turns it off".to_string()),
+        });
+    }
+    DOF.with(|s| *s.borrow_mut() = (focus, f_stop));
+    Ok(Value::NIL)
+}
+
+// web3d-M7: camera motion blur; the fraction of a frame the shutter is
+// open (0.5 = a film camera's 180-degree shutter), 0 = off.
+fn postfx_motion_blur_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.motion_blur")?;
+    let shutter = (number(&args[0], "postfx.motion_blur.shutter")? as f32).clamp(0.0, 2.0);
+    MOTION_BLUR.with(|s| *s.borrow_mut() = shutter);
+    Ok(Value::NIL)
+}
+
+// web3d-M7: colour grading through a `.cube` 3D LUT; strength 0..1
+// (0 turns it off).
+fn postfx_lut_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "postfx.lut")?;
+    if !args[0].is_str() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "postfx.lut expects a path to a .cube file".to_string(),
+            help: Some("e.g. `postfx.lut(\"looks/warm.cube\", 1.0)`".to_string()),
+        });
+    }
+    let path = args[0].as_string();
+    let strength = (number(&args[1], "postfx.lut.strength")? as f32).clamp(0.0, 1.0);
+    COLOR_LUT.with(|s| *s.borrow_mut() = (strength > 0.0).then_some((path, strength)));
     Ok(Value::NIL)
 }
 

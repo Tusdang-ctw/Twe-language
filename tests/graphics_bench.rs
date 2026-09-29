@@ -125,6 +125,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
     let mut settled = 0;
     for frame in 0.. {
         let snap = RenderSnapshot {
+            lut: None,
             camera,
             background: [0.0, 0.0, 0.0],
             environment: Some(EnvironmentSettings {
