@@ -118,6 +118,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
   - **Inside the editor:** TweEngine Studio now runs the game in a panel beside the code and reloads it on every save.
   - **Still to do by hand:** the itch.io upload. The 1 MB build is ready.
 
+- **2026-09-29: M7 opens with the engine's plumbing.** Before adding any of the effects that should beat Three.js, the renderer was rebuilt around a *render graph*: each frame declares its passes and what they read and write, and the engine works out order, drops unused work, and shares GPU memory between passes. The proof it changed nothing: every test image came out byte-for-byte identical. The plan puts a measurement harness next, so every later graphics feature is scored against Three.js with numbers, not screenshots.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.
