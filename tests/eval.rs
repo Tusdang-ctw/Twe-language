@@ -1332,6 +1332,21 @@ postfx.lut(\"looks/warm.cube\", 0.75)
 ").is_err(), "the LUT is a path");
 }
 
+/// web3d-M7: `light.fog` sets height fog; density 0 turns it off.
+#[test]
+fn light_fog_setter() {
+    run_program_str("light.fog(0.05, 0.3, (0.7, 0.75, 0.8))
+").expect("should run");
+    let (density, falloff, color) = twec::stdlib::fog_settings().expect("fog on");
+    assert_eq!((density, falloff), (0.05, 0.3));
+    assert!((color[1] - 0.75).abs() < 1e-6);
+    run_program_str("light.fog(0, 0, color.white)
+").expect("should run");
+    assert_eq!(twec::stdlib::fog_settings(), None);
+    assert!(run_program_str("light.fog(-1, 0, color.white)
+").is_err());
+}
+
 #[test]
 fn postfx_bloom_clamps_negative_intensity_to_zero() {
     let _ = run_program_str("postfx.bloom(-0.5)\n").expect("should run");

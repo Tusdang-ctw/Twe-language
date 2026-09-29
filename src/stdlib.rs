@@ -346,6 +346,11 @@ pub fn install(env: &mut Env) {
         "shadow".to_string(),
         Value::from_builtin("light.shadow", &["handle", "enabled"], light_shadow_impl),
     );
+    // web3d-M7: exponential height fog; density 0 turns it off.
+    light_fields.insert(
+        "fog".to_string(),
+        Value::from_builtin("light.fog", &["density", "falloff", "color"], light_fog_impl),
+    );
     light_fields.insert(
         "clear".to_string(),
         Value::from_builtin("light.clear", &[], light_clear_impl),
@@ -1094,6 +1099,8 @@ thread_local! {
     /// web3d-M7 session 8: depth of field (focus distance, f-number),
     /// motion blur shutter, and the colour-grading LUT (path, strength).
     static DOF: RefCell<(f32, f32)> = const { RefCell::new((0.0, 0.0)) };
+    /// web3d-M7: height fog (density, falloff, sRGB colour), or none.
+    static FOG: RefCell<Option<(f32, f32, [f32; 3])>> = const { RefCell::new(None) };
     static MOTION_BLUR: RefCell<f32> = const { RefCell::new(0.0) };
     static COLOR_LUT: RefCell<Option<(String, f32)>> = const { RefCell::new(None) };
     /// web3d-M7: temporal anti-aliasing (`postfx.taa`), off by default.
@@ -1175,6 +1182,11 @@ pub fn auto_exposure_enabled() -> bool {
 /// `postfx.ao_radius`).
 pub fn ao_settings() -> (f32, f32) {
     (AO_INTENSITY.with(|s| *s.borrow()), AO_RADIUS.with(|s| *s.borrow()))
+}
+
+/// web3d-M7: height fog as (density, falloff, sRGB colour), if on.
+pub fn fog_settings() -> Option<(f32, f32, [f32; 3])> {
+    FOG.with(|s| *s.borrow())
 }
 
 /// web3d-M7: depth of field as (focus distance, f-number); (0, 0) = off.
@@ -11497,6 +11509,27 @@ fn light_set_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             slot.color_radius = [color[0], color[1], color[2], radius];
         }
     });
+    Ok(Value::NIL)
+}
+
+// web3d-M7: `light.fog(density, falloff, color)` — exponential height
+// fog: `density` per world unit at y = 0, thinning by e^(-falloff * y)
+// with height (0 = uniform fog). Density 0 turns it off.
+fn light_fog_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "light.fog")?;
+    let density = number(&args[0], "light.fog.density")? as f32;
+    let falloff = number(&args[1], "light.fog.falloff")? as f32;
+    if density < 0.0 || falloff < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "light.fog: density and falloff can't be negative".to_string(),
+            help: Some("e.g. `light.fog(0.05, 0.3, (0.7, 0.75, 0.8))`; `light.fog(0, 0, color.white)` turns it off".to_string()),
+        });
+    }
+    let (r, g, b, _) = rgba(&args[2], "light.fog.color")?;
+    let color = [r as f32, g as f32, b as f32];
+    FOG.with(|s| *s.borrow_mut() = (density > 0.0).then_some((density, falloff, color)));
     Ok(Value::NIL)
 }
 

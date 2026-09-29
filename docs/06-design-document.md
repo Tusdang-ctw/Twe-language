@@ -970,6 +970,7 @@ light.set_radius(torch, 9.0)
 light.shadow(torch, true)                 # this light casts shadows
 light.remove(torch)
 light.clear()                             # remove every point light
+light.fog(0.05, 0.3, (0.7, 0.75, 0.8))    # height fog: density, falloff, colour; density 0 = off
 ```
 
 - There are 8 point-light slots; `light.add` errors when all are taken.
@@ -980,6 +981,20 @@ light.clear()                             # remove every point light
   - they are snapped to whole texels, so edges don't shimmer as the camera moves.
 - Sun shadows are soft (PCSS): sharp where an object meets the ground, softer the further the shadow falls from its caster. The sun's apparent size is fixed.
 - The environment map (§7.7b's IBL) casts no shadows.
+
+**Height fog** *(web3d-M7)*. `light.fog(density, falloff, color)` fills the air with fog that is thickest at ground level (y = 0) and thins with height:
+- the density at height y is `density · e^(-falloff · y)` per world unit; `falloff` 0 gives the same density everywhere;
+- how much fog a pixel shows is the fog along the whole line of sight, computed exactly, so looking up out of a valley clears and looking across it doesn't;
+- the fog is its `color`, glowing brighter looking toward the sun;
+- it covers every surface, translucent ones included, and the background;
+- `light.fog(0, 0, color.white)` turns it off.
+
+**Translucency** *(web3d-M7)*. A draw colour with alpha below 1 (`cube(at: p, color: (0.2, 0.6, 1.0, 0.4))`) draws translucent, and so do glTF materials with `alphaMode: BLEND`:
+- translucent surfaces are drawn after everything opaque, sorted back to front by distance (each glTF primitive by its own centre), and blended over what is behind them;
+- double-sided glTF materials draw their back faces first, so the inside of a glass shows through its front;
+- translucent draws cast no shadows and don't occlude ambient light (glTF BLEND primitives of opaque meshes still cast shadows);
+- a draw with a `visual` material stays opaque whatever its alpha;
+- surfaces that cross each other can blend in the wrong order where they overlap: sorting is per surface, not per pixel.
 
 ### 7.8 Camera
 

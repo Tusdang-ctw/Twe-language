@@ -134,6 +134,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: a camera, not just a renderer.** Twe's 3D can now behave like a camera: it focuses at a distance and blurs the rest as a real lens of that size would, streaks the image when the camera whips around, and takes a colour grade from the same `.cube` files film colourists use. Each of these has an easy wrong version, and the tests caught two: blur leaking around a sharp object's edges, and motion streaks that smeared inward instead of across the background.
 
+- **2026-09-29: glass and mist.** Twe's 3D learned see-through things (a colour with less than full opacity now shows what's behind it, drawn far-to-near so the layers stack correctly) and fog that pools near the ground and clears as you look up, glowing where the sun shines through. Checking against the reference images turned up a curiosity: the "ground truth" renders treat some cut-out panels as see-through, which neither Twe nor Three.js does, because the spec says otherwise.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

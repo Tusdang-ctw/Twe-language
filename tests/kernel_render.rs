@@ -446,6 +446,7 @@ fn environment_lights_and_backs_the_scene() {
     for _ in 0..3 {
         let snap = RenderSnapshot {
             lut: None,
+            fog: None,
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: Some(EnvironmentSettings {
                 path: "sky.hdr",
@@ -704,6 +705,7 @@ fn backdrop_pixel(
     for i in 0..frames {
         let snap = RenderSnapshot {
             lut: None,
+            fog: None,
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: None,
             background,
@@ -1077,4 +1079,128 @@ on render():
     let column = (0..H).filter(|&y| differ(pixel(&moving_off, 118, y), pixel(&moving_on, 118, y))).count();
     assert!(row >= 8, "only {row} pixels of the centre row streaked");
     assert!(column <= 2, "{column} pixels of the block's top and bottom edges blurred");
+}
+
+/// web3d-M7: a tint with alpha below 1 is translucent, and translucent
+/// draws blend back to front whatever order the script drew them in:
+/// green (front) over red (behind) shows more green than red.
+#[test]
+fn translucent_draws_blend_back_to_front() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |alpha: f32| {
+        format!(
+            r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((0.5, 0.5, 0.5, 1.0))
+light.fog(0, 0, color.white)
+postfx.tonemap("none")
+camera.eye = vec3(0, 0, 5)
+camera.target = vec3(0, 0, 0)
+on render():
+    cube(at: vec3(0, 0, 0), color: (0, 1, 0, {alpha}), size: 1.0)
+    cube(at: vec3(0, 0, -4), color: (1, 0, 0, {alpha}), size: 3.0)
+"#
+        )
+    };
+    let opaque = render_once(&scene(1.0));
+    let blended = render_once(&scene(0.5));
+    save_png("translucent", &blended);
+    let [r, g, _] = pixel(&opaque, W / 2, H / 2);
+    assert!(g > r + 100, "the opaque front block hides the back one: {:?}", [r, g]);
+    let [r, g, b] = pixel(&blended, W / 2, H / 2);
+    assert!(r > 60, "the red block shows through: {:?}", [r, g, b]);
+    assert!(g > r + 30, "green is in front (blended last): {:?}", [r, g, b]);
+    // Beside the front block only the back one (and the background).
+    let [r2, g2, _] = pixel(&blended, W / 2 + 32, H / 2);
+    assert!(r2 > g2 + 40, "the back block alone beside it: {:?}", [r2, g2]);
+}
+
+/// web3d-M7: a glTF BLEND material is translucent: the background
+/// shows through a half-transparent blue quad.
+#[test]
+fn gltf_blend_materials_are_translucent() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let positions: [f32; 12] = [-1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0, 0.0];
+    let normals: Vec<f32> = [0.0f32, 0.0, 1.0].repeat(4);
+    let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+    let mut bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+    bin.extend(normals.iter().flat_map(|f| f.to_le_bytes()));
+    bin.extend(indices.iter().flat_map(|i| i.to_le_bytes()));
+    let json = r#"{"asset":{"version":"2.0"},
+        "scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0}]}],
+        "materials":[{"alphaMode":"BLEND","pbrMetallicRoughness":{"baseColorFactor":[0,0,0,0.5],"metallicFactor":0},
+            "emissiveFactor":[0,0,1]}],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-1,-1,0],"max":[1,1,0]},
+            {"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"},
+            {"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":48},
+            {"buffer":0,"byteOffset":48,"byteLength":48},
+            {"buffer":0,"byteOffset":96,"byteLength":12}],
+        "buffers":[{"byteLength":{bin_len}}]}"#;
+    let dir = std::path::Path::new("target/kernel-render");
+    std::fs::create_dir_all(dir).expect("create output dir");
+    std::fs::write(dir.join("blend_quad.glb"), glb(json, &bin)).expect("write glb");
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some(dir.into()));
+    let src = r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((0.0, 0.0, 0.0, 1.0))
+light.fog(0, 0, color.white)
+camera.eye = vec3(0, 0, 3)
+camera.target = vec3(0, 0, 0)
+on render():
+    mesh("blend_quad.glb", at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+"#;
+    let rgba = render_source(&mut renderer, "blend_quad", src);
+    twec::bundle::set_asset_root(None);
+    save_png("blend_quad", &rgba);
+    let [r, g, b] = pixel(&rgba, W / 2, H / 2);
+    let [br, bg, _] = pixel(&rgba, 5, 5);
+    // Half of an emissive blue over the background: bluish, not the
+    // opaque quad's full blue, with the background's red and green.
+    assert!((150..240).contains(&b), "half-transparent blue: {:?}", [r, g, b]);
+    assert!(r > 10 && g > 20, "the background shows through: {:?} over {:?}", [r, g, b], [br, bg]);
+}
+
+/// web3d-M7: height fog thickens with distance and toward the ground,
+/// and the background fogs over too.
+#[test]
+fn height_fog_thickens_with_distance_and_depth() {
+    if headless().is_none() {
+        return;
+    }
+    let src = r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((1.0, 1.0, 1.0, 1.0))
+light.fog(0.08, 0.3, (1, 0, 0))
+camera.eye = vec3(0, 5, 10)
+camera.target = vec3(0, 5, 0)
+on render():
+    cube(at: vec3(-2.5, 5, 7), color: (1, 1, 1, 1), size: 1.0)
+    cube(at: vec3(4, 12, -20), color: (1, 1, 1, 1), size: 6.0)
+    cube(at: vec3(4, -2, -20), color: (1, 1, 1, 1), size: 6.0)
+"#;
+    let rgba = render_once(src);
+    save_png("height_fog", &rgba);
+    let [nr, ng, _] = pixel(&rgba, 20, 120);
+    assert!(ng > 180, "the near block is barely fogged: {:?}", [nr, ng]);
+    let high = pixel(&rgba, 200, 60);
+    let low = pixel(&rgba, 200, 175);
+    assert!(low[0] > low[1] + 40, "the far low block is fogged red: {low:?}");
+    assert!(high[1] > low[1] + 30, "fog thins with height: high {high:?} vs low {low:?}");
+    // The background fogs too: fully looking down into the fog,
+    // partly looking up out of it.
+    let (down, up) = (pixel(&rgba, 5, 230), pixel(&rgba, 160, 3));
+    assert!(down[0] > 200 && down[1] < 60, "looking down: {down:?}");
+    assert!(up[0] < down[0] - 40, "looking up escapes the fog: {up:?} vs {down:?}");
 }

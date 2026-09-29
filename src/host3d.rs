@@ -113,6 +113,11 @@ pub fn render_frame(
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let lut = crate::stdlib::color_lut();
     let snap = RenderSnapshot {
+        fog: crate::stdlib::fog_settings().map(|(density, falloff, color)| crate::kernel::render::FogSettings {
+            density,
+            falloff,
+            color,
+        }),
         camera: Camera3d::new(eye, target, up),
         lut: lut.as_ref().map(|(path, strength)| crate::kernel::render::LutSettings {
             path,

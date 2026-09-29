@@ -147,6 +147,17 @@ pub struct EnvironmentSettings<'a> {
     pub backdrop: bool,
 }
 
+/// web3d-M7: exponential height fog for a frame. Density falls off
+/// with height above y = 0: `density · e^(-falloff · y)` per world unit
+/// (falloff 0 = the same density everywhere).
+#[derive(Debug, Clone, Copy)]
+pub struct FogSettings {
+    pub density: f32,
+    pub falloff: f32,
+    /// sRGB, like script colours.
+    pub color: [f32; 3],
+}
+
 /// web3d-M7: a colour-grading look for a frame.
 #[derive(Debug, Clone, Copy)]
 pub struct LutSettings<'a> {
@@ -160,6 +171,8 @@ pub struct RenderSnapshot<'a> {
     pub camera: Camera3d,
     /// web3d-M7: colour grading, applied after the tonemap curve.
     pub lut: Option<LutSettings<'a>>,
+    /// web3d-M7: height fog.
+    pub fog: Option<FogSettings>,
     /// web3d-M7: image-based lighting; `None` lights with the uniform
     /// ambient colour instead.
     pub environment: Option<EnvironmentSettings<'a>>,
@@ -342,6 +355,21 @@ struct CameraUniform {
     eye: [f32; 4],
     /// web3d-M7: inverse of `view_proj` (the backdrop's view rays).
     inv_view_proj: [[f32; 4]; 4],
+}
+
+/// web3d-M7: the height fog uniform (see `FogSettings`).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct FogUniform {
+    /// density, falloff, base height, enabled (1/0).
+    params: [f32; 4],
+    /// Linear fog colour (rgb), _.
+    color: [f32; 4],
+    /// Direction toward the sun (xyz), forward-scattering strength.
+    sun: [f32; 4],
+    /// The background colour (rgb, linear) the backdrop fogs over when
+    /// there is no environment backdrop; w = camera far distance.
+    background: [f32; 4],
 }
 
 // web3d-M0: `PointLightU`, `LightsUniform` and `AnimSnapshot` live in
@@ -536,6 +564,51 @@ struct Env {
 // per pixel; a 1x1 white texture when AO is off.
 @group(0) @binding(8) var t_ao: texture_2d<f32>;
 
+// web3d-M7: exponential height fog (Quilez, "better fog"). Density
+// a·e^(-b·(y - h0)) integrates in closed form along the view ray:
+// optical depth = a·e^(-b·(o.y - h0))·(1 - e^(-b·d.y·t)) / (b·d.y).
+// The light it scatters toward the eye is its colour, brightened
+// looking toward the sun (forward scattering).
+struct Fog {
+    params: vec4<f32>,
+    color: vec4<f32>,
+    sun: vec4<f32>,
+    background: vec4<f32>,
+};
+@group(0) @binding(9) var<uniform> fog: Fog;
+
+fn fog_amount(p: vec3<f32>) -> f32 {
+    if (fog.params.w < 0.5) {
+        return 0.0;
+    }
+    let o = camera.eye.xyz;
+    let v = p - o;
+    let t = length(v);
+    let dy = v.y / max(t, 1e-5);
+    let a = fog.params.x;
+    let b = fog.params.y;
+    let k = a * exp(-b * (o.y - fog.params.z));
+    let bdt = b * dy * t;
+    var depth = k * t;
+    if (abs(bdt) > 1e-4) {
+        depth = k * (1.0 - exp(-bdt)) / (b * dy);
+    }
+    return 1.0 - exp(-max(depth, 0.0));
+}
+
+fn fog_light(dir: vec3<f32>) -> vec3<f32> {
+    let lobe = pow(max(dot(dir, fog.sun.xyz), 0.0), 8.0) * fog.sun.w;
+    return fog.color.rgb * (1.0 + lobe);
+}
+
+fn apply_fog(c: vec3<f32>, p: vec3<f32>) -> vec3<f32> {
+    let f = fog_amount(p);
+    if (f <= 0.0) {
+        return c;
+    }
+    return mix(c, fog_light(normalize(p - camera.eye.xyz)), f);
+}
+
 // Phase 24: per-mesh joint matrix UBO. Up to 128 joints per
 // skinned mesh. Unskinned meshes (cube, sphere, glb without a
 // skin) bind a default UBO whose joint 0 is identity, and their
@@ -593,7 +666,8 @@ fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
-    @location(1) base_color: vec3<f32>,
+    // web3d-M7: the instance tint with its alpha (translucency).
+    @location(1) base_color: vec4<f32>,
     @location(2) tex_coord: vec2<f32>,
     @location(3) world_pos: vec3<f32>,
     // Phase 28 session 2: view-space forward depth, used to pick
@@ -630,7 +704,7 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     out.vertex_color = vert.color;
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
     out.world_normal = yaw_rotate(skinned_normal, inst.inst_rot);
-    out.base_color = inst.inst_color.rgb;
+    out.base_color = inst.inst_color;
     out.tex_coord = vert.uv;
     out.world_pos = model_pos;
     // Reverse-Z: clip.w is positive view-space distance forward.
@@ -910,7 +984,7 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
         }
         color = color + direct_light(n, v, to_light / dist, pl.color_radius.rgb * (t * t * visible), f0, diffuse_color, a, energy);
     }
-    return color + s.emissive;
+    return apply_fog(color + s.emissive, in.world_pos);
 }
 
 // A material texture slot's UV: the chosen UV set through the slot's
@@ -945,7 +1019,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
     let duv1 = dpdx(normal_uv);
     let duv2 = dpdy(normal_uv);
 
-    let base = material.base_color * base_t * in.vertex_color * vec4<f32>(in.base_color, 1.0);
+    let base = material.base_color * base_t * in.vertex_color * in.base_color;
     if (material.alpha.x > 0.5 && material.alpha.x < 1.5 && base.a < material.alpha.y) {
         discard;
     }
@@ -989,7 +1063,14 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
         1.0 + material.params.w * (occlusion_t.r - 1.0),
         material.emissive.rgb * emissive_t.rgb,
     );
-    return vec4<f32>(shade(in, s), 1.0);
+    // web3d-M7: coverage for the transparent pass (the opaque passes
+    // don't blend, so it's ignored there): a glTF BLEND material's
+    // alpha, else the draw's tint alpha.
+    var alpha = in.base_color.a;
+    if (material.alpha.x > 1.5) {
+        alpha = base.a;
+    }
+    return vec4<f32>(shade(in, s), alpha);
 }
 "#;
 
@@ -1006,10 +1087,34 @@ struct Env {
     sh: array<vec4<f32>, 9>,
     params: vec4<f32>,
 };
+struct Fog {
+    params: vec4<f32>,
+    color: vec4<f32>,
+    sun: vec4<f32>,
+    background: vec4<f32>,
+};
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(2) var<uniform> env: Env;
 @group(0) @binding(4) var t_env_equirect: texture_2d<f32>;
 @group(0) @binding(6) var s_env: sampler;
+@group(0) @binding(9) var<uniform> fog: Fog;
+
+// Height fog along a ray to the far plane (the main shader's integral
+// at t = far).
+fn sky_fog(d: vec3<f32>) -> f32 {
+    if (fog.params.w < 0.5) {
+        return 0.0;
+    }
+    let t = fog.background.w;
+    let b = fog.params.y;
+    let k = fog.params.x * exp(-b * (camera.eye.y - fog.params.z));
+    let bdt = b * d.y * t;
+    var depth = k * t;
+    if (abs(bdt) > 1e-4) {
+        depth = k * (1.0 - exp(-bdt)) / (b * d.y);
+    }
+    return 1.0 - exp(-max(depth, 0.0));
+}
 
 struct SkyOut {
     @builtin(position) pos: vec4<f32>,
@@ -1030,7 +1135,13 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let far = camera.inv_view_proj * vec4<f32>(in.ndc, 1.0, 1.0);
     let d = normalize(far.xyz / far.w - camera.eye.xyz);
     let uv = vec2<f32>(atan2(d.z, d.x) / (2.0 * 3.14159265) + 0.5, 0.5 - asin(clamp(d.y, -1.0, 1.0)) / 3.14159265);
-    return vec4<f32>(textureSampleLevel(t_env_equirect, s_env, uv, 0.0).rgb * env.params.x, 1.0);
+    // The environment, or (fog without one) the background colour.
+    var c = fog.background.rgb;
+    if (env.params.w > 0.5) {
+        c = textureSampleLevel(t_env_equirect, s_env, uv, 0.0).rgb * env.params.x;
+    }
+    let lobe = pow(max(dot(d, fog.sun.xyz), 0.0), 8.0) * fog.sun.w;
+    return vec4<f32>(mix(c, fog.color.rgb * (1.0 + lobe), sky_fog(d)), 1.0);
 }
 "#;
 
@@ -1050,7 +1161,7 @@ fn fs_material(in: VertexOutput, @builtin(front_facing) front: bool) -> @locatio
         n = -n;
     }
     // A visual's colour on the plain dielectric surface.
-    return vec4<f32>(shade(in, Surface(in.base_color * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0))), 1.0);
+    return vec4<f32>(shade(in, Surface(in.base_color.rgb * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0))), 1.0);
 }
 "#;
 
@@ -1427,6 +1538,21 @@ fn surface_pipeline(
     fs_entry: &str,
     double_sided: bool,
 ) -> wgpu::RenderPipeline {
+    let cull = if double_sided { None } else { Some(wgpu::Face::Back) };
+    surface_pipeline_with(device, layout, shader, fs_entry, cull, false)
+}
+
+/// web3d-M7: the lit surface culling `cull`, either opaque (depth
+/// written) or blended over what's drawn (alpha blending, depth tested
+/// but not written) for the transparent pass.
+fn surface_pipeline_with(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    fs_entry: &str,
+    cull: Option<wgpu::Face>,
+    blend: bool,
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(fs_entry),
         layout: Some(layout),
@@ -1443,7 +1569,11 @@ fn surface_pipeline(
             // tonemap pass converts to the swapchain's sRGB.
             targets: &[Some(wgpu::ColorTargetState {
                 format: HDR_FORMAT,
-                blend: Some(wgpu::BlendState::REPLACE),
+                blend: Some(if blend {
+                    wgpu::BlendState::ALPHA_BLENDING
+                } else {
+                    wgpu::BlendState::REPLACE
+                }),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
@@ -1453,14 +1583,14 @@ fn surface_pipeline(
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
             // web3d-M7: glTF `doubleSided` materials draw both faces.
-            cull_mode: if double_sided { None } else { Some(wgpu::Face::Back) },
+            cull_mode: cull,
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: Some(true),
+            depth_write_enabled: Some(!blend),
             depth_compare: Some(wgpu::CompareFunction::Less),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
@@ -1884,6 +2014,12 @@ pub struct Renderer {
     /// web3d-M7: the same surface with back faces drawn (glTF
     /// `doubleSided` materials).
     pipeline_double: wgpu::RenderPipeline,
+    /// web3d-M7: the blended surface for the transparent pass, front
+    /// faces and back faces.
+    blend_front: wgpu::RenderPipeline,
+    blend_back: wgpu::RenderPipeline,
+    /// web3d-M7: height fog.
+    fog_buffer: wgpu::Buffer,
     /// web3d-M3: the main pipeline's layout, reused by material
     /// pipelines.
     pipeline_layout: wgpu::PipelineLayout,
@@ -2055,6 +2191,10 @@ struct GpuSubmesh {
     double_sided: bool,
     /// web3d-M7: alpha-masked (the depth prepass cuts it out too).
     masked: bool,
+    /// web3d-M7: alpha-blended: drawn in the transparent pass, sorted
+    /// by `centroid` (mesh space).
+    blend: bool,
+    centroid: [f32; 3],
 }
 
 /// Phase 24: per-mesh skin data + GPU resources. Built at glb load
@@ -2354,7 +2494,14 @@ async fn init_renderer(
             sampler_entry(7),
             // web3d-M7: screen-space ambient occlusion.
             texture_entry(8, wgpu::TextureViewDimension::D2),
+            // web3d-M7: height fog.
+            uniform_entry(9, wgpu::ShaderStages::FRAGMENT),
         ],
+    });
+    let fog_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("twe-kernel fog uniform"),
+        contents: bytemuck::bytes_of(&FogUniform::zeroed()),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
     let env = EnvState::new(&device, &queue, &frame_bgl);
     let taa = crate::kernel::taa::Taa::new(&device);
@@ -2377,6 +2524,7 @@ async fn init_renderer(
         &lights_buffer,
         &env,
         ao.view(false),
+        &fog_buffer,
     );
 
     // Phase 24: joint UBO bind group layout, plus a shared
@@ -2493,6 +2641,10 @@ async fn init_renderer(
     });
     let pipeline = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main", false);
     let pipeline_double = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main", true);
+    // web3d-M7: the transparent pass — front faces, and back faces
+    // (drawn first for double-sided surfaces).
+    let blend_front = surface_pipeline_with(&device, &pipeline_layout, &shader, "fs_main", Some(wgpu::Face::Back), true);
+    let blend_back = surface_pipeline_with(&device, &pipeline_layout, &shader, "fs_main", Some(wgpu::Face::Front), true);
 
     // Phase 28 session 2: cascaded shadow maps. The shadow texture
     // is a 2D array with `CASCADE_COUNT` layers; each shadow pass
@@ -2789,6 +2941,9 @@ async fn init_renderer(
         config,
         pipeline,
         pipeline_double,
+        blend_front,
+        blend_back,
+        fog_buffer,
         pipeline_layout,
         material_pipelines: HashMap::new(),
         target_format,
@@ -3894,6 +4049,8 @@ fn upload_loaded_glb(
             material: bind_groups[sub.material].clone(),
             double_sided: materials[sub.material].double_sided,
             masked: materials[sub.material].alpha_mode == crate::kernel::material::AlphaMode::Mask,
+            blend: materials[sub.material].alpha_mode == crate::kernel::material::AlphaMode::Blend,
+            centroid: submesh_centroid(&vertices, &indices[sub.first as usize..(sub.first + sub.count) as usize]),
         })
         .collect();
     // Phase 24: build per-mesh skin GPU resources when the glb
@@ -4176,6 +4333,7 @@ impl Renderer {
                                 &state.lights_buffer,
                                 &state.env,
                                 state.ao.view(false),
+                                &state.fog_buffer,
                             );
                             state.frame_ao_key = 0;
                         }
@@ -4215,7 +4373,10 @@ impl Renderer {
         let mut cube_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
         let mut sphere_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
         let mut mesh_groups: Vec<(MeshKey, Vec<&DrawCall3d>)> = Vec::new();
-        for d in queue {
+        // web3d-M7: a tint with alpha below 1 is translucent (drawn in
+        // the sorted transparent pass). `visual` materials stay opaque.
+        let translucent = |d: &DrawCall3d| d.color[3] < 0.999 && d.material == 0;
+        for d in queue.iter().filter(|d| !translucent(d)) {
             match d.primitive {
                 Primitive::Cube => {
                     let key = (d.texture, d.material);
@@ -4315,6 +4476,107 @@ impl Renderer {
                 (*k, push_group(list, &mut instances, r))
             })
             .collect();
+        // web3d-M7: the transparent pass's draws — translucent draws, one
+        // instance each, and the blended glTF primitives of opaque mesh
+        // instances — sorted back to front by distance to the eye.
+        let mut transparent: Vec<TransparentDraw> = Vec::new();
+        let dist2 = |p: [f32; 3]| {
+            let v = sub(p, eye);
+            dot(v, v)
+        };
+        let world_point = |inst: &Instance, local: [f32; 3]| {
+            let (s, c) = (inst.rot[0], inst.rot[1]);
+            [
+                inst.position[0] + (c * local[0] + s * local[2]) * inst.size,
+                inst.position[1] + local[1] * inst.size,
+                inst.position[2] + (-s * local[0] + c * local[2]) * inst.size,
+            ]
+        };
+        for ((id, tex, mat), range) in &mesh_ranges {
+            if *tex != 0 || *mat != 0 {
+                continue;
+            }
+            let Some(mesh) = state.mesh_cache.get(id) else { continue };
+            for (si, sub) in mesh.submeshes.iter().enumerate().filter(|(_, s)| s.blend) {
+                for i in range.0..range.1 {
+                    transparent.push(TransparentDraw {
+                        shape: TransparentShape::Mesh { id: *id, tex: 0, sub: Some(si) },
+                        instance: i,
+                        depth: dist2(world_point(&instances[i as usize], sub.centroid)),
+                        double_sided: sub.double_sided,
+                    });
+                }
+            }
+        }
+        for d in queue.iter().filter(|d| translucent(d)) {
+            let (radius, shape) = match d.primitive {
+                Primitive::Cube => (cube_radius, TransparentShape::Cube(d.texture)),
+                Primitive::Sphere => (sphere_radius, TransparentShape::Sphere(d.texture)),
+                Primitive::Mesh(id) => match state.mesh_cache.get(&id) {
+                    Some(m) => (m.bound_radius, TransparentShape::Mesh { id, tex: d.texture, sub: None }),
+                    None => continue,
+                },
+            };
+            let (start, end) = push_group(&[d], &mut instances, radius);
+            if end == start {
+                continue;
+            }
+            let inst = instances[start as usize];
+            match shape {
+                // A glTF mesh without a script texture: each primitive
+                // sorts on its own centroid.
+                TransparentShape::Mesh { id, tex: 0, .. } => {
+                    for (si, sub) in state.mesh_cache[&id].submeshes.iter().enumerate() {
+                        transparent.push(TransparentDraw {
+                            shape: TransparentShape::Mesh { id, tex: 0, sub: Some(si) },
+                            instance: start,
+                            depth: dist2(world_point(&inst, sub.centroid)),
+                            double_sided: sub.double_sided,
+                        });
+                    }
+                }
+                shape => transparent.push(TransparentDraw {
+                    shape,
+                    instance: start,
+                    depth: dist2(inst.position),
+                    double_sided: false,
+                }),
+            }
+        }
+        transparent.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+
+        // web3d-M7: height fog, with the sun's direction for its glow.
+        let fog_uniform = match snap.fog {
+            Some(f) if f.density > 0.0 => {
+                let sun_len = (lights_uniform.sun_dir[0].powi(2)
+                    + lights_uniform.sun_dir[1].powi(2)
+                    + lights_uniform.sun_dir[2].powi(2))
+                .sqrt()
+                .max(1e-6);
+                FogUniform {
+                    params: [f.density, f.falloff.max(0.0), 0.0, 1.0],
+                    color: [
+                        srgb_to_linear(f.color[0]),
+                        srgb_to_linear(f.color[1]),
+                        srgb_to_linear(f.color[2]),
+                        0.0,
+                    ],
+                    sun: [
+                        lights_uniform.sun_dir[0] / sun_len,
+                        lights_uniform.sun_dir[1] / sun_len,
+                        lights_uniform.sun_dir[2] / sun_len,
+                        0.5 * lights_uniform.sun_dir[3].max(0.0),
+                    ],
+                    background: [snap.background[0], snap.background[1], snap.background[2], far],
+                }
+            }
+            _ => FogUniform::zeroed(),
+        };
+        let fog_on = fog_uniform.params[3] > 0.5;
+        state
+            .queue
+            .write_buffer(&state.fog_buffer, 0, bytemuck::bytes_of(&fog_uniform));
+
         if !instances.is_empty() {
             // Phase 23: grow the instance buffer if this frame needs
             // more instances than the current capacity. Doubling keeps
@@ -4660,6 +4922,7 @@ impl Renderer {
                 &state.lights_buffer,
                 &state.env,
                 state.ao.view(ao_on),
+                &state.fog_buffer,
             );
             state.frame_ao_key = ao_key;
         }
@@ -4982,7 +5245,7 @@ impl Renderer {
                                 } else {
                                     // web3d-M7: each glTF primitive with its
                                     // own material.
-                                    for sub in &gpu_mesh.submeshes {
+                                    for sub in gpu_mesh.submeshes.iter().filter(|s| !s.blend) {
                                         rpass.set_pipeline(if sub.double_sided {
                                             &state.pipeline_double
                                         } else {
@@ -5007,10 +5270,16 @@ impl Renderer {
                         }
                         // web3d-M7: the environment as the backdrop,
                         // wherever no geometry was drawn.
-                        if env_uniform.params[3] > 0.5 {
+                        // With fog, the background fogs too.
+                        if env_uniform.params[3] > 0.5 || fog_on {
                             rpass.set_pipeline(&state.env.sky_pipeline);
                             rpass.set_bind_group(0, &state.frame_bind_group, &[]);
                             rpass.draw(0..3, 0..1);
+                        }
+                        // web3d-M7: translucent surfaces, back to front,
+                        // over the finished opaque scene.
+                        if !transparent.is_empty() {
+                            draw_transparent(&mut rpass, state, &transparent);
                         }
                     }
                 }
@@ -5228,6 +5497,7 @@ fn frame_bind_group(
     lights: &wgpu::Buffer,
     env: &EnvState,
     ao: &wgpu::TextureView,
+    fog: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     let view = |v| wgpu::BindingResource::TextureView(v);
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -5269,6 +5539,10 @@ fn frame_bind_group(
             wgpu::BindGroupEntry {
                 binding: 8,
                 resource: view(ao),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: fog.as_entire_binding(),
             },
         ],
     })
@@ -5436,6 +5710,101 @@ impl Prepass {
     }
 }
 
+/// web3d-M7: what a transparent draw draws.
+#[derive(Clone, Copy, Debug)]
+enum TransparentShape {
+    Cube(u32),
+    Sphere(u32),
+    /// A mesh; `sub` is one glTF primitive (with its own material), or
+    /// `None` for the whole mesh under a script texture `tex`.
+    Mesh { id: u32, tex: u32, sub: Option<usize> },
+}
+
+/// web3d-M7: one draw of the transparent pass: a shape, the instance
+/// (index into the instance buffer), and its squared distance to the
+/// eye (the sort key).
+#[derive(Clone, Copy, Debug)]
+struct TransparentDraw {
+    shape: TransparentShape,
+    instance: u32,
+    depth: f32,
+    double_sided: bool,
+}
+
+/// The average of a glTF primitive's vertex positions (mesh space).
+fn submesh_centroid(vertices: &[Vertex], indices: &[u32]) -> [f32; 3] {
+    let mut sum = [0.0f64; 3];
+    for &i in indices {
+        let p = vertices[i as usize].position;
+        for k in 0..3 {
+            sum[k] += f64::from(p[k]);
+        }
+    }
+    let n = indices.len().max(1) as f64;
+    [(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32]
+}
+
+/// web3d-M7: the transparent pass: each sorted draw blended over the
+/// frame, double-sided surfaces' back faces first. Expects the main
+/// pass's bind groups 0 and 3 and the instance buffer bound.
+fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[TransparentDraw]) {
+    let texture_group = |tex: u32| -> &wgpu::BindGroup {
+        if tex == 0 {
+            return &state.plain_material;
+        }
+        state.texture_cache.get(&tex).unwrap_or(&state.plain_material)
+    };
+    pass.set_bind_group(0, &state.frame_bind_group, &[]);
+    pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+    pass.set_bind_group(3, &state.shadow_combined_bg, &[]);
+    pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+    for d in draws {
+        let instances = d.instance..d.instance + 1;
+        let (range, skinned) = match d.shape {
+            TransparentShape::Cube(tex) => {
+                pass.set_bind_group(1, texture_group(tex), &[]);
+                pass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
+                pass.set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                (0..state.cube_index_count, false)
+            }
+            TransparentShape::Sphere(tex) => {
+                pass.set_bind_group(1, texture_group(tex), &[]);
+                pass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
+                pass.set_index_buffer(state.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                (0..state.sphere_index_count, false)
+            }
+            TransparentShape::Mesh { id, tex, sub } => {
+                let Some(mesh) = state.mesh_cache.get(&id) else { continue };
+                if let Some(skin) = &mesh.skin {
+                    pass.set_bind_group(2, &skin.joint_bind_group, &[]);
+                }
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
+                let range = match sub.and_then(|s| mesh.submeshes.get(s)) {
+                    Some(s) => {
+                        pass.set_bind_group(1, &s.material, &[]);
+                        s.first..s.first + s.count
+                    }
+                    None => {
+                        pass.set_bind_group(1, texture_group(tex), &[]);
+                        0..mesh.index_count
+                    }
+                };
+                (range, mesh.skin.is_some())
+            }
+        };
+        if d.double_sided {
+            pass.set_pipeline(&state.blend_back);
+            pass.draw_indexed(range.clone(), 0, instances.clone());
+        }
+        pass.set_pipeline(&state.blend_front);
+        pass.draw_indexed(range, 0, instances);
+        if skinned {
+            pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+        }
+    }
+}
+
 /// Draw every instance into the depth prepass, each glTF primitive with
 /// the pipeline its material needs (masked ones bind their material).
 fn draw_prepass(
@@ -5484,7 +5853,7 @@ fn draw_prepass(
             pass.set_pipeline(&pp.opaque);
             pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
         } else {
-            for sub in &gpu_mesh.submeshes {
+            for sub in gpu_mesh.submeshes.iter().filter(|s| !s.blend) {
                 if sub.masked {
                     pass.set_pipeline(&pp.masked);
                     pass.set_bind_group(2, &sub.material, &[]);
