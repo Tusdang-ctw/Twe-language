@@ -58,9 +58,10 @@ wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 # v0.2 session 1: glTF 2.0 mesh import. Pure-Rust crate but only
 # referenced by play3d / physics3d which are excluded from WASM.
-# web3d-M7: "KHR_texture_transform" lets models that require the extension load
-# (e.g. SheenChair); the renderer applies it from M7 session 3.
-gltf = { version = "1", default-features = false, features = ["import", "utils", "names", "KHR_texture_transform"] }
+# web3d-M7: KHR_texture_transform and KHR_materials_emissive_strength are read by the
+# material loader (kernel/material.rs); "extensions" exposes the raw extension JSON
+# for the texture references and material extensions the crate does not parse.
+gltf = { version = "1", default-features = false, features = ["import", "utils", "names", "extensions", "KHR_texture_transform", "KHR_materials_emissive_strength"] }
 # Phase 17 session 3: PNG/JPEG texture loading for the 3D pipeline.
 # Transitively available via macroquad on WASM, but the explicit dep
 # is only needed by play3d which is native-only.

@@ -14,6 +14,9 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::kernel::graph::{Access, Extent, FrameGraph, TextureDesc, TexturePool};
+use crate::kernel::material::{
+    upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS, SRGB_SLOT,
+};
 
 pub use crate::render3d_types::{AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive};
 
@@ -164,15 +167,27 @@ struct Vertex {
     /// the unskinned UBO). Skinned meshes from glTF write the
     /// `WEIGHTS_0` accessor here, normalized to sum to 1.0.
     weights: [f32; 4],
+    /// web3d-M7: second UV set (glTF `TEXCOORD_1`; occlusion maps often
+    /// use it).
+    uv1: [f32; 2],
+    /// web3d-M7: glTF `TANGENT` (xyz, w = handedness). All zero when
+    /// the model has none: the shader then builds the normal-map frame
+    /// from screen-space derivatives.
+    tangent: [f32; 4],
+    /// web3d-M7: glTF `COLOR_0` (linear RGBA), multiplied into base colour.
+    color: [f32; 4],
 }
 
 impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x3,
         4 => Float32x2,
         5 => Uint16x4,
         6 => Float32x4,
+        8 => Float32x2,
+        9 => Float32x4,
+        10 => Float32x4,
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -219,6 +234,8 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     /// web3d-M3: x = simulation time (s), for materials.
     time: [f32; 4],
+    /// web3d-M7: the eye position (xyz), for view-dependent shading.
+    eye: [f32; 4],
 }
 
 // web3d-M0: `PointLightU`, `LightsUniform` and `AnimSnapshot` live in
@@ -346,15 +363,35 @@ struct Camera {
     view_proj: mat4x4<f32>,
     // x = simulation time in seconds (materials animate on it).
     time: vec4<f32>,
+    // web3d-M7: xyz = eye position.
+    eye: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
 
-// Phase 17 session 3: texture sampler. Bound per draw call by
-// the play loop — fallback white 1x1 texture is bound when the
-// mesh has no texture, so untextured rendering still works.
-@group(1) @binding(0) var t_diffuse: texture_2d<f32>;
-@group(1) @binding(1) var s_diffuse: sampler;
+// web3d-M7: the surface's material (kernel/material.rs) at group 1:
+// glTF metallic-roughness factors, alpha mode, a UV transform per
+// texture, and five textures with their samplers. Built-in shapes and
+// script-textured draws bind the plain material (white, dielectric).
+struct Material {
+    base_color: vec4<f32>,
+    emissive: vec4<f32>,       // rgb = emissive (strength applied)
+    params: vec4<f32>,         // metallic, roughness, normal scale, occlusion strength
+    alpha: vec4<f32>,          // mode (0 opaque, 1 mask, 2 blend), cutoff, double-sided
+    // Per texture slot: (offset.xy, rotation, uv set), (scale.xy, has texture, _).
+    xf: array<vec4<f32>, 10>,
+};
+@group(1) @binding(0) var<uniform> material: Material;
+@group(1) @binding(1) var t_base: texture_2d<f32>;
+@group(1) @binding(2) var t_metal_rough: texture_2d<f32>;
+@group(1) @binding(3) var t_normal: texture_2d<f32>;
+@group(1) @binding(4) var t_occlusion: texture_2d<f32>;
+@group(1) @binding(5) var t_emissive: texture_2d<f32>;
+@group(1) @binding(6) var s_base: sampler;
+@group(1) @binding(7) var s_metal_rough: sampler;
+@group(1) @binding(8) var s_normal: sampler;
+@group(1) @binding(9) var s_occlusion: sampler;
+@group(1) @binding(10) var s_emissive: sampler;
 
 // Phase 20: lighting uniform — global ambient, directional sun,
 // 8 point lights. Bound once per frame (group 2) alongside camera.
@@ -405,6 +442,9 @@ struct VertexInput {
     @location(4) uv: vec2<f32>,
     @location(5) joints: vec4<u32>,   // u16x4 zero-extended
     @location(6) weights: vec4<f32>,
+    @location(8) uv1: vec2<f32>,
+    @location(9) tangent: vec4<f32>,
+    @location(10) color: vec4<f32>,
 };
 
 struct InstanceInput {
@@ -429,6 +469,11 @@ struct VertexOutput {
     // matrix in this codebase, clip.w equals view-space `-z`, i.e.
     // positive distance away from the eye.
     @location(4) view_z: f32,
+    // web3d-M7: second UV set, tangent (w = handedness, 0 = none) and
+    // vertex colour.
+    @location(5) tex_coord1: vec2<f32>,
+    @location(6) world_tangent: vec4<f32>,
+    @location(7) vertex_color: vec4<f32>,
 };
 
 @vertex
@@ -444,9 +489,13 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
         + vert.weights.w * joints_u.matrices[vert.joints.w];
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
+    let skinned_tangent = (skin_mat * vec4<f32>(vert.tangent.xyz, 0.0)).xyz;
     let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
         + inst.inst_pos_size.xyz;
     var out: VertexOutput;
+    out.tex_coord1 = vert.uv1;
+    out.world_tangent = vec4<f32>(yaw_rotate(skinned_tangent, inst.inst_rot), vert.tangent.w);
+    out.vertex_color = vert.color;
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
     out.world_normal = yaw_rotate(skinned_normal, inst.inst_rot);
     out.base_color = inst.inst_color.rgb;
@@ -526,33 +575,108 @@ fn sample_shadow(world_pos: vec3<f32>, view_z: f32) -> f32 {
     return sum / 9.0;
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Sampled first, in uniform control flow (WebGPU requires it for
-    // implicit-derivative sampling).
-    let tex = textureSample(t_diffuse, s_diffuse, in.tex_coord);
-    return vec4<f32>(in.base_color * tex.rgb * light_at(in), tex.a);
+// ---- web3d-M7: physically based shading -------------------------------
+//
+// glTF 2.0 metallic-roughness (spec Appendix B): Lambert diffuse plus a
+// Cook-Torrance specular lobe with the GGX distribution, the
+// height-correlated Smith visibility term and Schlick's Fresnel, and
+// multiscatter energy compensation (Fdez-Agüera 2019, as in Filament)
+// so rough metals don't lose energy. Light units: a light of intensity
+// 1 makes a white Lambert surface facing it reflect 1 (irradiance x pi),
+// which keeps the game's existing lights at their old brightness.
+//
+// Until image-based lighting (M7 session 4), the ambient colour acts as
+// a uniform environment for both the diffuse and the specular lobe.
+
+const PI: f32 = 3.14159265;
+
+struct Surface {
+    albedo: vec3<f32>,
+    metallic: f32,
+    roughness: f32,   // perceptual
+    n: vec3<f32>,
+    occlusion: f32,
+    emissive: vec3<f32>,
+};
+
+fn d_ggx(noh: f32, a: f32) -> f32 {
+    let a2 = a * a;
+    let f = noh * noh * (a2 - 1.0) + 1.0;
+    return a2 / (PI * f * f);
 }
 
-// Light arriving at a fragment: ambient, the shadowed sun, and up to 8
-// point lights. Shared by the plain surface and every material.
-fn light_at(in: VertexOutput) -> vec3<f32> {
-    let n = normalize(in.world_normal);
-    var lit = lights.ambient.rgb;
-    // Directional sun. w = intensity multiplier; 0 disables the sun.
+fn v_smith_ggx_correlated(nov: f32, nol: f32, a: f32) -> f32 {
+    let a2 = a * a;
+    let gv = nol * sqrt(nov * nov * (1.0 - a2) + a2);
+    let gl = nov * sqrt(nol * nol * (1.0 - a2) + a2);
+    return 0.5 / max(gv + gl, 1e-5);
+}
+
+fn f_schlick(f0: vec3<f32>, voh: f32) -> vec3<f32> {
+    return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - voh, 5.0);
+}
+
+// Karis 2014's analytic fit of the split-sum DFG integral: returns
+// (scale, bias) so that the directional albedo of the specular lobe is
+// f0 * x + y. Replaced by a LUT with IBL in session 4.
+fn env_brdf_approx(roughness: f32, nov: f32) -> vec2<f32> {
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * nov)) * r.x + r.y;
+    return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+}
+
+// One light's reflected radiance.
+fn direct_light(
+    n: vec3<f32>,
+    v: vec3<f32>,
+    l: vec3<f32>,
+    radiance: vec3<f32>,
+    f0: vec3<f32>,
+    diffuse_color: vec3<f32>,
+    a: f32,
+    energy: vec3<f32>,
+) -> vec3<f32> {
+    let nol = clamp(dot(n, l), 0.0, 1.0);
+    if (nol <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let h = normalize(v + l);
+    let nov = max(dot(n, v), 1e-4);
+    let noh = clamp(dot(n, h), 0.0, 1.0);
+    let voh = clamp(dot(v, h), 0.0, 1.0);
+    let spec = d_ggx(noh, a) * v_smith_ggx_correlated(nov, nol, a) * f_schlick(f0, voh) * energy;
+    return (diffuse_color / PI + spec) * radiance * (nol * PI);
+}
+
+// Light leaving a surface point toward the eye: ambient environment,
+// the shadowed sun, up to 8 point lights, and emission. Shared by glTF
+// materials, the plain surface and `visual` materials.
+fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
+    let n = s.n;
+    let v = normalize(camera.eye.xyz - in.world_pos);
+    let nov = max(dot(n, v), 1e-4);
+    let roughness = clamp(s.roughness, 0.03, 1.0);
+    let a = roughness * roughness;
+    let f0 = mix(vec3<f32>(0.04), s.albedo, s.metallic);
+    let diffuse_color = s.albedo * (1.0 - s.metallic);
+    let ab = env_brdf_approx(roughness, nov);
+    let energy = vec3<f32>(1.0) + f0 * (1.0 / max(ab.x + ab.y, 1e-4) - 1.0);
+
+    // Ambient as a uniform environment; occlusion applies here only
+    // (glTF: it describes indirect light).
+    var color = lights.ambient.rgb * (diffuse_color + (f0 * ab.x + ab.y) * energy) * s.occlusion;
+
+    // Directional sun. w = intensity; 0 disables the sun. Shadows
+    // attenuate only the sun.
     if (lights.sun_dir.w > 0.0) {
         let l = normalize(lights.sun_dir.xyz);
-        let d = max(dot(n, l), 0.0);
-        // Phase 25: shadow attenuates only the sun term, not
-        // ambient or point lights — same convention as Unity /
-        // Unreal so artists can still see geometry in shadow.
         let shadow = sample_shadow(in.world_pos, in.view_z);
-        lit = lit + lights.sun_dir.www * (d * shadow);
+        color = color + direct_light(n, v, l, vec3<f32>(lights.sun_dir.w * shadow), f0, diffuse_color, a, energy);
     }
-    // Up to 8 point lights with quadratic attenuation. radius==0
-    // disables the slot. Inside the radius the falloff is a smooth
-    // edge so distant lights don't pop. Outside, contribution is
-    // exactly zero (early out via the comparison).
+    // Up to 8 point lights, radius 0 = off; a smooth-edged falloff that
+    // reaches zero at the radius (game-friendly, predictable to tune).
     for (var i: u32 = 0u; i < 8u; i = i + 1u) {
         let pl = lights.point_lights[i];
         let r = pl.color_radius.w;
@@ -564,17 +688,89 @@ fn light_at(in: VertexOutput) -> vec3<f32> {
         if (dist >= r) {
             continue;
         }
-        let l = to_light / dist;
-        let lambert = max(dot(n, l), 0.0);
-        // Attenuation: 1 at distance 0, smooth-edge falloff to 0
-        // at the edge of the radius. This is a game-friendly
-        // approximation rather than physically-correct 1/d² —
-        // bounded radii make tuning predictable.
         let t = 1.0 - (dist / r);
-        let atten = t * t;
-        lit = lit + pl.color_radius.rgb * (lambert * atten);
+        color = color + direct_light(n, v, to_light / dist, pl.color_radius.rgb * (t * t), f0, diffuse_color, a, energy);
     }
-    return lit;
+    return color + s.emissive;
+}
+
+// A material texture slot's UV: the chosen UV set through the slot's
+// KHR_texture_transform (offset, rotation, scale).
+fn material_uv(in: VertexOutput, slot: u32) -> vec2<f32> {
+    let a = material.xf[2u * slot];
+    let b = material.xf[2u * slot + 1u];
+    var uv = in.tex_coord;
+    if (a.w > 0.5) {
+        uv = in.tex_coord1;
+    }
+    let c = cos(a.z);
+    let s = sin(a.z);
+    return vec2<f32>(
+        b.x * c * uv.x + b.y * s * uv.y + a.x,
+        -b.x * s * uv.x + b.y * c * uv.y + a.y,
+    );
+}
+
+@fragment
+fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // Every texture read and derivative first, in uniform control flow
+    // (WebGPU requires it for implicit-derivative sampling).
+    let normal_uv = material_uv(in, 2u);
+    let base_t = textureSample(t_base, s_base, material_uv(in, 0u));
+    let mr_t = textureSample(t_metal_rough, s_metal_rough, material_uv(in, 1u));
+    let normal_t = textureSample(t_normal, s_normal, normal_uv);
+    let occlusion_t = textureSample(t_occlusion, s_occlusion, material_uv(in, 3u));
+    let emissive_t = textureSample(t_emissive, s_emissive, material_uv(in, 4u));
+    let dp1 = dpdx(in.world_pos);
+    let dp2 = dpdy(in.world_pos);
+    let duv1 = dpdx(normal_uv);
+    let duv2 = dpdy(normal_uv);
+
+    let base = material.base_color * base_t * in.vertex_color * vec4<f32>(in.base_color, 1.0);
+    if (material.alpha.x > 0.5 && material.alpha.x < 1.5 && base.a < material.alpha.y) {
+        discard;
+    }
+
+    // The shading normal: the interpolated normal, perturbed by the
+    // normal map in a tangent frame from the vertex tangents, or, when
+    // the model has none, from screen-space derivatives (Schüler 2013,
+    // as Three.js does). Back faces of double-sided surfaces flip it.
+    var n = normalize(in.world_normal);
+    if (material.xf[5].z > 0.5) {
+        var t: vec3<f32>;
+        var b: vec3<f32>;
+        if (abs(in.world_tangent.w) > 0.5) {
+            t = normalize(in.world_tangent.xyz - n * dot(n, in.world_tangent.xyz));
+            b = cross(n, t) * in.world_tangent.w;
+        } else {
+            let dp2perp = cross(dp2, n);
+            let dp1perp = cross(n, dp1);
+            t = dp2perp * duv1.x + dp1perp * duv2.x;
+            b = dp2perp * duv1.y + dp1perp * duv2.y;
+            let scale = inverseSqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
+            t = t * scale;
+            b = b * scale;
+        }
+        if (!front) {
+            t = -t;
+            b = -b;
+            n = -n;
+        }
+        let tn = normal_t.xyz * 2.0 - 1.0;
+        n = normalize(t * (tn.x * material.params.z) + b * (tn.y * material.params.z) + n * tn.z);
+    } else if (!front) {
+        n = -n;
+    }
+
+    let s = Surface(
+        base.rgb,
+        clamp(material.params.x * mr_t.b, 0.0, 1.0),
+        clamp(material.params.y * mr_t.g, 0.0, 1.0),
+        n,
+        1.0 + material.params.w * (occlusion_t.r - 1.0),
+        material.emissive.rgb * emissive_t.rgb,
+    );
+    return vec4<f32>(shade(in, s), 1.0);
 }
 "#;
 
@@ -584,12 +780,17 @@ fn light_at(in: VertexOutput) -> vec3<f32> {
 /// cut out, so a visual can shape the mesh (a flame on a quad).
 const MATERIAL_FS: &str = r#"
 @fragment
-fn fs_material(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_material(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let c = twe_pixel(in.tex_coord, camera.time.x);
     if (c.a < 0.5) {
         discard;
     }
-    return vec4<f32>(in.base_color * c.rgb * light_at(in), 1.0);
+    var n = normalize(in.world_normal);
+    if (!front) {
+        n = -n;
+    }
+    // A visual's colour on the plain dielectric surface.
+    return vec4<f32>(shade(in, Surface(in.base_color * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0))), 1.0);
 }
 "#;
 
@@ -659,15 +860,32 @@ fn vs_fullscreen(@builtin(vertex_index) idx: u32) -> VOut {
     return out;
 }
 
-// Narkowicz 2015 ACES approximation — fast (~6 fma) and visually
-// matches the full ACES tone curve closely enough for game use.
+// web3d-M7: ACES Filmic as Three.js, the glTF Sample Viewer and the
+// Khronos Render Fidelity references apply it — Stephen Hill's fit of
+// the RRT + ODT, in AP1 with the sRGB <-> AP1 matrices, after a 1/0.6
+// exposure. (It replaced Narkowicz's 2015 one-line approximation,
+// which runs visibly darker and less saturated than the reference.)
+fn rrt_odt_fit(v: vec3<f32>) -> vec3<f32> {
+    let a = v * (v + 0.0245786) - 0.000090537;
+    let b = v * (0.983729 * v + 0.4329510) + 0.238081;
+    return a / b;
+}
+
 fn aces(x: vec3<f32>) -> vec3<f32> {
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+    // sRGB => XYZ => D65_2_D60 => AP1 => RRT_SAT (columns)
+    let aces_in = mat3x3<f32>(
+        vec3<f32>(0.59719, 0.07600, 0.02840),
+        vec3<f32>(0.35458, 0.90834, 0.13383),
+        vec3<f32>(0.04823, 0.01566, 0.83777),
+    );
+    // ODT_SAT => XYZ => D60_2_D65 => sRGB (columns)
+    let aces_out = mat3x3<f32>(
+        vec3<f32>(1.60475, -0.10208, -0.00327),
+        vec3<f32>(-0.53108, 1.10813, -0.07276),
+        vec3<f32>(-0.07367, -0.00605, 1.07602),
+    );
+    let c = aces_out * rrt_odt_fit(aces_in * (x / 0.6));
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // Phase 28 session 3: 12-tap inline bloom. Each tap samples the
@@ -808,6 +1026,7 @@ fn surface_pipeline(
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     fs_entry: &str,
+    double_sided: bool,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(fs_entry),
@@ -834,7 +1053,8 @@ fn surface_pipeline(
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
+            // web3d-M7: glTF `doubleSided` materials draw both faces.
+            cull_mode: if double_sided { None } else { Some(wgpu::Face::Back) },
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
@@ -907,6 +1127,10 @@ const UNSKINNED_J: [u16; 4] = [0, 0, 0, 0];
 /// weight on joint 0 (which is the identity matrix in the
 /// unskinned UBO).
 const UNSKINNED_W: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+/// web3d-M7: defaults for the built-in shapes' extra attributes.
+const NO_UV1: [f32; 2] = [0.0, 0.0];
+const NO_TANGENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 const CUBE_VERTICES: &[Vertex] = &[
     // +z (front)
@@ -916,6 +1140,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, -0.5, 0.5],
@@ -923,6 +1150,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, 0.5, 0.5],
@@ -930,6 +1160,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, 0.5, 0.5],
@@ -937,6 +1170,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     // -z (back)
     Vertex {
@@ -945,6 +1181,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, -0.5, -0.5],
@@ -952,6 +1191,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, 0.5, -0.5],
@@ -959,6 +1201,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, 0.5, -0.5],
@@ -966,6 +1211,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     // +x (right)
     Vertex {
@@ -974,6 +1222,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, -0.5, -0.5],
@@ -981,6 +1232,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, 0.5, -0.5],
@@ -988,6 +1242,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, 0.5, 0.5],
@@ -995,6 +1252,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     // -x (left)
     Vertex {
@@ -1003,6 +1263,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, -0.5, 0.5],
@@ -1010,6 +1273,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, 0.5, 0.5],
@@ -1017,6 +1283,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, 0.5, -0.5],
@@ -1024,6 +1293,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     // +y (top)
     Vertex {
@@ -1032,6 +1304,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, 0.5, 0.5],
@@ -1039,6 +1314,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, 0.5, -0.5],
@@ -1046,6 +1324,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, 0.5, -0.5],
@@ -1053,6 +1334,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     // -y (bottom)
     Vertex {
@@ -1061,6 +1345,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, -0.5, -0.5],
@@ -1068,6 +1355,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_BR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [0.5, -0.5, 0.5],
@@ -1075,6 +1365,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TR,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
     Vertex {
         position: [-0.5, -0.5, 0.5],
@@ -1082,6 +1375,9 @@ const CUBE_VERTICES: &[Vertex] = &[
         uv: UV_TL,
         joints: UNSKINNED_J,
         weights: UNSKINNED_W,
+        uv1: NO_UV1,
+        tangent: NO_TANGENT,
+        color: WHITE,
     },
 ];
 
@@ -1139,6 +1435,9 @@ fn sphere_mesh() -> (Vec<Vertex>, Vec<u16>) {
                 uv: [u, v],
                 joints: UNSKINNED_J,
                 weights: UNSKINNED_W,
+                uv1: NO_UV1,
+                tangent: NO_TANGENT,
+                color: WHITE,
             });
         }
     }
@@ -1176,6 +1475,9 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    /// web3d-M7: the same surface with back faces drawn (glTF
+    /// `doubleSided` materials).
+    pipeline_double: wgpu::RenderPipeline,
     /// web3d-M3: the main pipeline's layout, reused by material
     /// pipelines.
     pipeline_layout: wgpu::PipelineLayout,
@@ -1277,16 +1579,13 @@ pub struct Renderer {
     /// delivered.
     mesh_pending: HashSet<u32>,
     texture_pending: HashSet<u32>,
-    /// Phase 17 session 3: texture bind group layout (reused for
-    /// every per-texture bind group), default linear sampler, and
-    /// fallback white 1×1 texture's bind group. Untextured meshes
-    /// bind `white_bind_group` so the fragment shader's
-    /// `textureSample` call always has something to sample.
-    texture_bgl: wgpu::BindGroupLayout,
-    default_sampler: wgpu::Sampler,
-    white_bind_group: wgpu::BindGroup,
-    /// Lazy-loaded textures keyed by `Env::texture_paths` interned id.
-    /// Each entry is the bind group ready to set on render group 1.
+    /// web3d-M7: the group-1 material layout, default textures and
+    /// samplers, and the plain material the built-in shapes and
+    /// untextured draws use.
+    materials: MaterialKit,
+    plain_material: wgpu::BindGroup,
+    /// Lazy-loaded textures keyed by `Env::texture_paths` interned id:
+    /// the plain material with that texture as its base colour.
     texture_cache: HashMap<u32, wgpu::BindGroup>,
     texture_load_failures: HashSet<u32>,
 }
@@ -1307,13 +1606,9 @@ struct GpuMesh {
     /// `.glb` accessors can use u8 / u16 / u32; we widen everything
     /// to u32 on load so the pipeline only needs one branch.
     index_format: wgpu::IndexFormat,
-    /// Phase 17 finish: auto-loaded base color texture from the
-    /// glTF material. `Some` when the first primitive's
-    /// `pbr_metallic_roughness.baseColorTexture` resolves to an
-    /// embedded image; the render flow uses this as the per-mesh
-    /// fallback when the script's `mesh()` call doesn't supply
-    /// an explicit texture handle.
-    auto_texture: Option<wgpu::BindGroup>,
+    /// web3d-M7: one draw range per glTF primitive, each with its
+    /// material (used when the script gives no texture or material).
+    submeshes: Vec<GpuSubmesh>,
     /// Phase 24: skinning data extracted from the glTF skin (if
     /// any). When `Some`, the mesh has per-vertex joint indices +
     /// weights bound, the per-mesh joint UBO + bind group below
@@ -1321,6 +1616,14 @@ struct GpuMesh {
     /// frame from the active animation clip. When `None`, the
     /// shared `identity_joints_bind_group` is used at slot 3.
     skin: Option<MeshSkin>,
+}
+
+/// web3d-M7: a glTF primitive's index range and material.
+struct GpuSubmesh {
+    first: u32,
+    count: u32,
+    material: wgpu::BindGroup,
+    double_sided: bool,
 }
 
 /// Phase 24: per-mesh skin data + GPU resources. Built at glb load
@@ -1643,91 +1946,9 @@ async fn init_renderer(
         }],
     });
 
-    // Phase 17 session 3: texture bind group layout — sampled
-    // 2D float texture + a filtering sampler. One layout, reused
-    // for every per-mesh texture binding (including the fallback
-    // white texture used by untextured meshes).
-    let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("twec-play3d texture bgl"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-        ],
-    });
-    // White 1x1 fallback texture so untextured meshes draw correctly
-    // (sampling any uv produces white, which multiplied by the
-    // per-instance tint gives the unmodified tint).
-    let white_texture = device.create_texture_with_data(
-        &queue,
-        &wgpu::TextureDescriptor {
-            label: Some("twec-play3d white fallback"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::default(),
-        &[255, 255, 255, 255],
-    );
-    let white_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
-    // Phase 28 session 1: trilinear filtering + 16x anisotropy.
-    // - mipmap_filter Linear (was Nearest) trilinears between mip
-    //   levels, so distant textures don't show the harsh seams that
-    //   point-sampled mips produce.
-    // - anisotropy_clamp 16 enables anisotropic filtering for grazing
-    //   surface angles. The wgpu spec allows any power of 2 in
-    //   [1, 16]; backends silently clamp to whatever the GPU supports
-    //   (real hardware tops out at 16x in practice).
-    // - Both are no-ops without a populated mip chain, which is what
-    //   `upload_texture_with_mips` builds for game textures. The
-    //   white 1x1 fallback retains its single level — sampling a
-    //   1x1 with mipmap_filter Linear degenerates to level 0.
-    let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("twec-play3d sampler"),
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::Repeat,
-        address_mode_w: wgpu::AddressMode::Repeat,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::MipmapFilterMode::Linear,
-        anisotropy_clamp: 16,
-        ..Default::default()
-    });
-    let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("twec-play3d white bg"),
-        layout: &texture_bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&white_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&default_sampler),
-            },
-        ],
-    });
+    // web3d-M7: materials (kernel/material.rs) at group 1.
+    let mut materials = MaterialKit::new(&device, &queue);
+    let plain_material = materials.bind_group(&device, &MaterialData::plain(), [None; SLOTS]);
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("twec-play3d shader"),
@@ -1789,13 +2010,14 @@ async fn init_renderer(
         label: Some("twec-play3d pipeline layout"),
         bind_group_layouts: &[
             Some(&frame_bgl),
-            Some(&texture_bgl),
+            Some(&materials.layout),
             Some(&joints_bgl),
             Some(&shadow_combined_bgl),
         ],
         immediate_size: 0,
     });
-    let pipeline = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main");
+    let pipeline = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main", false);
+    let pipeline_double = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main", true);
 
     // Phase 28 session 2: cascaded shadow maps. The shadow texture
     // is a 2D array with `CASCADE_COUNT` layers; each shadow pass
@@ -2055,6 +2277,7 @@ async fn init_renderer(
         queue,
         config,
         pipeline,
+        pipeline_double,
         pipeline_layout,
         material_pipelines: HashMap::new(),
         target_format,
@@ -2089,133 +2312,26 @@ async fn init_renderer(
         mesh_load_failures: HashSet::new(),
         mesh_pending: HashSet::new(),
         texture_pending: HashSet::new(),
-        texture_bgl,
-        default_sampler,
-        white_bind_group,
+        materials,
+        plain_material,
         texture_cache: HashMap::new(),
         texture_load_failures: HashSet::new(),
     })
 }
 
-/// Phase 17 session 3: PNG/JPEG texture loader. Decodes via the
-/// `image` crate, uploads as Rgba8UnormSrgb, returns a bind group
-/// ready to set on render group 1. Path is resolved through the
-/// bundle-aware loader so built `.exe`s work.
+/// Phase 17 session 3: PNG/JPEG texture loader (a script's
+/// `texture(path)`). Decodes via the `image` crate and uploads as sRGB
+/// colour with mips; the caller wraps it in a material.
 fn upload_texture_bytes(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
     bytes: &[u8],
-) -> Result<wgpu::BindGroup, String> {
+) -> Result<wgpu::TextureView, String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
-    let texture = upload_texture_with_mips(device, queue, "twec-play3d texture", &rgba, w, h);
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("twec-play3d texture bg"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    }))
-}
-
-/// Phase 28 session 1: upload an RGBA8 texture with a full mip
-/// chain. Mip levels are generated CPU-side via
-/// `image::imageops::resize` with Triangle filtering. Each level
-/// is resampled from the original (slower than chained box
-/// downsample but produces cleaner downscales for non-power-of-two
-/// textures, which is the common case for game textures from
-/// `.glb` files).
-///
-/// **Gamma caveat.** Triangle filtering on `Rgba8UnormSrgb` byte
-/// values resamples in sRGB space, not linear. The visual error is
-/// minor but present (mips trend slightly darker than ideal). A
-/// proper linear-space resize is a follow-on if it ever becomes
-/// visible — most engines just live with it.
-fn upload_texture_with_mips(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    label: &str,
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-) -> wgpu::Texture {
-    let max_dim = width.max(height).max(1);
-    let mip_level_count = (max_dim as f32).log2().floor() as u32 + 1;
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * width),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    if mip_level_count > 1 {
-        let source: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
-            image::ImageBuffer::from_raw(width, height, rgba.to_vec())
-                .expect("rgba slice length should be width * height * 4");
-        for level in 1..mip_level_count {
-            let mw = (width >> level).max(1);
-            let mh = (height >> level).max(1);
-            let mip =
-                image::imageops::resize(&source, mw, mh, image::imageops::FilterType::Triangle);
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: level,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &mip,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * mw),
-                    rows_per_image: Some(mh),
-                },
-                wgpu::Extent3d {
-                    width: mw,
-                    height: mh,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-    }
-    texture
+    let texture = upload_rgba(device, queue, "twec-play3d texture", &rgba, w, h, true);
+    Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()))
 }
 
 // ---------- glTF 2.0 mesh loader ----------
@@ -2225,17 +2341,6 @@ fn upload_texture_with_mips(
 // caller uploads to GPU. Multi-primitive scenes, node transforms,
 // materials, and textures are all follow-ons — design notes in
 // `notes/future-phases.md` "Carried into v0.2".
-
-/// Phase 17 finish: image data extracted from a glTF material.
-/// `pixels` is RGBA8, `width × height` row-major. The gltf crate
-/// pre-decodes embedded textures regardless of source format
-/// (PNG/JPEG/raw), so by the time we see it the data is already
-/// in a uniform layout we can upload directly.
-struct AutoTextureData {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
-}
 
 /// Phase 24: skin + animation data extracted from a glb at load
 /// time, ready to be paired with GPU resources by the caller.
@@ -2252,14 +2357,14 @@ pub(crate) struct LoadedSkinData {
 /// A decoded `.glb`, ready for GPU upload. Opaque to hosts: they get
 /// one from [`parse_glb_bytes`] and hand it back via
 /// [`AssetReady::Mesh`].
-pub struct LoadedGlb(GlbParts);
+pub struct LoadedGlb(Box<GlbData>);
 
 impl LoadedGlb {
     /// web3d-M7: a sphere around every vertex (bounding-box centre, then
     /// the farthest vertex), in the model's own units. The graphics
     /// harness places cameras and clip planes with it.
     pub fn bounding_sphere(&self) -> ([f32; 3], f32) {
-        let verts = &self.0 .0;
+        let verts = &self.0.vertices;
         if verts.is_empty() {
             return ([0.0; 3], 0.0);
         }
@@ -2283,14 +2388,26 @@ impl LoadedGlb {
     }
 }
 
-/// Phase 24: the glb loader's parts — (vertices, indices, optional
-/// auto-loaded base color texture, optional skin + animation data).
-type GlbParts = (
-    Vec<Vertex>,
-    Vec<u32>,
-    Option<AutoTextureData>,
-    Option<LoadedSkinData>,
-);
+/// The glb loader's output: one vertex / index buffer for the whole
+/// model, split into per-primitive draw ranges with their materials
+/// (web3d-M7), the images those materials use, and skin + animation
+/// data (Phase 24).
+struct GlbData {
+    vertices: Vec<Vertex>,
+    indices: Vec<u32>,
+    submeshes: Vec<Submesh>,
+    materials: Vec<MaterialData>,
+    images: Vec<ImageData>,
+    skin: Option<LoadedSkinData>,
+}
+
+/// web3d-M7: one glTF primitive's range of `GlbData::indices`.
+#[derive(Clone, Copy, Debug)]
+struct Submesh {
+    first: u32,
+    count: u32,
+    material: usize,
+}
 
 /// Inner loader exposed for tests — drives the gltf crate against
 /// an in-memory byte slice instead of a path so we can exercise
@@ -2307,9 +2424,23 @@ pub fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
     // normals at load time — except for skinned primitives, whose
     // positions stay in mesh-local space (the skin pass at render
     // time resolves them via the joint matrices). Phase 24.
-    let mut all_verts: Vec<Vertex> = Vec::new();
-    let mut all_indices: Vec<u32> = Vec::new();
-    let mut auto_texture: Option<AutoTextureData> = None;
+    // web3d-M7: every material of the document, then glTF's default
+    // material for primitives that name none; every image as RGBA8.
+    let mut materials: Vec<MaterialData> =
+        doc.materials().map(|m| MaterialData::from_gltf(&m)).collect();
+    materials.push(MaterialData {
+        metallic: 1.0,
+        roughness: 1.0,
+        ..MaterialData::plain()
+    });
+    let mut out = GlbData {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        submeshes: Vec::new(),
+        materials,
+        images: images.iter().map(ImageData::from_gltf).collect(),
+        skin: None,
+    };
 
     // Use the default scene if present, otherwise scene 0.
     let scene = doc
@@ -2318,49 +2449,31 @@ pub fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
         .ok_or_else(|| "glb has no scenes".to_string())?;
 
     for node in scene.nodes() {
-        flatten_node(
-            &node,
-            mat4_identity(),
-            &buffers,
-            &images,
-            &mut all_verts,
-            &mut all_indices,
-            &mut auto_texture,
-        );
+        flatten_node(&node, mat4_identity(), &buffers, &mut out);
     }
 
     // Phase 5 fallback: if the document has meshes but no scene
     // graph (rare but legal for raw mesh files), pull the first
     // primitive of the first mesh directly. Preserves backward
     // compatibility with the pre-Phase-19 single-primitive loader.
-    if all_verts.is_empty() {
+    if out.vertices.is_empty() {
         let mesh = doc.meshes().next().unwrap();
         let primitive = mesh
             .primitives()
             .next()
             .ok_or_else(|| "first mesh has no primitives".to_string())?;
-        flatten_primitive(
-            &primitive,
-            mat4_identity(),
-            false,
-            &buffers,
-            &images,
-            &mut all_verts,
-            &mut all_indices,
-            &mut auto_texture,
-        );
+        flatten_primitive(&primitive, mat4_identity(), false, &buffers, &mut out);
     }
 
-    if all_verts.is_empty() {
+    if out.vertices.is_empty() {
         return Err("glb has zero vertices across all primitives".to_string());
     }
 
     // Phase 24: extract skin + animation data, if any. We pick the
     // first skin referenced anywhere in the document; multi-skin
     // documents are rare in practice and outside MVP scope.
-    let skin_data = extract_skin_data(&doc, &buffers, &scene);
-
-    Ok(LoadedGlb((all_verts, all_indices, auto_texture, skin_data)))
+    out.skin = extract_skin_data(&doc, &buffers, &scene);
+    Ok(LoadedGlb(Box::new(out)))
 }
 
 /// Phase 24: extract skin + animation channels from the document.
@@ -2941,38 +3054,18 @@ fn flatten_node(
     node: &gltf::Node<'_>,
     parent_transform: [[f32; 4]; 4],
     buffers: &[gltf::buffer::Data],
-    images: &[gltf::image::Data],
-    out_verts: &mut Vec<Vertex>,
-    out_indices: &mut Vec<u32>,
-    out_auto_tex: &mut Option<AutoTextureData>,
+    out: &mut GlbData,
 ) {
     let local = node.transform().matrix();
     let world = mat4_mul(parent_transform, local);
     let is_skinned = node.skin().is_some();
     if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
-            flatten_primitive(
-                &primitive,
-                world,
-                is_skinned,
-                buffers,
-                images,
-                out_verts,
-                out_indices,
-                out_auto_tex,
-            );
+            flatten_primitive(&primitive, world, is_skinned, buffers, out);
         }
     }
     for child in node.children() {
-        flatten_node(
-            &child,
-            world,
-            buffers,
-            images,
-            out_verts,
-            out_indices,
-            out_auto_tex,
-        );
+        flatten_node(&child, world, buffers, out);
     }
 }
 
@@ -2980,17 +3073,21 @@ fn flatten_node(
 /// output, transformed by `world` (or left in mesh-local space when
 /// skinned). Index values are offset by the existing vertex count
 /// so multiple primitives share one buffer.
-#[allow(clippy::too_many_arguments)]
+/// Append one glTF primitive to the flattened model as a submesh with
+/// its material: vertices transformed by `world` (or left in mesh-local
+/// space when skinned), indices offset by the existing vertex count so
+/// every primitive shares one buffer. Non-triangle primitives (points,
+/// lines) are skipped.
 fn flatten_primitive(
     primitive: &gltf::Primitive<'_>,
     world: [[f32; 4]; 4],
     is_skinned: bool,
     buffers: &[gltf::buffer::Data],
-    images: &[gltf::image::Data],
-    out_verts: &mut Vec<Vertex>,
-    out_indices: &mut Vec<u32>,
-    out_auto_tex: &mut Option<AutoTextureData>,
+    out: &mut GlbData,
 ) {
+    if primitive.mode() != gltf::mesh::Mode::Triangles {
+        return;
+    }
     let reader = primitive.reader(|b| Some(&buffers[b.index()]));
     let positions: Vec<[f32; 3]> = match reader.read_positions() {
         Some(p) => p.collect(),
@@ -2999,130 +3096,88 @@ fn flatten_primitive(
     if positions.is_empty() {
         return;
     }
-    let normals: Vec<[f32; 3]> = match reader.read_normals() {
-        Some(iter) => {
-            let v: Vec<[f32; 3]> = iter.collect();
-            if v.len() == positions.len() {
-                v
-            } else {
-                vec![[0.0, 1.0, 0.0]; positions.len()]
-            }
+    let count = positions.len();
+    // An optional attribute, or `default` for every vertex when it is
+    // absent or has the wrong length.
+    fn or_default<T: Clone>(v: Option<Vec<T>>, count: usize, default: T) -> Vec<T> {
+        match v {
+            Some(v) if v.len() == count => v,
+            _ => vec![default; count],
         }
-        None => vec![[0.0, 1.0, 0.0]; positions.len()],
-    };
-    let uvs: Vec<[f32; 2]> = match reader.read_tex_coords(0) {
-        Some(iter) => {
-            let v: Vec<[f32; 2]> = iter.into_f32().collect();
-            if v.len() == positions.len() {
-                v
-            } else {
-                vec![[0.0, 0.0]; positions.len()]
-            }
-        }
-        None => vec![[0.0, 0.0]; positions.len()],
-    };
+    }
+    let normals = or_default(reader.read_normals().map(|i| i.collect()), count, [0.0, 1.0, 0.0]);
+    let uvs = or_default(
+        reader.read_tex_coords(0).map(|i| i.into_f32().collect()),
+        count,
+        [0.0, 0.0],
+    );
+    let uvs1 = or_default(
+        reader.read_tex_coords(1).map(|i| i.into_f32().collect()),
+        count,
+        [0.0, 0.0],
+    );
+    let tangents = or_default(reader.read_tangents().map(|i| i.collect()), count, NO_TANGENT);
+    let colors = or_default(
+        reader.read_colors(0).map(|i| i.into_rgba_f32().collect()),
+        count,
+        WHITE,
+    );
+    // Phase 24: JOINTS_0 / WEIGHTS_0, or the identity skin.
+    let joints = or_default(
+        reader.read_joints(0).map(|i| i.into_u16().collect()),
+        count,
+        UNSKINNED_J,
+    );
+    let weights = or_default(
+        reader.read_weights(0).map(|i| i.into_f32().collect()),
+        count,
+        UNSKINNED_W,
+    );
 
-    // Phase 24: read JOINTS_0 / WEIGHTS_0 if present. When absent,
-    // default to (0,0,0,0) / (1,0,0,0) so the unskinned skin pass
-    // collapses to identity at render time.
-    let joints: Vec<[u16; 4]> = match reader.read_joints(0) {
-        Some(iter) => iter.into_u16().collect(),
-        None => vec![UNSKINNED_J; positions.len()],
-    };
-    let joints = if joints.len() == positions.len() {
-        joints
-    } else {
-        vec![UNSKINNED_J; positions.len()]
-    };
-    let weights: Vec<[f32; 4]> = match reader.read_weights(0) {
-        Some(iter) => iter.into_f32().collect(),
-        None => vec![UNSKINNED_W; positions.len()],
-    };
-    let weights = if weights.len() == positions.len() {
-        weights
-    } else {
-        vec![UNSKINNED_W; positions.len()]
-    };
-
-    // Phase 24: per glTF 2.0 spec, transforms of skinned mesh
-    // instances are NOT applied to the rendered mesh — joint
-    // transforms in the skin hierarchy already carry that
-    // information. So when this primitive is skinned, leave
-    // positions/normals in mesh-local space and let the skin pass
-    // in the vertex shader resolve them. Unskinned primitives
-    // bake the parent-multiplied world transform as before.
-    let base_index = out_verts.len() as u32;
-    for (((p, n), uv), (j, w)) in positions
-        .iter()
-        .zip(normals.iter())
-        .zip(uvs.iter())
-        .zip(joints.iter().zip(weights.iter()))
-    {
-        let (pos, nrm) = if is_skinned {
-            (*p, *n)
+    // Phase 24: per glTF 2.0, a skinned mesh's node transform is not
+    // applied (the joints carry it), so skinned primitives stay in
+    // mesh-local space; unskinned ones bake the world transform.
+    let base_index = out.vertices.len() as u32;
+    for i in 0..count {
+        let (position, normal, tangent) = if is_skinned {
+            (positions[i], normals[i], tangents[i])
         } else {
+            let t = tangents[i];
+            let tt = mat4_transform_dir(world, [t[0], t[1], t[2]]);
             (
-                mat4_transform_point(world, *p),
-                mat4_transform_dir(world, *n),
+                mat4_transform_point(world, positions[i]),
+                mat4_transform_dir(world, normals[i]),
+                [tt[0], tt[1], tt[2], t[3]],
             )
         };
-        out_verts.push(Vertex {
-            position: pos,
-            normal: nrm,
-            uv: *uv,
-            joints: *j,
-            weights: *w,
+        out.vertices.push(Vertex {
+            position,
+            normal,
+            uv: uvs[i],
+            joints: joints[i],
+            weights: weights[i],
+            uv1: uvs1[i],
+            tangent,
+            color: colors[i],
         });
     }
 
-    let indices: Vec<u32> = match reader.read_indices() {
-        Some(idx) => idx.into_u32().collect(),
-        None => (0..positions.len() as u32).collect(),
-    };
-    for i in indices {
-        out_indices.push(base_index + i);
+    let first = out.indices.len() as u32;
+    match reader.read_indices() {
+        Some(idx) => out.indices.extend(idx.into_u32().map(|i| base_index + i)),
+        None => out.indices.extend(base_index..base_index + count as u32),
     }
-
-    // Phase 19: capture the first primitive's base color texture as
-    // the mesh-wide auto texture. Multi-material primitives don't
-    // get per-primitive textures yet (deferred to a Phase 21+
-    // follow-on once the renderer's draw partitioning supports it).
-    if out_auto_tex.is_none() {
-        if let Some(info) = primitive
-            .material()
-            .pbr_metallic_roughness()
-            .base_color_texture()
-        {
-            let image_index = info.texture().source().index();
-            if let Some(img) = images.get(image_index) {
-                let pixels = match img.format {
-                    gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
-                    gltf::image::Format::R8G8B8 => widen_rgb_to_rgba(&img.pixels),
-                    _ => vec![255u8; (img.width * img.height * 4) as usize],
-                };
-                *out_auto_tex = Some(AutoTextureData {
-                    width: img.width,
-                    height: img.height,
-                    pixels,
-                });
-            }
-        }
-    }
-}
-
-/// Widen a tightly-packed RGB8 buffer to RGBA8 with full alpha.
-/// glTF allows RGB8 sources for opaque base color textures; the
-/// wgpu upload path always wants 4 channels.
-fn widen_rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
-    let pixels = rgb.len() / 3;
-    let mut out = Vec::with_capacity(pixels * 4);
-    for chunk in rgb.chunks_exact(3) {
-        out.push(chunk[0]);
-        out.push(chunk[1]);
-        out.push(chunk[2]);
-        out.push(255);
-    }
-    out
+    // web3d-M7: the primitive's material; glTF's default (the last
+    // entry) when it names none.
+    let material = primitive
+        .material()
+        .index()
+        .unwrap_or(out.materials.len() - 1);
+    out.submeshes.push(Submesh {
+        first,
+        count: out.indices.len() as u32 - first,
+        material,
+    });
 }
 
 /// Phase 28 session 5: GPU-upload portion of mesh load, split out
@@ -3134,12 +3189,18 @@ fn widen_rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
 fn upload_loaded_glb(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
+    kit: &mut MaterialKit,
     joints_bgl: &wgpu::BindGroupLayout,
     loaded: LoadedGlb,
 ) -> GpuMesh {
-    let (vertices, indices, auto_tex, skin_data) = loaded.0;
+    let GlbData {
+        vertices,
+        indices,
+        submeshes,
+        materials,
+        images,
+        skin: skin_data,
+    } = *loaded.0;
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("twec-play3d mesh vertices"),
         contents: bytemuck::cast_slice(&vertices),
@@ -3150,36 +3211,50 @@ fn upload_loaded_glb(
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX,
     });
-    // Phase 17 finish: upload the auto-extracted base color texture
-    // to GPU memory and build a bind group ready for render-time
-    // binding. Untextured glb meshes (no material or no base color
-    // texture) leave `auto_texture: None`; the render flow falls
-    // back to the global white 1x1 in that case.
-    let auto_texture = auto_tex.map(|tex| {
-        let texture = upload_texture_with_mips(
-            device,
-            queue,
-            "twec-play3d glb auto texture",
-            &tex.pixels,
-            tex.width,
-            tex.height,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("twec-play3d glb auto texture bg"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
+    // web3d-M7: upload each image once per encoding it is used with
+    // (colour slots sRGB, data slots linear), then a bind group per
+    // material.
+    let mut views: HashMap<(usize, bool), wgpu::TextureView> = HashMap::new();
+    for m in &materials {
+        for (i, slot) in m.slots.iter().enumerate() {
+            let Some(slot) = slot else { continue };
+            let key = (slot.image, SRGB_SLOT[i]);
+            if views.contains_key(&key) {
+                continue;
+            }
+            if let Some(img) = images.get(slot.image) {
+                let t = upload_rgba(
+                    device,
+                    queue,
+                    "twe-kernel glb texture",
+                    &img.rgba,
+                    img.width,
+                    img.height,
+                    key.1,
+                );
+                views.insert(key, t.create_view(&wgpu::TextureViewDescriptor::default()));
+            }
+        }
+    }
+    let bind_groups: Vec<wgpu::BindGroup> = materials
+        .iter()
+        .map(|m| {
+            let mut slots = [None; SLOTS];
+            for (i, slot) in m.slots.iter().enumerate() {
+                slots[i] = slot.and_then(|s| views.get(&(s.image, SRGB_SLOT[i])));
+            }
+            kit.bind_group(device, m, slots)
         })
-    });
+        .collect();
+    let submeshes = submeshes
+        .iter()
+        .map(|sub| GpuSubmesh {
+            first: sub.first,
+            count: sub.count,
+            material: bind_groups[sub.material].clone(),
+            double_sided: materials[sub.material].double_sided,
+        })
+        .collect();
     // Phase 24: build per-mesh skin GPU resources when the glb
     // has a skinned mesh. Each skinned mesh owns its joint UBO,
     // updated each frame from the script-driven `mesh_anim`.
@@ -3241,7 +3316,7 @@ fn upload_loaded_glb(
         index_buffer,
         index_count: indices.len() as u32,
         index_format: wgpu::IndexFormat::Uint32,
-        auto_texture,
+        submeshes,
         skin,
     }
 }
@@ -3274,6 +3349,7 @@ impl Renderer {
         let camera_uniform = CameraUniform {
             view_proj,
             time: [snap.time, 0.0, 0.0, 0.0],
+            eye: [eye[0], eye[1], eye[2], 1.0],
         };
         state
             .queue
@@ -3335,8 +3411,7 @@ impl Renderer {
                             let gpu_mesh = upload_loaded_glb(
                                 &state.device,
                                 &state.queue,
-                                &state.texture_bgl,
-                                &state.default_sampler,
+                                &mut state.materials,
                                 &state.joints_bgl,
                                 loaded,
                             );
@@ -3351,13 +3426,12 @@ impl Renderer {
                 AssetReady::Texture(id, result) => {
                     state.texture_pending.remove(&id);
                     let uploaded = result.and_then(|bytes| {
-                        upload_texture_bytes(
-                            &state.device,
-                            &state.queue,
-                            &state.texture_bgl,
-                            &state.default_sampler,
-                            &bytes,
-                        )
+                        let view = upload_texture_bytes(&state.device, &state.queue, &bytes)?;
+                        let mut slots = [None; SLOTS];
+                        slots[BASE] = Some(&view);
+                        Ok(state
+                            .materials
+                            .bind_group(&state.device, &MaterialData::plain(), slots))
                     });
                     match uploaded {
                         Ok(bg) => {
@@ -3551,6 +3625,7 @@ impl Renderer {
                     &state.pipeline_layout,
                     &module,
                     "fs_material",
+                    false,
                 );
                 state.material_pipelines.insert(pixel.clone(), pipeline);
             }
@@ -3815,12 +3890,12 @@ impl Renderer {
                             // missing/failed ids fall through to white.
                             let bind_for = |tex_id: u32| -> &wgpu::BindGroup {
                                 if tex_id == 0 {
-                                    return &state.white_bind_group;
+                                    return &state.plain_material;
                                 }
                                 state
                                     .texture_cache
                                     .get(&tex_id)
-                                    .unwrap_or(&state.white_bind_group)
+                                    .unwrap_or(&state.plain_material)
                             };
                             // web3d-M3: the plain surface, or a material's pipeline.
                             let pipeline_for = |mat: u32| -> &wgpu::RenderPipeline {
@@ -3868,21 +3943,6 @@ impl Renderer {
                                     Some(m) => m,
                                     None => continue,
                                 };
-                                rpass.set_pipeline(pipeline_for(*mat));
-                                // Phase 17 finish: when the script's `mesh()` call
-                                // didn't supply an explicit texture (tex == 0),
-                                // prefer the mesh's auto-loaded baseColorTexture if
-                                // it has one. Falls through to white when neither
-                                // is present.
-                                let bind = if *tex == 0 {
-                                    gpu_mesh
-                                        .auto_texture
-                                        .as_ref()
-                                        .unwrap_or(&state.white_bind_group)
-                                } else {
-                                    bind_for(*tex)
-                                };
-                                rpass.set_bind_group(1, bind, &[]);
                                 // Phase 24: bind per-mesh joint UBO when the mesh
                                 // has a skin; the joint matrices were uploaded in
                                 // step 4c above. Unskinned meshes leave slot 3
@@ -3892,7 +3952,29 @@ impl Renderer {
                                 }
                                 rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
                                 rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
-                                rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+                                if *tex != 0 || *mat != 0 {
+                                    // A script texture or a `visual` material
+                                    // covers the whole mesh as one surface.
+                                    rpass.set_pipeline(pipeline_for(*mat));
+                                    rpass.set_bind_group(1, bind_for(*tex), &[]);
+                                    rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+                                } else {
+                                    // web3d-M7: each glTF primitive with its
+                                    // own material.
+                                    for sub in &gpu_mesh.submeshes {
+                                        rpass.set_pipeline(if sub.double_sided {
+                                            &state.pipeline_double
+                                        } else {
+                                            &state.pipeline
+                                        });
+                                        rpass.set_bind_group(1, &sub.material, &[]);
+                                        rpass.draw_indexed(
+                                            sub.first..sub.first + sub.count,
+                                            0,
+                                            range.0..range.1,
+                                        );
+                                    }
+                                }
                                 // Re-bind the identity joints for the next draw if
                                 // we just used a skinned bind group, so subsequent
                                 // unskinned draws don't accidentally read this
@@ -4237,10 +4319,89 @@ mod tests {
         out
     }
 
+    /// Pack a glTF JSON (with `{bin_len}` for the buffer length) and a
+    /// binary chunk into a .glb.
+    fn glb(json: &str, bin: &[u8]) -> Vec<u8> {
+        let mut j = json.replace("{bin_len}", &bin.len().to_string()).into_bytes();
+        while !j.len().is_multiple_of(4) {
+            j.push(b' ');
+        }
+        let mut b = bin.to_vec();
+        while !b.len().is_multiple_of(4) {
+            b.push(0);
+        }
+        let total = (12 + 8 + j.len() + 8 + b.len()) as u32;
+        let mut out = b"glTF".to_vec();
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&(j.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"JSON");
+        out.extend_from_slice(&j);
+        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(&b);
+        out
+    }
+
+    /// web3d-M7: each primitive becomes a submesh with its own glTF
+    /// material; factors, alpha mode, double-sidedness, emissive
+    /// strength and vertex colours are read; a primitive without a
+    /// material gets glTF's default (metallic 1, roughness 1).
+    #[test]
+    fn parse_glb_reads_a_material_per_primitive() {
+        let positions: [f32; 18] = [
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, // triangle 0
+            2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0, 1.0, 0.0, // triangle 1
+        ];
+        let colors: [f32; 24] = [0.5; 24];
+        let mut bin = bytemuck::cast_slice::<f32, u8>(&positions).to_vec();
+        bin.extend_from_slice(bytemuck::cast_slice::<f32, u8>(&colors));
+        let json = r#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_emissive_strength"],
+            "scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+            "meshes":[{"primitives":[
+                {"attributes":{"POSITION":0,"COLOR_0":2},"material":0},
+                {"attributes":{"POSITION":1},"material":1},
+                {"attributes":{"POSITION":1}}]}],
+            "materials":[
+                {"pbrMetallicRoughness":{"baseColorFactor":[1,0,0,1],"metallicFactor":0.25,"roughnessFactor":0.75},"doubleSided":true},
+                {"emissiveFactor":[0,0,1],"extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":4}},"alphaMode":"MASK","alphaCutoff":0.3}],
+            "accessors":[
+                {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+                {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3","min":[2,0,0],"max":[3,1,0]},
+                {"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"}],
+            "bufferViews":[
+                {"buffer":0,"byteOffset":0,"byteLength":36},
+                {"buffer":0,"byteOffset":36,"byteLength":36},
+                {"buffer":0,"byteOffset":72,"byteLength":48}],
+            "buffers":[{"byteLength":{bin_len}}]}"#;
+        let data = parse_glb_bytes(&glb(json, &bin)).expect("decode").0;
+        assert_eq!(data.submeshes.len(), 3);
+        let mats: Vec<usize> = data.submeshes.iter().map(|s| s.material).collect();
+        assert_eq!(mats, [0, 1, 2], "the third primitive gets the default material");
+        assert_eq!(
+            data.submeshes.iter().map(|s| (s.first, s.count)).collect::<Vec<_>>(),
+            [(0, 3), (3, 3), (6, 3)]
+        );
+        let red = &data.materials[0];
+        assert_eq!(red.base_color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!((red.metallic, red.roughness), (0.25, 0.75));
+        assert!(red.double_sided);
+        let glow = &data.materials[1];
+        assert_eq!(glow.emissive, [0.0, 0.0, 4.0], "emissive strength applied");
+        assert_eq!(glow.alpha_mode, crate::kernel::material::AlphaMode::Mask);
+        assert_eq!(glow.alpha_cutoff, 0.3);
+        let default = &data.materials[2];
+        assert_eq!((default.metallic, default.roughness), (1.0, 1.0));
+        assert_eq!(data.vertices[0].color, [0.5; 4]);
+        assert_eq!(data.vertices[3].color, [1.0; 4], "no COLOR_0: white");
+    }
+
     #[test]
     fn parse_glb_extracts_positions_and_indices() {
         let bytes = make_minimal_glb();
-        let (vertices, indices, _auto_tex, _skin) = parse_glb_bytes(&bytes).expect("decode").0;
+        let GlbData {
+            vertices, indices, ..
+        } = *parse_glb_bytes(&bytes).expect("decode").0;
         assert_eq!(vertices.len(), 3);
         assert_eq!(indices, vec![0, 1, 2]);
         assert_eq!(vertices[0].position, [0.0, 0.0, 0.0]);
@@ -4253,7 +4414,7 @@ mod tests {
         // The fixture omits NORMAL — loader fills with [0, 1, 0]
         // so the mesh still shades against the directional light.
         let bytes = make_minimal_glb();
-        let (vertices, _, _, _) = parse_glb_bytes(&bytes).expect("decode").0;
+        let vertices = parse_glb_bytes(&bytes).expect("decode").0.vertices;
         assert_eq!(vertices[0].normal, [0.0, 1.0, 0.0]);
     }
 
@@ -4283,7 +4444,9 @@ mod tests {
         std::fs::write(path, &bytes).expect("write fixture");
         // Round-trip check: the file we just wrote must decode.
         let written = std::fs::read(path).expect("read fixture back");
-        let (vertices, indices, _, _) = parse_glb_bytes(&written).expect("decode").0;
+        let GlbData {
+            vertices, indices, ..
+        } = *parse_glb_bytes(&written).expect("decode").0;
         assert_eq!(vertices.len(), 3);
         assert_eq!(indices.len(), 3);
     }
@@ -4392,13 +4555,13 @@ mod tests {
     }
 
     /// Phase 27: the Vertex layout's stride must match what the
-    /// shader expects. With joints (8B) + weights (16B) added on
-    /// top of position+normal+uv (32B), the stride should be
-    /// exactly 56 bytes. A mismatch here would either crash on
-    /// pipeline creation or silently scramble vertex data.
+    /// shader expects: position + normal + uv (32 B), joints +
+    /// weights (24 B), and web3d-M7's uv1 + tangent + colour (40 B)
+    /// = 96 B. A mismatch would crash on pipeline creation or
+    /// silently scramble vertex data.
     #[test]
-    fn vertex_layout_stride_matches_phase_24() {
-        assert_eq!(std::mem::size_of::<Vertex>(), 56);
+    fn vertex_layout_stride_matches() {
+        assert_eq!(std::mem::size_of::<Vertex>(), 96);
     }
 
     /// Phase 27: the joint UBO size must fit in the default wgpu

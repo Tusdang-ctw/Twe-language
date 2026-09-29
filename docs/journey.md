@@ -122,6 +122,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: the scoreboard.** Before improving a single pixel, Twe got an honest scoreboard. Twelve standard 3D test scenes from the Khronos group are rendered by Twe and by Three.js from identical files, and each image is scored against a Hollywood-grade path-traced reference with NVIDIA's ꟻLIP image metric. The starting score: **Twe 0.348, Three.js 0.186** (lower is better); Twe's error is about twice Three.js's. The table is committed, so every future improvement shows up as a number in the project history. Its first run already caught a real Twe bug: models with many materials were painted with just one.
 
+- **2026-09-29: real materials.** Twe's renderer learned physically based materials: metal that looks like metal, bumpy surfaces from normal maps, glowing parts, textures that tile and rotate as the model's author intended, and a separate material for every part of a model (before, a whole model wore one texture). On the scoreboard Twe went from 0.348 to **0.295** (Three.js: 0.186), about a third of the gap closed, and on one test scene it now ties Three.js. What's left is mostly lighting from the environment, the next step.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

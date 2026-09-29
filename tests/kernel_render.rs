@@ -14,6 +14,10 @@
 
 use twec::kernel::render::Renderer;
 
+/// The asset root is process-global: tests that set it hold this lock
+/// for the rest of the test, so parallel tests don't swap it underneath.
+static ASSET_ROOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const W: u32 = 320;
 const H: u32 = 240;
 
@@ -236,6 +240,7 @@ fn survive3d_frame_renders() {
     let Some(mut renderer) = headless() else {
         return;
     };
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
     twec::bundle::set_asset_root(Some("examples/survive3d".into()));
     let rgba = render_script(&mut renderer, "examples/survive3d/main.twe", 1200);
     save_png("survive3d", &rgba);
@@ -253,6 +258,7 @@ fn survive3d_level_up_renders() {
     let Some(mut renderer) = headless() else {
         return;
     };
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
     twec::bundle::set_asset_root(Some("examples/survive3d".into()));
     let rgba = render_script_with(&mut renderer, "examples/survive3d/main.twe", 2, |env| {
         env.set("xp".to_string(), twec::value::Value::from_int(50));
@@ -274,6 +280,7 @@ fn hero_renders_mid_stride() {
     let Some(mut renderer) = headless() else {
         return;
     };
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
     twec::bundle::set_asset_root(Some("examples/survive3d".into()));
     let src = r#"
 camera.eye = vec3(1.2, 1.3, 3.0)
@@ -296,4 +303,84 @@ on render():
     let skin = count(&|r, g, b| r > 150 && g > 100 && r > b + 40);
     assert!(blue > 300, "shirt pixels: {blue}");
     assert!(skin > 100, "skin pixels: {skin}");
+}
+
+/// Pack a glTF JSON (with `{bin_len}` for the buffer length) and a
+/// binary chunk into a .glb.
+fn glb(json: &str, bin: &[u8]) -> Vec<u8> {
+    let mut j = json.replace("{bin_len}", &bin.len().to_string()).into_bytes();
+    while !j.len().is_multiple_of(4) {
+        j.push(b' ');
+    }
+    let mut b = bin.to_vec();
+    while !b.len().is_multiple_of(4) {
+        b.push(0);
+    }
+    let total = (12 + 8 + j.len() + 8 + b.len()) as u32;
+    let mut out = b"glTF".to_vec();
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&total.to_le_bytes());
+    out.extend_from_slice(&(j.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&j);
+    out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&b);
+    out
+}
+
+/// web3d-M7: a glTF model's primitives draw with their own materials:
+/// the left quad is a red dielectric, the right one black but emissive
+/// blue (strength 2), so it glows whatever the lighting.
+#[test]
+fn gltf_primitives_draw_with_their_own_materials() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let quad = |x0: f32, x1: f32| -> Vec<f32> {
+        vec![x0, -0.6, 0.0, x1, -0.6, 0.0, x1, 0.6, 0.0, x0, 0.6, 0.0]
+    };
+    let mut positions = quad(-1.3, -0.1);
+    positions.extend(quad(0.1, 1.3));
+    let normals: Vec<f32> = [0.0f32, 0.0, 1.0].repeat(8);
+    let indices: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+    let mut bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+    bin.extend(normals.iter().flat_map(|f| f.to_le_bytes()));
+    bin.extend(indices.iter().flat_map(|i| i.to_le_bytes()));
+    let json = r#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_emissive_strength"],
+        "scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+        "meshes":[{"primitives":[
+            {"attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0},
+            {"attributes":{"POSITION":0,"NORMAL":1},"indices":3,"material":1}]}],
+        "materials":[
+            {"pbrMetallicRoughness":{"baseColorFactor":[0.8,0.05,0.05,1],"metallicFactor":0,"roughnessFactor":0.9}},
+            {"pbrMetallicRoughness":{"baseColorFactor":[0,0,0,1],"metallicFactor":0},
+             "emissiveFactor":[0.1,0.2,1],"extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":2}}}],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":8,"type":"VEC3","min":[-1.3,-0.6,0],"max":[1.3,0.6,0]},
+            {"bufferView":1,"componentType":5126,"count":8,"type":"VEC3"},
+            {"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"},
+            {"bufferView":2,"byteOffset":12,"componentType":5123,"count":6,"type":"SCALAR"}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":96},
+            {"buffer":0,"byteOffset":96,"byteLength":96},
+            {"buffer":0,"byteOffset":192,"byteLength":24}],
+        "buffers":[{"byteLength":{bin_len}}]}"#;
+    let dir = std::path::Path::new("target/kernel-render");
+    std::fs::create_dir_all(dir).expect("create output dir");
+    std::fs::write(dir.join("two_materials.glb"), glb(json, &bin)).expect("write glb");
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some(dir.into()));
+    let src = r#"
+camera.eye = vec3(0, 0, 3)
+camera.target = vec3(0, 0, 0)
+on render():
+    mesh("two_materials.glb", at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+"#;
+    let rgba = render_source(&mut renderer, "two_materials", src);
+    save_png("two_materials", &rgba);
+    let [lr, lg, lb] = pixel(&rgba, W / 4, H / 2);
+    let [rr, rg, rb] = pixel(&rgba, 3 * W / 4, H / 2);
+    assert!(lr > lg + 40 && lr > lb + 40, "left quad red: {:?}", [lr, lg, lb]);
+    assert!(rb > rr + 60 && rb > 150, "right quad glows blue: {:?}", [rr, rg, rb]);
 }

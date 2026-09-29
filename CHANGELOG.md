@@ -13,6 +13,15 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Physically based materials** (web3d-M7): glTF models draw each
+  primitive with its own metallic-roughness material — base colour,
+  metal-rough, normal, occlusion and emissive maps, texture transforms,
+  emissive strength, alpha mask, double-sided surfaces, vertex colours —
+  shaded with GGX / Smith / Schlick and multiscatter energy compensation.
+  Before, a whole model wore its first material's base-colour texture.
+- **Graphics comparison harness** (`bench/graphics/`): Twe and Three.js
+  render the Khronos Render Fidelity scenes, scored with FLIP against
+  path-traced references.
 - **Soak harness** (web3d-M4): `twec::soak` plays a 3D game with a
   scripted player (move, level up, pause, die, restart) through the
   real input and render paths. `tests/soak.rs` runs it natively (a
@@ -118,6 +127,10 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **3D tone curve and shading (visible change).** ACES now uses the
+  fitted RRT+ODT curve Three.js and the glTF references use (was a
+  darker approximation), and cubes / spheres shade as a physically based
+  dielectric, with specular highlights.
 - **`mouse.x` / `mouse.y` in 3D** are in 640×480 canvas units (as in
   2D and the HUD), not window pixels (web3d-M4).
 - **3D colours are sRGB (visible change).** Tints and `cube()` /
