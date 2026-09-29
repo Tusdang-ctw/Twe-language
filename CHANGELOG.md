@@ -13,6 +13,7 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **glTF material extensions** (web3d-M7): `.glb` models render clearcoat, sheen, iridescence, transmission with volume absorption, IOR and specular (`KHR_materials_*`).
 - **Translucency and fog in 3D** (web3d-M7): a draw colour with alpha below 1 and glTF `BLEND` materials draw translucent (sorted back to front); `light.fog(density, falloff, color)` adds exponential height fog.
 - **Depth of field, motion blur and colour grading in 3D** (web3d-M7): `postfx.dof(focus, f_stop)` (a physical thin lens), `postfx.motion_blur(shutter)` (camera motion) and `postfx.lut(path, strength)` (`.cube` 3D LUTs).
 - **Post-processing in 3D** (web3d-M7):

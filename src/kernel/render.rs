@@ -16,7 +16,7 @@ use wgpu::util::DeviceExt;
 use crate::kernel::graph::{Access, Extent, FrameGraph, TextureDesc, TexturePool};
 use crate::kernel::environment::EnvUniform;
 use crate::kernel::material::{
-    upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS, SRGB_SLOT,
+    upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS,
 };
 
 pub use crate::render3d_types::{AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive};
@@ -518,7 +518,11 @@ struct Material {
     params: vec4<f32>,         // metallic, roughness, normal scale, occlusion strength
     alpha: vec4<f32>,          // mode (0 opaque, 1 mask, 2 blend), cutoff, double-sided
     // Per texture slot: (offset.xy, rotation, uv set), (scale.xy, has texture, _).
-    xf: array<vec4<f32>, 10>,
+    xf: array<vec4<f32>, 18>,
+    // web3d-M7: glTF extension parameters and the extension slot of each
+    // texture role (kernel/material.rs `MaterialUniform`).
+    ext: array<vec4<f32>, 6>,
+    roles: array<vec4<f32>, 3>,
 };
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var t_base: texture_2d<f32>;
@@ -526,11 +530,19 @@ struct Material {
 @group(1) @binding(3) var t_normal: texture_2d<f32>;
 @group(1) @binding(4) var t_occlusion: texture_2d<f32>;
 @group(1) @binding(5) var t_emissive: texture_2d<f32>;
-@group(1) @binding(6) var s_base: sampler;
-@group(1) @binding(7) var s_metal_rough: sampler;
-@group(1) @binding(8) var s_normal: sampler;
-@group(1) @binding(9) var s_occlusion: sampler;
-@group(1) @binding(10) var s_emissive: sampler;
+@group(1) @binding(6) var t_ext0: texture_2d<f32>;
+@group(1) @binding(7) var t_ext1: texture_2d<f32>;
+@group(1) @binding(8) var t_ext2: texture_2d<f32>;
+@group(1) @binding(9) var t_ext3: texture_2d<f32>;
+@group(1) @binding(10) var s_base: sampler;
+@group(1) @binding(11) var s_metal_rough: sampler;
+@group(1) @binding(12) var s_normal: sampler;
+@group(1) @binding(13) var s_occlusion: sampler;
+@group(1) @binding(14) var s_emissive: sampler;
+@group(1) @binding(15) var s_ext0: sampler;
+@group(1) @binding(16) var s_ext1: sampler;
+@group(1) @binding(17) var s_ext2: sampler;
+@group(1) @binding(18) var s_ext3: sampler;
 
 // Phase 20: lighting uniform — global ambient, directional sun,
 // 8 point lights. Bound once per frame (group 2) alongside camera.
@@ -576,6 +588,9 @@ struct Fog {
     background: vec4<f32>,
 };
 @group(0) @binding(9) var<uniform> fog: Fog;
+// web3d-M7: the opaque scene behind transmissive surfaces, with mips
+// (kernel/post.rs `Transmission`); black when nothing transmits.
+@group(0) @binding(10) var t_transmission: texture_2d<f32>;
 
 fn fog_amount(p: vec3<f32>) -> f32 {
     if (fog.params.w < 0.5) {
@@ -680,6 +695,8 @@ struct VertexOutput {
     @location(5) tex_coord1: vec2<f32>,
     @location(6) world_tangent: vec4<f32>,
     @location(7) vertex_color: vec4<f32>,
+    // web3d-M7: the instance's scale (volume thickness is in mesh units).
+    @location(8) model_scale: f32,
 };
 
 @vertex
@@ -705,6 +722,7 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
     out.world_normal = yaw_rotate(skinned_normal, inst.inst_rot);
     out.base_color = inst.inst_color;
+    out.model_scale = inst.inst_pos_size.w;
     out.tex_coord = vert.uv;
     out.world_pos = model_pos;
     // Reverse-Z: clip.w is positive view-space distance forward.
@@ -847,7 +865,37 @@ struct Surface {
     n: vec3<f32>,
     occlusion: f32,
     emissive: vec3<f32>,
+    // web3d-M7 glTF extensions. The dielectric specular lobe's f0 and
+    // f90 (KHR_materials_ior + KHR_materials_specular; 0.04 and 1 by
+    // default); KHR_materials_clearcoat (strength, perceptual roughness,
+    // its own normal); KHR_materials_sheen (colour, roughness);
+    // KHR_materials_iridescence (strength, film IOR, film thickness nm).
+    specular_f0: vec3<f32>,
+    specular_f90: f32,
+    clearcoat: f32,
+    clearcoat_roughness: f32,
+    clearcoat_n: vec3<f32>,
+    sheen_color: vec3<f32>,
+    sheen_roughness: f32,
+    iridescence: f32,
+    iridescence_ior: f32,
+    iridescence_thickness: f32,
+    // KHR_materials_transmission + KHR_materials_volume: how much light
+    // passes through, the IOR it refracts by, the volume's thickness
+    // (mesh units) and its absorption (colour reached at `distance`;
+    // distance 0 = none).
+    transmission: f32,
+    ior: f32,
+    thickness: f32,
+    attenuation_color: vec3<f32>,
+    attenuation_distance: f32,
 };
+
+// A surface without extension layers (the plain surface and `visual`
+// materials).
+fn surface_plain(albedo: vec3<f32>, metallic: f32, roughness: f32, n: vec3<f32>, occlusion: f32, emissive: vec3<f32>) -> Surface {
+    return Surface(albedo, metallic, roughness, n, occlusion, emissive, vec3<f32>(0.04), 1.0, 0.0, 0.0, n, vec3<f32>(0.0), 0.0, 0.0, 1.3, 0.0, 0.0, 1.5, 0.0, vec3<f32>(1.0), 0.0);
+}
 
 fn d_ggx(noh: f32, a: f32) -> f32 {
     let a2 = a * a;
@@ -866,6 +914,93 @@ fn f_schlick(f0: vec3<f32>, voh: f32) -> vec3<f32> {
     return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - voh, 5.0);
 }
 
+fn f_schlick90(f0: vec3<f32>, f90: f32, voh: f32) -> vec3<f32> {
+    return f0 + (vec3<f32>(f90) - f0) * pow(1.0 - voh, 5.0);
+}
+
+// web3d-M7: the sheen lobe — the "Charlie" distribution (Estevez &
+// Kulla 2017) with Neubelt & Pettineo's visibility, as the glTF sheen
+// extension specifies.
+fn d_charlie(noh: f32, roughness: f32) -> f32 {
+    let inv_a = 1.0 / max(roughness * roughness, 1e-6);
+    let sin2 = max(1.0 - noh * noh, 0.0078125);
+    return (2.0 + inv_a) * pow(sin2, inv_a * 0.5) / (2.0 * PI);
+}
+
+fn v_neubelt(nov: f32, nol: f32) -> f32 {
+    return clamp(1.0 / (4.0 * (nol + nov - nol * nov)), 0.0, 1.0);
+}
+
+fn max3(c: vec3<f32>) -> f32 {
+    return max(c.r, max(c.g, c.b));
+}
+
+// web3d-M7: thin-film iridescence (Belcour & Barla 2017, "A Practical
+// Extension to Microfacet Theory for the Modeling of Varying
+// Iridescence"), as the glTF iridescence extension and the Khronos
+// sample viewer evaluate it: the Fresnel of an air / film / base stack,
+// with the interference integrated against the CIE sensitivity curves
+// (a Gaussian fit in Fourier space).
+fn iridescence_sensitivity(opd: f32, shift: vec3<f32>) -> vec3<f32> {
+    let phase = 2.0 * PI * opd * 1.0e-9;
+    let val = vec3<f32>(5.4856e-13, 4.4201e-13, 5.2481e-13);
+    let pos = vec3<f32>(1.6810e+06, 1.7953e+06, 2.2084e+06);
+    let variance = vec3<f32>(4.3278e+09, 9.3046e+09, 6.6121e+09);
+    var xyz = val * sqrt(2.0 * PI * variance) * cos(pos * phase + shift) * exp(-phase * phase * variance);
+    xyz.x = xyz.x + 9.7470e-14 * sqrt(2.0 * PI * 4.5282e+09) * cos(2.2399e+06 * phase + shift.x) * exp(-4.5282e+09 * phase * phase);
+    xyz = xyz / 1.0685e-7;
+    let xyz_to_rec709 = mat3x3<f32>(
+        vec3<f32>(3.2404542, -0.9692660, 0.0556434),
+        vec3<f32>(-1.5371385, 1.8760108, -0.2040259),
+        vec3<f32>(-0.4985314, 0.0415560, 1.0572252),
+    );
+    return xyz_to_rec709 * xyz;
+}
+
+fn ior_to_f0(transmitted: f32, incident: f32) -> f32 {
+    let r = (transmitted - incident) / (transmitted + incident);
+    return r * r;
+}
+
+fn eval_iridescence(outside_ior: f32, film_ior_in: f32, cos1: f32, thickness: f32, base_f0: vec3<f32>) -> vec3<f32> {
+    // The film fades to the outside medium as it thins to nothing.
+    let film_ior = mix(outside_ior, film_ior_in, smoothstep(0.0, 0.03, thickness));
+    let sin2_sq = (outside_ior / film_ior) * (outside_ior / film_ior) * (1.0 - cos1 * cos1);
+    let cos2_sq = 1.0 - sin2_sq;
+    if (cos2_sq < 0.0) {
+        return vec3<f32>(1.0); // total internal reflection
+    }
+    let cos2 = sqrt(cos2_sq);
+    // First interface (outside -> film).
+    let r0 = ior_to_f0(film_ior, outside_ior);
+    let r12 = f_schlick(vec3<f32>(r0), cos1).x;
+    let t121 = 1.0 - r12;
+    var phi12 = 0.0;
+    if (film_ior < outside_ior) {
+        phi12 = PI;
+    }
+    let phi21 = PI - phi12;
+    // Second interface (film -> base).
+    let sqrt_f0 = sqrt(clamp(base_f0, vec3<f32>(0.0), vec3<f32>(0.9999)));
+    let base_ior = (vec3<f32>(1.0) + sqrt_f0) / (vec3<f32>(1.0) - sqrt_f0);
+    let r1 = ((base_ior - vec3<f32>(film_ior)) / (base_ior + vec3<f32>(film_ior))) * ((base_ior - vec3<f32>(film_ior)) / (base_ior + vec3<f32>(film_ior)));
+    let r23 = f_schlick(r1, cos2);
+    let phi23 = select(vec3<f32>(0.0), vec3<f32>(PI), base_ior < vec3<f32>(film_ior));
+    // Phase shift and the compound terms.
+    let opd = 2.0 * film_ior * thickness * cos2;
+    let phi = vec3<f32>(phi21) + phi23;
+    let r123 = clamp(r12 * r23, vec3<f32>(1e-5), vec3<f32>(0.9999));
+    let sqrt_r123 = sqrt(r123);
+    let rs = t121 * t121 * r23 / (vec3<f32>(1.0) - r123);
+    var i = vec3<f32>(r12) + rs;
+    var cm = rs - vec3<f32>(t121);
+    for (var m: i32 = 1; m <= 2; m = m + 1) {
+        cm = cm * sqrt_r123;
+        i = i + cm * 2.0 * iridescence_sensitivity(f32(m) * opd, f32(m) * phi);
+    }
+    return max(i, vec3<f32>(0.0));
+}
+
 // Irradiance from the environment's SH9 at normal n.
 fn sh_irradiance(n: vec3<f32>) -> vec3<f32> {
     let x = n.x;
@@ -879,27 +1014,63 @@ fn sh_irradiance(n: vec3<f32>) -> vec3<f32> {
     return max(e, vec3<f32>(0.0));
 }
 
-// One light's reflected radiance.
-fn direct_light(
+// Everything a light's contribution needs about the surface and the
+// view, computed once per pixel.
+struct Lobes {
     n: vec3<f32>,
     v: vec3<f32>,
-    l: vec3<f32>,
-    radiance: vec3<f32>,
-    f0: vec3<f32>,
-    diffuse_color: vec3<f32>,
+    nov: f32,
     a: f32,
+    f0: vec3<f32>,
+    f90: f32,
+    diffuse_color: vec3<f32>,
     energy: vec3<f32>,
-) -> vec3<f32> {
-    let nol = clamp(dot(n, l), 0.0, 1.0);
-    if (nol <= 0.0) {
-        return vec3<f32>(0.0);
+    // Iridescent Fresnel (at the view angle) and its strength.
+    irid: vec3<f32>,
+    irid_w: f32,
+    // Sheen colour, roughness, and the base layer's scale under it.
+    sheen_color: vec3<f32>,
+    sheen_roughness: f32,
+    sheen_scale: f32,
+    // Clearcoat strength, normal, n·v, alpha, and the base layer's
+    // scale under it.
+    cc: f32,
+    cc_n: vec3<f32>,
+    cc_nov: f32,
+    cc_a: f32,
+    cc_atten: f32,
+};
+
+// One light's reflected radiance: the base layer (Lambert + GGX, with
+// iridescence), sheen over it, clearcoat over both.
+fn surface_light(p: Lobes, l: vec3<f32>, radiance: vec3<f32>) -> vec3<f32> {
+    var out = vec3<f32>(0.0);
+    let h = normalize(p.v + l);
+    let voh = clamp(dot(p.v, h), 0.0, 1.0);
+    let nol = clamp(dot(p.n, l), 0.0, 1.0);
+    if (nol > 0.0) {
+        let noh = clamp(dot(p.n, h), 0.0, 1.0);
+        var f = f_schlick90(p.f0, p.f90, voh);
+        if (p.irid_w > 0.0) {
+            f = mix(f, p.irid, p.irid_w);
+        }
+        let spec = d_ggx(noh, p.a) * v_smith_ggx_correlated(p.nov, nol, p.a) * f * p.energy;
+        out = (p.diffuse_color / PI + spec) * (nol * PI);
+        if (p.sheen_scale < 1.0) {
+            let sheen = p.sheen_color * d_charlie(noh, p.sheen_roughness) * v_neubelt(p.nov, nol);
+            out = out * p.sheen_scale + sheen * (nol * PI);
+        }
     }
-    let h = normalize(v + l);
-    let nov = max(dot(n, v), 1e-4);
-    let noh = clamp(dot(n, h), 0.0, 1.0);
-    let voh = clamp(dot(v, h), 0.0, 1.0);
-    let spec = d_ggx(noh, a) * v_smith_ggx_correlated(nov, nol, a) * f_schlick(f0, voh) * energy;
-    return (diffuse_color / PI + spec) * radiance * (nol * PI);
+    if (p.cc > 0.0) {
+        out = out * p.cc_atten;
+        let cc_nol = clamp(dot(p.cc_n, l), 0.0, 1.0);
+        if (cc_nol > 0.0) {
+            let cc_noh = clamp(dot(p.cc_n, h), 0.0, 1.0);
+            let cc_f = f_schlick(vec3<f32>(0.04), voh).x * p.cc;
+            out = out + vec3<f32>(d_ggx(cc_noh, p.cc_a) * v_smith_ggx_correlated(p.cc_nov, cc_nol, p.cc_a) * cc_f * (cc_nol * PI));
+        }
+    }
+    return out * radiance;
 }
 
 // web3d-M7: this pixel's screen-space ambient occlusion.
@@ -930,13 +1101,48 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     let v = normalize(camera.eye.xyz - in.world_pos);
     let nov = max(dot(n, v), 1e-4);
     let roughness = clamp(s.roughness, 0.03, 1.0);
-    let a = roughness * roughness;
-    let f0 = mix(vec3<f32>(0.04), s.albedo, s.metallic);
-    let diffuse_color = s.albedo * (1.0 - s.metallic);
-    // The split sum's DFG terms (A, B): specular albedo = f0·A + B.
+    var p: Lobes;
+    p.n = n;
+    p.v = v;
+    p.nov = nov;
+    p.a = roughness * roughness;
+    p.f0 = mix(s.specular_f0, s.albedo, s.metallic);
+    p.f90 = mix(s.specular_f90, 1.0, s.metallic);
+    p.diffuse_color = s.albedo * (1.0 - s.metallic);
+    // Transmission takes the place of diffuse reflection (metals don't
+    // transmit).
+    let transmission = s.transmission * (1.0 - s.metallic);
+    p.diffuse_color = p.diffuse_color * (1.0 - transmission);
+    // The split sum's DFG terms (A, B): specular albedo = f0·A + f90·B.
     let ab = textureSampleLevel(t_dfg, s_clamp, vec2<f32>(nov, roughness), 0.0).xy;
-    let energy = vec3<f32>(1.0) + f0 * (1.0 / max(ab.x + ab.y, 1e-4) - 1.0);
-    let specular_albedo = (f0 * ab.x + ab.y) * energy;
+    p.energy = vec3<f32>(1.0) + p.f0 * (1.0 / max(ab.x + ab.y, 1e-4) - 1.0);
+    var specular_albedo = (p.f0 * ab.x + p.f90 * ab.y) * p.energy;
+    // Iridescence replaces the base layer's Fresnel by the thin film's.
+    p.irid = p.f0;
+    p.irid_w = 0.0;
+    if (s.iridescence > 0.0) {
+        p.irid = eval_iridescence(1.0, s.iridescence_ior, nov, s.iridescence_thickness, p.f0);
+        p.irid_w = s.iridescence;
+        specular_albedo = mix(specular_albedo, p.irid * (ab.x + ab.y) * p.energy, s.iridescence);
+    }
+    // Sheen scales the layer under it by the energy it reflects (the
+    // DFG table's third channel integrates the sheen lobe).
+    p.sheen_color = s.sheen_color;
+    p.sheen_roughness = clamp(s.sheen_roughness, 0.07, 1.0);
+    p.sheen_scale = 1.0;
+    var sheen_e = 0.0;
+    if (max3(s.sheen_color) > 0.0) {
+        sheen_e = textureSampleLevel(t_dfg, s_clamp, vec2<f32>(nov, p.sheen_roughness), 0.0).z;
+        p.sheen_scale = 1.0 - max3(s.sheen_color) * sheen_e;
+    }
+    // Clearcoat: a dielectric (IOR 1.5) GGX layer on top; what it
+    // reflects doesn't reach the layers below.
+    p.cc = s.clearcoat;
+    p.cc_n = s.clearcoat_n;
+    p.cc_nov = max(dot(s.clearcoat_n, v), 1e-4);
+    let cc_roughness = clamp(s.clearcoat_roughness, 0.03, 1.0);
+    p.cc_a = cc_roughness * cc_roughness;
+    p.cc_atten = 1.0 - s.clearcoat * f_schlick(vec3<f32>(0.04), p.cc_nov).x;
 
     // Indirect light; occlusion applies here only (glTF: it describes
     // indirect light), on the specular lobe through Lagarde's fit. The
@@ -946,14 +1152,63 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     let diffuse_ao = s.occlusion * ao_multibounce(ssao, s.albedo);
     let occlusion = min(s.occlusion, ssao);
     var color: vec3<f32>;
+    var irradiance: vec3<f32>;
+    var cc_light = vec3<f32>(0.0);
     if (env.params.z > 0.5) {
         let r = reflect(-v, n);
         let prefiltered = textureSampleLevel(t_env_specular, s_env, r, roughness * env.params.y).rgb;
         let spec_ao = clamp(pow(nov + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
-        color = (diffuse_color * sh_irradiance(n) / PI * diffuse_ao + prefiltered * specular_albedo * spec_ao) * env.params.x;
+        irradiance = sh_irradiance(n) / PI * env.params.x;
+        color = p.diffuse_color * irradiance * diffuse_ao + prefiltered * specular_albedo * spec_ao * env.params.x;
+        if (s.clearcoat > 0.0) {
+            let rc = reflect(-v, s.clearcoat_n);
+            let abc = textureSampleLevel(t_dfg, s_clamp, vec2<f32>(p.cc_nov, cc_roughness), 0.0).xy;
+            let pc = textureSampleLevel(t_env_specular, s_env, rc, cc_roughness * env.params.y).rgb;
+            cc_light = pc * (0.04 * abc.x + abc.y) * s.clearcoat * spec_ao * env.params.x;
+        }
     } else {
         // No environment: the ambient colour as a uniform one.
-        color = lights.ambient.rgb * (diffuse_color * diffuse_ao + specular_albedo * occlusion);
+        irradiance = lights.ambient.rgb;
+        color = lights.ambient.rgb * (p.diffuse_color * diffuse_ao + specular_albedo * occlusion);
+        if (s.clearcoat > 0.0) {
+            let abc = textureSampleLevel(t_dfg, s_clamp, vec2<f32>(p.cc_nov, cc_roughness), 0.0).xy;
+            cc_light = lights.ambient.rgb * (0.04 * abc.x + abc.y) * s.clearcoat * occlusion;
+        }
+    }
+    // web3d-M7: what's behind, refracted through the volume (Snell,
+    // exiting after `thickness`), blurred by roughness (a mip of the
+    // opaque scene per roughness, narrowed as IOR nears 1), absorbed
+    // over the path (Beer-Lambert), tinted by the base colour, and what
+    // the specular lobe reflects doesn't pass.
+    if (transmission > 0.0) {
+        let refracted = refract(-v, n, 1.0 / max(s.ior, 1.0001));
+        let exit = in.world_pos + refracted * (s.thickness * in.model_scale);
+        let clip = camera.view_proj * vec4<f32>(exit, 1.0);
+        let uv = vec2<f32>(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+        let size = vec2<f32>(textureDimensions(t_transmission));
+        let lod = log2(max(size.x, 1.0)) * roughness * clamp(s.ior * 2.0 - 2.0, 0.0, 1.0);
+        let source = textureSampleLevel(t_transmission, s_clamp, uv, lod);
+        var behind = source.rgb;
+        // Where nothing was drawn (the source's alpha is coverage), a
+        // refracted ray still reaches the environment even when the
+        // camera's background isn't it (as in a path tracer).
+        if (env.params.z > 0.5 && env.params.w < 0.5) {
+            let sky = textureSampleLevel(t_env_specular, s_env, refracted, roughness * env.params.y).rgb * env.params.x;
+            behind = mix(sky, source.rgb, source.a);
+        }
+        if (s.attenuation_distance > 0.0) {
+            let path = length(exit - in.world_pos);
+            behind = behind * pow(max(s.attenuation_color, vec3<f32>(1e-4)), vec3<f32>(path / s.attenuation_distance));
+        }
+        color = color + transmission * behind * s.albedo * (vec3<f32>(1.0) - specular_albedo);
+    }
+    // Sheen from the environment: its lobe is broad, so it takes the
+    // irradiance, scaled by the lobe's integral.
+    if (p.sheen_scale < 1.0) {
+        color = color * p.sheen_scale + s.sheen_color * sheen_e * irradiance * diffuse_ao;
+    }
+    if (s.clearcoat > 0.0) {
+        color = color * p.cc_atten + cc_light;
     }
 
     // Directional sun. w = intensity; 0 disables the sun. Shadows
@@ -961,7 +1216,7 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     if (lights.sun_dir.w > 0.0) {
         let l = normalize(lights.sun_dir.xyz);
         let shadow = sample_shadow(in.world_pos, in.view_z, n, in.clip_position.xy);
-        color = color + direct_light(n, v, l, vec3<f32>(lights.sun_dir.w * shadow), f0, diffuse_color, a, energy);
+        color = color + surface_light(p, l, vec3<f32>(lights.sun_dir.w * shadow));
     }
     // Up to 8 point lights, radius 0 = off; a smooth-edged falloff that
     // reaches zero at the radius (game-friendly, predictable to tune).
@@ -982,9 +1237,9 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
         if (layer >= 0) {
             visible = point_shadow(layer, in.world_pos, pl.pos.xyz, r, n);
         }
-        color = color + direct_light(n, v, to_light / dist, pl.color_radius.rgb * (t * t * visible), f0, diffuse_color, a, energy);
+        color = color + surface_light(p, to_light / dist, pl.color_radius.rgb * (t * t * visible));
     }
-    return apply_fog(color + s.emissive, in.world_pos);
+    return apply_fog(color + s.emissive * p.cc_atten, in.world_pos);
 }
 
 // A material texture slot's UV: the chosen UV set through the slot's
@@ -1004,6 +1259,18 @@ fn material_uv(in: VertexOutput, slot: u32) -> vec2<f32> {
     );
 }
 
+// web3d-M7: an extension texture by role (kernel/material.rs ROLE_*):
+// the texel of the extension slot the material assigned the role, or
+// white when the role has no texture.
+fn ext_texel(ext: array<vec4<f32>, 4>, role: u32) -> vec4<f32> {
+    var texels = ext;
+    let slot = i32(material.roles[role / 4u][role % 4u]);
+    if (slot < 0) {
+        return vec4<f32>(1.0);
+    }
+    return texels[slot];
+}
+
 @fragment
 fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // Every texture read and derivative first, in uniform control flow
@@ -1014,6 +1281,12 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
     let normal_t = textureSample(t_normal, s_normal, normal_uv);
     let occlusion_t = textureSample(t_occlusion, s_occlusion, material_uv(in, 3u));
     let emissive_t = textureSample(t_emissive, s_emissive, material_uv(in, 4u));
+    let ext = array<vec4<f32>, 4>(
+        textureSample(t_ext0, s_ext0, material_uv(in, 5u)),
+        textureSample(t_ext1, s_ext1, material_uv(in, 6u)),
+        textureSample(t_ext2, s_ext2, material_uv(in, 7u)),
+        textureSample(t_ext3, s_ext3, material_uv(in, 8u)),
+    );
     let dp1 = dpdx(in.world_pos);
     let dp2 = dpdy(in.world_pos);
     let duv1 = dpdx(normal_uv);
@@ -1024,38 +1297,38 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
         discard;
     }
 
-    // The shading normal: the interpolated normal, perturbed by the
-    // normal map in a tangent frame from the vertex tangents, or, when
-    // the model has none, from screen-space derivatives (Schüler 2013,
-    // as Three.js does). Back faces of double-sided surfaces flip it.
-    var n = normalize(in.world_normal);
+    // The geometric normal (flipped for back faces of double-sided
+    // surfaces) and a tangent frame from the vertex tangents or, when
+    // the model has none, screen-space derivatives (Schüler 2013, as
+    // Three.js does). Normal maps (the base layer's and clearcoat's)
+    // perturb it within that frame.
+    var ng = normalize(in.world_normal);
+    var t: vec3<f32>;
+    var b: vec3<f32>;
+    if (abs(in.world_tangent.w) > 0.5) {
+        t = normalize(in.world_tangent.xyz - ng * dot(ng, in.world_tangent.xyz));
+        b = cross(ng, t) * in.world_tangent.w;
+    } else {
+        let dp2perp = cross(dp2, ng);
+        let dp1perp = cross(ng, dp1);
+        t = dp2perp * duv1.x + dp1perp * duv2.x;
+        b = dp2perp * duv1.y + dp1perp * duv2.y;
+        let scale = inverseSqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
+        t = t * scale;
+        b = b * scale;
+    }
+    if (!front) {
+        t = -t;
+        b = -b;
+        ng = -ng;
+    }
+    var n = ng;
     if (material.xf[5].z > 0.5) {
-        var t: vec3<f32>;
-        var b: vec3<f32>;
-        if (abs(in.world_tangent.w) > 0.5) {
-            t = normalize(in.world_tangent.xyz - n * dot(n, in.world_tangent.xyz));
-            b = cross(n, t) * in.world_tangent.w;
-        } else {
-            let dp2perp = cross(dp2, n);
-            let dp1perp = cross(n, dp1);
-            t = dp2perp * duv1.x + dp1perp * duv2.x;
-            b = dp2perp * duv1.y + dp1perp * duv2.y;
-            let scale = inverseSqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
-            t = t * scale;
-            b = b * scale;
-        }
-        if (!front) {
-            t = -t;
-            b = -b;
-            n = -n;
-        }
         let tn = normal_t.xyz * 2.0 - 1.0;
-        n = normalize(t * (tn.x * material.params.z) + b * (tn.y * material.params.z) + n * tn.z);
-    } else if (!front) {
-        n = -n;
+        n = normalize(t * (tn.x * material.params.z) + b * (tn.y * material.params.z) + ng * tn.z);
     }
 
-    let s = Surface(
+    var s = surface_plain(
         base.rgb,
         clamp(material.params.x * mr_t.b, 0.0, 1.0),
         clamp(material.params.y * mr_t.g, 0.0, 1.0),
@@ -1063,12 +1336,45 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
         1.0 + material.params.w * (occlusion_t.r - 1.0),
         material.emissive.rgb * emissive_t.rgb,
     );
+    // web3d-M7: glTF material extensions (kernel/material.rs).
+    let ior = material.ext[0].x;
+    let specular = material.ext[0].y * ext_texel(ext, 0u).a;
+    let specular_color = material.ext[1].rgb * ext_texel(ext, 1u).rgb;
+    let r0 = ior_to_f0(ior, 1.0);
+    s.specular_f0 = min(vec3<f32>(r0) * specular_color, vec3<f32>(1.0)) * specular;
+    s.specular_f90 = specular;
+    s.clearcoat = clamp(material.ext[0].z * ext_texel(ext, 2u).r, 0.0, 1.0);
+    s.clearcoat_roughness = clamp(material.ext[0].w * ext_texel(ext, 3u).g, 0.0, 1.0);
+    s.clearcoat_n = ng;
+    if (material.roles[1].x >= 0.0) {
+        let cn = ext_texel(ext, 4u).xyz * 2.0 - 1.0;
+        let cs = material.ext[1].w;
+        s.clearcoat_n = normalize(t * (cn.x * cs) + b * (cn.y * cs) + ng * cn.z);
+    }
+    s.sheen_color = material.ext[2].rgb * ext_texel(ext, 5u).rgb;
+    s.sheen_roughness = material.ext[2].w * ext_texel(ext, 6u).a;
+    s.iridescence = material.ext[3].w * ext_texel(ext, 9u).r;
+    s.iridescence_ior = material.ext[4].w;
+    s.transmission = clamp(material.ext[3].x * ext_texel(ext, 7u).r, 0.0, 1.0);
+    s.ior = ior;
+    s.thickness = material.ext[3].y * ext_texel(ext, 8u).g;
+    s.attenuation_distance = material.ext[3].z;
+    s.attenuation_color = material.ext[4].rgb;
+    let film = material.ext[5];
+    s.iridescence_thickness = film.y;
+    if (material.roles[2].z >= 0.0) {
+        s.iridescence_thickness = mix(film.x, film.y, ext_texel(ext, 10u).g);
+    }
     // web3d-M7: coverage for the transparent pass (the opaque passes
     // don't blend, so it's ignored there): a glTF BLEND material's
     // alpha, else the draw's tint alpha.
     var alpha = in.base_color.a;
     if (material.alpha.x > 1.5) {
         alpha = base.a;
+    }
+    // A transmissive surface already carries what's behind it.
+    if (s.transmission > 0.0 && material.alpha.x < 1.5) {
+        alpha = 1.0;
     }
     return vec4<f32>(shade(in, s), alpha);
 }
@@ -1161,7 +1467,7 @@ fn fs_material(in: VertexOutput, @builtin(front_facing) front: bool) -> @locatio
         n = -n;
     }
     // A visual's colour on the plain dielectric surface.
-    return vec4<f32>(shade(in, Surface(in.base_color.rgb * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0))), 1.0);
+    return vec4<f32>(shade(in, surface_plain(in.base_color.rgb * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0))), 1.0);
 }
 "#;
 
@@ -1465,7 +1771,7 @@ struct Material {
 };
 @group(2) @binding(0) var<uniform> material: Material;
 @group(2) @binding(1) var t_base: texture_2d<f32>;
-@group(2) @binding(6) var s_base: sampler;
+@group(2) @binding(10) var s_base: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -2060,9 +2366,12 @@ pub struct Renderer {
     dof: crate::kernel::post::Dof,
     motion: crate::kernel::post::MotionBlur,
     lut: LutState,
-    /// The AO texture the frame bind group was built with
-    /// (`Ao::key`), and a frame counter (AO pattern rotation).
-    frame_ao_key: u64,
+    /// The AO and transmission textures the frame bind group was built
+    /// with (`Ao::key`, `Transmission::key`), and a frame counter (AO
+    /// pattern rotation).
+    frame_ao_key: (u64, u64),
+    /// web3d-M7: the opaque scene behind transmissive surfaces.
+    transmission: crate::kernel::post::Transmission,
     frame_index: std::cell::Cell<u32>,
     /// web3d-M7: point-light shadow cubes.
     point_shadows: PointShadows,
@@ -2195,6 +2504,16 @@ struct GpuSubmesh {
     /// by `centroid` (mesh space).
     blend: bool,
     centroid: [f32; 3],
+    /// web3d-M7: transmissive (`KHR_materials_transmission`): drawn in
+    /// the transparent pass, over a copy of the opaque scene.
+    transmissive: bool,
+}
+
+impl GpuSubmesh {
+    /// Drawn in the sorted transparent pass rather than the opaque one.
+    fn sorted(&self) -> bool {
+        self.blend || self.transmissive
+    }
 }
 
 /// Phase 24: per-mesh skin data + GPU resources. Built at glb load
@@ -2496,6 +2815,8 @@ async fn init_renderer(
             texture_entry(8, wgpu::TextureViewDimension::D2),
             // web3d-M7: height fog.
             uniform_entry(9, wgpu::ShaderStages::FRAGMENT),
+            // web3d-M7: the transmission source.
+            texture_entry(10, wgpu::TextureViewDimension::D2),
         ],
     });
     let fog_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2508,6 +2829,7 @@ async fn init_renderer(
     let ao = crate::kernel::ao::Ao::new(&device, &queue);
     let bloom = crate::kernel::post::Bloom::new(&device, &queue);
     let exposure = crate::kernel::post::AutoExposure::new(&device);
+    let transmission = crate::kernel::post::Transmission::new(&device, &queue);
     let dof = crate::kernel::post::Dof::new(&device);
     let motion = crate::kernel::post::MotionBlur::new(&device);
     let lut = LutState {
@@ -2523,8 +2845,8 @@ async fn init_renderer(
         &camera_buffer,
         &lights_buffer,
         &env,
-        ao.view(false),
         &fog_buffer,
+        [ao.view(false), transmission.view(false)],
     );
 
     // Phase 24: joint UBO bind group layout, plus a shared
@@ -2968,7 +3290,8 @@ async fn init_renderer(
         dof,
         motion,
         lut,
-        frame_ao_key: 0,
+        frame_ao_key: (0, 0),
+        transmission,
         frame_index: std::cell::Cell::new(0),
         point_shadows,
         lights_buffer,
@@ -3106,7 +3429,7 @@ pub fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
     // web3d-M7: every material of the document, then glTF's default
     // material for primitives that name none; every image as RGBA8.
     let mut materials: Vec<MaterialData> =
-        doc.materials().map(|m| MaterialData::from_gltf(&m)).collect();
+        doc.materials().map(|m| MaterialData::from_gltf(&m, &doc)).collect();
     materials.push(MaterialData {
         metallic: 1.0,
         roughness: 1.0,
@@ -4011,9 +4334,9 @@ fn upload_loaded_glb(
     // material.
     let mut views: HashMap<(usize, bool), wgpu::TextureView> = HashMap::new();
     for m in &materials {
-        for (i, slot) in m.slots.iter().enumerate() {
+        for slot in &m.slots {
             let Some(slot) = slot else { continue };
-            let key = (slot.image, SRGB_SLOT[i]);
+            let key = (slot.image, slot.srgb);
             if views.contains_key(&key) {
                 continue;
             }
@@ -4036,7 +4359,7 @@ fn upload_loaded_glb(
         .map(|m| {
             let mut slots = [None; SLOTS];
             for (i, slot) in m.slots.iter().enumerate() {
-                slots[i] = slot.and_then(|s| views.get(&(s.image, SRGB_SLOT[i])));
+                slots[i] = slot.and_then(|s| views.get(&(s.image, s.srgb)));
             }
             kit.bind_group(device, m, slots)
         })
@@ -4051,6 +4374,7 @@ fn upload_loaded_glb(
             masked: materials[sub.material].alpha_mode == crate::kernel::material::AlphaMode::Mask,
             blend: materials[sub.material].alpha_mode == crate::kernel::material::AlphaMode::Blend,
             centroid: submesh_centroid(&vertices, &indices[sub.first as usize..(sub.first + sub.count) as usize]),
+            transmissive: materials[sub.material].ext.transmission > 0.0,
         })
         .collect();
     // Phase 24: build per-mesh skin GPU resources when the glb
@@ -4332,10 +4656,10 @@ impl Renderer {
                                 &state.camera_buffer,
                                 &state.lights_buffer,
                                 &state.env,
-                                state.ao.view(false),
                                 &state.fog_buffer,
+                                [state.ao.view(false), state.transmission.view(false)],
                             );
-                            state.frame_ao_key = 0;
+                            state.frame_ao_key = (0, 0);
                         }
                         Err(e) => log_error(&format!("environment load: {e}")),
                     }
@@ -4497,7 +4821,7 @@ impl Renderer {
                 continue;
             }
             let Some(mesh) = state.mesh_cache.get(id) else { continue };
-            for (si, sub) in mesh.submeshes.iter().enumerate().filter(|(_, s)| s.blend) {
+            for (si, sub) in mesh.submeshes.iter().enumerate().filter(|(_, s)| s.sorted()) {
                 for i in range.0..range.1 {
                     transparent.push(TransparentDraw {
                         shape: TransparentShape::Mesh { id: *id, tex: 0, sub: Some(si) },
@@ -4544,6 +4868,16 @@ impl Renderer {
             }
         }
         transparent.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+        // web3d-M7: transmissive surfaces need the opaque scene as a
+        // texture: the main pass splits around a copy of it.
+        let transmission_on = transparent.iter().any(|d| match d.shape {
+            TransparentShape::Mesh { id, sub: Some(si), .. } => state
+                .mesh_cache
+                .get(&id)
+                .and_then(|m| m.submeshes.get(si))
+                .is_some_and(|s| s.transmissive),
+            _ => false,
+        });
 
         // web3d-M7: height fog, with the sun's direction for its glow.
         let fog_uniform = match snap.fog {
@@ -4773,6 +5107,28 @@ impl Renderer {
                 (hdr, Access::Attach),
             ],
         );
+        // web3d-M7: with transmission, the opaque frame is copied into the
+        // transmission source, and a second pass draws the transparent
+        // list over the same multisampled targets.
+        if transmission_on {
+            let source = graph.import("transmission source", false);
+            graph.add_pass(
+                FramePass::TransmissionCopy,
+                "transmission source",
+                &[(hdr, Access::Sample)],
+                &[(source, Access::Attach)],
+            );
+            graph.add_pass(
+                FramePass::MainTransparent,
+                "transparent",
+                &[(source, Access::Sample)],
+                &[
+                    (hdr_msaa, Access::Attach),
+                    (depth, Access::Attach),
+                    (hdr, Access::Attach),
+                ],
+            );
+        }
         // web3d-M7: TAA resolves `hdr` into the persistent history the
         // tonemap then reads.
         let tonemap_input = if taa_on {
@@ -4913,18 +5269,21 @@ impl Renderer {
                 },
             );
         }
-        let ao_key = state.ao.key(ao_on);
-        if ao_key != state.frame_ao_key {
+        if transmission_on {
+            state.transmission.prepare(&state.device, width, height);
+        }
+        let frame_key = (state.ao.key(ao_on), state.transmission.key(transmission_on));
+        if frame_key != state.frame_ao_key {
             state.frame_bind_group = frame_bind_group(
                 &state.device,
                 &state.frame_bgl,
                 &state.camera_buffer,
                 &state.lights_buffer,
                 &state.env,
-                state.ao.view(ao_on),
                 &state.fog_buffer,
+                [state.ao.view(ao_on), state.transmission.view(transmission_on)],
             );
-            state.frame_ao_key = ao_key;
+            state.frame_ao_key = frame_key;
         }
         if bloom_on {
             state
@@ -5045,6 +5404,39 @@ impl Renderer {
                         .ok_or("render graph: no prepass depth")?;
                     state.ao.record(&state.device, &mut encoder, view);
                 }
+                FramePass::TransmissionCopy => {
+                    state.transmission.record(&state.device, &mut encoder, main_color_view);
+                }
+                FramePass::MainTransparent => {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("twe-kernel transparent pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: msaa_view,
+                            depth_slice: None,
+                            resolve_target: Some(main_color_view),
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Discard,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: if taa_on || dof_on || motion_on {
+                                    wgpu::StoreOp::Store
+                                } else {
+                                    wgpu::StoreOp::Discard
+                                },
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    draw_transparent(&mut rpass, state, &transparent);
+                }
                 FramePass::Dof => {
                     let (input, output) = dof_io.ok_or("render graph: dof without targets")?;
                     let input = view_of(input).ok_or("render graph: no dof input")?;
@@ -5130,20 +5522,29 @@ impl Renderer {
                                 depth_slice: None,
                                 resolve_target: Some(main_color_view),
                                 ops: wgpu::Operations {
+                                    // With transmission, alpha 0 marks the
+                                    // background (alpha resolves to
+                                    // coverage) for refracted rays.
                                     load: wgpu::LoadOp::Clear(wgpu::Color {
                                         r: f64::from(snap.background[0]),
                                         g: f64::from(snap.background[1]),
                                         b: f64::from(snap.background[2]),
-                                        a: 1.0,
+                                        a: if transmission_on { 0.0 } else { 1.0 },
                                     }),
-                                    store: wgpu::StoreOp::Discard,
+                                    // Kept for the transparent pass when
+                                    // it runs separately.
+                                    store: if transmission_on {
+                                        wgpu::StoreOp::Store
+                                    } else {
+                                        wgpu::StoreOp::Discard
+                                    },
                                 },
                             })],
                             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                                 view: depth_view,
                                 depth_ops: Some(wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(1.0),
-                                    store: if taa_on || dof_on || motion_on {
+                                    store: if taa_on || dof_on || motion_on || transmission_on {
                                         wgpu::StoreOp::Store
                                     } else {
                                         wgpu::StoreOp::Discard
@@ -5245,7 +5646,7 @@ impl Renderer {
                                 } else {
                                     // web3d-M7: each glTF primitive with its
                                     // own material.
-                                    for sub in gpu_mesh.submeshes.iter().filter(|s| !s.blend) {
+                                    for sub in gpu_mesh.submeshes.iter().filter(|s| !s.sorted()) {
                                         rpass.set_pipeline(if sub.double_sided {
                                             &state.pipeline_double
                                         } else {
@@ -5278,7 +5679,7 @@ impl Renderer {
                         }
                         // web3d-M7: translucent surfaces, back to front,
                         // over the finished opaque scene.
-                        if !transparent.is_empty() {
+                        if !transparent.is_empty() && !transmission_on {
                             draw_transparent(&mut rpass, state, &transparent);
                         }
                     }
@@ -5496,8 +5897,8 @@ fn frame_bind_group(
     camera: &wgpu::Buffer,
     lights: &wgpu::Buffer,
     env: &EnvState,
-    ao: &wgpu::TextureView,
     fog: &wgpu::Buffer,
+    [ao, transmission]: [&wgpu::TextureView; 2],
 ) -> wgpu::BindGroup {
     let view = |v| wgpu::BindingResource::TextureView(v);
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -5543,6 +5944,10 @@ fn frame_bind_group(
             wgpu::BindGroupEntry {
                 binding: 9,
                 resource: fog.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: view(transmission),
             },
         ],
     })
@@ -5853,7 +6258,7 @@ fn draw_prepass(
             pass.set_pipeline(&pp.opaque);
             pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
         } else {
-            for sub in gpu_mesh.submeshes.iter().filter(|s| !s.blend) {
+            for sub in gpu_mesh.submeshes.iter().filter(|s| !s.sorted()) {
                 if sub.masked {
                     pass.set_pipeline(&pp.masked);
                     pass.set_bind_group(2, &sub.material, &[]);
@@ -5998,6 +6403,11 @@ enum FramePass {
     Ao,
     /// The lit scene into the HDR target.
     Main,
+    /// web3d-M7: the opaque frame into the transmission source's mips.
+    TransmissionCopy,
+    /// web3d-M7: the transparent list over the opaque frame (when the
+    /// main pass is split for transmission).
+    MainTransparent,
     /// web3d-M7: temporal anti-aliasing resolve into the history.
     Taa,
     /// web3d-M7: depth of field (bokeh gather + composite).
@@ -6702,6 +7112,7 @@ mod tests {
         validate_wgsl("EXPOSURE", crate::kernel::post::exposure_shader_source());
         validate_wgsl("DOF", crate::kernel::post::dof_shader_source());
         validate_wgsl("MOTION", crate::kernel::post::motion_shader_source());
+        validate_wgsl("TRANSMISSION", crate::kernel::post::transmission_shader_source());
     }
 
     /// Phase 27: the Vertex layout's stride must match what the

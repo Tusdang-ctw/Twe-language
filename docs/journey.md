@@ -136,6 +136,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: glass and mist.** Twe's 3D learned see-through things (a colour with less than full opacity now shows what's behind it, drawn far-to-near so the layers stack correctly) and fog that pools near the ground and clears as you look up, glowing where the sun shines through. Checking against the reference images turned up a curiosity: the "ground truth" renders treat some cut-out panels as see-through, which neither Twe nor Three.js does, because the spec says otherwise.
 
+- **2026-09-29: velvet, lacquer, soap film and glass.** Twe now reads the parts of the glTF format that describe fancy materials: the soft sheen of velvet, a clear lacquer coat over a painted surface, the rainbow shimmer of a soap bubble, and real glass that bends and tints what's behind it. On the scoreboard Twe's average error now ties the best renderer in the reference set (Khronos's own sample viewer) and sits clearly ahead of Three.js. Along the way, a stress check found an intermittent crash in the test suite that predates this work, which the notes chase down.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

@@ -1204,3 +1204,147 @@ on render():
     assert!(down[0] > 200 && down[1] < 60, "looking down: {down:?}");
     assert!(up[0] < down[0] - 40, "looking up escapes the fog: {up:?} vs {down:?}");
 }
+
+/// web3d-M7: a glTF with one quad per material, side by side across
+/// x ∈ [-1.8, 1.8] at z = 0, facing +z (the camera).
+fn quads_glb(materials: &[&str]) -> Vec<u8> {
+    let n = materials.len();
+    let width = 3.6 / n as f32;
+    let (mut positions, mut normals, mut indices) = (Vec::<f32>::new(), Vec::<f32>::new(), Vec::<u16>::new());
+    for i in 0..n {
+        let x0 = -1.8 + i as f32 * width + 0.05;
+        let x1 = x0 + width - 0.1;
+        positions.extend([x0, -0.6, 0.0, x1, -0.6, 0.0, x1, 0.6, 0.0, x0, 0.6, 0.0]);
+        normals.extend([0.0f32, 0.0, 1.0].repeat(4));
+        let b = (4 * i) as u16;
+        indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+    let mut bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+    bin.extend(normals.iter().flat_map(|f| f.to_le_bytes()));
+    bin.extend(indices.iter().flat_map(|i| i.to_le_bytes()));
+    let vbytes = positions.len() * 4;
+    let primitives: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":{},"material":{i}}}"#, 2 + i))
+        .collect();
+    let index_accessors: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"bufferView":2,"byteOffset":{},"componentType":5123,"count":6,"type":"SCALAR"}}"#, i * 12))
+        .collect();
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},
+        "extensionsUsed":["KHR_materials_sheen","KHR_materials_clearcoat","KHR_materials_iridescence","KHR_materials_transmission","KHR_materials_volume"],
+        "scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
+        "meshes":[{{"primitives":[{}]}}],
+        "materials":[{}],
+        "accessors":[
+            {{"bufferView":0,"componentType":5126,"count":{v},"type":"VEC3","min":[-1.8,-0.6,0],"max":[1.8,0.6,0]}},
+            {{"bufferView":1,"componentType":5126,"count":{v},"type":"VEC3"}},{}],
+        "bufferViews":[
+            {{"buffer":0,"byteOffset":0,"byteLength":{vb}}},
+            {{"buffer":0,"byteOffset":{vb},"byteLength":{vb}}},
+            {{"buffer":0,"byteOffset":{ib},"byteLength":{il}}}],
+        "buffers":[{{"byteLength":{{bin_len}}}}]}}"#,
+        primitives.join(","),
+        materials.join(","),
+        index_accessors.join(","),
+        v = 4 * n,
+        vb = vbytes,
+        ib = 2 * vbytes,
+        il = indices.len() * 2,
+    );
+    glb(&json, &bin)
+}
+
+/// Render `glb` (written as `name`.glb) with the script `src`, which
+/// draws it through `mesh("<name>.glb", …)`.
+fn render_glb(name: &str, glb_bytes: Vec<u8>, src: &str) -> Vec<u8> {
+    let mut renderer = headless().expect("gpu");
+    let dir = std::path::Path::new("target/kernel-render");
+    std::fs::create_dir_all(dir).expect("create output dir");
+    std::fs::write(dir.join(format!("{name}.glb")), glb_bytes).expect("write glb");
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some(dir.into()));
+    let rgba = render_source(&mut renderer, name, src);
+    twec::bundle::set_asset_root(None);
+    save_png(name, &rgba);
+    rgba
+}
+
+/// web3d-M7: glTF material extensions change the surface as their specs
+/// say. Under flat ambient light, against a black dielectric: sheen
+/// and clearcoat add reflected light, and a thin film makes a grey
+/// metal iridescent (coloured, where plain it is grey; on a perfect
+/// mirror a film reflects every wavelength, so the base is grey).
+#[test]
+fn gltf_material_extensions_shade() {
+    if headless().is_none() {
+        return;
+    }
+    let glb_bytes = quads_glb(&[
+        r#"{"pbrMetallicRoughness":{"baseColorFactor":[0,0,0,1],"metallicFactor":0,"roughnessFactor":0.6}}"#,
+        r#"{"pbrMetallicRoughness":{"baseColorFactor":[0,0,0,1],"metallicFactor":0,"roughnessFactor":0.6},
+            "extensions":{"KHR_materials_sheen":{"sheenColorFactor":[1,1,1],"sheenRoughnessFactor":0.5}}}"#,
+        r#"{"pbrMetallicRoughness":{"baseColorFactor":[0,0,0,1],"metallicFactor":0,"roughnessFactor":0.6},
+            "extensions":{"KHR_materials_clearcoat":{"clearcoatFactor":1,"clearcoatRoughnessFactor":0.1}}}"#,
+        r#"{"pbrMetallicRoughness":{"baseColorFactor":[0.5,0.5,0.5,1],"metallicFactor":1,"roughnessFactor":0.3},
+            "extensions":{"KHR_materials_iridescence":{"iridescenceFactor":1,"iridescenceThicknessMaximum":450}}}"#,
+    ]);
+    let src = r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((0.4, 0.4, 0.4, 1.0))
+light.fog(0, 0, color.white)
+postfx.tonemap("none")
+camera.eye = vec3(0, 0, 3)
+camera.target = vec3(0, 0, 0)
+on render():
+    mesh("extensions.glb", at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+"#;
+    let rgba = render_glb("extensions", glb_bytes, src);
+    let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+    let at = |i: u32| pixel(&rgba, W / 8 + i * W / 4, H / 2);
+    let plain = at(0);
+    // Sheen is a grazing lobe: faint head-on, but there.
+    assert!(luma(at(1)) > luma(plain) + 30, "sheen adds light: {:?} vs {plain:?}", at(1));
+    assert!(luma(at(2)) > luma(plain) + 20, "clearcoat adds a reflection: {:?} vs {plain:?}", at(2));
+    let film = at(3);
+    let spread = film.iter().max().unwrap() - film.iter().min().unwrap();
+    // A plain grey metal is exactly grey (spread 0).
+    assert!(spread > 12, "a thin film colours the metal: {film:?}");
+}
+
+/// web3d-M7: transmission shows what's behind (a red block through a
+/// clear quad), and a volume absorbs it: blue attenuation over a thick
+/// slab leaves little red.
+#[test]
+fn gltf_transmission_and_volume() {
+    if headless().is_none() {
+        return;
+    }
+    let glb_bytes = quads_glb(&[
+        r#"{"pbrMetallicRoughness":{"baseColorFactor":[1,1,1,1],"metallicFactor":0,"roughnessFactor":0},
+            "extensions":{"KHR_materials_transmission":{"transmissionFactor":0}}}"#,
+        r#"{"pbrMetallicRoughness":{"baseColorFactor":[1,1,1,1],"metallicFactor":0,"roughnessFactor":0},
+            "extensions":{"KHR_materials_transmission":{"transmissionFactor":1}}}"#,
+        r#"{"pbrMetallicRoughness":{"baseColorFactor":[1,1,1,1],"metallicFactor":0,"roughnessFactor":0},
+            "extensions":{"KHR_materials_transmission":{"transmissionFactor":1},
+              "KHR_materials_volume":{"thicknessFactor":0.5,"attenuationDistance":0.1,"attenuationColor":[0.1,0.1,1]}}}"#,
+    ]);
+    let src = r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((0.4, 0.4, 0.4, 1.0))
+light.fog(0, 0, color.white)
+postfx.tonemap("none")
+camera.eye = vec3(0, 0, 3)
+camera.target = vec3(0, 0, 0)
+on render():
+    cube(at: vec3(0, 0, -5), color: (1, 0, 0, 1), size: 6.0)
+    mesh("transmission.glb", at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+"#;
+    let rgba = render_glb("transmission", glb_bytes, src);
+    let at = |i: u32| pixel(&rgba, W / 6 + i * W / 3, H / 2);
+    let (opaque, clear, absorbed) = (at(0), at(1), at(2));
+    assert!(opaque[0].abs_diff(opaque[1]) < 20, "the opaque quad is white-grey: {opaque:?}");
+    assert!(clear[0] > clear[1] + 60, "the red block shows through: {clear:?}");
+    assert!(absorbed[0] + 40 < clear[0], "the blue volume absorbs the red: {absorbed:?} vs {clear:?}");
+}

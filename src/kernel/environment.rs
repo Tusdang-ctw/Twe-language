@@ -151,7 +151,7 @@ fn v_smith_ggx_correlated(nov: f32, nol: f32, a: f32) -> f32 {
 /// The split sum's DFG table: texel (i, j) at n·v = (i + ½)/N and
 /// perceptual roughness (j + ½)/N holds (A, B) with the specular
 /// lobe's directional albedo = f0·A + B.
-pub(crate) fn dfg_lut() -> Vec<[f32; 2]> {
+pub(crate) fn dfg_lut() -> Vec<[f32; 3]> {
     let n = DFG_SIZE;
     let mut out = Vec::with_capacity((n * n) as usize);
     for j in 0..n {
@@ -174,10 +174,39 @@ pub(crate) fn dfg_lut() -> Vec<[f32; 2]> {
                     sb += fc * g_vis;
                 }
             }
-            out.push([sa / DFG_SAMPLES as f32, sb / DFG_SAMPLES as f32]);
+            out.push([sa / DFG_SAMPLES as f32, sb / DFG_SAMPLES as f32, sheen_albedo(nov, roughness)]);
         }
     }
     out
+}
+
+/// web3d-M7: the directional albedo of the glTF sheen lobe (Charlie
+/// distribution, Neubelt visibility) at `nov` for sheen roughness
+/// `roughness`: the DFG table's third channel, which scales the layer
+/// under the sheen by the energy the sheen takes. Uniform hemisphere
+/// sampling (the lobe is broad, so this converges quickly).
+pub(crate) fn sheen_albedo(nov: f32, roughness: f32) -> f32 {
+    let r = roughness.max(0.07);
+    let inv_a = 1.0 / (r * r);
+    let v = [(1.0 - nov * nov).sqrt(), 0.0, nov];
+    let mut sum = 0.0f32;
+    for s in 0..DFG_SAMPLES {
+        let [u1, u2] = hammersley(s, DFG_SAMPLES);
+        let cos_t = u1;
+        let sin_t = (1.0 - cos_t * cos_t).sqrt();
+        let phi = 2.0 * std::f32::consts::PI * u2;
+        let l = [sin_t * phi.cos(), sin_t * phi.sin(), cos_t];
+        let hv = [v[0] + l[0], v[1] + l[1], v[2] + l[2]];
+        let len = (hv[0] * hv[0] + hv[1] * hv[1] + hv[2] * hv[2]).sqrt().max(1e-7);
+        let noh = hv[2] / len;
+        let sin2 = (1.0 - noh * noh).max(0.0078125);
+        let d = (2.0 + inv_a) * sin2.powf(inv_a * 0.5) / (2.0 * std::f32::consts::PI);
+        let nol = cos_t;
+        let vis = (1.0 / (4.0 * (nol + nov - nol * nov))).clamp(0.0, 1.0);
+        // pdf of uniform hemisphere sampling is 1 / (2 pi).
+        sum += d * vis * nol * 2.0 * std::f32::consts::PI;
+    }
+    (sum / DFG_SAMPLES as f32).min(1.0)
 }
 
 /// f32 → IEEE half (round to nearest; out-of-range clamps to the
@@ -602,7 +631,7 @@ pub(crate) fn build(device: &wgpu::Device, queue: &wgpu::Queue, img: &HdrImage) 
 
 /// The DFG table as an Rgba16Float texture (A, B, 0, 1).
 pub(crate) fn dfg_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let texels: Vec<[f32; 4]> = dfg_lut().iter().map(|[a, b]| [*a, *b, 0.0, 1.0]).collect();
+    let texels: Vec<[f32; 4]> = dfg_lut().iter().map(|[a, b, c]| [*a, *b, *c, 1.0]).collect();
     upload_rgba16f(device, queue, "twe-kernel dfg lut", DFG_SIZE, DFG_SIZE, &texels)
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
@@ -684,7 +713,7 @@ mod tests {
     #[test]
     fn dfg_terms_are_bounded_and_fall_with_roughness_at_grazing_angles() {
         let lut = dfg_lut();
-        for [a, b] in &lut {
+        for [a, b, _] in &lut {
             assert!((0.0..=1.01).contains(&(a + b)), "{a} + {b}");
         }
         // Smooth, facing the viewer: almost all energy is reflected.

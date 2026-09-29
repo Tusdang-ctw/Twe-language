@@ -545,6 +545,17 @@ A visual that fails the GPU-safety checks (`twec verify`) is an error when a loo
 - **Inheritance.** Keys merge along `extends`: a subclass overrides individual keys.
 - **What is drawn.** Live entities are drawn, including while paused; despawned ones are not. The top-level `on render():` still runs and draws alongside looks. Per-entity `render()` methods are not called in 3D.
 - **Colour.** Tints (and `cube()` / `sphere()` colours) are sRGB, as picked in any colour tool; the renderer decodes them to linear light before shading.
+- **glTF materials** *(web3d-M7)*. A `.glb` is drawn with its own materials, per primitive, as glTF 2.0 defines them. The tint multiplies the base colour.
+  - **Core:** metallic-roughness PBR; base colour, metal-rough, normal, occlusion and emissive textures; vertex colours; alpha modes (opaque, mask, blend); double-sided.
+  - **Texture and emission extensions:** `KHR_texture_transform`, `KHR_materials_emissive_strength`.
+  - **Layered-material extensions:**
+    - `KHR_materials_ior` and `KHR_materials_specular`;
+    - `KHR_materials_clearcoat` (a lacquer layer with its own roughness and normal map);
+    - `KHR_materials_sheen` (cloth and velvet);
+    - `KHR_materials_iridescence` (thin films: soap, oil, anodised metal);
+    - `KHR_materials_transmission` with `KHR_materials_volume` (glass and liquids: what's behind refracts through, blurs with roughness and is absorbed by coloured volumes).
+  - **Not read yet:** `KHR_materials_anisotropy` (drawn as an isotropic surface), KTX2 / Basis Universal textures and meshopt-compressed geometry.
+  - **Extension texture limit:** a material can use up to four distinct textures across the layered extensions. More is reported and the rest ignored; no Khronos sample needs more.
 - **Animated meshes** *(web3d-M4)*. A skinned `.glb` plays the clip `mesh_anim` selects for that mesh path; every entity drawing the mesh shares it. `survive3d`'s hero:
 
   ```twe

@@ -1547,6 +1547,215 @@ pub(crate) fn identity_lut(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::
     upload_lut(device, queue, &CubeLut { size: 2, data })
 }
 
+// ---------------------------------------------------------------------
+// web3d-M7 session 10: the transmission source.
+// ---------------------------------------------------------------------
+
+const TRANSMISSION_SHADER: &str = r#"
+@group(0) @binding(0) var t_src: texture_2d<f32>;
+@group(0) @binding(1) var s_linear: sampler;
+
+struct VOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_full(@builtin(vertex_index) i: u32) -> VOut {
+    var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+    var out: VOut;
+    out.pos = vec4<f32>(p[i], 0.0, 1.0);
+    out.uv = vec2<f32>(p[i].x * 0.5 + 0.5, 0.5 - p[i].y * 0.5);
+    return out;
+}
+
+// A copy (same size) or a 2x2 box (half size): one bilinear tap. Alpha
+// is coverage (0 where nothing was drawn), kept for the shader.
+@fragment
+fn fs_down(in: VOut) -> @location(0) vec4<f32> {
+    return textureSampleLevel(t_src, s_linear, in.uv, 0.0);
+}
+"#;
+
+/// The transmission shader, for validation tests.
+#[cfg(test)]
+pub(crate) fn transmission_shader_source() -> &'static str {
+    TRANSMISSION_SHADER
+}
+
+/// web3d-M7: what transmissive surfaces see through — the opaque scene,
+/// copied after the opaque pass into a full mip chain so rough glass
+/// can blur it (a mip per roughness, as Three.js and the Khronos sample
+/// viewer do).
+pub(crate) struct Transmission {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// The whole chain (sampled by surfaces) and one view per mip.
+    chain: Option<(wgpu::TextureView, Vec<wgpu::TextureView>)>,
+    size: (u32, u32),
+    /// Black, bound when nothing transmits.
+    black: wgpu::TextureView,
+    generation: u64,
+}
+
+impl Transmission {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("twe-kernel transmission bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("twe-kernel transmission"),
+            source: wgpu::ShaderSource::Wgsl(TRANSMISSION_SHADER.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("twe-kernel transmission layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("twe-kernel transmission"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_full"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_down"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let black = crate::kernel::material::upload_rgba(
+            device,
+            queue,
+            "twe-kernel transmission black",
+            &[0, 0, 0, 255],
+            1,
+            1,
+            false,
+        )
+        .create_view(&wgpu::TextureViewDescriptor::default());
+        Transmission {
+            pipeline,
+            layout,
+            sampler: linear_sampler(device, "twe-kernel transmission sampler"),
+            chain: None,
+            size: (0, 0),
+            black,
+            generation: 0,
+        }
+    }
+
+    /// Size the chain for a `width × height` frame.
+    pub fn prepare(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if self.size == (width, height) && self.chain.is_some() {
+            return;
+        }
+        let mips = 32 - width.max(height).max(1).leading_zeros();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("twe-kernel transmission source"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: mips,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let levels = (0..mips)
+            .map(|mip| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: mip,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        self.chain = Some((texture.create_view(&wgpu::TextureViewDescriptor::default()), levels));
+        self.size = (width, height);
+        self.generation += 1;
+    }
+
+    /// The chain surfaces sample, or black when nothing transmits.
+    pub fn view(&self, on: bool) -> &wgpu::TextureView {
+        match &self.chain {
+            Some((v, _)) if on => v,
+            _ => &self.black,
+        }
+    }
+
+    /// Changes whenever [`view`](Self::view) would return a different
+    /// texture.
+    pub fn key(&self, on: bool) -> u64 {
+        if on && self.chain.is_some() {
+            self.generation
+        } else {
+            0
+        }
+    }
+
+    /// Copy the resolved opaque frame `source` into mip 0, then halve
+    /// it down the chain.
+    pub fn record(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView) {
+        let Some((_, levels)) = &self.chain else {
+            return;
+        };
+        for (i, target) in levels.iter().enumerate() {
+            let input = if i == 0 { source } else { &levels[i - 1] };
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("twe-kernel transmission bg"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(input),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            screen_pass(encoder, "twe-kernel transmission mip", &self.pipeline, &bg, target);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
