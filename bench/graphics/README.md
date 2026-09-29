@@ -46,7 +46,11 @@ Requirements:
 **The steps separately:**
 - `node fetch.mjs`
 - `node render-three.mjs [scene …]`
-- `cargo test --release --test graphics_bench -- --ignored --nocapture` (from the repo root; `TWE_BENCH_SCENES=a,b` limits it)
+- `cargo test --release --test graphics_bench -- --ignored --nocapture` (from the repo root). Environment variables:
+  - `TWE_BENCH_SCENES=a,b` limits it to those scenes;
+  - `TWE_BENCH_TAA=0` turns TAA off;
+  - `TWE_BENCH_AO=0` turns ambient occlusion off;
+  - `TWE_BENCH_AO_RADIUS` sets the AO radius as a fraction of the model's bounding radius.
 - `python score.py`
 
 ## Rules

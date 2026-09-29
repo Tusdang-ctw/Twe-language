@@ -130,6 +130,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: shadows that behave like light.** Shadows in Twe used to be hard-edged and fixed around the camera's target. Now the sun's shadows are soft the way real ones are: crisp where a crate meets the floor, blurring as they stretch away. They're also fitted to what the camera sees, so they stay sharp up close and don't shimmer as the camera moves. Torches and lamps can cast shadows too, in every direction. The scoreboard didn't move, and the notes explain why: the benchmark scenes are lit by their surroundings, not by lamps. This one is judged by tests and by eye.
 
+- **2026-09-29: level with Three.js.** Twe learned ambient occlusion, the soft darkening where surfaces crowd together: under a helmet's brim, where a pillar meets the floor. It also gained lens-like glow around bright lights, eye-like adaptation to dark and bright scenes, and two more film curves. On the scoreboard, Twe's average error dipped below Three.js's for the first time: 0.1850 against 0.1857. The notes call it what it is, a tie within noise, measured with a feature switched on that the Three.js setup doesn't use. The same session caught a bug that had hidden for four sessions: every built-in sphere was being drawn inside out.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

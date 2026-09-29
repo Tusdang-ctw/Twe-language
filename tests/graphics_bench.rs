@@ -19,13 +19,21 @@ use std::path::{Path, PathBuf};
 
 use twec::json::Value;
 use twec::kernel::render::{
-    Camera3d, EnvironmentSettings, PostFx, RenderSnapshot, Renderer, ShadowSettings,
+    Camera3d, EnvironmentSettings, PostFx, RenderSnapshot, Renderer, ShadowSettings, Tonemapper,
 };
 use twec::render3d_types::{DrawCall3d, Primitive};
 
 /// Twe's anti-aliasing for the comparison: 4x MSAA always, plus TAA
 /// (`TWE_BENCH_TAA=0` turns it off), converged over the settle frames.
 const SETTLE_FRAMES: u32 = 24;
+
+/// Ambient occlusion for the comparison (session 7): intensity
+/// (`TWE_BENCH_AO`, default 1; 0 turns it off) and radius as a fraction
+/// of the model's bounding radius (`TWE_BENCH_AO_RADIUS`, default 0.4).
+fn bench_ao() -> (f32, f32) {
+    let var = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    (var("TWE_BENCH_AO", 1.0), var("TWE_BENCH_AO_RADIUS", 0.4))
+}
 
 fn num(v: &Value, key: &str) -> f32 {
     match v.get(key) {
@@ -130,13 +138,16 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
                 extent: twec::stdlib::shadow_extent(),
             },
             post: PostFx {
-                tonemap_aces: true,
+                tonemapper: Tonemapper::Aces,
                 taa: std::env::var("TWE_BENCH_TAA").map_or(true, |v| v != "0"),
                 vignette: 0.0,
                 vignette_color: [0.0; 3],
                 bloom_intensity: 0.0,
                 bloom_threshold: 1.0,
                 frustum_cull: false,
+                ao: bench_ao().0,
+                ao_radius: bench_ao().1 * sphere_r,
+                ..PostFx::default()
             },
             draws: &draws,
             mesh_paths: &mesh_paths,

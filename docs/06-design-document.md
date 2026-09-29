@@ -905,23 +905,44 @@ on Slime.death(s):
 ### 7.7b 3D post-processing  *(`twec play3d` and web builds)*
 
 ```twe
-postfx.tonemap(true)              # ACES filmic curve (default on)
+postfx.tonemap("aces")            # the curve: "aces" (default), "agx", "neutral", "none"
+postfx.exposure(0.5)              # exposure compensation in stops (default 0)
+postfx.auto_exposure(true)        # adapt to the scene's brightness (default off)
+postfx.ao(1.0)                    # ambient occlusion strength, 0 (off, default); 1 is physical
+postfx.ao_radius(0.5)             # how far occluders reach, in world units (default 0.5)
 postfx.taa(true)                  # temporal anti-aliasing (default off)
 postfx.vignette(0.4)              # radial darkening, 0 (off) to 1 (full)
 postfx.vignette_color(color.purple) # tint instead of darken (default black)
-postfx.bloom(0.6)                 # inline 12-tap bloom intensity, 0 (off)
-postfx.bloom_threshold(1.0)       # HDR luminance above which bloom kicks in
+postfx.bloom(0.6)                 # bloom intensity, 0 (off, default)
+postfx.bloom_threshold(1.0)       # HDR brightness where bloom starts; 0 = everything glows a little
 postfx.frustum_cull(true)         # skip culled draw calls (default on)
 ```
 
-The HDR pipeline always runs; `postfx.tonemap(false)` switches the final pass from ACES to a straight clamp. The ACES curve is the fitted RRT + ODT that Three.js and the glTF references use (web3d-M7).
+The HDR pipeline always runs. The steps from scene light to the display, in order *(web3d-M7)*:
+
+- **Exposure.** The frame is scaled by 2^`exposure`. With `auto_exposure(true)` it is also scaled so the scene's average brightness (a histogram of the frame, ignoring the darkest 40% and brightest 5% of pixels) lands on middle grey; the adaptation takes about a second, like an eye. `exposure` then shifts that result.
+- **Bloom** (Jimenez 2014, as in Unreal, Unity HDRP and Blender Eevee). The bright parts of the frame are blurred through a chain of halving resolutions and summed, which gives glare a tight core and a wide, soft falloff, then added before the curve. Light above `bloom_threshold` blooms, with a soft knee; `bloom_threshold(0)` makes every surface glow slightly, as a real lens does.
+- **The curve** (`postfx.tonemap`):
+  - `"aces"`, the default, is ACES Filmic: the fitted RRT + ODT that Three.js and the glTF references use.
+  - `"agx"` is AgX, Blender 4's default. Very bright colours fade toward white instead of shifting hue.
+  - `"neutral"` is Khronos PBR Neutral. Colours below about 0.8 pass through almost unchanged, so product and material colours stay true.
+  - `"none"` is a straight clamp.
+
+  `postfx.tonemap(true)` / `(false)` still mean ACES / none. An unknown name is an error listing the valid ones.
+- **Vignette** last.
+
+**Ambient occlusion** *(web3d-M7)*. `postfx.ao(1.0)` darkens light from the environment (IBL or `light.ambient`) where surfaces are hemmed in: corners, contact with the ground, the inside of a helmet. It is ground-truth ambient occlusion (GTAO):
+- It measures, from the camera's depth, how much of the sky each point can see within `ao_radius`, so a flat floor stays unoccluded.
+- It only affects indirect light. The sun and point lights have their own shadows (§7.7c).
+- On bright surfaces, light bouncing between occluders softens it.
+- It costs an extra depth-only pass over the scene. Alpha-masked glTF materials (leaves, fences) are cut out in that pass too.
 
 **Anti-aliasing** *(web3d-M7)*. The scene always renders with 4× MSAA, which smooths geometric edges. `postfx.taa(true)` adds temporal anti-aliasing on top, which also smooths shading detail (specular sparkle, thin highlights):
 - each frame is rendered with a sub-pixel jitter and blended into a history of earlier frames;
 - the history is reprojected with the camera's motion and clamped to the new frame's neighbourhood, so moving the camera doesn't leave ghosts;
 - objects that move on their own are kept sharp by the clamp, but can look slightly soft in fast motion (per-object motion vectors aren't implemented yet).
 
-TAA is off by default, because it trades a little sharpness for stability. `bloom` is a single-pass inline kernel — small radius (~12 pixels), no multi-tier downsample chain. Shadows are covered in §7.7c.
+TAA is off by default, because it trades a little sharpness for stability. Shadows are covered in §7.7c.
 
 ### 7.7c 3D lights and shadows  *(`twec play3d` and web builds)*
 

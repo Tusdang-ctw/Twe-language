@@ -30,6 +30,6 @@
     "khronos-AlphaBlendModeTest"
   ],
   "notes": {
-    "khronos-Sponza": "the Cycles reference is lit only by sky through the courtyard opening, so it is very dark; real-time engines without occlusion light the interior far more. Twe's low error here comes from its dim default lighting, not accuracy (it also textures every surface with one material, a loader defect fixed in M7 session 3). Not a meaningful win until image-based lighting and ambient occlusion land."
+    "khronos-Sponza": "the Cycles reference is lit only by sky through the courtyard opening, so the colonnades are dark; engines without occlusion light them far too brightly. Twe's lead here (since M7 session 7) comes from ambient occlusion, which the harness turns on for Twe; Three.js as the harness renders it has none (three ships a GTAOPass addon, not used here). The error is still large for every engine."
   }
 }

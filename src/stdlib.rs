@@ -388,7 +388,25 @@ pub fn install(env: &mut Env) {
     let mut postfx_fields = HashMap::new();
     postfx_fields.insert(
         "tonemap".to_string(),
-        Value::from_builtin("postfx.tonemap", &["enabled"], postfx_tonemap_impl),
+        Value::from_builtin("postfx.tonemap", &["curve"], postfx_tonemap_impl),
+    );
+    // web3d-M7: exposure (manual stops, auto adaptation) and ambient
+    // occlusion.
+    postfx_fields.insert(
+        "exposure".to_string(),
+        Value::from_builtin("postfx.exposure", &["stops"], postfx_exposure_impl),
+    );
+    postfx_fields.insert(
+        "auto_exposure".to_string(),
+        Value::from_builtin("postfx.auto_exposure", &["enabled"], postfx_auto_exposure_impl),
+    );
+    postfx_fields.insert(
+        "ao".to_string(),
+        Value::from_builtin("postfx.ao", &["intensity"], postfx_ao_impl),
+    );
+    postfx_fields.insert(
+        "ao_radius".to_string(),
+        Value::from_builtin("postfx.ao_radius", &["radius"], postfx_ao_radius_impl),
     );
     // web3d-M7: temporal anti-aliasing on top of the built-in 4x MSAA.
     postfx_fields.insert(
@@ -1051,7 +1069,15 @@ thread_local! {
     /// swapchain. The toggle controls whether the tonemap shader
     /// applies the ACES curve (default on, commercial-grade)
     /// versus a straight linear→sRGB pass (off).
-    static TONEMAP_ENABLED: RefCell<bool> = const { RefCell::new(true) };
+    static TONEMAPPER: RefCell<crate::kernel::render::Tonemapper> =
+        const { RefCell::new(crate::kernel::render::Tonemapper::Aces) };
+    /// web3d-M7: exposure compensation in stops, auto exposure, and
+    /// ambient occlusion (`postfx.exposure` / `auto_exposure` / `ao` /
+    /// `ao_radius`).
+    static EXPOSURE_STOPS: RefCell<f32> = const { RefCell::new(0.0) };
+    static AUTO_EXPOSURE: RefCell<bool> = const { RefCell::new(false) };
+    static AO_INTENSITY: RefCell<f32> = const { RefCell::new(0.0) };
+    static AO_RADIUS: RefCell<f32> = const { RefCell::new(0.5) };
     /// web3d-M7: temporal anti-aliasing (`postfx.taa`), off by default.
     static TAA_ENABLED: RefCell<bool> = const { RefCell::new(false) };
     /// Phase 26: vignette strength, 0.0 (off) to 1.0 (full).
@@ -1112,9 +1138,25 @@ pub fn taa_enabled() -> bool {
     TAA_ENABLED.with(|s| *s.borrow())
 }
 
-/// Phase 26: read the script-controlled ACES tonemap toggle.
-pub fn tonemap_enabled() -> bool {
-    TONEMAP_ENABLED.with(|s| *s.borrow())
+/// web3d-M7: the script-chosen tonemap curve (`postfx.tonemap`).
+pub fn tonemap_curve() -> crate::kernel::render::Tonemapper {
+    TONEMAPPER.with(|s| *s.borrow())
+}
+
+/// web3d-M7: exposure compensation in stops (`postfx.exposure`).
+pub fn exposure_stops() -> f32 {
+    EXPOSURE_STOPS.with(|s| *s.borrow())
+}
+
+/// web3d-M7: `postfx.auto_exposure`.
+pub fn auto_exposure_enabled() -> bool {
+    AUTO_EXPOSURE.with(|s| *s.borrow())
+}
+
+/// web3d-M7: ambient occlusion intensity and radius (`postfx.ao`,
+/// `postfx.ao_radius`).
+pub fn ao_settings() -> (f32, f32) {
+    (AO_INTENSITY.with(|s| *s.borrow()), AO_RADIUS.with(|s| *s.borrow()))
 }
 
 /// Phase 26: read the script-controlled vignette strength.
@@ -11525,19 +11567,81 @@ fn sun_shadow_extent_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runti
     Ok(Value::NIL)
 }
 
+// web3d-M7: the tonemap curve by name ("aces", "agx", "neutral",
+// "none"); `true` / `false` keep their Phase 26 meaning (ACES / none).
 fn postfx_tonemap_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    use crate::kernel::render::Tonemapper;
     arity(args, 1, "postfx.tonemap")?;
-    let on = if args[0].is_bool() {
-        args[0].as_bool()
+    let bad = |got: String| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("postfx.tonemap: unknown curve {got}"),
+        help: Some(
+            "use \"aces\" (default), \"agx\", \"neutral\" or \"none\" (true / false mean \"aces\" / \"none\")"
+                .to_string(),
+        ),
+    };
+    let curve = if args[0].is_bool() {
+        if args[0].as_bool() {
+            Tonemapper::Aces
+        } else {
+            Tonemapper::None
+        }
+    } else if args[0].is_str() {
+        match args[0].as_string().as_str() {
+            "aces" => Tonemapper::Aces,
+            "agx" => Tonemapper::AgX,
+            "neutral" => Tonemapper::Neutral,
+            "none" => Tonemapper::None,
+            other => return Err(bad(format!("\"{other}\""))),
+        }
     } else {
+        return Err(bad("(expected a string or a bool)".to_string()));
+    };
+    TONEMAPPER.with(|s| *s.borrow_mut() = curve);
+    Ok(Value::NIL)
+}
+
+fn postfx_exposure_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.exposure")?;
+    let stops = (number(&args[0], "postfx.exposure.stops")? as f32).clamp(-16.0, 16.0);
+    EXPOSURE_STOPS.with(|s| *s.borrow_mut() = stops);
+    Ok(Value::NIL)
+}
+
+fn postfx_auto_exposure_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.auto_exposure")?;
+    if !args[0].is_bool() {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: "postfx.tonemap expects a bool".to_string(),
-            help: None,
+            message: "postfx.auto_exposure expects a bool".to_string(),
+            help: Some("`postfx.auto_exposure(true)` adapts exposure to the scene's brightness".to_string()),
         });
-    };
-    TONEMAP_ENABLED.with(|s| *s.borrow_mut() = on);
+    }
+    AUTO_EXPOSURE.with(|s| *s.borrow_mut() = args[0].as_bool());
+    Ok(Value::NIL)
+}
+
+fn postfx_ao_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.ao")?;
+    let v = (number(&args[0], "postfx.ao.intensity")? as f32).clamp(0.0, 4.0);
+    AO_INTENSITY.with(|s| *s.borrow_mut() = v);
+    Ok(Value::NIL)
+}
+
+fn postfx_ao_radius_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.ao_radius")?;
+    let r = number(&args[0], "postfx.ao_radius.radius")? as f32;
+    if r <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "postfx.ao_radius: radius must be > 0".to_string(),
+            help: Some("the radius is in world units (metres); 0.5 suits human-scale scenes".to_string()),
+        });
+    }
+    AO_RADIUS.with(|s| *s.borrow_mut() = r);
     Ok(Value::NIL)
 }
 

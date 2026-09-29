@@ -1281,6 +1281,38 @@ fn postfx_vignette_color_setter() {
     assert!((c[2] - 0.30).abs() < 1e-5, "vignette b = {}", c[2]);
 }
 
+/// web3d-M7: `postfx.tonemap` takes a curve name; `true` / `false`
+/// keep meaning ACES / none, and an unknown name is an error.
+#[test]
+fn postfx_tonemap_curves() {
+    use twec::kernel::render::Tonemapper;
+    for (arg, curve) in [
+        ("\"agx\"", Tonemapper::AgX),
+        ("\"neutral\"", Tonemapper::Neutral),
+        ("\"none\"", Tonemapper::None),
+        ("true", Tonemapper::Aces),
+        ("false", Tonemapper::None),
+        ("\"aces\"", Tonemapper::Aces),
+    ] {
+        run_program_str(&format!("postfx.tonemap({arg})\n")).expect("should run");
+        assert_eq!(twec::stdlib::tonemap_curve(), curve, "postfx.tonemap({arg})");
+    }
+    let err = run_program_str("postfx.tonemap(\"filmic\")\n").expect_err("unknown curve");
+    assert!(err.contains("unknown curve \"filmic\""), "{err}");
+}
+
+/// web3d-M7: exposure and ambient-occlusion setters.
+#[test]
+fn postfx_exposure_and_ao_setters() {
+    run_program_str("postfx.exposure(-1.5)\npostfx.auto_exposure(true)\n").expect("should run");
+    assert_eq!(twec::stdlib::exposure_stops(), -1.5);
+    assert!(twec::stdlib::auto_exposure_enabled());
+    run_program_str("postfx.ao(0.8)\npostfx.ao_radius(2)\n").expect("should run");
+    assert_eq!(twec::stdlib::ao_settings(), (0.8, 2.0));
+    assert!(run_program_str("postfx.ao_radius(0)\n").is_err(), "a zero radius is rejected");
+    assert!(run_program_str("postfx.auto_exposure(1)\n").is_err(), "auto_exposure takes a bool");
+}
+
 #[test]
 fn postfx_bloom_clamps_negative_intensity_to_zero() {
     let _ = run_program_str("postfx.bloom(-0.5)\n").expect("should run");

@@ -4,9 +4,11 @@
 //! adapt interpreter state into kernel inputs. Becomes the
 //! `twe-kernel` crate when the workspace splits.
 
+pub(crate) mod ao;
 pub(crate) mod environment;
 pub mod graph;
 pub mod hud;
 pub(crate) mod material;
+pub(crate) mod post;
 pub mod render;
 pub(crate) mod taa;

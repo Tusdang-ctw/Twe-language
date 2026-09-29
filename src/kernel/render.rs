@@ -55,10 +55,38 @@ pub struct ShadowSettings {
     pub extent: f32,
 }
 
+/// web3d-M7: the curve that maps HDR scene light to the display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tonemapper {
+    /// A straight clamp (blown highlights clip).
+    None,
+    /// ACES Filmic (Hill's RRT + ODT fit), as Three.js and the glTF
+    /// references apply it. The default.
+    Aces,
+    /// AgX (Sobotka), Blender 4's default: hue-preserving, highlights
+    /// desaturate toward white instead of skewing.
+    AgX,
+    /// Khronos PBR Neutral: base colours below ~0.8 pass through
+    /// almost unchanged (product and material viewers).
+    Neutral,
+}
+
+impl Tonemapper {
+    /// The id the tonemap shader switches on.
+    fn id(self) -> f32 {
+        match self {
+            Tonemapper::None => 0.0,
+            Tonemapper::Aces => 1.0,
+            Tonemapper::AgX => 2.0,
+            Tonemapper::Neutral => 3.0,
+        }
+    }
+}
+
 /// Post-processing and culling settings for a frame.
 #[derive(Debug, Clone, Copy)]
 pub struct PostFx {
-    pub tonemap_aces: bool,
+    pub tonemapper: Tonemapper,
     /// web3d-M7: temporal anti-aliasing (on top of the main pass's MSAA).
     pub taa: bool,
     pub vignette: f32,
@@ -66,6 +94,35 @@ pub struct PostFx {
     pub bloom_intensity: f32,
     pub bloom_threshold: f32,
     pub frustum_cull: bool,
+    /// web3d-M7: exposure compensation in stops (EV; the image is
+    /// scaled by 2^exposure before the tonemap).
+    pub exposure: f32,
+    /// web3d-M7: adapt the exposure to the frame's brightness (the
+    /// `exposure` stops are then added on top).
+    pub auto_exposure: bool,
+    /// web3d-M7: ambient occlusion (GTAO) strength, 0 = off; 1 is
+    /// physically based.
+    pub ao: f32,
+    /// web3d-M7: how far (world units) occluders reach.
+    pub ao_radius: f32,
+}
+
+impl Default for PostFx {
+    fn default() -> Self {
+        PostFx {
+            tonemapper: Tonemapper::Aces,
+            taa: false,
+            vignette: 0.0,
+            vignette_color: [0.0; 3],
+            bloom_intensity: 0.0,
+            bloom_threshold: 1.0,
+            frustum_cull: true,
+            exposure: 0.0,
+            auto_exposure: false,
+            ao: 0.0,
+            ao_radius: 0.5,
+        }
+    }
 }
 
 /// Everything the renderer needs from the host for one frame.
@@ -450,6 +507,9 @@ struct Env {
 @group(0) @binding(5) var t_dfg: texture_2d<f32>;
 @group(0) @binding(6) var s_env: sampler;
 @group(0) @binding(7) var s_clamp: sampler;
+// web3d-M7: screen-space ambient occlusion (kernel/ao.rs), one texel
+// per pixel; a 1x1 white texture when AO is off.
+@group(0) @binding(8) var t_ao: texture_2d<f32>;
 
 // Phase 24: per-mesh joint matrix UBO. Up to 128 joints per
 // skinned mesh. Unskinned meshes (cube, sphere, glb without a
@@ -743,6 +803,26 @@ fn direct_light(
     return (diffuse_color / PI + spec) * radiance * (nol * PI);
 }
 
+// web3d-M7: this pixel's screen-space ambient occlusion.
+fn screen_ao(frag: vec2<f32>) -> f32 {
+    let dim = textureDimensions(t_ao);
+    let p = min(vec2<u32>(frag), dim - vec2<u32>(1u));
+    return textureLoad(t_ao, p, 0).r;
+}
+
+// Jimenez 2016's multi-bounce fit: light bounced between occluders
+// brightens occlusion on bright surfaces (and tints it on coloured
+// ones). Exactly 1 when unoccluded.
+fn ao_multibounce(x: f32, albedo: vec3<f32>) -> vec3<f32> {
+    if (x >= 0.999) {
+        return vec3<f32>(1.0);
+    }
+    let a = 2.0404 * albedo - 0.3324;
+    let b = -4.7951 * albedo + 0.6417;
+    let c = 2.7552 * albedo + 0.6903;
+    return max(vec3<f32>(x), ((x * a + b) * x + c) * x);
+}
+
 // Light leaving a surface point toward the eye: ambient environment,
 // the shadowed sun, up to 8 point lights, and emission. Shared by glTF
 // materials, the plain surface and `visual` materials.
@@ -760,16 +840,21 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     let specular_albedo = (f0 * ab.x + ab.y) * energy;
 
     // Indirect light; occlusion applies here only (glTF: it describes
-    // indirect light), on the specular lobe through Lagarde's fit.
+    // indirect light), on the specular lobe through Lagarde's fit. The
+    // material's occlusion and screen-space AO (web3d-M7) combine: the
+    // product on diffuse (with multi-bounce), the minimum on specular.
+    let ssao = screen_ao(in.clip_position.xy);
+    let diffuse_ao = s.occlusion * ao_multibounce(ssao, s.albedo);
+    let occlusion = min(s.occlusion, ssao);
     var color: vec3<f32>;
     if (env.params.z > 0.5) {
         let r = reflect(-v, n);
         let prefiltered = textureSampleLevel(t_env_specular, s_env, r, roughness * env.params.y).rgb;
-        let spec_ao = clamp(pow(nov + s.occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + s.occlusion, 0.0, 1.0);
-        color = (diffuse_color * sh_irradiance(n) / PI * s.occlusion + prefiltered * specular_albedo * spec_ao) * env.params.x;
+        let spec_ao = clamp(pow(nov + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
+        color = (diffuse_color * sh_irradiance(n) / PI * diffuse_ao + prefiltered * specular_albedo * spec_ao) * env.params.x;
     } else {
         // No environment: the ambient colour as a uniform one.
-        color = lights.ambient.rgb * (diffuse_color + specular_albedo) * s.occlusion;
+        color = lights.ambient.rgb * (diffuse_color * diffuse_ao + specular_albedo * occlusion);
     }
 
     // Directional sun. w = intensity; 0 disables the sun. Shadows
@@ -951,38 +1036,31 @@ pub fn material_shader_source(pixel: &str) -> String {
     format!("{SHADER_SRC}\n{pixel}\n{MATERIAL_FS}")
 }
 
-/// Phase 26: ACES filmic tone mapping shader. Reads an HDR
-/// linear-light texture and writes sRGB-encoded LDR to the
-/// swapchain.
+/// Phase 26 / web3d-M7: the display pass. Reads the HDR frame and
+/// writes the display (sRGB) target:
 ///
-/// Phase 28 session 3 (bloom) + session 4 (vignette extension)
-/// extend this pass with:
-///   - inline bloom: a 12-tap circular kernel sampled around the
-///     current pixel. Each tap contributes `max(sample - threshold, 0)`,
-///     summed and averaged then scaled by `bloom_intensity`. v1
-///     bloom — small radius (~12 pixels), no multi-tier downsample
-///     chain. Cheaper than real bloom but visually credible for
-///     bright lights / sun glints. Multi-tier downsample is a
-///     follow-on whenever wider haloes are needed.
-///   - color-tinted vignette: instead of darkening to black, the
-///     vignette can lerp toward a user-supplied tint colour. Set
-///     `vignette_color` to (0, 0, 0) for the classic black
-///     vignette; (0.05, 0.0, 0.1) for a "twilight" feel; etc.
+/// 1. **exposure**: the manual stops, plus the adapted exposure when
+///    auto exposure is on (kernel/post.rs);
+/// 2. **bloom**: the multi-level chain (kernel/post.rs), added before
+///    the curve so glare shoulders like the highlights it comes from;
+/// 3. **the curve**: none, ACES, AgX or Khronos PBR Neutral;
+/// 4. **vignette**, toward a tint colour (black by default).
 pub(crate) const TONEMAP_SHADER_SRC: &str = r#"
 struct Params {
-    /// x = ACES on/off (1.0 / 0.0)
-    /// y = bloom intensity (0.0 = bloom off)
-    /// z = bloom threshold (HDR luminance above which bloom kicks in)
-    /// w = vignette strength
+    /// x = curve (0 none, 1 ACES, 2 AgX, 3 PBR Neutral),
+    /// y = bloom scale (intensity / levels; 0 = off),
+    /// z = exposure multiplier (2^stops), w = vignette strength.
     flags: vec4<f32>,
-    /// xyz = vignette tint color (defaults to black for classic
-    /// darkening); w padding.
+    /// xyz = vignette tint; w = auto exposure on (1/0).
     vignette_color: vec4<f32>,
 };
 
 @group(0) @binding(0) var t_hdr: texture_2d<f32>;
 @group(0) @binding(1) var s_hdr: sampler;
 @group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var t_bloom: texture_2d<f32>;
+// x = adapted log2 exposure (kernel/post.rs).
+@group(0) @binding(4) var<storage, read> exposure_state: vec4<f32>;
 
 struct VOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -1010,11 +1088,9 @@ fn vs_fullscreen(@builtin(vertex_index) idx: u32) -> VOut {
     return out;
 }
 
-// web3d-M7: ACES Filmic as Three.js, the glTF Sample Viewer and the
-// Khronos Render Fidelity references apply it — Stephen Hill's fit of
-// the RRT + ODT, in AP1 with the sRGB <-> AP1 matrices, after a 1/0.6
-// exposure. (It replaced Narkowicz's 2015 one-line approximation,
-// which runs visibly darker and less saturated than the reference.)
+// ACES Filmic as Three.js, the glTF Sample Viewer and the Khronos
+// Render Fidelity references apply it — Stephen Hill's fit of the RRT +
+// ODT, in AP1 with the sRGB <-> AP1 matrices, after a 1/0.6 exposure.
 fn rrt_odt_fit(v: vec3<f32>) -> vec3<f32> {
     let a = v * (v + 0.0245786) - 0.000090537;
     let b = v * (0.983729 * v + 0.4329510) + 0.238081;
@@ -1038,64 +1114,96 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// Phase 28 session 3: 12-tap inline bloom. Each tap samples the
-// HDR texture at a small offset, subtracts the bloom threshold,
-// clamps to non-negative (so only bright pixels contribute), and
-// the average becomes the additive bloom term.
-//
-// Radius is fixed in pixels — the offsets divided by texture
-// dimensions to get UV offsets. Pattern is a 12-vertex circle at
-// 6 pixels + a second ring at 12 pixels for a soft falloff.
-fn bloom_inline(uv: vec2<f32>, threshold: f32) -> vec3<f32> {
-    let dim = vec2<f32>(textureDimensions(t_hdr));
-    let inv = vec2<f32>(1.0 / dim.x, 1.0 / dim.y);
-    // 12 offsets — two concentric rings, six taps each.
-    let r1 = 6.0;
-    let r2 = 12.0;
-    var offsets = array<vec2<f32>, 12>(
-        vec2<f32>( 1.0,  0.0) * r1,
-        vec2<f32>( 0.5,  0.866) * r1,
-        vec2<f32>(-0.5,  0.866) * r1,
-        vec2<f32>(-1.0,  0.0) * r1,
-        vec2<f32>(-0.5, -0.866) * r1,
-        vec2<f32>( 0.5, -0.866) * r1,
-        vec2<f32>( 1.0,  0.0) * r2,
-        vec2<f32>( 0.5,  0.866) * r2,
-        vec2<f32>(-0.5,  0.866) * r2,
-        vec2<f32>(-1.0,  0.0) * r2,
-        vec2<f32>(-0.5, -0.866) * r2,
-        vec2<f32>( 0.5, -0.866) * r2,
+// AgX (Troy Sobotka), in the form Three.js r160+ and Filament ship:
+// Rec.2020 working space, the inset matrix, a log2 encoding over
+// [-12.47, 4.03] EV, the default-contrast sigmoid (a 6th-order fit),
+// then the outset matrix and back to Rec.709. Matrices are columns.
+fn agx_contrast(x: vec3<f32>) -> vec3<f32> {
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+fn agx(x: vec3<f32>) -> vec3<f32> {
+    let srgb_to_2020 = mat3x3<f32>(
+        vec3<f32>(0.6274, 0.0691, 0.0164),
+        vec3<f32>(0.3293, 0.9195, 0.0880),
+        vec3<f32>(0.0433, 0.0113, 0.8956),
     );
-    var sum = vec3<f32>(0.0);
-    for (var i: i32 = 0; i < 12; i = i + 1) {
-        let off = offsets[i] * inv;
-        let s = textureSample(t_hdr, s_hdr, uv + off).rgb;
-        // Only the part above threshold blooms.
-        sum = sum + max(s - vec3<f32>(threshold), vec3<f32>(0.0));
+    let rec2020_to_srgb = mat3x3<f32>(
+        vec3<f32>(1.6605, -0.1246, -0.0182),
+        vec3<f32>(-0.5876, 1.1329, -0.1006),
+        vec3<f32>(-0.0728, -0.0083, 1.1187),
+    );
+    let inset = mat3x3<f32>(
+        vec3<f32>(0.856627153315983, 0.137318972929847, 0.11189821299995),
+        vec3<f32>(0.0951212405381588, 0.761241990602591, 0.0767994186031903),
+        vec3<f32>(0.0482516061458583, 0.101439036467562, 0.811302368396859),
+    );
+    let outset = mat3x3<f32>(
+        vec3<f32>(1.1271005818144368, -0.1413297634984383, -0.14132976349843826),
+        vec3<f32>(-0.11060664309660323, 1.157823702216272, -0.11060664309660294),
+        vec3<f32>(-0.016493938717834573, -0.016493938717834257, 1.2519364065950405),
+    );
+    let min_ev = -12.47393;
+    let max_ev = 4.026069;
+    var c = inset * (srgb_to_2020 * x);
+    c = max(c, vec3<f32>(1e-10));
+    c = clamp((log2(c) - min_ev) / (max_ev - min_ev), vec3<f32>(0.0), vec3<f32>(1.0));
+    c = agx_contrast(c);
+    c = outset * c;
+    c = pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+    c = rec2020_to_srgb * c;
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Khronos PBR Neutral (Khronos 3D Commerce, 2024): identity below the
+// compression start, apart from a small toe offset; above it a
+// highlight roll-off that desaturates toward white.
+fn pbr_neutral(x: vec3<f32>) -> vec3<f32> {
+    let start = 0.8 - 0.04;
+    let desaturation = 0.15;
+    let m = min(x.r, min(x.g, x.b));
+    var offset = 0.04;
+    if (m < 0.08) {
+        offset = m - 6.25 * m * m;
     }
-    return sum / 12.0;
+    var c = x - vec3<f32>(offset);
+    let peak = max(c.r, max(c.g, c.b));
+    if (peak < start) {
+        return c;
+    }
+    let d = 1.0 - start;
+    let new_peak = 1.0 - d * d / (peak + d - start);
+    c = c * (new_peak / peak);
+    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+    return mix(c, vec3<f32>(new_peak), g);
 }
 
 @fragment
 fn fs_tonemap(in: VOut) -> @location(0) vec4<f32> {
     var hdr = textureSample(t_hdr, s_hdr, in.uv).rgb;
-    // Phase 28 session 3: inline bloom. Adds the bloom term to
-    // the HDR base before tonemap so the bright halo gets the
-    // same ACES curve as the source highlights.
-    let bloom_intensity = params.flags.y;
-    if (bloom_intensity > 0.001) {
-        let bloom = bloom_inline(in.uv, params.flags.z);
-        hdr = hdr + bloom * bloom_intensity;
+    let bloom = textureSample(t_bloom, s_hdr, in.uv).rgb;
+    if (params.flags.y > 0.0) {
+        hdr = hdr + bloom * params.flags.y;
     }
+    var exposure = params.flags.z;
+    if (params.vignette_color.w > 0.5) {
+        exposure = exposure * exp2(exposure_state.x);
+    }
+    hdr = hdr * exposure;
     var col: vec3<f32>;
-    if (params.flags.x > 0.5) {
+    let curve = params.flags.x;
+    if (curve > 2.5) {
+        col = clamp(pbr_neutral(hdr), vec3<f32>(0.0), vec3<f32>(1.0));
+    } else if (curve > 1.5) {
+        col = agx(hdr);
+    } else if (curve > 0.5) {
         col = aces(hdr);
     } else {
-        // Pass-through clamp — preserves HDR-style blown highlights
-        // when ACES is off.
         col = clamp(hdr, vec3<f32>(0.0), vec3<f32>(1.0));
     }
-    // Phase 28 session 4: color-tinted vignette. Smooth radial
+    // Phase 28 session 4: colour-tinted vignette. Smooth radial
     // lerp from the LDR color toward `vignette_color` — strength 0
     // disables, strength 1 fully replaces the corner pixels with
     // the tint color. Black tint = classic vignette darkening.
@@ -1170,6 +1278,94 @@ fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<
     let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
         + inst.inst_pos_size.xyz;
     return shadow_u.light_space_matrix * vec4<f32>(model_pos, 1.0);
+}
+"#;
+
+/// web3d-M7: the depth prepass for alpha-masked glTF primitives (the
+/// opaque ones reuse `vs_shadow` with the camera's matrix): cut out
+/// where base-colour alpha is below the cutoff, as the main pass does,
+/// so leaves and fences don't occlude like solid cards.
+pub(crate) const PREPASS_MASK_SRC: &str = r#"
+struct Pass {
+    view_proj: mat4x4<f32>,
+};
+@group(0) @binding(0) var<uniform> pass_u: Pass;
+
+struct Joints {
+    matrices: array<mat4x4<f32>, 128>,
+};
+@group(1) @binding(0) var<uniform> joints_u: Joints;
+
+struct Material {
+    base_color: vec4<f32>,
+    emissive: vec4<f32>,
+    params: vec4<f32>,
+    alpha: vec4<f32>,
+    xf: array<vec4<f32>, 10>,
+};
+@group(2) @binding(0) var<uniform> material: Material;
+@group(2) @binding(1) var t_base: texture_2d<f32>;
+@group(2) @binding(6) var s_base: sampler;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(4) uv: vec2<f32>,
+    @location(5) joints: vec4<u32>,
+    @location(6) weights: vec4<f32>,
+    @location(8) uv1: vec2<f32>,
+    @location(10) color: vec4<f32>,
+};
+
+struct InstanceInput {
+    @location(2) inst_pos_size: vec4<f32>,
+    @location(7) inst_rot: vec4<f32>,
+};
+
+struct MaskOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) uv1: vec2<f32>,
+    @location(2) alpha: f32,
+};
+
+fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
+    return vec3<f32>(rot.y * v.x + rot.x * v.z, v.y, -rot.x * v.x + rot.y * v.z);
+}
+
+@vertex
+fn vs_mask(vert: VertexInput, inst: InstanceInput) -> MaskOut {
+    let skin_mat: mat4x4<f32> =
+          vert.weights.x * joints_u.matrices[vert.joints.x]
+        + vert.weights.y * joints_u.matrices[vert.joints.y]
+        + vert.weights.z * joints_u.matrices[vert.joints.z]
+        + vert.weights.w * joints_u.matrices[vert.joints.w];
+    let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
+    let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
+        + inst.inst_pos_size.xyz;
+    var out: MaskOut;
+    out.pos = pass_u.view_proj * vec4<f32>(model_pos, 1.0);
+    out.uv = vert.uv;
+    out.uv1 = vert.uv1;
+    out.alpha = vert.color.a;
+    return out;
+}
+
+@fragment
+fn fs_mask(in: MaskOut) {
+    // Base-colour slot's UV set and KHR_texture_transform.
+    let a = material.xf[0];
+    let b = material.xf[1];
+    var uv = in.uv;
+    if (a.w > 0.5) {
+        uv = in.uv1;
+    }
+    let c = cos(a.z);
+    let s = sin(a.z);
+    let t = vec2<f32>(b.x * c * uv.x + b.y * s * uv.y + a.x, -b.x * s * uv.x + b.y * c * uv.y + a.y);
+    let alpha = material.base_color.a * textureSample(t_base, s_base, t).a * in.alpha;
+    if (alpha < material.alpha.y) {
+        discard;
+    }
 }
 "#;
 
@@ -1603,19 +1799,22 @@ fn sphere_mesh() -> (Vec<Vertex>, Vec<u16>) {
     let stride = lon + 1;
     for i in 0..lat {
         for j in 0..lon {
-            // Two triangles per quad. CCW from outside given the
-            // (lat, lon) → (theta, phi) mapping above, where +y is
-            // theta=0 (top of the sphere).
+            // Two triangles per quad, counter-clockwise seen from
+            // outside: going down a row (d) is -y, one step round (b)
+            // is +phi, and (b - a) x (d - a) points outward.
+            // web3d-M7: the winding was clockwise, which went unseen
+            // until session 3's back-face culling drew every sphere
+            // inside-out (the far hemisphere's inner face).
             let a = (i * stride + j) as u16;
             let b = (i * stride + j + 1) as u16;
             let c = ((i + 1) * stride + j + 1) as u16;
             let d = ((i + 1) * stride + j) as u16;
             indices.push(a);
+            indices.push(c);
             indices.push(d);
-            indices.push(c);
             indices.push(a);
-            indices.push(c);
             indices.push(b);
+            indices.push(c);
         }
     }
     (vertices, indices)
@@ -1666,6 +1865,16 @@ pub struct Renderer {
     env: EnvState,
     /// web3d-M7: temporal anti-aliasing (history, jitter, resolve).
     taa: crate::kernel::taa::Taa,
+    /// web3d-M7: the camera depth prepass (for ambient occlusion).
+    prepass: Prepass,
+    /// web3d-M7: ambient occlusion, bloom and auto exposure.
+    ao: crate::kernel::ao::Ao,
+    bloom: crate::kernel::post::Bloom,
+    exposure: crate::kernel::post::AutoExposure,
+    /// The AO texture the frame bind group was built with
+    /// (`Ao::key`), and a frame counter (AO pattern rotation).
+    frame_ao_key: u64,
+    frame_index: std::cell::Cell<u32>,
     /// web3d-M7: point-light shadow cubes.
     point_shadows: PointShadows,
     /// Phase 20: lighting uniform buffer, written once per frame from
@@ -1724,9 +1933,10 @@ pub struct Renderer {
     /// web3d-M7: the render graph's transient targets (HDR colour,
     /// depth, …), kept across frames.
     pool: TexturePool,
-    /// Bind group over the HDR target + sampler + params, tagged with
-    /// the pool generation of the HDR texture it binds.
-    tonemap_bind_group: Option<(u64, wgpu::BindGroup)>,
+    /// Bind group over the HDR target + sampler + params + bloom +
+    /// exposure, tagged with the HDR texture's pool generation and the
+    /// bloom texture's key.
+    tonemap_bind_group: Option<((u64, u64), wgpu::BindGroup)>,
     /// Lazy-loaded `.glb` mesh GPU resources, keyed by the
     /// `Env::mesh_paths` interned id (the `u32` payload of
     /// `Primitive::Mesh`). Populated on first sight of a new id in
@@ -1790,6 +2000,8 @@ struct GpuSubmesh {
     count: u32,
     material: wgpu::BindGroup,
     double_sided: bool,
+    /// web3d-M7: alpha-masked (the depth prepass cuts it out too).
+    masked: bool,
 }
 
 /// Phase 24: per-mesh skin data + GPU resources. Built at glb load
@@ -2087,11 +2299,23 @@ async fn init_renderer(
             texture_entry(5, wgpu::TextureViewDimension::D2),
             sampler_entry(6),
             sampler_entry(7),
+            // web3d-M7: screen-space ambient occlusion.
+            texture_entry(8, wgpu::TextureViewDimension::D2),
         ],
     });
     let env = EnvState::new(&device, &queue, &frame_bgl);
     let taa = crate::kernel::taa::Taa::new(&device);
-    let frame_bind_group = frame_bind_group(&device, &frame_bgl, &camera_buffer, &lights_buffer, &env);
+    let ao = crate::kernel::ao::Ao::new(&device, &queue);
+    let bloom = crate::kernel::post::Bloom::new(&device, &queue);
+    let exposure = crate::kernel::post::AutoExposure::new(&device);
+    let frame_bind_group = frame_bind_group(
+        &device,
+        &frame_bgl,
+        &camera_buffer,
+        &lights_buffer,
+        &env,
+        ao.view(false),
+    );
 
     // Phase 24: joint UBO bind group layout, plus a shared
     // identity-only UBO bound for unskinned draws (cube, sphere,
@@ -2298,6 +2522,7 @@ async fn init_renderer(
         source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER_SRC.into()),
     });
     let point_shadows = PointShadows::new(&device, &shadow_uniform_bgl, &joints_bgl, &shadow_shader);
+    let prepass = Prepass::new(&device, &shadow_uniform_bgl, &joints_bgl, &materials.layout, &shadow_shader);
     let shadow_combined_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twec-play3d shadow combined bg"),
         layout: &shadow_combined_bgl,
@@ -2398,6 +2623,28 @@ async fn init_renderer(
                 },
                 count: None,
             },
+            // web3d-M7: the bloom chain's top level.
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // web3d-M7: the adapted exposure.
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let tonemap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2410,10 +2657,7 @@ async fn init_renderer(
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
-    // Phase 28 sessions 3+4: tonemap params is now two vec4s (32 B):
-    //   flags.x = ACES on/off, .y = bloom intensity,
-    //   flags.z = bloom threshold, .w = vignette strength
-    //   vignette_color.xyz = vignette tint (defaults to black)
+    // Tonemap params, two vec4s (32 B): see `TONEMAP_SHADER_SRC`.
     let tonemap_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("twec-play3d tonemap params"),
         size: 32,
@@ -2489,6 +2733,12 @@ async fn init_renderer(
         frame_bgl,
         env,
         taa,
+        prepass,
+        ao,
+        bloom,
+        exposure,
+        frame_ao_key: 0,
+        frame_index: std::cell::Cell::new(0),
         point_shadows,
         lights_buffer,
         joints_bgl,
@@ -3567,6 +3817,7 @@ fn upload_loaded_glb(
             count: sub.count,
             material: bind_groups[sub.material].clone(),
             double_sided: materials[sub.material].double_sided,
+            masked: materials[sub.material].alpha_mode == crate::kernel::material::AlphaMode::Mask,
         })
         .collect();
     // Phase 24: build per-mesh skin GPU resources when the glb
@@ -3817,13 +4068,16 @@ impl Renderer {
                         Ok(env) => {
                             state.env.current = env;
                             state.env.loaded = state.env.requested.clone();
+                            // Built without AO; the frame re-binds it below.
                             state.frame_bind_group = frame_bind_group(
                                 &state.device,
                                 &state.frame_bgl,
                                 &state.camera_buffer,
                                 &state.lights_buffer,
                                 &state.env,
+                                state.ao.view(false),
                             );
+                            state.frame_ao_key = 0;
                         }
                         Err(e) => log_error(&format!("environment load: {e}")),
                     }
@@ -4127,10 +4381,30 @@ impl Renderer {
                 );
             }
         }
+        // web3d-M7: ambient occlusion needs the camera's depth before
+        // the main pass shades: a depth prepass, then GTAO into the
+        // persistent AO texture the main pass reads.
+        let ao_on = snap.post.ao > 0.0 && !instances.is_empty();
+        let mut main_reads = vec![(shadow_map, Access::Sample), (point_shadow_map, Access::Sample)];
+        let prepass_depth = if ao_on {
+            let prepass_depth = graph.create(TextureDesc::new("prepass depth", Extent::FULL, DEPTH_FORMAT));
+            let ao_texture = graph.import("ambient occlusion", false);
+            graph.add_pass(FramePass::Prepass, "depth prepass", &[], &[(prepass_depth, Access::Attach)]);
+            graph.add_pass(
+                FramePass::Ao,
+                "gtao + blur",
+                &[(prepass_depth, Access::Sample)],
+                &[(ao_texture, Access::Attach)],
+            );
+            main_reads.push((ao_texture, Access::Sample));
+            Some(prepass_depth)
+        } else {
+            None
+        };
         graph.add_pass(
             FramePass::Main,
             "main",
-            &[(shadow_map, Access::Sample), (point_shadow_map, Access::Sample)],
+            &main_reads,
             &[
                 (hdr_msaa, Access::Attach),
                 (depth, Access::Attach),
@@ -4151,10 +4425,34 @@ impl Renderer {
         } else {
             hdr
         };
+        // web3d-M7: bloom and exposure measure the anti-aliased frame.
+        let bloom_on = snap.post.bloom_intensity > 0.0;
+        let auto_exposure = snap.post.auto_exposure;
+        let mut tonemap_reads = vec![(tonemap_input, Access::Sample)];
+        if bloom_on {
+            let chain = graph.import("bloom chain", false);
+            graph.add_pass(
+                FramePass::Bloom,
+                "bloom",
+                &[(tonemap_input, Access::Sample)],
+                &[(chain, Access::Attach)],
+            );
+            tonemap_reads.push((chain, Access::Sample));
+        }
+        if auto_exposure {
+            let adapted = graph.import("adapted exposure", false);
+            graph.add_pass(
+                FramePass::Exposure,
+                "exposure",
+                &[(tonemap_input, Access::Sample)],
+                &[(adapted, Access::Storage)],
+            );
+            tonemap_reads.push((adapted, Access::Sample));
+        }
         graph.add_pass(
             FramePass::Tonemap,
             "tonemap + hud",
-            &[(tonemap_input, Access::Sample)],
+            &tonemap_reads,
             &[(target, Access::Attach)],
         );
         let plan = graph.compile().map_err(|e| e.to_string())?;
@@ -4170,27 +4468,65 @@ impl Renderer {
                 unjittered_view_proj,
                 invert4(unjittered_view_proj),
             );
-            // The history written this frame alternates: bind it fresh.
-            let bg = tonemap_bind_group(
-                &state.device,
-                &state.tonemap_bgl,
-                state.taa.output(),
-                &state.tonemap_sampler,
-                &state.tonemap_params_buffer,
-            );
-            state.tonemap_bind_group = Some((u64::MAX, bg));
         }
-        let hdr_generation = state.pool.generation(&plan, hdr);
-        if !taa_on && state.tonemap_bind_group.as_ref().map(|(g, _)| *g) != Some(hdr_generation) {
-            let view = state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?;
-            let bg = tonemap_bind_group(
-                &state.device,
-                &state.tonemap_bgl,
-                view,
-                &state.tonemap_sampler,
-                &state.tonemap_params_buffer,
+        let (width, height) = (state.config.width, state.config.height);
+        if ao_on {
+            let (device, queue) = (&state.device, &state.queue);
+            state.prepass.write(queue, view_proj);
+            state.ao.prepare(
+                device,
+                queue,
+                width,
+                height,
+                &crate::kernel::ao::AoFrame {
+                    proj,
+                    near,
+                    far,
+                    radius: snap.post.ao_radius.max(1e-4),
+                    intensity: snap.post.ao,
+                    // A still pattern without TAA (no flicker).
+                    frame: if taa_on { state.frame_index.get() } else { 0 },
+                },
             );
-            state.tonemap_bind_group = Some((hdr_generation, bg));
+        }
+        let ao_key = state.ao.key(ao_on);
+        if ao_key != state.frame_ao_key {
+            state.frame_bind_group = frame_bind_group(
+                &state.device,
+                &state.frame_bgl,
+                &state.camera_buffer,
+                &state.lights_buffer,
+                &state.env,
+                state.ao.view(ao_on),
+            );
+            state.frame_ao_key = ao_key;
+        }
+        if bloom_on {
+            state
+                .bloom
+                .prepare(&state.device, &state.queue, width, height, snap.post.bloom_threshold);
+        }
+        if auto_exposure {
+            state.exposure.prepare(&state.queue, snap.time);
+        } else {
+            state.exposure.reset(&state.queue);
+        }
+        // The history written this frame alternates: with TAA the
+        // tonemap's input is bound fresh every frame.
+        let input_key = if taa_on {
+            u64::MAX
+        } else {
+            state.pool.generation(&plan, hdr)
+        };
+        let key = (input_key, state.bloom.key(bloom_on));
+        if taa_on || state.tonemap_bind_group.as_ref().map(|(k, _)| *k) != Some(key) {
+            let input = if taa_on {
+                state.taa.output()
+            } else {
+                state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?
+            };
+            let bg = tonemap_bind_group(state, input, state.bloom.view(bloom_on));
+            state.tonemap_bind_group = Some((key, bg));
         }
         // Phase 26: fullscreen tonemap pass — reads the HDR offscreen,
         // applies ACES (or pass-through, per script flag) plus
@@ -4198,28 +4534,31 @@ impl Renderer {
         // the main pipeline writes Rgba16Float, so this pass is the
         // step that gets that data into the user's sRGB display.
         let PostFx {
-            tonemap_aces,
+            tonemapper,
             vignette,
             vignette_color: [vc_r, vc_g, vc_b],
             bloom_intensity,
-            bloom_threshold,
+            exposure,
             ..
         } = snap.post;
-        // params layout (8 floats / 32 bytes):
-        //   [0..3] flags: x=ACES, y=bloom_intensity, z=bloom_threshold, w=vignette
-        //   [4..7] vignette_color: r, g, b, padding
+        // The bloom chain's top level sums its levels: average them.
+        let bloom_scale = if bloom_on {
+            bloom_intensity / state.bloom.level_count() as f32
+        } else {
+            0.0
+        };
         state.queue.write_buffer(
             &state.tonemap_params_buffer,
             0,
             bytemuck::cast_slice(&[
-                if tonemap_aces { 1.0_f32 } else { 0.0 },
-                bloom_intensity,
-                bloom_threshold,
+                tonemapper.id(),
+                bloom_scale,
+                exposure.exp2(),
                 vignette,
                 vc_r,
                 vc_g,
                 vc_b,
-                0.0,
+                if auto_exposure { 1.0 } else { 0.0 },
             ]),
         );
         let state = &*state;
@@ -4229,8 +4568,44 @@ impl Renderer {
             .pool
             .view(&plan, hdr_msaa)
             .ok_or("render graph: no msaa target")?;
+        let post_input = if taa_on { state.taa.output() } else { main_color_view };
         for pass in &plan.passes {
             match *pass {
+                FramePass::Prepass => {
+                    let view = prepass_depth
+                        .and_then(|d| state.pool.view(&plan, d))
+                        .ok_or("render graph: no prepass depth")?;
+                    let mut ppass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("twe-kernel depth prepass"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    draw_prepass(&mut ppass, state, &cube_ranges, &sphere_ranges, &mesh_ranges);
+                }
+                FramePass::Ao => {
+                    let view = prepass_depth
+                        .and_then(|d| state.pool.view(&plan, d))
+                        .ok_or("render graph: no prepass depth")?;
+                    state.ao.record(&state.device, &mut encoder, view);
+                }
+                FramePass::Bloom => {
+                    state.bloom.record(&state.device, &mut encoder, post_input);
+                }
+                FramePass::Exposure => {
+                    state
+                        .exposure
+                        .record(&state.device, &mut encoder, post_input, width, height);
+                }
                 FramePass::Shadow(cascade) => {
                     // Push the active cascade's matrix into the per-pass
                     // uniform. queue.write_buffer is recorded as a copy
@@ -4480,6 +4855,7 @@ impl Renderer {
         if taa_on {
             state.taa.advance();
         }
+        state.frame_index.set(state.frame_index.get().wrapping_add(1));
         if let Some(frame) = frame {
             state.queue.present(frame);
         }
@@ -4644,6 +5020,7 @@ fn frame_bind_group(
     camera: &wgpu::Buffer,
     lights: &wgpu::Buffer,
     env: &EnvState,
+    ao: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |v| wgpu::BindingResource::TextureView(v);
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -4681,6 +5058,10 @@ fn frame_bind_group(
             wgpu::BindGroupEntry {
                 binding: 7,
                 resource: wgpu::BindingResource::Sampler(&env.clamp_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: view(ao),
             },
         ],
     })
@@ -4723,6 +5104,191 @@ fn draw_depth(
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
         pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+        if gpu_mesh.skin.is_some() {
+            pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+        }
+    }
+}
+
+/// web3d-M7: the camera depth prepass: the camera's (jittered)
+/// view-projection, and depth-only pipelines for single-sided,
+/// double-sided and alpha-masked surfaces.
+struct Prepass {
+    buffer: wgpu::Buffer,
+    bg: wgpu::BindGroup,
+    opaque: wgpu::RenderPipeline,
+    double: wgpu::RenderPipeline,
+    masked: wgpu::RenderPipeline,
+}
+
+impl Prepass {
+    fn new(
+        device: &wgpu::Device,
+        pass_bgl: &wgpu::BindGroupLayout,
+        joints_bgl: &wgpu::BindGroupLayout,
+        material_bgl: &wgpu::BindGroupLayout,
+        shadow_shader: &wgpu::ShaderModule,
+    ) -> Self {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("twe-kernel prepass uniform"),
+            contents: bytemuck::bytes_of(&ShadowPassUniform::identity()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("twe-kernel prepass bg"),
+            layout: pass_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let depth_only = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("twe-kernel prepass layout"),
+            bind_group_layouts: &[Some(pass_bgl), Some(joints_bgl)],
+            immediate_size: 0,
+        });
+        let with_material = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("twe-kernel prepass mask layout"),
+            bind_group_layouts: &[Some(pass_bgl), Some(joints_bgl), Some(material_bgl)],
+            immediate_size: 0,
+        });
+        let mask_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("twe-kernel prepass mask"),
+            source: wgpu::ShaderSource::Wgsl(PREPASS_MASK_SRC.into()),
+        });
+        let pipeline = |label: &str,
+                        layout: &wgpu::PipelineLayout,
+                        module: &wgpu::ShaderModule,
+                        vs: &str,
+                        fs: Option<&str>,
+                        cull: Option<wgpu::Face>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some(vs),
+                    buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
+                    compilation_options: Default::default(),
+                },
+                fragment: fs.map(|entry| wgpu::FragmentState {
+                    module,
+                    entry_point: Some(entry),
+                    targets: &[],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: cull,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        Prepass {
+            opaque: pipeline(
+                "twe-kernel prepass",
+                &depth_only,
+                shadow_shader,
+                "vs_shadow",
+                None,
+                Some(wgpu::Face::Back),
+            ),
+            double: pipeline("twe-kernel prepass (double-sided)", &depth_only, shadow_shader, "vs_shadow", None, None),
+            masked: pipeline(
+                "twe-kernel prepass (masked)",
+                &with_material,
+                &mask_shader,
+                "vs_mask",
+                Some("fs_mask"),
+                None,
+            ),
+            buffer,
+            bg,
+        }
+    }
+
+    fn write(&self, queue: &wgpu::Queue, view_proj: [[f32; 4]; 4]) {
+        queue.write_buffer(
+            &self.buffer,
+            0,
+            bytemuck::bytes_of(&ShadowPassUniform {
+                light_space_matrix: view_proj,
+            }),
+        );
+    }
+}
+
+/// Draw every instance into the depth prepass, each glTF primitive with
+/// the pipeline its material needs (masked ones bind their material).
+fn draw_prepass(
+    pass: &mut wgpu::RenderPass<'_>,
+    state: &Renderer,
+    cubes: &[(SurfaceKey, InstanceRange)],
+    spheres: &[(SurfaceKey, InstanceRange)],
+    meshes: &[(MeshKey, InstanceRange)],
+) {
+    let pp = &state.prepass;
+    pass.set_pipeline(&pp.opaque);
+    pass.set_bind_group(0, &pp.bg, &[]);
+    pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+    pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+    for (buffers, ranges) in [
+        (
+            (&state.cube_vertex_buffer, &state.cube_index_buffer, state.cube_index_count),
+            cubes,
+        ),
+        (
+            (&state.sphere_vertex_buffer, &state.sphere_index_buffer, state.sphere_index_count),
+            spheres,
+        ),
+    ] {
+        for (_, range) in ranges {
+            if range.1 > range.0 {
+                pass.set_vertex_buffer(0, buffers.0.slice(..));
+                pass.set_index_buffer(buffers.1.slice(..), wgpu::IndexFormat::Uint16);
+                pass.draw_indexed(0..buffers.2, 0, range.0..range.1);
+            }
+        }
+    }
+    for ((mesh_id, tex, mat), range) in meshes {
+        if range.1 <= range.0 {
+            continue;
+        }
+        let Some(gpu_mesh) = state.mesh_cache.get(mesh_id) else {
+            continue;
+        };
+        if let Some(skin) = &gpu_mesh.skin {
+            pass.set_bind_group(1, &skin.joint_bind_group, &[]);
+        }
+        pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+        pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
+        if *tex != 0 || *mat != 0 {
+            pass.set_pipeline(&pp.opaque);
+            pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
+        } else {
+            for sub in &gpu_mesh.submeshes {
+                if sub.masked {
+                    pass.set_pipeline(&pp.masked);
+                    pass.set_bind_group(2, &sub.material, &[]);
+                } else if sub.double_sided {
+                    pass.set_pipeline(&pp.double);
+                } else {
+                    pass.set_pipeline(&pp.opaque);
+                }
+                pass.draw_indexed(sub.first..sub.first + sub.count, 0, range.0..range.1);
+            }
+        }
         if gpu_mesh.skin.is_some() {
             pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
         }
@@ -4850,10 +5416,18 @@ enum FramePass {
     /// web3d-M7: depth from a point light into one face (light × 6 +
     /// face) of the point-shadow cube array.
     PointShadow(usize),
+    /// web3d-M7: camera depth only (for ambient occlusion).
+    Prepass,
+    /// web3d-M7: GTAO and its blur, from the prepass depth.
+    Ao,
     /// The lit scene into the HDR target.
     Main,
     /// web3d-M7: temporal anti-aliasing resolve into the history.
     Taa,
+    /// web3d-M7: the bloom chain, from the (anti-aliased) HDR frame.
+    Bloom,
+    /// web3d-M7: measure the frame and adapt the exposure.
+    Exposure,
     /// HDR to the display (tonemap, bloom, vignette), then the HUD.
     Tonemap,
 }
@@ -4879,12 +5453,16 @@ fn create_offscreen(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) 
 /// The tonemap pass's inputs: the HDR target, its sampler and the
 /// per-frame params.
 fn tonemap_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
+    state: &Renderer,
     hdr: &wgpu::TextureView,
-    sampler: &wgpu::Sampler,
-    params: &wgpu::Buffer,
+    bloom: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
+    let (device, layout, sampler, params) = (
+        &state.device,
+        &state.tonemap_bgl,
+        &state.tonemap_sampler,
+        &state.tonemap_params_buffer,
+    );
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twec-play3d tonemap bg"),
         layout,
@@ -4900,6 +5478,14 @@ fn tonemap_bind_group(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(bloom),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: state.exposure.state().as_entire_binding(),
             },
         ],
     })
@@ -5009,6 +5595,30 @@ mod tests {
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    /// web3d-M7: the built-in shapes wind counter-clockwise seen from
+    /// outside (the front faces the pipelines keep), so every
+    /// triangle's geometric normal points away from the centre. The
+    /// sphere was wound the other way and drew inside-out under
+    /// back-face culling.
+    #[test]
+    fn built_in_shapes_face_outward() {
+        let (sphere_vertices, sphere_indices) = sphere_mesh();
+        for (name, vertices, indices) in [
+            ("cube", CUBE_VERTICES, CUBE_INDICES),
+            ("sphere", sphere_vertices.as_slice(), sphere_indices.as_slice()),
+        ] {
+            for tri in indices.chunks(3) {
+                let [a, b, c] = [0, 1, 2].map(|k| vertices[tri[k] as usize].position);
+                let n = cross(sub(b, a), sub(c, a));
+                if dot(n, n) < 1e-12 {
+                    continue; // degenerate (the sphere's poles)
+                }
+                let centroid = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0];
+                assert!(dot(n, centroid) > 0.0, "{name}: triangle {tri:?} faces inward");
+            }
+        }
     }
 
     fn approx_mat(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> bool {
@@ -5298,6 +5908,7 @@ mod tests {
             ("SHADER_SRC", SHADER_SRC),
             ("SHADOW_SHADER_SRC", SHADOW_SHADER_SRC),
             ("TONEMAP_SHADER_SRC", TONEMAP_SHADER_SRC),
+            ("PREPASS_MASK_SRC", PREPASS_MASK_SRC),
         ] {
             assert!(
                 !src.contains("textureSampleCompare("),
@@ -5496,6 +6107,15 @@ mod tests {
     #[test]
     fn tonemap_shader_parses_and_validates() {
         validate_wgsl("TONEMAP_SHADER_SRC", TONEMAP_SHADER_SRC);
+    }
+
+    /// web3d-M7 session 7: the prepass, AO, bloom and exposure shaders.
+    #[test]
+    fn post_shaders_parse_and_validate() {
+        validate_wgsl("PREPASS_MASK_SRC", PREPASS_MASK_SRC);
+        validate_wgsl("AO", crate::kernel::ao::shader_source());
+        validate_wgsl("BLOOM", crate::kernel::post::bloom_shader_source());
+        validate_wgsl("EXPOSURE", crate::kernel::post::exposure_shader_source());
     }
 
     /// Phase 27: the Vertex layout's stride must match what the

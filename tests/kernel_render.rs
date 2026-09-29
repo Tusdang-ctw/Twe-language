@@ -416,7 +416,7 @@ fn hdr_file(w: usize, h: usize, row_color: impl Fn(usize) -> [f32; 3]) -> Vec<u8
 #[test]
 fn environment_lights_and_backs_the_scene() {
     use twec::kernel::render::{
-        Camera3d, EnvironmentSettings, PostFx, RenderSnapshot, ShadowSettings,
+        Camera3d, EnvironmentSettings, PostFx, RenderSnapshot, ShadowSettings, Tonemapper,
     };
     use twec::render3d_types::{DrawCall3d, Primitive};
     let Some(mut renderer) = headless() else {
@@ -458,13 +458,14 @@ fn environment_lights_and_backs_the_scene() {
                 extent: 10.0,
             },
             post: PostFx {
-                tonemap_aces: true,
+                tonemapper: Tonemapper::Aces,
                 taa: false,
                 vignette: 0.0,
                 vignette_color: [0.0; 3],
                 bloom_intensity: 0.0,
                 bloom_threshold: 1.0,
                 frustum_cull: false,
+                ..PostFx::default()
             },
             draws: &draws,
             mesh_paths: &[],
@@ -684,4 +685,248 @@ on render():
     assert!(brighter < 50, "{brighter} pixels got brighter");
     // Soft edge: a band of partly darkened pixels around the umbra.
     assert!(any - hard > 150, "penumbra of only {} pixels", any - hard);
+}
+
+/// web3d-M7 session 7: render `frames` frames of an empty scene over a
+/// flat `background` (linear HDR) with `post`, time advancing 1/60 s a
+/// frame from `t0`, and return the centre pixel of the last one.
+fn backdrop_pixel(
+    renderer: &mut Renderer,
+    background: [f32; 3],
+    post: twec::kernel::render::PostFx,
+    frames: u32,
+    t0: f32,
+) -> [u8; 3] {
+    use twec::kernel::render::{Camera3d, RenderSnapshot, ShadowSettings};
+    let anim = |_: u32| Default::default();
+    let mut assets = twec::play3d::NativeAssets::default();
+    for i in 0..frames {
+        let snap = RenderSnapshot {
+            camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            environment: None,
+            background,
+            lights: bytemuck::Zeroable::zeroed(),
+            shadow: ShadowSettings {
+                enabled: false,
+                extent: 10.0,
+            },
+            post,
+            draws: &[],
+            mesh_paths: &[],
+            texture_paths: &[],
+            time: t0 + i as f32 / 60.0,
+            materials: &[],
+            hud: &[],
+            anim: &anim,
+        };
+        renderer.render(&snap, &mut assets).expect("render");
+    }
+    pixel(&renderer.read_pixels().expect("read pixels"), W / 2, H / 2)
+}
+
+fn srgb8(linear: f32) -> f32 {
+    let c = linear.clamp(0.0, 1.0);
+    let s = if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    s * 255.0
+}
+
+/// Column-major 3x3 (columns as in the WGSL) times a vector.
+fn mat3(cols: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| cols[0][i] * v[0] + cols[1][i] * v[1] + cols[2][i] * v[2])
+}
+
+/// CPU references for the tonemap curves, from their published forms.
+fn aces_ref(x: f32) -> f32 {
+    let aces_in = [
+        [0.59719, 0.07600, 0.02840],
+        [0.35458, 0.90834, 0.13383],
+        [0.04823, 0.01566, 0.83777],
+    ];
+    let aces_out = [
+        [1.60475, -0.10208, -0.00327],
+        [-0.53108, 1.10813, -0.07276],
+        [-0.07367, -0.00605, 1.07602],
+    ];
+    let v = mat3(aces_in, [x / 0.6; 3]);
+    let fit = v.map(|v| (v * (v + 0.024_578_6) - 0.000_090_537) / (v * (0.983_729 * v + 0.432_951) + 0.238_081));
+    mat3(aces_out, fit)[1].clamp(0.0, 1.0)
+}
+
+fn agx_ref(x: f32) -> f32 {
+    let to_2020 = [[0.6274, 0.0691, 0.0164], [0.3293, 0.9195, 0.0880], [0.0433, 0.0113, 0.8956]];
+    let from_2020 = [[1.6605, -0.1246, -0.0182], [-0.5876, 1.1329, -0.1006], [-0.0728, -0.0083, 1.1187]];
+    let inset = [
+        [0.856_627_2, 0.137_319, 0.111_898_2],
+        [0.095_121_24, 0.761_242, 0.076_799_42],
+        [0.048_251_6, 0.101_439, 0.811_302_4],
+    ];
+    let outset = [
+        [1.127_100_6, -0.141_329_76, -0.141_329_76],
+        [-0.110_606_64, 1.157_823_7, -0.110_606_64],
+        [-0.016_493_94, -0.016_493_94, 1.251_936_4],
+    ];
+    let (min_ev, max_ev) = (-12.473_93_f32, 4.026_069_f32);
+    let c = mat3(inset, mat3(to_2020, [x; 3])).map(|c| {
+        let t = ((c.max(1e-10).log2() - min_ev) / (max_ev - min_ev)).clamp(0.0, 1.0);
+        let (t2, t4) = (t * t, t * t * t * t);
+        15.5 * t4 * t2 - 40.14 * t4 * t + 31.96 * t4 - 6.868 * t2 * t + 0.4298 * t2 + 0.1191 * t - 0.00232
+    });
+    let c = mat3(outset, c).map(|c| c.max(0.0).powf(2.2));
+    mat3(from_2020, c)[1].clamp(0.0, 1.0)
+}
+
+fn neutral_ref(x: f32) -> f32 {
+    let offset = if x < 0.08 { x - 6.25 * x * x } else { 0.04 };
+    let c = x - offset;
+    let start = 0.76;
+    if c < start {
+        return c;
+    }
+    let d = 1.0 - start;
+    // Grey stays grey: the desaturation mix toward white is a no-op.
+    1.0 - d * d / (c + d - start)
+}
+
+/// web3d-M7: every tonemap curve matches its published form on a grey
+/// ramp (checked against CPU references), exposure scales the frame by
+/// 2^stops, and PBR Neutral leaves mid-tones alone (0.5 -> 0.46).
+#[test]
+fn tonemap_curves_and_exposure() {
+    use twec::kernel::render::{PostFx, Tonemapper};
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let clamp: fn(f32) -> f32 = |x| x.clamp(0.0, 1.0);
+    for (curve, reference) in [
+        (Tonemapper::None, clamp),
+        (Tonemapper::Aces, aces_ref as fn(f32) -> f32),
+        (Tonemapper::AgX, agx_ref),
+        (Tonemapper::Neutral, neutral_ref),
+    ] {
+        for x in [0.02_f32, 0.18, 0.5, 2.0, 8.0] {
+            let post = PostFx {
+                tonemapper: curve,
+                ..PostFx::default()
+            };
+            let got = backdrop_pixel(&mut renderer, [x; 3], post, 1, 0.0);
+            let want = srgb8(reference(x));
+            for c in got {
+                assert!(
+                    (f32::from(c) - want).abs() <= 2.0,
+                    "{curve:?}({x}): got {got:?}, want {want:.1}"
+                );
+            }
+        }
+    }
+    assert!((srgb8(neutral_ref(0.5)) - srgb8(0.46)).abs() < 0.01);
+    // +1 stop doubles the light: 0.25 shows as 0.5.
+    let post = PostFx {
+        tonemapper: Tonemapper::None,
+        exposure: 1.0,
+        ..PostFx::default()
+    };
+    let got = backdrop_pixel(&mut renderer, [0.25; 3], post, 1, 0.0);
+    assert!((f32::from(got[1]) - srgb8(0.5)).abs() <= 2.0, "exposure +1: {got:?}");
+}
+
+/// web3d-M7: auto exposure brings a dark and a bright scene to middle
+/// grey, snapping on the first frame and easing after a change.
+#[test]
+fn auto_exposure_adapts() {
+    use twec::kernel::render::{PostFx, Tonemapper};
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let post = PostFx {
+        tonemapper: Tonemapper::None,
+        auto_exposure: true,
+        ..PostFx::default()
+    };
+    let grey = srgb8(0.18);
+    let dark = backdrop_pixel(&mut renderer, [0.02; 3], post, 1, 0.0);
+    assert!((f32::from(dark[1]) - grey).abs() <= 4.0, "dark scene exposed to {dark:?}, want {grey:.0}");
+    // The lights come on: the first frame is still exposed for the
+    // dark (blown out); five seconds later it has adapted.
+    let first = backdrop_pixel(&mut renderer, [2.0; 3], post, 1, 1.0 / 60.0);
+    assert!(first[1] > 250, "adaptation eases, not snaps: {first:?}");
+    let adapted = backdrop_pixel(&mut renderer, [2.0; 3], post, 300, 2.0 / 60.0);
+    assert!((f32::from(adapted[1]) - grey).abs() <= 4.0, "bright scene exposed to {adapted:?}, want {grey:.0}");
+}
+
+/// web3d-M7: multi-level bloom spreads a bright light well beyond the
+/// old 12-pixel inline kernel, and leaves the far frame alone.
+#[test]
+fn bloom_reaches_far() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |bloom: f32| {
+        format!(
+            r#"
+light.clear()
+sun.direction(vec3(0, 0, 1))
+sun.intensity(40.0)
+light.ambient((0.0, 0.0, 0.0, 1.0))
+postfx.bloom({bloom})
+postfx.bloom_threshold(1.0)
+camera.eye = vec3(0, 0, 6)
+camera.target = vec3(0, 0, 0)
+on render():
+    sphere(at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 0.3)
+"#
+        )
+    };
+    let off = render_once(&scene(0.0));
+    let on = render_once(&scene(0.8));
+    save_png("bloom", &on);
+    let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+    // The sphere faces its light (it once drew inside-out, dark).
+    assert!(luma(pixel(&off, W / 2, H / 2)) > 600, "lit sphere: {:?}", pixel(&off, W / 2, H / 2));
+    for dx in [20, 40] {
+        let (a, b) = (pixel(&off, W / 2 + dx, H / 2), pixel(&on, W / 2 + dx, H / 2));
+        assert!(luma(b) > luma(a) + 6, "{dx} px out: off {a:?}, on {b:?}");
+    }
+    let corner = (pixel(&off, 5, 5), pixel(&on, 5, 5));
+    assert!((luma(corner.0) - luma(corner.1)).abs() <= 6, "far corner: {corner:?}");
+}
+
+/// web3d-M7: GTAO darkens the floor where it meets a block, and leaves
+/// open floor untouched (no self-occlusion on flat ground).
+#[test]
+fn ambient_occlusion_darkens_contact() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |ao: f32| {
+        format!(
+            r#"
+light.clear()
+sun.intensity(0.0)
+light.ambient((0.8, 0.8, 0.8, 1.0))
+postfx.ao({ao})
+postfx.ao_radius(1.0)
+camera.eye = vec3(0, 3, 5)
+camera.target = vec3(0, 0, 0)
+on render():
+    cube(at: vec3(0, -5.5, 0), color: (0.8, 0.8, 0.8, 1), size: 10.0)
+    cube(at: vec3(0, 0, 0), color: (0.8, 0.8, 0.8, 1), size: 1.0)
+"#
+        )
+    };
+    let off = render_once(&scene(0.0));
+    let on = render_once(&scene(1.0));
+    save_png("ambient_occlusion", &on);
+    let (darker, brighter) = darkened(&off, &on, 8);
+    assert!(darker > 500, "only {darker} pixels occluded");
+    assert!(brighter < 20, "{brighter} pixels got brighter");
+    // Open floor, far from the block.
+    let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+    for (x, y) in [(30, 225), (290, 225), (160, 230)] {
+        let (a, b) = (pixel(&off, x, y), pixel(&on, x, y));
+        assert!((luma(a) - luma(b)).abs() <= 6, "open floor at ({x}, {y}): off {a:?}, on {b:?}");
+    }
 }

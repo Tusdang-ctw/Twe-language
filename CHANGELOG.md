@@ -13,6 +13,10 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Post-processing in 3D** (web3d-M7):
+  - `postfx.ao(strength)` / `postfx.ao_radius(r)`: ground-truth ambient occlusion (GTAO) on indirect light;
+  - `postfx.exposure(stops)` and `postfx.auto_exposure(true)`;
+  - `postfx.tonemap("agx")` and `postfx.tonemap("neutral")` (Khronos PBR Neutral) next to `"aces"` and `"none"`.
 - **Shadows in 3D** (web3d-M7): `light.shadow(handle, true)` makes a
   point light cast shadows (up to 4 per frame). Sun shadows are now
   soft (PCSS) and use cascades fitted to the camera.
@@ -137,6 +141,7 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- `postfx.bloom` is now a multi-level bloom chain (Jimenez 2014) instead of a 12-pixel inline kernel: the glare reaches much further with a soft falloff. `postfx.tonemap` takes a curve name; `true` / `false` still mean ACES / none.
 - `sun.shadow_extent(r)` now means shadows reach `4 × r` from the camera,
   including casters up to `r` outside the view (it used to be the radius
   of a fixed square around the camera target).
@@ -179,6 +184,7 @@ removal would be load-bearing.
   process. Touch queries report no touches headless.
 
 ### Fixed
+- Built-in `sphere()` meshes were wound inside-out, so since back-face culling arrived (web3d-M7 session 3) every sphere drew its far inner hemisphere: dark, with a lit rim.
 - **glTF models without normals** are now shaded with flat face normals,
   as the glTF spec requires; the loader used to point them all straight
   up, lighting every such surface like a floor (web3d-M7).
