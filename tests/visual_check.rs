@@ -161,3 +161,139 @@ fn enforces_pixel_arity() {
         "got: {errors:#?}"
     );
 }
+
+// web3d-M7: procedural surface materials.
+
+const SURFACE_OK: &str = "visual Rock:\n\
+    \x20   surface(uv, time, pos, normal) -> material:\n\
+    \x20       let n = noise((pos.x, pos.z) * 3)\n\
+    \x20       return material(albedo: (0.5, 0.4, 0.3), roughness: 0.8 + n * 0.1, emission: color.orange * 2)\n\
+    \x20   displace(uv, time, pos, normal) -> vec3:\n\
+    \x20       return normal * math.clamp(noise((pos.x, pos.z)), 0, 1) * 0.1\n";
+
+#[test]
+fn accepts_surface_and_displace() {
+    let errors = check(SURFACE_OK);
+    assert!(errors.is_empty(), "got: {errors:#?}");
+}
+
+#[test]
+fn surface_may_leave_off_trailing_inputs() {
+    let src = "visual Plain:\n\
+        \x20   surface(uv, time) -> material:\n\
+        \x20       return material(metalness: 1)\n";
+    let errors = check(src);
+    assert!(errors.is_empty(), "got: {errors:#?}");
+}
+
+#[test]
+fn rejects_unknown_material_output_with_suggestion() {
+    let src = "visual Foo:\n\
+        \x20   surface(uv, time) -> material:\n\
+        \x20       return material(roughnes: 0.5)\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("no output `roughnes`")
+            && e.help.as_deref().is_some_and(|h| h.contains("roughness"))),
+        "got: {errors:#?}"
+    );
+}
+
+#[test]
+fn surface_must_return_material() {
+    let src = "visual Foo:\n\
+        \x20   surface(uv, time) -> material:\n\
+        \x20       return color.red\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("returns `material(...)`")),
+        "got: {errors:#?}"
+    );
+}
+
+#[test]
+fn material_only_as_surface_return() {
+    let src = "visual Foo:\n\
+        \x20   pixel(uv, time) -> color:\n\
+        \x20       let m = material(albedo: color.red)\n\
+        \x20       return color.red\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("only valid as what `surface` returns")),
+        "got: {errors:#?}"
+    );
+}
+
+#[test]
+fn material_takes_named_arguments_only() {
+    let src = "visual Foo:\n\
+        \x20   surface(uv, time) -> material:\n\
+        \x20       return material(color.red)\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("named arguments only")),
+        "got: {errors:#?}"
+    );
+}
+
+#[test]
+fn rejects_pixel_and_surface_together() {
+    let src = "visual Foo:\n\
+        \x20   pixel(uv, time) -> color:\n\
+        \x20       return color.red\n\
+        \x20   surface(uv, time) -> material:\n\
+        \x20       return material()\n";
+    let errors = check(src);
+    assert!(errors.iter().any(|e| e.message.contains("not both")), "got: {errors:#?}");
+}
+
+#[test]
+fn rejects_unknown_visual_method() {
+    let src = "visual Foo:\n\
+        \x20   pixel(uv, time) -> color:\n\
+        \x20       return color.red\n\
+        \x20   vertex(uv, time) -> vec3:\n\
+        \x20       return (0, 0, 0)\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("`vertex` is not a visual method")),
+        "got: {errors:#?}"
+    );
+}
+
+#[test]
+fn reports_type_errors_through_codegen() {
+    // A tuple where roughness (a number) belongs, and a displacement
+    // that isn't a 3-vector: caught by the checker, before a look draws.
+    let src = "visual Foo:\n\
+        \x20   surface(uv, time) -> material:\n\
+        \x20       return material(roughness: (0.5, 0.5))\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("`roughness` must be a number")),
+        "got: {errors:#?}"
+    );
+    let src = "visual Bar:\n\
+        \x20   pixel(uv, time) -> color:\n\
+        \x20       return color.red\n\
+        \x20   displace(uv, time) -> vec3:\n\
+        \x20       return 0.1\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("`displace` returns an (x, y, z) offset")),
+        "got: {errors:#?}"
+    );
+}
+
+#[test]
+fn rejects_named_arguments_outside_material() {
+    let src = "visual Foo:\n\
+        \x20   pixel(uv, time) -> color:\n\
+        \x20       let n = noise(p: uv)\n\
+        \x20       return color.red\n";
+    let errors = check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("named argument `p:`")),
+        "got: {errors:#?}"
+    );
+}

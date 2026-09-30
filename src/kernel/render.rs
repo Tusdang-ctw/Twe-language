@@ -444,21 +444,33 @@ impl Default for ShadowUniform {
 /// Phase 28 session 2: per-pass uniform for the shadow depth
 /// pass. Holds the active cascade's matrix; rewritten between
 /// passes so a single `vs_shadow` runs once per cascade.
+/// web3d-M7: every depth-only pass (sun cascades, point-light faces,
+/// the camera prepass) uses it, and `params.x` carries simulation time
+/// for materials that displace their vertices.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct ShadowPassUniform {
     pub light_space_matrix: [[f32; 4]; 4],
+    pub params: [f32; 4],
 }
 
 impl ShadowPassUniform {
     pub fn identity() -> Self {
-        Self {
-            light_space_matrix: [
+        Self::new(
+            [
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            0.0,
+        )
+    }
+
+    pub fn new(light_space_matrix: [[f32; 4]; 4], time: f32) -> Self {
+        Self {
+            light_space_matrix,
+            params: [time, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -744,6 +756,10 @@ fn srgb_to_linear3(c: vec3<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
+    return vertex_out(vert, inst);
+}
+
+fn vertex_out(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     // Phase 24: linear blend skinning. The four joint indices select
     // four mat4 from the joint UBO, weighted by `weights`. For
     // unskinned meshes joint 0 is identity and weights = (1,0,0,0),
@@ -1543,32 +1559,124 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// web3d-M3: fragment entry for a `visual` block used as a mesh
-/// material. The visual's `twe_pixel(uv, time)` is the surface colour
-/// (times the instance tint), lit like any surface; alpha below 0.5 is
-/// cut out, so a visual can shape the mesh (a flame on a quad).
+/// web3d-M3 / M7: fragment entry for a `visual` block used as a mesh
+/// material. The visual's `twe_surface(uv, time, pos, normal)` gives
+/// albedo (times the instance tint), normal, roughness, metalness and
+/// emission, lit like any surface; albedo alpha below 0.5 is cut out,
+/// so a visual can shape the mesh (a flame on a quad).
+///
+/// Colours arrive as scripts write them, sRGB (as tints do), and are
+/// decoded here. Emission may exceed 1 (brighter than white, for
+/// bloom): its brightest channel above 1 is an intensity, and the
+/// colour under it is decoded.
 const MATERIAL_FS: &str = r#"
+fn srgb_intensity_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let k = max(max3(max(c, vec3<f32>(0.0))), 1.0);
+    return srgb_to_linear3(max(c, vec3<f32>(0.0)) / k) * k;
+}
+
 @fragment
 fn fs_material(in: VertexOutput, @builtin(front_facing) front: bool) -> SurfaceOut {
-    let c = twe_pixel(in.tex_coord, camera.time.x);
-    if (c.a < 0.5) {
-        discard;
-    }
     var n = normalize(in.world_normal);
     if (!front) {
         n = -n;
     }
-    // A visual's colour on the plain dielectric surface.
-    let lit = shade(in, surface_plain(in.base_color.rgb * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0)));
+    let m = twe_surface(in.tex_coord, camera.time.x, in.world_pos, n);
+    if (m.albedo.a < 0.5) {
+        discard;
+    }
+    // A zero normal (normalized to NaN) falls back to the mesh's.
+    var sn = m.normal;
+    if (!(dot(sn, sn) > 0.5)) {
+        sn = n;
+    }
+    let albedo = in.base_color.rgb * srgb_to_linear3(clamp(m.albedo.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
+    let s = surface_plain(albedo, m.metalness, m.roughness, sn, 1.0, srgb_intensity_to_linear(m.emission));
+    let lit = shade(in, s);
     return SurfaceOut(vec4<f32>(lit, 1.0), g_surface);
 }
 "#;
 
+/// web3d-M7: a displaced vertex. The visual's `twe_displace` moves the
+/// point in world space; the normal is rebuilt from the displaced
+/// surface around it — displacement sampled at two points a centimetre
+/// away along the surface — so lighting follows the new shape. Shared
+/// by the main vertex stage and the depth passes' (which use only the
+/// position).
+const DISPLACE_WGSL: &str = r#"
+struct TweDisplaced {
+    pos: vec3<f32>,
+    normal: vec3<f32>,
+};
+
+fn twe_displaced(p: vec3<f32>, n: vec3<f32>, uv: vec2<f32>, time: f32) -> TweDisplaced {
+    var a = cross(n, vec3<f32>(0.0, 1.0, 0.0));
+    if (dot(a, a) < 1e-4) {
+        a = cross(n, vec3<f32>(1.0, 0.0, 0.0));
+    }
+    a = normalize(a);
+    // (a, b, n) is right-handed, so (pa - p0) × (pb - p0) ≈ n.
+    let b = cross(n, a);
+    let e = 0.01;
+    let p0 = p + twe_displace(uv, time, p, n);
+    let pa = p + a * e + twe_displace(uv, time, p + a * e, n);
+    let pb = p + b * e + twe_displace(uv, time, p + b * e, n);
+    var m = cross(pa - p0, pb - p0);
+    if (!(dot(m, m) > 1e-14)) {
+        m = n;
+    }
+    return TweDisplaced(p0, normalize(m));
+}
+"#;
+
+/// web3d-M7: the main passes' vertex entry for a displacing material.
+const MATERIAL_VS: &str = r#"
+@vertex
+fn vs_material(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
+    var out = vertex_out(vert, inst);
+    let d = twe_displaced(out.world_pos, normalize(out.world_normal), out.tex_coord, camera.time.x);
+    out.world_pos = d.pos;
+    out.world_normal = d.normal;
+    out.clip_position = camera.view_proj * vec4<f32>(d.pos, 1.0);
+    out.view_z = out.clip_position.w;
+    return out;
+}
+"#;
+
+/// web3d-M7: the depth passes' vertex entry for a displacing material.
+const MATERIAL_DEPTH_VS: &str = r#"
+@vertex
+fn vs_shadow_displaced(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<f32> {
+    let w = world_vertex(vert, inst);
+    let p = w.pos + twe_displace(vert.uv, shadow_u.params.x, w.pos, normalize(w.normal));
+    return shadow_u.light_space_matrix * vec4<f32>(p, 1.0);
+}
+"#;
+
+/// web3d-M7: whether a material's WGSL (`visual_wgsl::compile_material`)
+/// displaces its vertices — it defines `twe_displace` exactly then.
+pub fn material_displaces(material: &str) -> bool {
+    material.contains("fn twe_displace(")
+}
+
 /// The full shader for a material: the main shader, the visual's
-/// `twe_pixel` (from `visual_wgsl::compile_material`), and the
-/// material fragment entry. Public so tests can validate it.
-pub fn material_shader_source(pixel: &str) -> String {
-    format!("{SHADER_SRC}\n{pixel}\n{MATERIAL_FS}")
+/// `twe_surface` (from `visual_wgsl::compile_material`), and the
+/// material fragment entry, plus the displacing vertex entry
+/// `vs_material` when the material displaces. Public so tests can
+/// validate it.
+pub fn material_shader_source(material: &str) -> String {
+    if material_displaces(material) {
+        format!("{SHADER_SRC}\n{material}\n{MATERIAL_FS}\n{DISPLACE_WGSL}\n{MATERIAL_VS}")
+    } else {
+        format!("{SHADER_SRC}\n{material}\n{MATERIAL_FS}")
+    }
+}
+
+/// web3d-M7: a displacing material's depth-only shader (entry
+/// `vs_shadow_displaced`), for the sun cascades, point-light faces and
+/// the camera prepass. Public so tests can validate it.
+pub fn material_depth_source(material: &str) -> String {
+    format!("{SHADOW_SHADER_SRC}\n{material}\n{MATERIAL_DEPTH_VS}")
 }
 
 /// Phase 26 / web3d-M7: the display pass. Reads the HDR frame and
@@ -1802,6 +1910,8 @@ pub(crate) const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba
 pub(crate) const SHADOW_SHADER_SRC: &str = r#"
 struct ShadowPass {
     light_space_matrix: mat4x4<f32>,
+    // x = simulation time (displacing materials).
+    params: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> shadow_u: ShadowPass;
 
@@ -1829,8 +1939,19 @@ fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
     return vec3<f32>(rot.y * v.x + rot.x * v.z, v.y, -rot.x * v.x + rot.y * v.z);
 }
 
+// web3d-M7: a vertex in world space, with its normal (for displacing
+// materials).
+struct WorldVertex {
+    pos: vec3<f32>,
+    normal: vec3<f32>,
+};
+
 @vertex
 fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<f32> {
+    return shadow_u.light_space_matrix * vec4<f32>(world_vertex(vert, inst).pos, 1.0);
+}
+
+fn world_vertex(vert: VertexInput, inst: InstanceInput) -> WorldVertex {
     // web3d-M7: only skinned meshes (rot.w = 1) blend joints.
     var skin_mat = mat4x4<f32>(
         vec4<f32>(1.0, 0.0, 0.0, 0.0),
@@ -1845,9 +1966,10 @@ fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<
             + vert.weights.w * joints_u.matrices[vert.joints.w];
     }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
+    let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
     let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
         + inst.inst_pos_size.xyz;
-    return shadow_u.light_space_matrix * vec4<f32>(model_pos, 1.0);
+    return WorldVertex(model_pos, yaw_rotate(skinned_normal, inst.inst_rot));
 }
 "#;
 
@@ -1953,12 +2075,12 @@ fn surface_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
-    fs_entry: &str,
+    (vs_entry, fs_entry): (&str, &str),
     double_sided: bool,
     surface: bool,
 ) -> wgpu::RenderPipeline {
     let cull = if double_sided { None } else { Some(wgpu::Face::Back) };
-    surface_pipeline_with(device, layout, shader, fs_entry, cull, false, surface)
+    surface_pipeline_with(device, layout, shader, (vs_entry, fs_entry), cull, false, surface)
 }
 
 /// web3d-M7: the lit-surface pipelines of the main passes, without or
@@ -1976,10 +2098,11 @@ struct LitPipelines {
 
 impl LitPipelines {
     fn new(device: &wgpu::Device, layout: &wgpu::PipelineLayout, shader: &wgpu::ShaderModule, surface: bool) -> Self {
-        let blend = |cull| surface_pipeline_with(device, layout, shader, "fs_main", Some(cull), true, surface);
+        let entries = ("vs_main", "fs_main");
+        let blend = |cull| surface_pipeline_with(device, layout, shader, entries, Some(cull), true, surface);
         LitPipelines {
-            opaque: surface_pipeline(device, layout, shader, "fs_main", false, surface),
-            double: surface_pipeline(device, layout, shader, "fs_main", true, surface),
+            opaque: surface_pipeline(device, layout, shader, entries, false, surface),
+            double: surface_pipeline(device, layout, shader, entries, true, surface),
             blend_front: blend(wgpu::Face::Back),
             blend_back: blend(wgpu::Face::Front),
         }
@@ -1993,7 +2116,7 @@ fn surface_pipeline_with(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
-    fs_entry: &str,
+    (vs_entry, fs_entry): (&str, &str),
     cull: Option<wgpu::Face>,
     blend: bool,
     surface: bool,
@@ -2003,7 +2126,7 @@ fn surface_pipeline_with(
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
-            entry_point: Some("vs_main"),
+            entry_point: Some(vs_entry),
             buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
             compilation_options: Default::default(),
         },
@@ -2485,6 +2608,11 @@ pub struct Renderer {
     /// with every program (and on hot reload), the source doesn't lie.
     /// Index 1: with the surface record (see `lit_ssr`).
     material_pipelines: [HashMap<String, wgpu::RenderPipeline>; 2],
+    /// web3d-M7: the depth-only passes' layout (sun cascades, point
+    /// faces and the prepass share it), and the depth pipelines of each
+    /// displacing material, keyed like `material_pipelines`.
+    depth_layout: wgpu::PipelineLayout,
+    displaced_depth: HashMap<String, DisplacedDepth>,
     /// web3d-M3: the sRGB format frames are drawn in — the surface's
     /// own format, or an sRGB view of it (browsers often give a
     /// WebGPU canvas a non-sRGB format).
@@ -3457,6 +3585,8 @@ async fn init_renderer(
         fog_buffer,
         pipeline_layout,
         material_pipelines: [HashMap::new(), HashMap::new()],
+        depth_layout: shadow_pipeline_layout,
+        displaced_depth: HashMap::new(),
         target_format,
         hud,
         cube_vertex_buffer,
@@ -4728,9 +4858,7 @@ impl Renderer {
         );
         for (light, (pos, radius)) in point_shadow_lights.iter().enumerate() {
             for face in 0..6 {
-                let pass_uniform = ShadowPassUniform {
-                    light_space_matrix: point_face_view_proj(*pos, face, *radius),
-                };
+                let pass_uniform = ShadowPassUniform::new(point_face_view_proj(*pos, face, *radius), snap.time);
                 state.queue.write_buffer(
                     &state.point_shadows.pass_buffers[light * 6 + face],
                     0,
@@ -5298,6 +5426,7 @@ impl Renderer {
                 continue;
             };
             let variant = usize::from(ssr_on);
+            let displaces = material_displaces(pixel);
             if !state.material_pipelines[variant].contains_key(pixel) {
                 let module = state
                     .device
@@ -5309,11 +5438,17 @@ impl Renderer {
                     &state.device,
                     &state.pipeline_layout,
                     &module,
-                    "fs_material",
+                    (if displaces { "vs_material" } else { "vs_main" }, "fs_material"),
                     false,
                     ssr_on,
                 );
                 state.material_pipelines[variant].insert(pixel.clone(), pipeline);
+            }
+            // web3d-M7: a displacing material's shadows and prepass
+            // depth follow its displaced shape.
+            if displaces && !state.displaced_depth.contains_key(pixel) {
+                let depth = DisplacedDepth::new(&state.device, &state.depth_layout, pixel);
+                state.displaced_depth.insert(pixel.clone(), depth);
             }
         }
 
@@ -5686,7 +5821,7 @@ impl Renderer {
         }
         if ao_on {
             let (device, queue) = (&state.device, &state.queue);
-            state.prepass.write(queue, view_proj);
+            state.prepass.write(queue, view_proj, snap.time);
             state.ao.prepare(
                 device,
                 queue,
@@ -5881,7 +6016,8 @@ impl Renderer {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    draw_prepass(&mut ppass, state, &cube_ranges, &sphere_ranges, &mesh_ranges);
+                    let ranges = (&cube_ranges[..], &sphere_ranges[..], &mesh_ranges[..]);
+                    draw_prepass(&mut ppass, state, ranges, snap.materials);
                 }
                 FramePass::Ao => {
                     let view = prepass_depth
@@ -6044,9 +6180,8 @@ impl Renderer {
                     // uniform. queue.write_buffer is recorded as a copy
                     // command; sequential write_buffer + render_pass pairs
                     // execute in order at submission time.
-                    let pass_uniform = ShadowPassUniform {
-                        light_space_matrix: shadow_uniform.light_space_matrices[cascade],
-                    };
+                    let pass_uniform =
+                        ShadowPassUniform::new(shadow_uniform.light_space_matrices[cascade], snap.time);
                     state.queue.write_buffer(
                         &state.shadow_pass_buffers[cascade],
                         0,
@@ -6067,11 +6202,11 @@ impl Renderer {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    spass.set_pipeline(&state.shadow_pipeline);
                     spass.set_bind_group(0, &state.shadow_pass_bgs[cascade], &[]);
                     spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
                     spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-                    draw_depth(&mut spass, state, &cube_ranges, &sphere_ranges, &mesh_ranges);
+                    let ranges = (&cube_ranges[..], &sphere_ranges[..], &mesh_ranges[..]);
+                    draw_depth(&mut spass, state, ranges, snap.materials, DepthPass::Cascade);
                 }
                 FramePass::PointShadow(layer) => {
                     let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -6089,11 +6224,11 @@ impl Renderer {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    spass.set_pipeline(&state.point_shadows.pipeline);
                     spass.set_bind_group(0, &state.point_shadows.pass_bgs[layer], &[]);
                     spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
                     spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-                    draw_depth(&mut spass, state, &cube_ranges, &sphere_ranges, &mesh_ranges);
+                    let ranges = (&cube_ranges[..], &sphere_ranges[..], &mesh_ranges[..]);
+                    draw_depth(&mut spass, state, ranges, snap.materials, DepthPass::Point);
                 }
                 FramePass::Main => {
                     {
@@ -6217,6 +6352,24 @@ impl Renderer {
     }
 
     /// web3d-M7: this frame's lit-surface pipelines.
+    /// web3d-M7: the depth pipeline for a draw with material `mat` in
+    /// depth pass `which`: the displacing material's own, else the
+    /// pass's plain one.
+    fn depth_pipeline(&self, materials: &[String], mat: u32, which: DepthPass) -> &wgpu::RenderPipeline {
+        let displaced = materials
+            .get(mat as usize)
+            .filter(|_| mat != 0)
+            .and_then(|src| self.displaced_depth.get(src));
+        match (which, displaced) {
+            (DepthPass::Cascade, Some(d)) => &d.cascade,
+            (DepthPass::Point, Some(d)) => &d.point,
+            (DepthPass::Prepass, Some(d)) => &d.prepass,
+            (DepthPass::Cascade, None) => &self.shadow_pipeline,
+            (DepthPass::Point, None) => &self.point_shadows.pipeline,
+            (DepthPass::Prepass, None) => &self.prepass.opaque,
+        }
+    }
+
     fn lit(&self) -> &LitPipelines {
         match (&self.lit_ssr, self.ssr_frame.get()) {
             (Some(p), true) => p,
@@ -6494,31 +6647,35 @@ fn frame_bind_group(
 fn draw_depth(
     pass: &mut wgpu::RenderPass<'_>,
     state: &Renderer,
-    cubes: &[(SurfaceKey, InstanceRange)],
-    spheres: &[(SurfaceKey, InstanceRange)],
-    meshes: &[(MeshKey, InstanceRange)],
+    (cubes, spheres, meshes): DepthRanges<'_>,
+    materials: &[String],
+    which: DepthPass,
 ) {
-    for (_, range) in cubes {
+    let pipeline = |mat: u32| state.depth_pipeline(materials, mat, which);
+    for ((_, mat), range) in cubes {
         if range.1 > range.0 {
+            pass.set_pipeline(pipeline(*mat));
             pass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
             pass.set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             pass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
         }
     }
-    for (_, range) in spheres {
+    for ((_, mat), range) in spheres {
         if range.1 > range.0 {
+            pass.set_pipeline(pipeline(*mat));
             pass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
             pass.set_index_buffer(state.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             pass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
         }
     }
-    for ((mesh_id, _, _), range) in meshes {
+    for ((mesh_id, _, mat), range) in meshes {
         if range.1 <= range.0 {
             continue;
         }
         let Some(gpu_mesh) = state.mesh_cache.get(mesh_id) else {
             continue;
         };
+        pass.set_pipeline(pipeline(*mat));
         if let Some(skin) = &gpu_mesh.skin {
             pass.set_bind_group(1, &skin.joint_bind_group, &[]);
         }
@@ -6527,6 +6684,84 @@ fn draw_depth(
         pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
         if gpu_mesh.skin.is_some() {
             pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+        }
+    }
+}
+
+/// web3d-M7: the instance ranges a depth pass draws: cubes, spheres,
+/// meshes.
+type DepthRanges<'a> = (
+    &'a [(SurfaceKey, InstanceRange)],
+    &'a [(SurfaceKey, InstanceRange)],
+    &'a [(MeshKey, InstanceRange)],
+);
+
+/// web3d-M7: which depth-only pass is drawing.
+#[derive(Clone, Copy)]
+enum DepthPass {
+    Cascade,
+    Point,
+    Prepass,
+}
+
+/// web3d-M7: a displacing material's depth-only pipelines, each like
+/// its pass's plain pipeline (culling, bias) but with the material's
+/// displacing vertex stage, so shadows and ambient occlusion follow the
+/// displaced shape.
+struct DisplacedDepth {
+    cascade: wgpu::RenderPipeline,
+    point: wgpu::RenderPipeline,
+    prepass: wgpu::RenderPipeline,
+}
+
+impl DisplacedDepth {
+    fn new(device: &wgpu::Device, layout: &wgpu::PipelineLayout, material: &str) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("twe-kernel displaced depth"),
+            source: wgpu::ShaderSource::Wgsl(material_depth_source(material).into()),
+        });
+        let shadow_bias = wgpu::DepthBiasState {
+            constant: 2,
+            slope_scale: 2.0,
+            clamp: 0.0,
+        };
+        let pipeline = |label: &str, cull: Option<wgpu::Face>, bias: wgpu::DepthBiasState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_shadow_displaced"),
+                    buffers: &[Some(Vertex::layout()), Some(Instance::layout())],
+                    compilation_options: Default::default(),
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: cull,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias,
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        DisplacedDepth {
+            cascade: pipeline("twe-kernel displaced shadow", Some(wgpu::Face::Front), shadow_bias),
+            point: pipeline("twe-kernel displaced point shadow", None, shadow_bias),
+            prepass: pipeline(
+                "twe-kernel displaced prepass",
+                Some(wgpu::Face::Back),
+                wgpu::DepthBiasState::default(),
+            ),
         }
     }
 }
@@ -6639,14 +6874,8 @@ impl Prepass {
         }
     }
 
-    fn write(&self, queue: &wgpu::Queue, view_proj: [[f32; 4]; 4]) {
-        queue.write_buffer(
-            &self.buffer,
-            0,
-            bytemuck::bytes_of(&ShadowPassUniform {
-                light_space_matrix: view_proj,
-            }),
-        );
+    fn write(&self, queue: &wgpu::Queue, view_proj: [[f32; 4]; 4], time: f32) {
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&ShadowPassUniform::new(view_proj, time)));
     }
 }
 
@@ -6889,15 +7118,9 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
 
 /// Draw every instance into the depth prepass, each glTF primitive with
 /// the pipeline its material needs (masked ones bind their material).
-fn draw_prepass(
-    pass: &mut wgpu::RenderPass<'_>,
-    state: &Renderer,
-    cubes: &[(SurfaceKey, InstanceRange)],
-    spheres: &[(SurfaceKey, InstanceRange)],
-    meshes: &[(MeshKey, InstanceRange)],
-) {
+fn draw_prepass(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, (cubes, spheres, meshes): DepthRanges<'_>, materials: &[String]) {
     let pp = &state.prepass;
-    pass.set_pipeline(&pp.opaque);
+    let pipeline = |mat: u32| state.depth_pipeline(materials, mat, DepthPass::Prepass);
     pass.set_bind_group(0, &pp.bg, &[]);
     pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
     pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
@@ -6911,8 +7134,9 @@ fn draw_prepass(
             spheres,
         ),
     ] {
-        for (_, range) in ranges {
+        for ((_, mat), range) in ranges {
             if range.1 > range.0 {
+                pass.set_pipeline(pipeline(*mat));
                 pass.set_vertex_buffer(0, buffers.0.slice(..));
                 pass.set_index_buffer(buffers.1.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..buffers.2, 0, range.0..range.1);
@@ -6932,7 +7156,7 @@ fn draw_prepass(
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
         if *tex != 0 || *mat != 0 {
-            pass.set_pipeline(&pp.opaque);
+            pass.set_pipeline(pipeline(*mat));
             pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
         } else {
             for sub in gpu_mesh.submeshes.iter().filter(|s| !s.sorted()) {
@@ -7666,6 +7890,9 @@ mod tests {
                         .unwrap_or_else(|e| panic!("{}: {name}: {}", path.display(), e.message));
                     let full = material_shader_source(&pixel);
                     validate_wgsl(name, &full);
+                    if material_displaces(&pixel) {
+                        validate_wgsl(name, &material_depth_source(&pixel));
+                    }
                     assert!(!full.contains("textureSampleCompare("));
                     checked += 1;
                 }

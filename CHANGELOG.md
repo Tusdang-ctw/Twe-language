@@ -13,6 +13,8 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Procedural surface materials** (web3d-M7): a `visual` block can describe a whole surface in code, with no textures. `surface(uv, time, pos, normal) -> material` returns `material(albedo:, normal:, roughness:, metalness:, emission:)`, and an optional `displace(uv, time, pos, normal) -> vec3` moves the mesh's vertices (shadows and lighting follow). `math.clamp`, `mod`, `atan2`, `dot`, `cross`, `length` and `normalize` now work inside visuals, as do `if` expressions. New example: `examples/procedural_materials_3d.twe`.
+- **`twec verify` reports `visual` block problems** (`visual-error`), including type errors such as a tuple where a number belongs.
 - **Reflections and volumetric fog in 3D** (web3d-M7): `postfx.ssr(strength)` turns on screen-space reflections (glossy surfaces reflect what's on screen); `light.volumetric(true)` lights `light.fog`'s fog per point, with light shafts through the sun's shadows and halos around lights.
 - **GPU particles in 3D** (web3d-M7): a `particles` block runs on the GPU in 3D (up to a million particles) when its bodies compile, and on the CPU otherwise; `collide: true` bounces particles off the scene.
 - **Hundreds of lights and spot lights in 3D** (web3d-M7): up to 1024 point and spot lights (was 8), shaded through a clustered light grid; `light.cone(handle, direction, angle)` makes a spot light.
@@ -148,6 +150,7 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **Colours from a `visual` material are sRGB**, like every other colour a script writes; a material's midtones render slightly darker than before. Unknown method names in a `visual` block are now an error instead of being ignored.
 - **Particle randomness** (web3d-M7): `random.float()` inside `on_spawn` / `on_update` now draws from the emitter's own random stream, so spawning particles no longer changes the script's random numbers. In 3D, a particle's default `size` is 0.1 (a radius in world units).
 - When more than four lights ask for shadows, the four nearest the camera get them (it was the first four added).
 - Native 3D picks the discrete GPU on machines with two (it picked the integrated one); `TWE_GPU_POWER=low` asks for the integrated GPU.

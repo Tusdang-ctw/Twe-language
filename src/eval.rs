@@ -958,14 +958,14 @@ fn look_material(
     if !(v.is_class() && v.as_class().kind == "visual") {
         return Err(err(
             format!("look material must be a visual block, got {}", v.type_name()),
-            "declare one with `visual Name:` and a `pixel(uv, time) -> color` method, then `material: Name`",
+            "declare one with `visual Name:` and a `pixel(uv, time) -> color` or `surface(uv, time, pos, normal) -> material` method, then `material: Name`",
         ));
     }
     let name = v.as_class().name.clone();
     env.intern_material(&name).map_err(|e| {
         err(
             format!("visual `{name}` can't be used as a material: {e}"),
-            "a material's `pixel` must pass the visual-block checks (`twec verify`)",
+            "a material's methods must pass the visual-block checks (`twec verify`)",
         )
     })
 }

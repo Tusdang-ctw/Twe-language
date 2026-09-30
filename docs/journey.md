@@ -146,6 +146,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-30: mirrors and sunbeams.** Two classic effects arrived together. Shiny floors and metal now reflect the scene around them, by following each reflected ray through the picture already drawn. Fog can now be lit point by point, so sunlight cuts visible beams between pillars and lamps glow in the mist. On the scoreboard Twe's error fell from 0.1800 to 0.1773, ahead of every renderer in the reference table, including Khronos's own viewer; the notes flag that the comparison gives Twe two effects the Three.js setup doesn't use. The session also caught a false alarm: a slowdown blamed on the new code turned out to be the laptop's graphics chip running hot. Re-measuring the old code showed it.
 
+- **2026-09-30: surfaces written in code.** Twe's oldest promise, "a fire effect in pure code, no texture file", grew up. A `visual` block can now describe a whole material: colour, bumps, shininess, metal, glow. It can also reshape the mesh it is drawn on: water ripples, lava rock swells, a crystal grows spikes, and their shadows move with them. The new demo courtyard has no image files at all. Two quieter findings came with it. The error checker had never actually looked inside visual blocks, although the docs said it did; now it does, down to "you gave roughness a pair of numbers". And the handwritten materials render at half the cost of the default plain surface, which reads nine blank textures it doesn't need.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

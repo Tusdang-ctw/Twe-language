@@ -40,7 +40,7 @@ scene Pong:            # a screen / game mode; holds vars + a state machine
 entity Slime:          # a spawnable game object with fields, methods, lifecycle
 state playing:         # a state-machine state (inside scene/entity/ai)
 dialogue MeetMerchant: # sequenced say/choice script
-visual Fire:           # compiles to a fragment shader (pixel(uv, time) -> color)
+visual Fire:           # GPU code: pixel(uv, time) -> color, or surface(...) -> material (+ displace)
 particles Sparks:      # an emitter; per-particle on_spawn(p) / on_update(p, dt)
 ```
 
@@ -142,6 +142,30 @@ entity Enemy:
 The keys are exactly `mesh`, `tint`, `scale`, `facing` and `material`, and a subclass can
 override single keys. `look:` is 3D-only for now (`twec play3d`,
 `twec build --target web`).
+
+A `visual` used as a `material` can be a full procedural surface, and can move the
+mesh's vertices. No texture files needed:
+
+```twe
+visual Lava:
+    surface(uv, time, pos, normal) -> material:     # trailing inputs may be left off
+        let crack = 1 - smoothstep(0.0, 0.07, math.abs(noise((pos.x, pos.z) * 3)))
+        return material(albedo: (0.07, 0.06, 0.06), roughness: 0.9, emission: (1.0, 0.35, 0.05) * crack * 4)
+
+    displace(uv, time, pos, normal) -> vec3:        # optional: world-space vertex offset
+        return normal * noise((pos.x, pos.z) * 4) * 0.06
+```
+
+- A visual has `pixel` **or** `surface`, plus optional `displace`.
+- `material(...)` takes named arguments only, all optional: `albedo` (colour), `normal`
+  (world direction), `roughness` and `metalness` (0–1), `emission` (colour, may exceed 1).
+  It is only valid as what `surface` returns.
+- `pos` and `normal` are world space (patterns in `pos` stay put when the mesh moves;
+  patterns in `uv` travel with it).
+- Visual bodies are a GPU subset: `let`, `if`, `return`; numbers and 2–4 tuples; `smoothstep`,
+  `mix`, `noise((x, y))` and `math.` abs sqrt floor ceil min max sin cos clamp mod atan2
+  dot cross length normalize. No assignment, loops, strings or other calls.
+  `verify` reports violations as `visual-error`.
 
 ## Stdlib map (call `stdlib_lookup` for exact signatures)
 

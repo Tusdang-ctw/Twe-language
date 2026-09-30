@@ -333,6 +333,22 @@ pub fn verify_program_with_options(
     // web3d-M3: `look:` keys are checked at class definition when the
     // program runs; report the same problems statically.
     diagnostics.append(&mut collect_look_issues(&program));
+    // web3d-M7: `visual` blocks are checked (GPU-safe subset, method
+    // set, `material(...)` outputs, types through the WGSL codegen)
+    // when a look first uses them; report the same problems statically.
+    diagnostics.extend(
+        crate::visual_check::check_program(&program)
+            .into_iter()
+            .map(|e| VerifyDiagnostic {
+                kind: "visual-error".to_string(),
+                severity: Severity::Error,
+                line: e.line,
+                col: e.col,
+                message: e.message,
+                help: e.help,
+                fix: None,
+            }),
+    );
     diagnostics.sort_by_key(|d| (d.line, d.col));
     VerifyReport {
         file,

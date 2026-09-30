@@ -486,22 +486,59 @@ state alert:
 
 ### 4.9 Visual blocks
 
-A `visual` block compiles to a fragment shader.
+A `visual` block compiles to GPU shader code (WGSL). It has up to three methods:
+
+| Method | Returns | Used |
+|---|---|---|
+| `pixel(uv, time) -> color` | a colour | fullscreen (`twec play_visual`), or as a mesh's colour (§4.9a) |
+| `surface(uv, time, pos, normal) -> material` *(web3d-M7)* | `material(...)` | as a mesh's whole surface (§4.9a) |
+| `displace(uv, time, pos, normal) -> vec3` *(web3d-M7)* | an `(x, y, z)` offset | moves a mesh's vertices (§4.9a) |
+
+A visual has `pixel` or `surface`, not both, and optionally `displace`.
 
 ```twe
 visual MyEffect:
     pixel(uv, time) -> color:
-        return color(uv.x, uv.y, 0, 1)
+        return (uv.x, uv.y, 0, 1)
+
+visual Lava:
+    surface(uv, time, pos) -> material:
+        let crack = 1 - smoothstep(0.0, 0.07, math.abs(noise((pos.x, pos.z) * 3)))
+        return material(albedo: (0.07, 0.06, 0.06), roughness: 0.9, emission: (1.0, 0.35, 0.05) * crack * 4)
+
+    displace(uv, time, pos, normal) -> vec3:
+        return normal * noise((pos.x, pos.z) * 4) * 0.06
 ```
 
-Restrictions inside `pixel`:
+**Inputs.** The parameters are positional, and their names are yours:
+- `uv`: the mesh's texture coordinates, `(u, v)`, 0 to 1 (fullscreen: the screen, origin top-left). Patterns in `uv` stay attached to a moving mesh.
+- `time`: simulation time in seconds (the sum of every tick's `dt`, so replays match).
+- `pos`: the point's world position, `(x, y, z)`. Patterns in `pos` line up across meshes (floors, terrain, water) but stay put while a mesh moves.
+- `normal`: the world-space unit normal, facing the viewer on the back of a two-sided surface.
 
-- No allocations.
-- No calls to non-`visual`-safe functions (the stdlib marks each).
-- Loops must have compile-time-known bounds.
-- No I/O, no entity manipulation.
+`surface` and `displace` may leave off trailing inputs they don't use: `surface(uv, time)` is fine.
 
-The compiler translates the `pixel` body to GLSL or WGSL depending on the runtime's GPU backend.
+**`material(...)`** takes named arguments only, each optional:
+
+| Output | Value | Default |
+|---|---|---|
+| `albedo` | colour `(r, g, b)` or `(r, g, b, a)`; alpha below 0.5 cuts the surface out | white |
+| `normal` | world-space direction (normalized for you) | the `normal` input |
+| `roughness` | number, 0 (mirror) to 1 (matte) | 0.5 |
+| `metalness` | number, 0 (dielectric) to 1 (metal) | 0 |
+| `emission` | colour `(r, g, b)`; values above 1 glow brighter than white | black |
+
+`material(...)` is only valid as what `surface` returns. Colours are written as everywhere else in Twe (sRGB), and a single number stands for a grey.
+
+**The GPU subset.** Inside a visual body:
+- `let`, `if` / `elif` / `else`, `return`, and `if` expressions;
+- numbers, bools and 2- to 4-tuples (vectors), with arithmetic, comparisons and swizzles (`uv.x`, `c.rgb`); a number combines with a tuple component-wise;
+- `color.<name>` constants and `math.pi`;
+- calls: `smoothstep`, `mix`, `noise((x, y))`, and `math.` `abs`, `sqrt`, `floor`, `ceil`, `min`, `max`, `sin`, `cos`, `smoothstep`, `mix`, `noise`, and *(web3d-M7)* `clamp`, `mod`, `atan2`, `dot`, `cross`, `length`, `normalize`. Each means what it does on the CPU (`math.mod` is Euclidean, `math.normalize` leaves a zero vector alone).
+
+Not allowed: assignment, loops, strings, lists, indexing, other calls, named arguments (except to `material`), `wait`, `spawn`, I/O. Types are checked too: a tuple where `roughness` wants a number is an error.
+
+**Diagnostics.** `twec verify` reports every problem as `visual-error`, with a fix suggestion where there is one (a misspelt `material` output gets "did you mean"). A program whose visual fails the checks doesn't run.
 
 ### 4.9a Looks  *(web3d-M3; 3D only)*
 
@@ -525,11 +562,19 @@ entity Enemy:
 | `facing` | number: yaw in radians about +Y; `0` faces +Z, and `math.atan2(dx, dz)` faces the direction `(dx, dz)` | `0` |
 | `material` | a `visual` block (§4.9) | none (the plain lit surface) |
 
-**Materials.** With `material: Fire`, the mesh's surface colour is the visual's `pixel(uv, time)`, evaluated on the GPU at the mesh's texture coordinates. It is multiplied by `tint` and lit like any surface. `time` is simulation time in seconds, the sum of every tick's `dt`, so replays match.
+**Materials.** With `material: Fire`, the visual (§4.9) is the mesh's surface, evaluated on the GPU for every pixel the mesh covers:
+- **`pixel`:** the colour is the surface's albedo, on the plain surface (roughness 0.5, not metal).
+- **`surface`** *(web3d-M7)*: every output of `material(...)`: albedo, normal, roughness, metalness, emission.
+- **Either way** the albedo is multiplied by `tint` (emission isn't), and the surface is lit like any other: sun, shadows, point lights, image-based lighting, ambient occlusion, reflections.
+- **Cut-outs:** albedo alpha below 0.5 is cut out, so a visual can shape the mesh; a flame on a quad is the typical use. Shadows still use the whole mesh.
 
-A pixel with alpha below 0.5 is cut out, so a visual can shape the mesh; a flame drawn on a quad is the typical use. Shadows still use the whole mesh.
+**Displacement** *(web3d-M7)*. A visual with `displace` moves each of the mesh's vertices by the returned world-space offset:
+- **Everywhere:** the main passes, the shadows (sun and point lights) and ambient occlusion all see the displaced shape.
+- **Lighting follows it.** The normal is rebuilt from the displaced surface: displacement is also sampled a centimetre away along the surface, in `pos`. So an offset that varies with `pos` lights correctly; one that varies only with `uv` keeps the mesh's normals (bend them with `material(normal: ...)`).
+- **Only vertices move.** The detail you get is the mesh's: a cube has 8 corners, the built-in sphere 16 × 24 segments. Displace a dense mesh (a grid `.glb`) for waves or terrain.
+- **Culling doesn't know.** A mesh is culled by its undisplaced bounds, so keep offsets small next to the mesh, or it may vanish at the screen's edge.
 
-A visual that fails the GPU-safety checks (`twec verify`) is an error when a look first uses it.
+A visual that fails the checks (`twec verify`) is an error when a look first uses it.
 
 - **The key set is closed.** `twec verify` reports:
   - an unknown key (`look-error.unknown-key`, with a rename fix when one key is close);
@@ -772,7 +817,7 @@ replay.is_playing()            # bool — true while replaying
 
 ### 7.2 Math
 
-All functions available as `math.<name>` and as bare names inside `visual` blocks.
+All functions are available as `math.<name>`. Inside `visual` blocks a GPU-safe subset works, with the same meaning (§4.9).
 
 ```twe
 math.abs(-3)           # 3

@@ -80,6 +80,19 @@ fn measure_with(
     fog: Option<twec::kernel::render::FogSettings>,
     cull: bool,
 ) -> (f64, f64) {
+    measure_materials(name, camera, draws, point_lights, (post, fog, cull), &[])
+}
+
+/// `measure_with`, the draws' `material` ids indexing `materials`
+/// (material WGSL; index 0 unused).
+fn measure_materials(
+    name: &str,
+    camera: Camera3d,
+    draws: &[DrawCall3d],
+    point_lights: &[twec::kernel::render::PointLightU],
+    (post, fog, cull): (PostFx, Option<twec::kernel::render::FogSettings>, bool),
+    materials: &[String],
+) -> (f64, f64) {
     let mut renderer = pollster::block_on(Renderer::new_headless(W, H)).expect("gpu");
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
@@ -106,7 +119,7 @@ fn measure_with(
         mesh_paths: &[],
         texture_paths: &[],
         time: 0.0,
-        materials: &[],
+        materials,
         hud: &[],
         anim: &anim,
     };
@@ -319,4 +332,66 @@ fn render_ssr_and_fog() {
     measure_with("ssr", top, &small, &lights, ssr, None, true);
     measure_with("fog", top, &small, &lights, PostFx::default(), fog(false), true);
     measure_with("vol fog", top, &small, &lights, PostFx::default(), fog(true), true);
+}
+
+/// web3d-M7 session 15: procedural surface materials over the small
+/// scene (300 cubes and a floor, top-down): every draw plain, with a
+/// `surface` material (noise, tiles, grout), and with that material
+/// displacing its vertices too.
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn render_procedural_materials() {
+    if pollster::block_on(Renderer::new_headless(64, 64)).is_err() {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    }
+    let material = |src: &str| -> String {
+        let tokens = twec::lexer::lex(src).expect("lex");
+        let program = twec::parser::parse(&tokens).expect("parse");
+        let twec::ast::Stmt::Decl { name, members, .. } = &program.stmts[0] else {
+            panic!("a visual");
+        };
+        twec::visual_wgsl::compile_material(name, members).expect("compile")
+    };
+    let surface = r#"    surface(uv, time, pos) -> material:
+        let cell = (math.mod(pos.x, 1), math.mod(pos.z, 1))
+        let odd = math.mod(math.floor(pos.x) + math.floor(pos.z), 2)
+        let edge = math.min(math.min(cell.x, 1 - cell.x), math.min(cell.y, 1 - cell.y))
+        let grout = 1 - smoothstep(0.02, 0.05, edge)
+        let stone = mix((0.86, 0.84, 0.8), (0.16, 0.16, 0.18), odd) + noise((pos.x, pos.z) * 5) * 0.06
+        return material(albedo: mix(stone, (0.35, 0.32, 0.3), grout), roughness: mix(0.2 + odd * 0.3, 0.95, grout))
+"#;
+    let displace = r#"    displace(uv, time, pos, normal) -> vec3:
+        return normal * noise((pos.x + pos.y, pos.z) * 4) * 0.05
+"#;
+    let materials = vec![
+        String::new(),
+        material(&format!("visual Tiles:\n{surface}")),
+        material(&format!("visual Bumpy:\n{surface}{displace}")),
+    ];
+    let scene = |mat: u32| -> Vec<DrawCall3d> {
+        let mut out = vec![DrawCall3d {
+            material: mat,
+            ..cube(0.0, -50.0, 0.0, 100.0, [0.3, 0.3, 0.3, 1.0])
+        }];
+        for i in 0..300 {
+            let a = i as f32 * 0.37;
+            let r = 3.0 + (i % 17) as f32;
+            out.push(DrawCall3d {
+                material: mat,
+                ..cube(r * a.cos(), 0.5, r * a.sin(), 1.0, [0.9, 0.4, 0.3, 1.0])
+            });
+        }
+        out
+    };
+    let top = Camera3d {
+        far: 200.0,
+        ..Camera3d::new([0.0, 18.0, 12.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    };
+    let post = (PostFx::default(), None, true);
+    measure_materials("plain", top, &scene(0), &[], post, &materials);
+    measure_materials("surface", top, &scene(1), &[], post, &materials);
+    measure_materials("displaced", top, &scene(2), &[], post, &materials);
+    // Again, in case the first run paid for clocks ramping up.
+    measure_materials("plain", top, &scene(0), &[], post, &materials);
 }

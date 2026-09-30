@@ -210,6 +210,32 @@ fn verify_suggests_a_rename_for_an_undefined_name_inside_a_function() {
     );
 }
 
+/// web3d-M7: `visual` problems are reported statically as
+/// `visual-error`, including type errors found by the WGSL codegen; the
+/// procedural-materials example is clean.
+#[test]
+fn verify_reports_visual_errors() {
+    let kinds = |src: &str| -> Vec<String> {
+        verify_program(src)
+            .diagnostics
+            .into_iter()
+            .map(|d| d.kind)
+            .collect()
+    };
+    // The call and its string literal: two violations.
+    assert_eq!(
+        kinds("visual Bad:\n    pixel(uv, time) -> color:\n        print(\"x\")\n        return color.red\n"),
+        ["visual-error", "visual-error"]
+    );
+    assert_eq!(
+        kinds("visual Bad:\n    surface(uv, time) -> material:\n        return material(metalness: (1, 1))\n"),
+        ["visual-error"]
+    );
+    let path = "examples/procedural_materials_3d.twe";
+    let r = verify_program(&std::fs::read_to_string(path).unwrap());
+    assert!(r.ok(), "{path}: {}", r.to_json());
+}
+
 /// web3d-M3: `look:` problems are reported statically with stable
 /// kinds; a key typo carries a rename fix that round-trips to clean.
 #[test]

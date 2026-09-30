@@ -200,6 +200,117 @@ fn look_material_paints_and_cuts_out() {
     );
 }
 
+/// web3d-M7: a visual's `surface` sets the material's outputs: albedo
+/// colours the mesh, emission makes it glow whatever the lighting, and
+/// `normal` changes how it is lit.
+#[test]
+fn procedural_surface_outputs() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let scene = |body: &str| {
+        format!(
+            r#"camera.eye = vec3(0, 6, 0.001)
+camera.target = vec3(0, 0, 0)
+sun.direction(vec3(0, 1, 0))
+visual Paint:
+    surface(uv, time, pos, normal) -> material:
+        return {body}
+entity Box:
+    var pos = vec3(0, 0, 0)
+    look:
+        scale: 2.0
+        material: Paint
+spawn Box
+"#
+        )
+    };
+    let red = render_source(&mut renderer, "surface_albedo", &scene("material(albedo: (0.8, 0.1, 0.1))"));
+    save_png("surface_albedo", &red);
+    let [r, g, b] = pixel(&red, W / 2, H / 2);
+    assert!(r > g + 60 && r > b + 60, "albedo should be red, got {:?}", [r, g, b]);
+
+    let glow = render_source(
+        &mut renderer,
+        "surface_emission",
+        &scene("material(albedo: (0.02, 0.02, 0.02), emission: (0.1, 0.3, 1.0) * 3)"),
+    );
+    save_png("surface_emission", &glow);
+    let [r, g, b] = pixel(&glow, W / 2, H / 2);
+    assert!(b > 200 && b > r + 80, "emission should glow blue, got {:?}", [r, g, b]);
+
+    // The top face lit head-on by the sun, then with its normal turned
+    // away from it.
+    let facing = render_source(&mut renderer, "surface_normal_up", &scene("material(albedo: (0.8, 0.8, 0.8))"));
+    let turned = render_source(
+        &mut renderer,
+        "surface_normal_turned",
+        &scene("material(albedo: (0.8, 0.8, 0.8), normal: (1, -0.2, 0))"),
+    );
+    save_png("surface_normal_turned", &turned);
+    let up = pixel(&facing, W / 2, H / 2)[1];
+    let away = pixel(&turned, W / 2, H / 2)[1];
+    assert!(up > away + 40, "a normal turned from the sun is darker: {up} vs {away}");
+}
+
+/// web3d-M7: a visual's `displace` moves the vertices in the main pass
+/// and in the depth passes: a cube displaced out of view leaves the
+/// floor under its undisplaced position unshadowed, exactly as with no
+/// cube at all (with ambient occlusion on, so the prepass runs too).
+#[test]
+fn displacement_moves_geometry_and_its_shadow() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let scene = |offset: &str, with_cube: bool| {
+        let mut src = format!(
+            r#"camera.eye = vec3(0, 10, 0.001)
+camera.target = vec3(0, 0, 0)
+sun.direction(vec3(0.1, 1, 0.05))
+sun.shadow(true)
+sun.shadow_extent(12.0)
+postfx.ao(1.0)
+visual Moved:
+    pixel(uv, time) -> color:
+        return color.red
+    displace(uv, time) -> vec3:
+        return {offset}
+entity Floor:
+    var pos = vec3(0, -21, 0)
+    look:
+        scale: 40.0
+        tint: (0.4, 0.4, 0.4)
+entity Box:
+    var pos = vec3(0, 2, 0)
+    look:
+        scale: 2.0
+        material: Moved
+spawn Floor
+"#
+        );
+        if with_cube {
+            src.push_str("spawn Box\n");
+        }
+        src
+    };
+    let empty = render_source(&mut renderer, "displace_none", &scene("(0, 0, 0)", false));
+    let still = render_source(&mut renderer, "displace_still", &scene("(0, 0, 0)", true));
+    let moved = render_source(&mut renderer, "displace_moved", &scene("(30, 0, 0)", true));
+    save_png("displace_still", &still);
+    save_png("displace_moved", &moved);
+    let centre = |rgba: &[u8]| pixel(rgba, W / 2, H / 2);
+    assert_ne!(centre(&still), centre(&empty), "the undisplaced cube covers the centre");
+    let (a, b) = (centre(&moved), centre(&empty));
+    assert!(
+        a.iter().zip(&b).all(|(x, y)| x.abs_diff(*y) <= 6),
+        "displaced away, the cube leaves the floor as if it weren't there: {a:?} vs {b:?}"
+    );
+    // A small shift moves the cube's image.
+    let nudged = render_source(&mut renderer, "displace_nudged", &scene("(1.5, 0, 0)", true));
+    save_png("displace_nudged", &nudged);
+    assert_ne!(pixel(&nudged, W / 2 - 30, H / 2), pixel(&still, W / 2 - 30, H / 2));
+}
+
 /// web3d-M3: `text()` / `rect()` in a 3D render draw a HUD over the
 /// scene, in the 2D runtime's 640×480 canvas coordinates.
 #[test]
@@ -245,6 +356,24 @@ fn survive3d_frame_renders() {
     let rgba = render_script(&mut renderer, "examples/survive3d/main.twe", 1200);
     save_png("survive3d", &rgba);
     // Not a blank frame: many distinct colours on screen.
+    let mut colours = std::collections::HashSet::new();
+    for px in rgba.chunks(4) {
+        colours.insert([px[0] / 16, px[1] / 16, px[2] / 16]);
+    }
+    assert!(colours.len() > 20, "only {} colours", colours.len());
+}
+
+/// web3d-M7: the procedural-materials example, every surface a `visual`
+/// (two displacing), with shadows, reflections, bloom and TAA on.
+#[test]
+fn procedural_materials_example_renders() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some("examples".into()));
+    let rgba = render_script(&mut renderer, "examples/procedural_materials_3d.twe", 90);
+    save_png("procedural_materials", &rgba);
     let mut colours = std::collections::HashSet::new();
     for px in rgba.chunks(4) {
         colours.insert([px[0] / 16, px[1] / 16, px[2] / 16]);

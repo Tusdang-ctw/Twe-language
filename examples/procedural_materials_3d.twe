@@ -1,0 +1,118 @@
+# @task: A courtyard whose every surface is a procedural material: tiles, water, gold, lava rock, a crystal
+# @inputs: none
+# @expected: a tiled floor around a rippling pool that reflects brushed gold, glowing lava rock and a pulsing crystal
+# @category: 3d
+# @difficulty: medium
+#
+# `twec play3d examples/procedural_materials_3d.twe`, or build it for the
+# browser with `twec build --target web examples/procedural_materials_3d.twe`.
+#
+# web3d-M7: a `visual` block is a full surface material. No texture
+# files: every look below is code.
+# - `surface(uv, time, pos, normal) -> material` returns
+#   `material(albedo:, normal:, roughness:, metalness:, emission:)`;
+#   leave out any output to keep its default.
+# - `displace(uv, time, pos, normal) -> vec3` moves each vertex; shadows
+#   and lighting follow the new shape.
+# `pos` and `normal` are in world space. `assets/grid_plane.glb` is a
+# 64 x 64 grid (see `assets/grid_plane.py`), dense enough to ripple.
+
+visual Tiles:
+    surface(uv, time, pos) -> material:
+        let cell = (math.mod(pos.x, 1), math.mod(pos.z, 1))
+        let odd = math.mod(math.floor(pos.x) + math.floor(pos.z), 2)
+        let edge = math.min(math.min(cell.x, 1 - cell.x), math.min(cell.y, 1 - cell.y))
+        let grout = 1 - smoothstep(0.02, 0.05, edge)
+        let veins = noise((pos.x, pos.z) * 5) * 0.06
+        let stone = mix((0.86, 0.84, 0.8), (0.16, 0.16, 0.18), odd) + veins
+        return material(albedo: mix(stone, (0.35, 0.32, 0.3), grout), roughness: mix(0.2 + odd * 0.3, 0.95, grout))
+
+visual Water:
+    surface(uv, time) -> material:
+        return material(albedo: (0.05, 0.22, 0.3), roughness: 0.05)
+
+    displace(uv, time, pos) -> vec3:
+        let swell = math.sin(pos.x * 1.7 + time * 1.3) * 0.04 + math.sin(pos.z * 2.3 - time * 1.7) * 0.03
+        let chop = noise((pos.x, pos.z) * 1.5 + (time * 0.4, 0)) * 0.03
+        return (0, swell + chop, 0)
+
+visual BrushedGold:
+    surface(uv, time, pos, normal) -> material:
+        let streak = noise((pos.y * 300, pos.x + pos.z))
+        return material(albedo: (1.0, 0.78, 0.34), metalness: 1, roughness: 0.28 + streak * 0.1)
+
+visual LavaRock:
+    surface(uv, time, pos) -> material:
+        let crack = 1 - smoothstep(0.0, 0.07, math.abs(noise((pos.x + pos.y, pos.z - pos.y) * 3)))
+        let glow = crack * (0.8 + 0.2 * math.sin(time * 3))
+        return material(albedo: (0.07, 0.06, 0.06), roughness: 0.9, emission: (1.0, 0.35, 0.05) * glow * 4)
+
+    displace(uv, time, pos, normal) -> vec3:
+        return normal * noise((pos.x + pos.y, pos.z) * 4) * 0.06
+
+visual Crystal:
+    surface(uv, time) -> material:
+        let pulse = 0.5 + 0.5 * math.sin(time * 2)
+        return material(albedo: (0.2, 0.6, 0.9), roughness: 0.1, emission: (0.1, 0.6, 1.0) * (0.4 + pulse * 1.6))
+
+    displace(uv, time, pos, normal) -> vec3:
+        let spikes = math.max(noise((pos.x + pos.y, pos.z - pos.y) * 6), 0)
+        return normal * spikes * (0.3 + 0.05 * math.sin(time * 2))
+
+entity Floor:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "assets/grid_plane.glb"
+        scale: 16
+        material: Tiles
+
+entity Pool:
+    var pos = vec3(0, 0.12, 0)
+    look:
+        mesh: "assets/grid_plane.glb"
+        scale: 6
+        material: Water
+
+entity GoldOrb:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "sphere"
+        scale: 1.6
+        material: BrushedGold
+
+entity LavaOrb:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "sphere"
+        scale: 1.4
+        material: LavaRock
+
+entity CrystalOrb:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "sphere"
+        scale: 1.2
+        material: Crystal
+
+spawn Floor
+spawn Pool
+spawn GoldOrb at vec3(-4.5, 0.8, -1.5)
+spawn LavaOrb at vec3(4.5, 0.7, -1.0)
+spawn CrystalOrb at vec3(0, 1.3, -1.0)
+
+light.clear()
+light.ambient((0.25, 0.27, 0.32, 1.0))
+sun.direction(vec3(-0.4, 0.7, 0.3))
+sun.shadow(true)
+sun.shadow_extent(14.0)
+light.add((0, 3.0, 3.0), (1.0, 0.85, 0.6, 1.0), 9)
+postfx.ssr(1.0)
+postfx.bloom(0.5)
+postfx.taa(true)
+
+var t = 0.0
+
+on update(dt):
+    t += dt
+    camera.eye = vec3(math.sin(t * 0.12) * 10.0, 6.0, math.cos(t * 0.12) * 10.0)
+    camera.target = vec3(0, 0.6, 0)
