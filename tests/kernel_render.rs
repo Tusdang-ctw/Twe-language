@@ -448,6 +448,7 @@ fn environment_lights_and_backs_the_scene() {
             lut: None,
             point_lights: &[],
             fog: None,
+            particles: Default::default(),
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: Some(EnvironmentSettings {
                 path: "sky.hdr",
@@ -708,6 +709,7 @@ fn backdrop_pixel(
             lut: None,
             point_lights: &[],
             fog: None,
+            particles: Default::default(),
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: None,
             background,
@@ -940,17 +942,24 @@ on render():
 /// Render `frames` frames of `src` (ticking 1/60 s between them) and
 /// return the last.
 fn render_frames(src: &str, frames: u32) -> Vec<u8> {
+    render_frames_env(src, frames).0
+}
+
+/// [`render_frames`], also returning the interpreter.
+fn render_frames_env(src: &str, frames: u32) -> (Vec<u8>, twec::value::Env) {
     let mut renderer = headless().expect("gpu");
     let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
+    // As the 3D hosts do.
+    env.gpu_particles = true;
     twec::eval::run_top_level(&mut env, &program).expect("top level");
     let mut assets = twec::play3d::NativeAssets::default();
     for _ in 0..frames {
         twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
         twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
     }
-    renderer.read_pixels().expect("read pixels")
+    (renderer.read_pixels().expect("read pixels"), env)
 }
 
 fn inverse_srgb8(v: f32) -> f32 {
@@ -1394,6 +1403,7 @@ fn gpu_culling_is_invisible_and_culls() {
                 lut: None,
                 point_lights: &[],
                 fog: None,
+                particles: Default::default(),
                 camera: Camera3d {
                     far: 400.0,
                     ..Camera3d::new([0.0, 3.0, 4.0], [0.0, 2.0, -20.0], [0.0, 1.0, 0.0])
@@ -1458,6 +1468,7 @@ fn floor_with_lights(lights: &[twec::kernel::render::PointLightU]) -> (Vec<u8>, 
         lut: None,
         point_lights: lights,
         fog: None,
+        particles: Default::default(),
         camera: Camera3d::new([0.0, height, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
         environment: None,
         background: [0.0; 3],
@@ -1546,4 +1557,121 @@ fn spot_lights_light_their_cone() {
     let (ox, oy) = to_pixel(3.0, 0.0);
     assert!(luma(pixel(&rgba, cx, cy)) > 300, "under the spot: {:?}", pixel(&rgba, cx, cy));
     assert!(luma(pixel(&rgba, ox, oy)) < 10, "outside the cone: {:?}", pixel(&rgba, ox, oy));
+}
+
+/// web3d-M7: a fountain of sparks over a floor, seen from above. The
+/// sparks fall through the floor (hidden) unless they `collide`.
+fn spark_scene(collide: bool, size: &str) -> String {
+    format!(
+        "camera.eye = vec3(0, 8, 0.001)
+camera.target = vec3(0, 0, 0)
+postfx.tonemap(\"none\")
+var big = 0.08
+
+particles Sparks:
+    count: 3000
+    lifetime: 5.0
+    collide: {collide}
+
+    on_spawn(p):
+        let a = random.float() * 6.2832
+        let r = random.float() * 2.0
+        p.velocity = (math.cos(a) * r, 2.0, math.sin(a) * r)
+        p.color = (1.0, 0.45, 0.0, 1.0)
+        p.size = {size}
+
+    on_update(p, dt):
+        p.velocity = (p.velocity.x, p.velocity.y - 9.8 * dt, p.velocity.z)
+        p.pos = (p.pos.x + p.velocity.x * dt, p.pos.y + p.velocity.y * dt, p.pos.z + p.velocity.z * dt)
+
+var fired = false
+on update(dt):
+    if not fired:
+        spawn Sparks at vec3(0, 1, 0)
+        fired = true
+
+on render():
+    cube(at: vec3(0, -50, 0), size: 100, color: (0.3, 0.3, 0.3, 1))
+"
+    )
+}
+
+fn orange_pixels(rgba: &[u8]) -> usize {
+    rgba.chunks_exact(4)
+        .filter(|p| p[0] > 120 && i32::from(p[0]) - i32::from(p[2]) > 80)
+        .count()
+}
+
+/// web3d-M7: a `particles` block that compiles runs on the GPU: its
+/// sparks draw, and with `collide: true` they bounce on the floor
+/// instead of falling through it.
+#[test]
+fn gpu_particles_draw_and_bounce() {
+    if headless().is_none() {
+        return;
+    }
+    let (early, env) = render_frames_env(&spark_scene(true, "0.06"), 10);
+    save_png("particles_early", &early);
+    assert_eq!(env.particle_programs.len(), 1, "the block runs on the GPU");
+    assert!(orange_pixels(&early) > 200, "sparks in the air: {}", orange_pixels(&early));
+    let bounced = render_frames(&spark_scene(true, "0.06"), 70);
+    let fell = render_frames(&spark_scene(false, "0.06"), 70);
+    save_png("particles_bounced", &bounced);
+    save_png("particles_fell", &fell);
+    let (on_floor, through) = (orange_pixels(&bounced), orange_pixels(&fell));
+    assert!(on_floor > 500, "sparks resting on the floor: {on_floor}");
+    assert!(through < on_floor / 20, "without collide they fall through: {through} vs {on_floor}");
+}
+
+/// web3d-M7: a block that can't compile (it reads a global) runs on the
+/// CPU and still draws in 3D.
+#[test]
+fn cpu_particles_still_draw_in_3d() {
+    if headless().is_none() {
+        return;
+    }
+    let (rgba, env) = render_frames_env(&spark_scene(true, "big"), 10);
+    save_png("particles_cpu", &rgba);
+    assert!(env.particle_programs.is_empty(), "the block runs on the CPU");
+    assert!(orange_pixels(&rgba) > 200, "CPU sparks draw: {}", orange_pixels(&rgba));
+}
+
+/// web3d-M7: a million particles fit the pool and draw.
+#[test]
+fn a_million_particles() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let src = "camera.eye = vec3(0, 0, 12)
+camera.target = vec3(0, 0, 0)
+postfx.tonemap(\"none\")
+
+particles Cloud:
+    count: 1000000
+    lifetime: 10.0
+
+    on_spawn(p):
+        p.pos = (random.float() * 8.0 - 4.0, random.float() * 8.0 - 4.0, random.float() * 2.0 - 1.0)
+        p.color = (0.2, 0.6, 1.0, 0.05)
+        p.size = 0.02
+
+spawn Cloud at vec3(0, 0, 0)
+";
+    let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    env.gpu_particles = true;
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    let mut assets = twec::play3d::NativeAssets::default();
+    for _ in 0..3 {
+        twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+        twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+    }
+    assert_eq!(renderer.particle_capacity(), 1 << 20);
+    let rgba = renderer.read_pixels().expect("pixels");
+    save_png("particles_million", &rgba);
+    // The cloud covers the middle of the view, blue; the corners don't.
+    let centre = pixel(&rgba, W / 2, H / 2);
+    let corner = pixel(&rgba, 4, 4);
+    assert!(centre[2] > corner[2] + 20, "cloud {centre:?} vs corner {corner:?}");
 }

@@ -577,6 +577,24 @@ Each particle has implicit fields: `pos`, `velocity`, `color`, `size`, `age` (in
 
 **v0.1 implementation status:** the declarative block is in. `count` (int, default 16) and `lifetime` (float seconds, default 1.0) are read at spawn time; `on_spawn(p)` and `on_update(p, dt)` are called per particle if defined. The runtime ages each particle (`age += dt`, `age_ratio = age / lifetime`) every frame and despawns the emitter when no particles are left. Default rendering draws each particle as a `draw_circle(p.pos, p.size, p.color)` — define `function render():` on the particles block to override. `emit_pattern` and keyword args are deferred until F1 (per the Phase 2 frustration list).
 
+**In 3D (web3d-M7, [note](changes/2026-09-30-web3d-m7-gpu-particles.md)):**
+
+- **GPU or CPU.** On a 3D host, a block whose bodies the GPU can run is compiled to WGSL and simulated and drawn by the GPU, a million particles at a time. Any other block runs on the CPU exactly as above and is drawn the same way.
+- **What the GPU runs.** A body can use:
+  - `let` locals, `if`, and `return`;
+  - assignments, plain and compound, to `p.pos` / `p.velocity` / `p.color` / `p.size` or to locals;
+  - number and tuple arithmetic (tuple ± tuple, tuple × number, tuple / number), comparisons and `and` / `or` / `not`, and `if … else` expressions;
+  - `vec3(...)`, `random.float()`, `color.<name>` and `math.pi`;
+  - `math.abs/min/max/clamp/mod/floor/ceil/sqrt/sin/cos/atan2/dot/cross/length/normalize/mix`, `smoothstep` and `noise`;
+  - the block's own fields whose defaults are literals.
+- **What sends a block to the CPU:**
+  - globals, `print`, loops, or a `render()` override;
+  - setting `p.age` / `p.lifetime`;
+  - a division both of whose sides may be integers (write `2.0`, not `2`).
+- **`collide: true`** (a field) bounces particles off whatever the camera sees, using the depth buffer.
+- **`size`** is a radius in world units, default 0.1.
+- **Randomness.** Particle bodies draw `random.float()` from their emitter's own random stream, on the CPU as well: spawning particles never changes the script's random numbers, so replays match whichever path a block takes.
+
 ### 4.10a Dialogue runtime (Phase 5 task 3, partial)
 
 `dialogue <Name>:` declares a sequenced block of statements. Calling `<Name>()` runs the body to completion. Inside a dialogue body, three statement forms are recognised (in addition to all normal statements):

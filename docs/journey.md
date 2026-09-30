@@ -142,6 +142,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-30: a thousand candles.** Twe's 3D scenes used to allow eight lamps. Now they can hold a thousand, because the view is split into thousands of small boxes and each spot on screen only pays for the few lights near it. Lights can be spotlights too, and when many lamps want to cast shadows, the ones nearest the player get them. A pleasant side effect: scenes with no lamps at all got faster, because every pixel used to check eight empty lamp slots.
 
+- **2026-09-30: a million sparks.** Twe's `particles` blocks, the language's built-in way to describe sparks, smoke and embers, now run on the graphics card in 3D. The same few lines of Twe that describe one spark are translated into a GPU program, so a million of them fly at once, and with `collide: true` they bounce off the floor and walls. The translator refuses anything the GPU version would do differently from the normal one, down to how dividing whole numbers rounds, and those blocks simply keep running the old way. Fixing the first version's slowness on the laptop's built-in graphics chip came down to one insight: soft round sparks don't need anti-aliasing. Removing it made them four times faster.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

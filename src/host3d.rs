@@ -99,6 +99,8 @@ pub fn render_frame(
     assets: &mut dyn AssetSource,
 ) -> Result<FrameTimes, String> {
     let start = crate::clock::now_secs();
+    // web3d-M7: from here on, particles that can run on the GPU do.
+    env.gpu_particles = true;
     if let Err(e) = eval::render_frame3d(env) {
         // Surface the runtime error to stderr but keep rendering — a
         // broken render frame shouldn't tear down the window.
@@ -113,7 +115,14 @@ pub fn render_frame(
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let lut = crate::stdlib::color_lut();
     let point_lights = crate::stdlib::point_lights_snapshot();
+    let emissions = std::mem::take(&mut env.particle_emissions);
+    let cpu_particles = eval::cpu_particles_3d(env);
     let snap = RenderSnapshot {
+        particles: crate::kernel::particles::ParticleFrame {
+            programs: &env.particle_programs,
+            emissions: &emissions,
+            cpu: &cpu_particles,
+        },
         point_lights: &point_lights,
         fog: crate::stdlib::fog_settings().map(|(density, falloff, color)| crate::kernel::render::FogSettings {
             density,

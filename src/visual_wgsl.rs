@@ -164,7 +164,7 @@ const UNIFORMS: &str = r#"struct Uniforms {
 /// Twe-compiled noise. Bit-identical to `stdlib::value_noise_2d` so
 /// CPU samples line up with shader samples. The hash uses a u32
 /// pipeline (matches Rust's wrapping_mul semantics on 32-bit).
-const WGSL_NOISE: &str = r#"fn twe_noise_hash2(x: i32, y: i32) -> f32 {
+pub(crate) const WGSL_NOISE: &str = r#"fn twe_noise_hash2(x: i32, y: i32) -> f32 {
     var h: u32 = u32(x) * 0x27d4eb2du
                 + u32(y) * 0x165667b1u
                 + 0x9e3779b9u;
@@ -492,7 +492,7 @@ fn call_name(callee: &Expr) -> Option<String> {
 /// Codegen inlines these as vec4<f32> literals so visual shaders
 /// don't need a runtime constants table — `color.red` becomes
 /// `vec4<f32>(1.0, 0.0, 0.0, 1.0)` directly.
-fn color_constant(name: &str) -> Option<[f32; 4]> {
+pub(crate) fn color_constant(name: &str) -> Option<[f32; 4]> {
     Some(match name {
         "red" => [1.0, 0.0, 0.0, 1.0],
         "green" => [0.0, 1.0, 0.0, 1.0],

@@ -13,6 +13,7 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **GPU particles in 3D** (web3d-M7): a `particles` block runs on the GPU in 3D (up to a million particles) when its bodies compile, and on the CPU otherwise; `collide: true` bounces particles off the scene.
 - **Hundreds of lights and spot lights in 3D** (web3d-M7): up to 1024 point and spot lights (was 8), shaded through a clustered light grid; `light.cone(handle, direction, angle)` makes a spot light.
 - **GPU culling in 3D** (web3d-M7): from 4096 opaque objects up, the GPU culls objects outside the view or hidden behind others (two-phase hierarchical-Z occlusion culling, indirect draws).
 - **glTF material extensions** (web3d-M7): `.glb` models render clearcoat, sheen, iridescence, transmission with volume absorption, IOR and specular (`KHR_materials_*`).
@@ -146,6 +147,7 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **Particle randomness** (web3d-M7): `random.float()` inside `on_spawn` / `on_update` now draws from the emitter's own random stream, so spawning particles no longer changes the script's random numbers. In 3D, a particle's default `size` is 0.1 (a radius in world units).
 - When more than four lights ask for shadows, the four nearest the camera get them (it was the first four added).
 - Native 3D picks the discrete GPU on machines with two (it picked the integrated one); `TWE_GPU_POWER=low` asks for the integrated GPU.
 - `postfx.bloom` is now a multi-level bloom chain (Jimenez 2014) instead of a 12-pixel inline kernel: the glare reaches much further with a soft falloff. `postfx.tonemap` takes a curve name; `true` / `false` still mean ACES / none.

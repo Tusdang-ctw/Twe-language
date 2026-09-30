@@ -283,15 +283,44 @@ fn seed_particle_emitter(
         };
         (count, lifetime, inst.class.clone())
     };
+    // web3d-M7: each emitter draws its particles' random numbers from
+    // its own stream, so particles never change the script's (and the
+    // CPU and GPU paths leave the simulation identical).
+    env.particle_seed = env.particle_seed.wrapping_add(1);
+    let seed = env.particle_seed;
+    // web3d-M7: on a 3D host, a block that compiled runs on the GPU:
+    // record the emission; the emitter only counts down its lifetime.
+    let gpu_at = at
+        .and_then(|v| crate::stdlib::xyz_of(v, "at").ok())
+        .or(if at.is_none() { Some([0.0; 3]) } else { None });
+    if env.gpu_particles {
+        if let (Some(at), Some(program)) = (gpu_at, env.intern_particle_program(&class.name)) {
+            env.particle_emissions.push(crate::kernel::particles::ParticleEmission {
+                program,
+                at,
+                count: count.min(u32::MAX as usize) as u32,
+                lifetime: lifetime as f32,
+                seed,
+            });
+            let mut e = emitter.borrow_mut();
+            e.insert_field("__gpu_age", Value::from_float(0.0));
+            e.insert_field("__gpu_lifetime", Value::from_float(if count == 0 { f64::NEG_INFINITY } else { lifetime }));
+            return Ok(());
+        }
+    }
     let on_spawn = find_method(&class, "on_spawn");
     let mut particles: Vec<Value> = Vec::with_capacity(count);
     let initial_pos = at
         .cloned()
         .unwrap_or_else(|| Value::from_tuple(vec![Value::from_float(0.0), Value::from_float(0.0)]));
+    let mut rng = particle_stream(seed);
+    // In 3D a particle's size is a radius in world units.
+    let default_size = if env.gpu_particles { 0.1 } else { 4.0 };
     for _ in 0..count {
-        let p = make_particle(&initial_pos, lifetime);
+        let p = make_particle(&initial_pos, lifetime, default_size);
         if let Some(method) = on_spawn.clone() {
-            call_method(
+            let script_rng = env.swap_rng(rng);
+            let result = call_method(
                 env,
                 Value::from_instance(emitter.clone()),
                 &method,
@@ -299,18 +328,27 @@ fn seed_particle_emitter(
                 &[],
                 line,
                 col,
-            )?;
+            );
+            rng = env.swap_rng(script_rng);
+            result?;
         }
         particles.push(p);
     }
-    emitter.borrow_mut().insert_field(
-        "__particles",
-        Value::from_list(Rc::new(RefCell::new(particles))),
-    );
+    let mut e = emitter.borrow_mut();
+    e.insert_field("__particles", Value::from_list(Rc::new(RefCell::new(particles))));
+    e.insert_field("__rng", Value::from_int(rng as i64));
     Ok(())
 }
 
-fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
+/// web3d-M7: the start of emitter `seed`'s random stream (SplitMix64).
+fn particle_stream(seed: u32) -> u64 {
+    let mut z = u64::from(seed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn make_particle(initial_pos: &Value, lifetime: f64, size: f64) -> Value {
     let mut o = Object {
         fields: HashMap::new(),
         kind: "particle",
@@ -329,7 +367,7 @@ fn make_particle(initial_pos: &Value, lifetime: f64) -> Value {
             Value::from_float(1.0),
         ]),
     );
-    o.insert_field("size", Value::from_float(4.0));
+    o.insert_field("size", Value::from_float(size));
     o.insert_field("age", Value::from_float(0.0));
     o.insert_field("age_ratio", Value::from_float(0.0));
     o.insert_field("lifetime", Value::from_float(lifetime));
@@ -342,6 +380,22 @@ fn tick_particle_emitter(
     class: &Rc<ClassDef>,
     dt: f64,
 ) -> Result<(), RuntimeError> {
+    // web3d-M7: a GPU emitter lives exactly as long as its particles
+    // would on the CPU (same ageing, same comparison).
+    let gpu = {
+        let e = emitter.borrow();
+        e.get_field("__gpu_age").zip(e.get_field("__gpu_lifetime"))
+    };
+    if let Some((age, lifetime)) = gpu {
+        let age = age.as_float() + dt;
+        let mut e = emitter.borrow_mut();
+        e.insert_field("__gpu_age", Value::from_float(age));
+        // Alive while `age < lifetime`, exactly the CPU's test.
+        if age.partial_cmp(&lifetime.as_float()) != Some(std::cmp::Ordering::Less) {
+            e.despawned = true;
+        }
+        return Ok(());
+    }
     let on_update = find_method(class, "on_update");
     let particles = {
         let __opt = emitter.borrow().get_field("__particles");
@@ -356,9 +410,12 @@ fn tick_particle_emitter(
         }
     };
     let snapshot: Vec<Value> = particles.borrow().clone();
+    let stream = emitter.borrow().get_field("__rng").filter(|v| v.is_int_or_boxed_int());
+    let mut rng = stream.map_or(1, |v| v.as_int() as u64);
     for p in &snapshot {
         if let Some(method) = on_update.clone() {
-            call_method(
+            let script_rng = env.swap_rng(rng);
+            let result = call_method(
                 env,
                 Value::from_instance(emitter.clone()),
                 &method,
@@ -366,7 +423,9 @@ fn tick_particle_emitter(
                 &[],
                 0,
                 0,
-            )?;
+            );
+            rng = env.swap_rng(script_rng);
+            result?;
         }
         if p.is_object() {
             let rc = p.as_object();
@@ -408,6 +467,7 @@ fn tick_particle_emitter(
             o.insert_field("age_ratio", Value::from_float(ratio));
         }
     }
+    emitter.borrow_mut().insert_field("__rng", Value::from_int(rng as i64));
     // Drop dead particles.
     particles.borrow_mut().retain(|p| {
         if p.is_object() {
@@ -428,6 +488,57 @@ fn tick_particle_emitter(
         emitter.borrow_mut().despawned = true;
     }
     Ok(())
+}
+
+/// web3d-M7: the live CPU-simulated particles, for a 3D host to draw
+/// (blocks that couldn't compile for the GPU). A 2D position lies in
+/// the z = 0 plane.
+pub fn cpu_particles_3d(env: &Env) -> Vec<crate::kernel::particles::GpuParticle> {
+    let mut out = Vec::new();
+    let num = |v: &Value| {
+        if v.is_float() {
+            Some(v.as_float() as f32)
+        } else if v.is_int_or_boxed_int() {
+            Some(v.as_int() as f32)
+        } else {
+            None
+        }
+    };
+    let floats = |v: Option<Value>| -> Vec<f32> {
+        v.and_then(|v| v.with_tuple(|e| e.iter().filter_map(num).collect()))
+            .unwrap_or_default()
+    };
+    for entity in &env.active_entities {
+        let e = entity.borrow();
+        if e.despawned {
+            continue;
+        }
+        let Some(list) = e.get_field("__particles").filter(|v| v.is_list()) else {
+            continue;
+        };
+        for p in list.as_list().borrow().iter().filter(|p| p.is_object()) {
+            let o = p.as_object();
+            let o = o.borrow();
+            let pos = floats(o.get_field("pos"));
+            let color = floats(o.get_field("color"));
+            let scalar = |name| o.get_field(name).as_ref().and_then(num).unwrap_or(0.0);
+            if pos.len() < 2 || color.len() != 4 {
+                continue;
+            }
+            out.push(crate::kernel::particles::GpuParticle {
+                pos: [pos[0], pos[1], pos.get(2).copied().unwrap_or(0.0)],
+                age: scalar("age"),
+                velocity: [0.0; 3],
+                lifetime: scalar("lifetime"),
+                color: [color[0], color[1], color[2], color[3]],
+                size: scalar("size"),
+                age_ratio: scalar("age_ratio"),
+                program: 0,
+                seed: 0,
+            });
+        }
+    }
+    out
 }
 
 fn render_particle_emitter(
@@ -4275,6 +4386,12 @@ fn eval_decl(
             None => crate::visual_wgsl::compile_material(name, members).map_err(|e| e.message),
         };
         env.visual_materials.insert(name.to_string(), compiled);
+    }
+    if matches!(kind, DeclKind::Particles) {
+        // web3d-M7: ready this block for the GPU; if it can't run there,
+        // it runs on the CPU.
+        let compiled = crate::particles_wgsl::compile(name, members);
+        env.particle_classes.insert(name.to_string(), compiled);
     }
     let look = build_look(env, parent_class.as_ref(), own_look, &field_defaults)?;
     let field_layout = field_layout(parent_class.as_ref(), &field_defaults);

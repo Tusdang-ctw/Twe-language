@@ -128,6 +128,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
             lut: None,
             point_lights: &[],
             fog: None,
+            particles: Default::default(),
             camera,
             background: [0.0, 0.0, 0.0],
             environment: Some(EnvironmentSettings {

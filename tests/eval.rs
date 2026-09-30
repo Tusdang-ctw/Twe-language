@@ -1997,6 +1997,69 @@ spawn Spark at (50.0, 60.0)
     assert_eq!(n, 4);
 }
 
+/// web3d-M7: whether a particles block runs on the CPU or the GPU
+/// changes nothing the script sees: its random numbers (particle bodies
+/// draw from their emitter's own stream) and when the emitter despawns.
+#[test]
+fn gpu_particles_leave_the_simulation_unchanged() {
+    let src = r#"
+particles Puff:
+    count: 5
+    lifetime: 0.1
+
+    on_spawn(p):
+        p.velocity = (random.float(), random.float(), 0.0)
+
+    on_update(p, dt):
+        p.size = 0.1 + random.float()
+
+var n = 0
+on update(dt):
+    if n == 0:
+        spawn Puff at vec3(0, 0, 0)
+    n += 1
+    print(entities.count(Puff), random.int(0..1000))
+"#;
+    let run = |gpu: bool| {
+        let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+        let mut env = twec::value::Env::new();
+        twec::stdlib::install(&mut env);
+        env.gpu_particles = gpu;
+        twec::eval::run_top_level(&mut env, &program).expect("top level");
+        for _ in 0..12 {
+            twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+        }
+        (env.out.clone(), env.particle_emissions.len())
+    };
+    let (cpu, cpu_emissions) = run(false);
+    let (gpu, gpu_emissions) = run(true);
+    assert_eq!((cpu_emissions, gpu_emissions), (0, 1), "the GPU run records its emission");
+    assert_eq!(cpu, gpu);
+    // The emitter lives 0.1 s: six ticks of 1/60 sum to just under 0.1
+    // in floating point, so the seventh ends it.
+    let counts: Vec<&str> = cpu.lines().map(|l| l.split(' ').next().unwrap_or("")).collect();
+    assert_eq!(counts[..9], ["1", "1", "1", "1", "1", "1", "1", "0", "0"], "{cpu}");
+}
+
+/// web3d-M7: whatever the GPU compiler accepts, the CPU runs too (the
+/// 3D example's blocks, simulated on the CPU without error).
+#[test]
+fn gpu_particle_blocks_also_run_on_the_cpu() {
+    let src = std::fs::read_to_string("examples/particles_3d.twe").expect("example");
+    let program = twec::parser::parse(&twec::lexer::lex(&src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    for name in ["Sparks", "Embers"] {
+        let compiled = env.particle_classes.get(name).expect("compiled");
+        assert!(compiled.is_ok(), "{name}: {compiled:?}");
+    }
+    // A few ticks: 60 000 embers are slow on the CPU in a debug build.
+    for _ in 0..3 {
+        twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("CPU tick");
+    }
+}
+
 #[test]
 fn keyword_args_distribute_to_function_params_by_name() {
     let src = r#"

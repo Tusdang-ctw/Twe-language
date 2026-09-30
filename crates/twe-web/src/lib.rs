@@ -213,6 +213,8 @@ async fn run() -> Result<(), String> {
     let program = twec::parser::parse(&tokens).map_err(|e| format!("main.twe:{e}"))?;
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
+    // web3d-M7: this host simulates compiled particles on the GPU.
+    env.gpu_particles = true;
     twec::eval::run_top_level(&mut env, &program)
         .map_err(|e| format!("main.twe: runtime error: {e}"))?;
     flush_output(&mut env);

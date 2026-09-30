@@ -70,6 +70,7 @@ fn measure_lit(
         lut: None,
         point_lights,
         fog: None,
+        particles: Default::default(),
         camera,
         environment: None,
         background: [0.05, 0.07, 0.1],
@@ -175,4 +176,89 @@ fn render_large_scenes() {
         measure("field", low, &field, cull);
         measure("occluded", low, &walled, cull);
     }
+}
+
+/// web3d-M7 session 13: GPU particles over the small scene — `n`
+/// particles emitted once, then simulated (gravity, drag) and drawn
+/// every frame, optionally bouncing off the depth buffer.
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn render_particles() {
+    use twec::kernel::particles::{ParticleEmission, ParticleFrame, ParticleProgram};
+    if pollster::block_on(Renderer::new_headless(64, 64)).is_err() {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    }
+    let mut small = vec![cube(0.0, -50.0, 0.0, 100.0, [0.3, 0.3, 0.3, 1.0])];
+    for i in 0..300 {
+        let a = i as f32 * 0.37;
+        let r = 3.0 + (i % 17) as f32;
+        small.push(cube(r * a.cos(), 0.5, r * a.sin(), 1.0, [0.9, 0.4, 0.3, 1.0]));
+    }
+    let camera = Camera3d {
+        far: 200.0,
+        ..Camera3d::new([0.0, 18.0, 12.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    };
+    for (n, collide) in [(100_000u32, false), (1_000_000, false), (1_000_000, true)] {
+        let programs = [ParticleProgram {
+            spawn: "    pt.velocity = vec3<f32>(twe_rand() * 16.0 - 8.0, twe_rand() * 12.0, twe_rand() * 16.0 - 8.0);\n    \
+                    pt.color = vec4<f32>(1.0, 0.5, 0.1, 0.6);\n    pt.size = 0.05;\n"
+                .into(),
+            update: "    pt.velocity.y -= 9.8 * dt;\n    pt.velocity *= 0.995;\n    pt.pos += pt.velocity * dt;\n".into(),
+            collide,
+        }];
+        let emission = [ParticleEmission {
+            program: 0,
+            at: [0.0, 2.0, 0.0],
+            count: n,
+            lifetime: 1000.0,
+            seed: 1,
+        }];
+        let mut renderer = pollster::block_on(Renderer::new_headless(W, H)).expect("gpu");
+        let anim = |_: u32| Default::default();
+        let mut assets = twec::play3d::NativeAssets::default();
+        let snap = |frame: u32| RenderSnapshot {
+            lut: None,
+            point_lights: &[],
+            fog: None,
+            particles: ParticleFrame {
+                programs: &programs,
+                emissions: if frame == 0 { &emission } else { &[] },
+                cpu: &[],
+            },
+            camera,
+            environment: None,
+            background: [0.05, 0.07, 0.1],
+            lights: {
+                let mut l: twec::render3d_types::LightsUniform = bytemuck::Zeroable::zeroed();
+                l.ambient = [0.3, 0.3, 0.3, 0.0];
+                l.sun_dir = [0.4, 0.8, 0.3, 1.0];
+                l
+            },
+            shadow: ShadowSettings {
+                enabled: false,
+                extent: 10.0,
+            },
+            post: PostFx::default(),
+            draws: &small,
+            mesh_paths: &[],
+            texture_paths: &[],
+            time: frame as f32 / 60.0,
+            materials: &[],
+            hud: &[],
+            anim: &anim,
+        };
+        for f in 0..30 {
+            renderer.render(&snap(f), &mut assets).expect("render");
+        }
+        renderer.read_pixels().expect("sync");
+        let start = std::time::Instant::now();
+        for f in 30..30 + FRAMES {
+            renderer.render(&snap(f), &mut assets).expect("render");
+        }
+        renderer.read_pixels().expect("sync");
+        let ms = start.elapsed().as_secs_f64() * 1e3 / f64::from(FRAMES);
+        eprintln!("{n:>8} particles collide={collide:<5}: {ms:6.2} ms/frame");
+    }
+    measure("no particles", camera, &small, true);
 }

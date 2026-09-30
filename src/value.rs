@@ -529,6 +529,20 @@ pub struct Env {
     /// web3d-M3: this frame's HUD (`text()` / `rect()` in a 3D render).
     pub hud_queue: Vec<crate::render3d_types::HudItem>,
     material_names: Vec<String>,
+    /// web3d-M7: whether `particles` blocks that compile to WGSL run on
+    /// the GPU (`kernel::particles`). The 3D hosts set it; elsewhere
+    /// every particle runs on the CPU.
+    pub gpu_particles: bool,
+    /// web3d-M7: each `particles` block compiled for the GPU, by name;
+    /// `Err` holds why it stays on the CPU.
+    pub particle_classes: HashMap<String, Result<crate::kernel::particles::ParticleProgram, String>>,
+    /// Particle program id → program, as the kernel's snapshot takes it.
+    pub particle_programs: Vec<crate::kernel::particles::ParticleProgram>,
+    particle_program_names: Vec<String>,
+    /// GPU emissions since the host last drained them.
+    pub particle_emissions: Vec<crate::kernel::particles::ParticleEmission>,
+    /// Counts emitters, seeding each one's random stream.
+    pub particle_seed: u32,
     /// web3d-M1: the module object being initialised when this env runs
     /// a module's top level (`None` for the entry program). A function
     /// whose `home` is this module resolves globals in this env.
@@ -611,6 +625,12 @@ impl Env {
             material_sources: vec![String::new()],
             hud_queue: Vec::new(),
             material_names: vec![String::new()],
+            gpu_particles: false,
+            particle_classes: HashMap::new(),
+            particle_programs: Vec::new(),
+            particle_program_names: Vec::new(),
+            particle_emissions: Vec::new(),
+            particle_seed: 0,
             current_module: None,
             render_queue3d: Vec::new(),
             mesh_paths: Vec::new(),
@@ -693,6 +713,25 @@ impl Env {
         x ^= x << 17;
         self.rng_state = x;
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// web3d-M7: swap in another random stream, returning the current
+    /// one. Particle bodies draw from their emitter's own stream, so
+    /// spawning particles never changes the script's random numbers.
+    pub fn swap_rng(&mut self, state: u64) -> u64 {
+        std::mem::replace(&mut self.rng_state, if state == 0 { 0x9E37_79B9_7F4A_7C15 } else { state })
+    }
+
+    /// web3d-M7: the GPU program id for particles block `name`, if it
+    /// compiled, interning it on first use.
+    pub fn intern_particle_program(&mut self, name: &str) -> Option<u32> {
+        if let Some(i) = self.particle_program_names.iter().position(|n| n == name) {
+            return Some(i as u32);
+        }
+        let program = self.particle_classes.get(name)?.as_ref().ok()?.clone();
+        self.particle_program_names.push(name.to_string());
+        self.particle_programs.push(program);
+        Some((self.particle_programs.len() - 1) as u32)
     }
 
     pub fn seed_rng(&mut self, seed: u64) {

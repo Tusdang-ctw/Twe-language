@@ -209,6 +209,8 @@ fn initialize(path: &str) -> Result<Env, ()> {
     } else {
         let mut env = Env::new();
         stdlib::install(&mut env);
+        // web3d-M7: this host simulates compiled particles on the GPU.
+        env.gpu_particles = true;
         if let Err(e) = eval::run_top_level(&mut env, &program) {
             eprintln!("{path}:{}:{}: {}", e.line, e.col, e.message);
             if let Some(help) = &e.help {

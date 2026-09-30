@@ -12,5 +12,6 @@ pub mod graph;
 pub mod hud;
 pub(crate) mod material;
 pub(crate) mod post;
+pub mod particles;
 pub mod render;
 pub(crate) mod taa;

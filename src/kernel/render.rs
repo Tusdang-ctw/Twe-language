@@ -177,6 +177,9 @@ pub struct RenderSnapshot<'a> {
     pub point_lights: &'a [PointLightU],
     /// web3d-M7: height fog.
     pub fog: Option<FogSettings>,
+    /// web3d-M7: GPU particle programs, this frame's emissions, and
+    /// particles simulated on the CPU to draw.
+    pub particles: crate::kernel::particles::ParticleFrame<'a>,
     /// web3d-M7: image-based lighting; `None` lights with the uniform
     /// ambient colour instead.
     pub environment: Option<EnvironmentSettings<'a>>,
@@ -2443,6 +2446,8 @@ pub struct Renderer {
     transmission: crate::kernel::post::Transmission,
     /// web3d-M7: GPU-driven culling and indirect draws.
     gpu_cull: crate::kernel::gpu_cull::GpuCull,
+    /// web3d-M7: GPU particles.
+    particles: crate::kernel::particles::Particles,
     /// web3d-M7: the clustered point / spot light list.
     clusters: crate::kernel::clusters::Clusters,
     frame_index: std::cell::Cell<u32>,
@@ -2926,6 +2931,7 @@ async fn init_renderer(
     let exposure = crate::kernel::post::AutoExposure::new(&device);
     let transmission = crate::kernel::post::Transmission::new(&device, &queue);
     let gpu_cull = crate::kernel::gpu_cull::GpuCull::new(&device);
+    let particles = crate::kernel::particles::Particles::new(&device);
     let dof = crate::kernel::post::Dof::new(&device);
     let motion = crate::kernel::post::MotionBlur::new(&device);
     let lut = LutState {
@@ -3393,6 +3399,7 @@ async fn init_renderer(
         frame_ao_key: (0, 0),
         transmission,
         gpu_cull,
+        particles,
         clusters,
         frame_index: std::cell::Cell::new(0),
         point_shadows,
@@ -4573,6 +4580,22 @@ impl Renderer {
         state
             .queue
             .write_buffer(&state.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        // web3d-M7: the frame's particles, simulated and drawn with the
+        // (jittered) camera the depth buffer is rendered with.
+        let particles_on = state.particles.prepare(
+            &state.device,
+            &state.queue,
+            &snap.particles,
+            &crate::kernel::particles::ParticleCamera {
+                view_proj,
+                inv_view_proj: camera_uniform.inv_view_proj,
+                eye,
+                right: [view[0][0], view[1][0], view[2][0]],
+                up: [view[0][1], view[1][1], view[2][1]],
+            },
+            (state.config.width, state.config.height),
+            snap.time,
+        );
 
         let lights_uniform = snap.lights;
         // web3d-M7: the frame's point and spot lights, with the shadow
@@ -5341,6 +5364,36 @@ impl Renderer {
                 ],
             );
         }
+        // web3d-M7: particles, after everything that draws the scene:
+        // simulate (bouncing off its depth), draw into the WBOIT
+        // targets, blend over `hdr`.
+        let wboit = if particles_on {
+            let pool = graph.import("particle pool", false);
+            graph.add_pass(
+                FramePass::ParticlesSim,
+                "particles",
+                &[(depth, Access::Sample)],
+                &[(pool, Access::Storage)],
+            );
+            use crate::kernel::particles::{ACCUM_FORMAT, REVEAL_FORMAT};
+            let accum = graph.create(TextureDesc::new("particle accum", Extent::FULL, ACCUM_FORMAT));
+            let reveal = graph.create(TextureDesc::new("particle reveal", Extent::FULL, REVEAL_FORMAT));
+            graph.add_pass(
+                FramePass::ParticlesDraw,
+                "particle draw",
+                &[(pool, Access::Sample), (depth, Access::Sample)],
+                &[(accum, Access::Attach), (reveal, Access::Attach)],
+            );
+            graph.add_pass(
+                FramePass::ParticlesComposite,
+                "particle composite",
+                &[(accum, Access::Sample), (reveal, Access::Sample)],
+                &[(hdr, Access::Attach)],
+            );
+            Some([accum, reveal])
+        } else {
+            None
+        };
         // web3d-M7: TAA resolves `hdr` into the persistent history the
         // tonemap then reads.
         let tonemap_input = if taa_on {
@@ -5673,7 +5726,7 @@ impl Renderer {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
-                                store: if taa_on || dof_on || motion_on || transmission_on {
+                                store: if taa_on || dof_on || motion_on || transmission_on || particles_on {
                                     wgpu::StoreOp::Store
                                 } else {
                                     wgpu::StoreOp::Discard
@@ -5690,6 +5743,23 @@ impl Renderer {
                     rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
                     draw_opaque(&mut rpass, state, snap.materials, &opaque_draws, &cull_groups, OpaqueSource::Late);
                     finish_scene(&mut rpass, state, env_uniform.params[3] > 0.5 || fog_on, &transparent, transmission_on);
+                }
+                FramePass::ParticlesSim => {
+                    state.particles.record_sim(&state.device, &mut encoder, depth_view);
+                }
+                FramePass::ParticlesDraw => {
+                    let [accum, reveal] = wboit.ok_or("render graph: particles without targets")?;
+                    let view = |r| state.pool.view(&plan, r).ok_or("render graph: no particle target");
+                    state
+                        .particles
+                        .record_draw(&state.device, &mut encoder, [view(accum)?, view(reveal)?], depth_view);
+                }
+                FramePass::ParticlesComposite => {
+                    let [accum, reveal] = wboit.ok_or("render graph: particles without targets")?;
+                    let view = |r| state.pool.view(&plan, r).ok_or("render graph: no particle target");
+                    state
+                        .particles
+                        .record_composite(&state.device, &mut encoder, view(accum)?, view(reveal)?, main_color_view);
                 }
                 FramePass::TransmissionCopy => {
                     state.transmission.record(&state.device, &mut encoder, main_color_view);
@@ -5710,7 +5780,7 @@ impl Renderer {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
-                                store: if taa_on || dof_on || motion_on {
+                                store: if taa_on || dof_on || motion_on || particles_on {
                                     wgpu::StoreOp::Store
                                 } else {
                                     wgpu::StoreOp::Discard
@@ -5831,7 +5901,7 @@ impl Renderer {
                                 view: depth_view,
                                 depth_ops: Some(wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(1.0),
-                                    store: if taa_on || dof_on || motion_on || transmission_on || gpu_cull {
+                                    store: if taa_on || dof_on || motion_on || transmission_on || gpu_cull || particles_on {
                                         wgpu::StoreOp::Store
                                     } else {
                                         wgpu::StoreOp::Discard
@@ -5917,6 +5987,11 @@ impl Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn gpu_cull_counts(&self) -> Option<(u32, u32, u32)> {
         self.gpu_cull.last_counts(&self.device, &self.queue)
+    }
+
+    /// web3d-M7 diagnostics: how many particles the GPU pool holds.
+    pub fn particle_capacity(&self) -> u32 {
+        self.particles.capacity()
     }
 
     /// Read back the last headless frame as tightly packed RGBA8
@@ -6775,6 +6850,12 @@ enum FramePass {
     /// web3d-M7: the transparent list over the opaque frame (when the
     /// main pass is split for transmission).
     MainTransparent,
+    /// web3d-M7: spawn and update the GPU particles.
+    ParticlesSim,
+    /// web3d-M7: draw the particles into the WBOIT targets.
+    ParticlesDraw,
+    /// web3d-M7: blend the particles over the frame.
+    ParticlesComposite,
     /// web3d-M7: temporal anti-aliasing resolve into the history.
     Taa,
     /// web3d-M7: depth of field (bokeh gather + composite).

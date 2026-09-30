@@ -59,6 +59,7 @@ pub mod lsp;
 pub mod module;
 pub mod mutator;
 pub mod parser;
+pub mod particles_wgsl;
 pub mod play;
 pub mod printer;
 pub mod profile;
