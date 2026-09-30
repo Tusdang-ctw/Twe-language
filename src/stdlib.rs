@@ -356,6 +356,11 @@ pub fn install(env: &mut Env) {
         "fog".to_string(),
         Value::from_builtin("light.fog", &["density", "falloff", "color"], light_fog_impl),
     );
+    // web3d-M7: light the fog per point (shafts, halos).
+    light_fields.insert(
+        "volumetric".to_string(),
+        Value::from_builtin("light.volumetric", &["enabled"], light_volumetric_impl),
+    );
     light_fields.insert(
         "clear".to_string(),
         Value::from_builtin("light.clear", &[], light_clear_impl),
@@ -426,6 +431,10 @@ pub fn install(env: &mut Env) {
     postfx_fields.insert(
         "motion_blur".to_string(),
         Value::from_builtin("postfx.motion_blur", &["shutter"], postfx_motion_blur_impl),
+    );
+    postfx_fields.insert(
+        "ssr".to_string(),
+        Value::from_builtin("postfx.ssr", &["strength"], postfx_ssr_impl),
     );
     postfx_fields.insert(
         "lut".to_string(),
@@ -1111,6 +1120,10 @@ thread_local! {
     /// web3d-M7: height fog (density, falloff, sRGB colour), or none.
     static FOG: RefCell<Option<(f32, f32, [f32; 3])>> = const { RefCell::new(None) };
     static MOTION_BLUR: RefCell<f32> = const { RefCell::new(0.0) };
+    /// web3d-M7 session 14: volumetric fog (`light.volumetric`) and
+    /// screen-space reflections (`postfx.ssr`).
+    static FOG_VOLUMETRIC: RefCell<bool> = const { RefCell::new(false) };
+    static SSR: RefCell<f32> = const { RefCell::new(0.0) };
     static COLOR_LUT: RefCell<Option<(String, f32)>> = const { RefCell::new(None) };
     /// web3d-M7: temporal anti-aliasing (`postfx.taa`), off by default.
     static TAA_ENABLED: RefCell<bool> = const { RefCell::new(false) };
@@ -1216,6 +1229,16 @@ pub fn fog_settings() -> Option<(f32, f32, [f32; 3])> {
 /// web3d-M7: depth of field as (focus distance, f-number); (0, 0) = off.
 pub fn dof_settings() -> (f32, f32) {
     DOF.with(|s| *s.borrow())
+}
+
+/// web3d-M7: whether fog is lit per point (`light.volumetric`).
+pub fn fog_volumetric() -> bool {
+    FOG_VOLUMETRIC.with(|s| *s.borrow())
+}
+
+/// web3d-M7: screen-space reflection strength (0 = off).
+pub fn ssr_strength() -> f32 {
+    SSR.with(|s| *s.borrow())
 }
 
 /// web3d-M7: the motion-blur shutter fraction (0 = off).
@@ -11550,6 +11573,25 @@ fn light_fog_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     Ok(Value::NIL)
 }
 
+// web3d-M7: `light.volumetric(enabled)` — light the fog per point in
+// space: shafts where the sun passes shadow casters, halos around point
+// and spot lights. It changes how `light.fog`'s fog is lit, so it needs
+// fog to show.
+fn light_volumetric_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "light.volumetric")?;
+    if !args[0].is_bool() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("light.volumetric expects true or false, got {}", args[0].type_name()),
+            help: Some("e.g. `light.volumetric(true)` (with fog from `light.fog`)".to_string()),
+        });
+    }
+    let on = args[0].as_bool();
+    FOG_VOLUMETRIC.with(|s| *s.borrow_mut() = on);
+    Ok(Value::NIL)
+}
+
 fn light_shadow_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "light.shadow")?;
     let handle = handle_int(&args[0], "light.shadow")?;
@@ -11759,6 +11801,16 @@ fn postfx_motion_blur_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runt
     arity(args, 1, "postfx.motion_blur")?;
     let shutter = (number(&args[0], "postfx.motion_blur.shutter")? as f32).clamp(0.0, 2.0);
     MOTION_BLUR.with(|s| *s.borrow_mut() = shutter);
+    Ok(Value::NIL)
+}
+
+// web3d-M7: screen-space reflections: how much of a surface's
+// environment reflection is replaced by what the screen shows along the
+// reflected ray (0 = off, 1 = all of it where a ray hits).
+fn postfx_ssr_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "postfx.ssr")?;
+    let strength = (number(&args[0], "postfx.ssr.strength")? as f32).clamp(0.0, 1.0);
+    SSR.with(|s| *s.borrow_mut() = strength);
     Ok(Value::NIL)
 }
 

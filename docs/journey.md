@@ -144,6 +144,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-30: a million sparks.** Twe's `particles` blocks, the language's built-in way to describe sparks, smoke and embers, now run on the graphics card in 3D. The same few lines of Twe that describe one spark are translated into a GPU program, so a million of them fly at once, and with `collide: true` they bounce off the floor and walls. The translator refuses anything the GPU version would do differently from the normal one, down to how dividing whole numbers rounds, and those blocks simply keep running the old way. Fixing the first version's slowness on the laptop's built-in graphics chip came down to one insight: soft round sparks don't need anti-aliasing. Removing it made them four times faster.
 
+- **2026-09-30: mirrors and sunbeams.** Two classic effects arrived together. Shiny floors and metal now reflect the scene around them, by following each reflected ray through the picture already drawn. Fog can now be lit point by point, so sunlight cuts visible beams between pillars and lamps glow in the mist. On the scoreboard Twe's error fell from 0.1800 to 0.1773, ahead of every renderer in the reference table, including Khronos's own viewer; the notes flag that the comparison gives Twe two effects the Three.js setup doesn't use. The session also caught a false alarm: a slowdown blamed on the new code turned out to be the laptop's graphics chip running hot. Re-measuring the old code showed it.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

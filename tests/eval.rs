@@ -1347,6 +1347,23 @@ fn light_fog_setter() {
 ").is_err());
 }
 
+/// web3d-M7: `postfx.ssr` (clamped to 0..1) and `light.volumetric`.
+#[test]
+fn ssr_and_volumetric_setters() {
+    run_program_str("postfx.ssr(0.8)
+light.volumetric(true)
+").expect("should run");
+    assert_eq!(twec::stdlib::ssr_strength(), 0.8);
+    assert!(twec::stdlib::fog_volumetric());
+    run_program_str("postfx.ssr(3)
+light.volumetric(false)
+").expect("should run");
+    assert_eq!(twec::stdlib::ssr_strength(), 1.0);
+    assert!(!twec::stdlib::fog_volumetric());
+    assert!(run_program_str("light.volumetric(1)
+").is_err(), "volumetric takes a bool");
+}
+
 /// web3d-M7: lights are no longer capped at 8 (clustered shading);
 /// `light.cone` makes a spot light; bad cones are errors.
 #[test]

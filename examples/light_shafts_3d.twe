@@ -1,0 +1,45 @@
+# @task: Light shafts through fog, a glowing lamp, and a mirror floor
+# @inputs: none
+# @expected: sunbeams slant between pillars through the fog, a warm halo glows around the lamp, and the floor mirrors the pillars
+# @category: 3d
+# @difficulty: small
+#
+# `twec play3d examples/light_shafts_3d.twe`, or build it for the browser
+# with `twec build --target web examples/light_shafts_3d.twe`.
+#
+# web3d-M7:
+# - `light.volumetric(true)` lights the fog from `light.fog` per point
+#   in space, so the pillars' shadows carve shafts out of the sunlit
+#   fog, and point lights glow in it.
+# - `postfx.ssr(1.0)` turns on screen-space reflections: the glossy
+#   floor (a glTF material, metallic and smooth) reflects the pillars
+#   instead of only the sky.
+
+var t = 0.0
+
+light.clear()
+light.ambient((0.12, 0.12, 0.15, 1.0))
+sun.direction(vec3(-0.5, 0.45, 0.25))
+sun.shadow(true)
+sun.shadow_extent(16.0)
+light.fog(0.035, 0.15, (0.55, 0.58, 0.68))
+light.volumetric(true)
+postfx.ssr(1.0)
+postfx.bloom(0.4)
+postfx.taa(true)
+
+let lamp = light.add((0, 1.2, 0), (4.0, 2.0, 0.8, 1.0), 6)
+
+on update(dt):
+    t += dt
+    camera.eye = vec3(math.sin(t * 0.15) * 11.0, 3.0, math.cos(t * 0.15) * 11.0)
+    camera.target = vec3(0, 1.8, 0)
+
+on render():
+    cube(at: vec3(0, -50.01, 0), size: 100, color: (0.18, 0.18, 0.2, 1))
+    mesh("assets/mirror_floor.glb", at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+    sphere(at: vec3(0, 1.2, 0), color: (1.0, 0.8, 0.5, 1.0), size: 0.3)
+    for i in 0..<8:
+        let a = i * 0.785
+        for h in 0..<5:
+            cube(at: vec3(math.cos(a) * 4.5, 0.5 + h, math.sin(a) * 4.5), size: 1, color: (0.55, 0.55, 0.6, 1))

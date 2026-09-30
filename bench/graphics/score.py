@@ -127,6 +127,10 @@ def main():
         f"`{SUITE['generator']['commit'][:10]}`, scored the same way, for context.",
         "A dash means that engine has no golden for the scene; the mean row covers",
         "only engines with every scene.",
+        "",
+        "Twe renders with ambient occlusion and screen-space reflections on",
+        "(`TWE_BENCH_AO`, `TWE_BENCH_SSR`); Three.js as this harness sets it up",
+        "uses neither (three ships GTAOPass and SSRPass addons, not used here).",
     ]
     notes = SUITE.get("notes", {})
     if notes:

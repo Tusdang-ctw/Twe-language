@@ -14,4 +14,6 @@ pub(crate) mod material;
 pub(crate) mod post;
 pub mod particles;
 pub mod render;
+pub(crate) mod ssr;
 pub(crate) mod taa;
+pub(crate) mod volumetric;

@@ -947,6 +947,7 @@ postfx.bloom_threshold(1.0)       # HDR brightness where bloom starts; 0 = every
 postfx.dof(8, 1.4)                # depth of field: focus distance, f-number; (0, 0) = off
 postfx.motion_blur(0.5)           # camera motion blur, shutter as a fraction of a frame; 0 = off
 postfx.lut("looks/warm.cube", 1)  # colour grading: a .cube 3D LUT and its strength; 0 = off
+postfx.ssr(1.0)                   # screen-space reflections, 0 (off, default) to 1
 postfx.frustum_cull(true)         # cull hidden objects on the GPU (default on)
 ```
 
@@ -992,6 +993,12 @@ The HDR pipeline always runs. The steps from scene light to the display, in orde
 
 TAA is off by default, because it trades a little sharpness for stability. Shadows are covered in §7.7c.
 
+**Screen-space reflections** *(web3d-M7)*. `postfx.ssr(strength)` makes glossy surfaces reflect the scene, not only the environment:
+- **How.** Each glossy pixel follows its reflected ray through the depth buffer. Where the ray meets something on screen, the pixel reflects that instead of the environment (IBL, or the ambient colour), by `strength` × how much the surface reflects.
+- **Which surfaces.** Only surfaces smooth enough to show it: roughness below 0.7, fading out from 0.35. Faint reflections (below 5%, e.g. a matte dielectric seen head-on) are skipped. Script-drawn primitives (roughness 0.5, a dielectric) barely reflect; glTF metals and polished floors do.
+- **Screen-space limits.** Only what is on screen can be reflected: rays leaving the screen, passing behind something or turning back toward the camera fade to the environment. Rough reflections aren't blurred (they fade instead).
+- **Cost.** The main pass writes a second target (the surface's normal, roughness and reflectance) only on frames with reflections on.
+
 ### 7.7c 3D lights and shadows  *(`twec play3d` and web builds)*
 
 ```twe
@@ -1008,6 +1015,7 @@ light.cone(torch, vec3(0, -1, 0), 30)     # a spot light: direction, half-angle 
 light.remove(torch)
 light.clear()                             # remove every point light
 light.fog(0.05, 0.3, (0.7, 0.75, 0.8))    # height fog: density, falloff, colour; density 0 = off
+light.volumetric(true)                    # light the fog per point: shafts, halos
 ```
 
 - **Up to 1024 point and spot lights** *(web3d-M7)*. `light.add` errors past that. Shading is clustered: the view is divided into a 16 × 9 × 24 grid, each cluster lists the lights that reach it, and a surface shades only its cluster's lights. A scene can hold hundreds of lights while each pixel pays for the few near it. (Before web3d-M7 there were 8.)
@@ -1026,6 +1034,13 @@ light.fog(0.05, 0.3, (0.7, 0.75, 0.8))    # height fog: density, falloff, colour
 - the fog is its `color`, glowing brighter looking toward the sun;
 - it covers every surface, translucent ones included, and the background;
 - `light.fog(0, 0, color.white)` turns it off.
+
+**Volumetric fog** *(web3d-M7)*. `light.volumetric(true)` lights that fog point by point instead of with the closed-form integral:
+- **Light shafts.** Where the sun's shadow falls (with `sun.shadow(true)`), the fog loses its sunlight, so light shafts slant between the shadow casters. A quarter of the fog's light is sky light, which no shadow blocks.
+- **Halos.** Point and spot lights light the fog around them.
+- **Where no shadow falls,** it looks like the closed-form fog.
+- **How.** The view is divided into 160 × 90 × 64 froxels (depth slices growing exponentially to the far plane); a compute pass lights each froxel, a second integrates them front to back, and each pixel takes the fog in front of it.
+- **Limits.** Point-light shadows don't cut the fog. Translucent surfaces are fogged as the opaque surface behind them. The slices are visible as soft banding at sharp shadow edges.
 
 **Translucency** *(web3d-M7)*. A draw colour with alpha below 1 (`cube(at: p, color: (0.2, 0.6, 1.0, 0.4))`) draws translucent, and so do glTF materials with `alphaMode: BLEND`:
 - translucent surfaces are drawn after everything opaque, sorted back to front by distance (each glTF primitive by its own centre), and blended over what is behind them;

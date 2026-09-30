@@ -151,6 +151,9 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
                 frustum_cull: false,
                 ao: bench_ao().0,
                 ao_radius: bench_ao().1 * sphere_r,
+                // Session 14: screen-space reflections (`TWE_BENCH_SSR`,
+                // default 1; 0 turns them off).
+                ssr: std::env::var("TWE_BENCH_SSR").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
                 ..PostFx::default()
             },
             draws: &draws,

@@ -1675,3 +1675,122 @@ spawn Cloud at vec3(0, 0, 0)
     let corner = pixel(&rgba, 4, 4);
     assert!(centre[2] > corner[2] + 20, "cloud {centre:?} vs corner {corner:?}");
 }
+
+/// web3d-M7: a glTF with one square in the y = 0 plane, x, z ∈ [-4, 4],
+/// facing up, with `material`.
+fn floor_glb(material: &str) -> Vec<u8> {
+    let positions = [-4.0f32, 0.0, -4.0, -4.0, 0.0, 4.0, 4.0, 0.0, 4.0, 4.0, 0.0, -4.0];
+    let normals = [0.0f32, 1.0, 0.0].repeat(4);
+    let indices = [0u16, 1, 2, 0, 2, 3];
+    let mut bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
+    bin.extend(normals.iter().flat_map(|f| f.to_le_bytes()));
+    bin.extend(indices.iter().flat_map(|i| i.to_le_bytes()));
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
+        "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":2,"material":0}}]}}],
+        "materials":[{material}],
+        "accessors":[
+            {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-4,0,-4],"max":[4,0,4]}},
+            {{"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"}},
+            {{"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}}],
+        "bufferViews":[
+            {{"buffer":0,"byteOffset":0,"byteLength":48}},
+            {{"buffer":0,"byteOffset":48,"byteLength":48}},
+            {{"buffer":0,"byteOffset":96,"byteLength":12}}],
+        "buffers":[{{"byteLength":{{bin_len}}}}]}}"#
+    );
+    glb(&json, &bin)
+}
+
+/// web3d-M7: with `postfx.ssr`, a mirror floor reflects the red block
+/// standing on it (screen-space reflections); without, only the
+/// surroundings. Pixels away from the floor don't change.
+#[test]
+fn screen_space_reflections_show_the_scene() {
+    if headless().is_none() {
+        return;
+    }
+    let mirror = r#"{"pbrMetallicRoughness":{"baseColorFactor":[0.9,0.9,0.9,1],"metallicFactor":1,"roughnessFactor":0.05}}"#;
+    let scene = |ssr: f32| {
+        format!(
+            "light.clear()
+light.ambient((0.3, 0.3, 0.3, 1.0))
+postfx.tonemap(\"none\")
+postfx.ssr({ssr})
+camera.eye = vec3(0, 1.6, 4)
+camera.target = vec3(0, 0.4, 0)
+on render():
+    mesh(\"mirror.glb\", at: vec3(0, 0, 0), color: (1, 1, 1, 1), size: 1.0)
+    cube(at: vec3(0, 0.5, 0), size: 1, color: (1, 0.1, 0.1, 1))
+"
+        )
+    };
+    let off = render_glb("mirror", floor_glb(mirror), &scene(0.0));
+    let on = render_glb("mirror", floor_glb(mirror), &scene(1.0));
+    save_png("ssr_off", &off);
+    save_png("ssr_on", &on);
+    let red = |p: &[u8]| p[0] > 90 && i32::from(p[0]) > i32::from(p[1]) + 50;
+    let (mut reflected, mut changed_above) = (0, 0);
+    for (i, (a, b)) in off.chunks_exact(4).zip(on.chunks_exact(4)).enumerate() {
+        let y = i as u32 / W;
+        if red(b) && !red(a) {
+            reflected += 1;
+        }
+        // The top rows show the backdrop, above the floor's horizon.
+        if y < 20 && (i32::from(a[0]) - i32::from(b[0])).abs() > 2 {
+            changed_above += 1;
+        }
+    }
+    assert!(reflected > 800, "the floor reflects the block: {reflected} pixels");
+    assert_eq!(changed_above, 0, "the backdrop is untouched");
+}
+
+/// web3d-M7: `light.volumetric` lights the fog per point. With no shadow
+/// in the way it matches the closed-form fog it replaces; with the sun
+/// shadowed by a wall, the fog in the wall's shadow is darker (a light
+/// shaft's edge).
+#[test]
+fn volumetric_fog_matches_and_casts_shafts() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |volumetric: bool, shadow: bool| {
+        format!(
+            "light.clear()
+light.ambient((0.2, 0.2, 0.2, 1.0))
+sun.direction(vec3(-0.6, 0.5, 0.2))
+sun.shadow({shadow})
+sun.shadow_extent(20.0)
+light.fog(0.15, 0.0, (0.8, 0.8, 0.8))
+light.volumetric({volumetric})
+postfx.tonemap(\"none\")
+camera.eye = vec3(0, 2, 8)
+camera.target = vec3(0, 2, 0)
+on render():
+    cube(at: vec3(0, -50, 0), size: 100, color: (0.3, 0.3, 0.3, 1))
+    cube(at: vec3(-3, 3, -2), size: 6, color: (0.5, 0.5, 0.5, 1))
+"
+        )
+    };
+    let mut renderer = headless().expect("gpu");
+    let closed = render_source(&mut renderer, "fog_closed", &scene(false, false));
+    let volume = render_source(&mut renderer, "fog_volume", &scene(true, false));
+    let closed_shadowed = render_source(&mut renderer, "fog_closed_shadowed", &scene(false, true));
+    let volume_shadowed = render_source(&mut renderer, "fog_volume_shadowed", &scene(true, true));
+    save_png("fog_closed", &closed);
+    save_png("fog_volume", &volume);
+    save_png("fog_volume_shadowed", &volume_shadowed);
+    let mean = |rgba: &[u8]| rgba.chunks_exact(4).map(|p| f64::from(p[0])).sum::<f64>() / f64::from(W * H);
+    assert!(
+        (mean(&closed) - mean(&volume)).abs() < 3.0,
+        "unshadowed, the volume matches the closed form: {} vs {}",
+        mean(&volume),
+        mean(&closed)
+    );
+    let darker = closed_shadowed
+        .chunks_exact(4)
+        .zip(volume_shadowed.chunks_exact(4))
+        .filter(|(a, b)| i32::from(a[0]) - i32::from(b[0]) > 8)
+        .count();
+    assert!(darker as u32 > W * H / 50, "the wall's shadow darkens the fog: {darker} pixels");
+}

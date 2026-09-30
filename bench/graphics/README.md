@@ -51,6 +51,7 @@ Requirements:
   - `TWE_BENCH_TAA=0` turns TAA off;
   - `TWE_BENCH_AO=0` turns ambient occlusion off;
   - `TWE_BENCH_AO_RADIUS` sets the AO radius as a fraction of the model's bounding radius.
+  - `TWE_BENCH_SSR=0` turns screen-space reflections off (default 1, web3d-M7 session 14).
 - `python score.py`
 
 ## Rules

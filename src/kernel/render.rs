@@ -113,6 +113,9 @@ pub struct PostFx {
     /// web3d-M7: camera motion blur, as the fraction of the frame the
     /// shutter is open (0.5 = a film camera's 180°); 0 = off.
     pub motion_blur: f32,
+    /// web3d-M7: screen-space reflections, as a multiplier on how much
+    /// of a surface's environment reflection they replace; 0 = off.
+    pub ssr: f32,
 }
 
 impl Default for PostFx {
@@ -132,6 +135,7 @@ impl Default for PostFx {
             dof_focus: 0.0,
             dof_f_stop: 0.0,
             motion_blur: 0.0,
+            ssr: 0.0,
         }
     }
 }
@@ -157,6 +161,10 @@ pub struct FogSettings {
     pub falloff: f32,
     /// sRGB, like script colours.
     pub color: [f32; 3],
+    /// web3d-M7: light the fog per point in a froxel volume — shafts
+    /// through the sun's shadows, halos around point lights — instead
+    /// of the closed-form integral.
+    pub volumetric: bool,
 }
 
 /// web3d-M7: a colour-grading look for a frame.
@@ -1141,6 +1149,27 @@ fn ao_multibounce(x: f32, albedo: vec3<f32>) -> vec3<f32> {
 // Light leaving a surface point toward the eye: ambient environment,
 // the shadowed sun, up to 8 point lights, and emission. Shared by glTF
 // materials, the plain surface and `visual` materials.
+// web3d-M7: what screen-space reflections need of the surface a pixel
+// shows, written by `shade` and output as the main pass's second target
+// (`SURFACE_FORMAT`): the world normal (octahedral, 0..1), roughness,
+// and the weight the environment's specular reflection has in the pixel
+// (0 = nothing to reflect).
+var<private> g_surface: vec4<f32>;
+
+fn oct_encode(n: vec3<f32>) -> vec2<f32> {
+    let p = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
+    var q = p;
+    if (n.z < 0.0) {
+        q = (1.0 - abs(p.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    }
+    return q * 0.5 + 0.5;
+}
+
+struct SurfaceOut {
+    @location(0) color: vec4<f32>,
+    @location(1) surface: vec4<f32>,
+};
+
 fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     let n = s.n;
     let v = normalize(camera.eye.xyz - in.world_pos);
@@ -1220,6 +1249,12 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
             cc_light = lights.ambient.rgb * (0.04 * abc.x + abc.y) * s.clearcoat * occlusion;
         }
     }
+    // The environment's specular weight, for reflections to replace.
+    var reflect_w = dot(specular_albedo, vec3<f32>(0.2126, 0.7152, 0.0722)) * occlusion;
+    if (env.params.z > 0.5) {
+        reflect_w = reflect_w * env.params.x;
+    }
+    g_surface = vec4<f32>(oct_encode(n), roughness, clamp(reflect_w, 0.0, 1.0));
     // web3d-M7: what's behind, refracted through the volume (Snell,
     // exiting after `thickness`), blurred by roughness (a mip of the
     // opaque scene per roughness, narrowed as IOR nears 1), absorbed
@@ -1328,7 +1363,7 @@ fn ext_texel(ext: array<vec4<f32>, 4>, role: u32) -> vec4<f32> {
 }
 
 @fragment
-fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> SurfaceOut {
     // Every texture read and derivative first, in uniform control flow
     // (WebGPU requires it for implicit-derivative sampling).
     let normal_uv = material_uv(in, 2u);
@@ -1432,7 +1467,8 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
     if (s.transmission > 0.0 && material.alpha.x < 1.5) {
         alpha = 1.0;
     }
-    return vec4<f32>(shade(in, s), alpha);
+    let lit = shade(in, s);
+    return SurfaceOut(vec4<f32>(lit, alpha), g_surface);
 }
 "#;
 
@@ -1513,7 +1549,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
 /// cut out, so a visual can shape the mesh (a flame on a quad).
 const MATERIAL_FS: &str = r#"
 @fragment
-fn fs_material(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_material(in: VertexOutput, @builtin(front_facing) front: bool) -> SurfaceOut {
     let c = twe_pixel(in.tex_coord, camera.time.x);
     if (c.a < 0.5) {
         discard;
@@ -1523,7 +1559,8 @@ fn fs_material(in: VertexOutput, @builtin(front_facing) front: bool) -> @locatio
         n = -n;
     }
     // A visual's colour on the plain dielectric surface.
-    return vec4<f32>(shade(in, surface_plain(in.base_color.rgb * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0))), 1.0);
+    let lit = shade(in, surface_plain(in.base_color.rgb * c.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0)));
+    return SurfaceOut(vec4<f32>(lit, 1.0), g_surface);
 }
 "#;
 
@@ -1747,6 +1784,9 @@ const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// web3d-M7: samples per pixel in the main pass (MSAA). The multisampled
 /// colour resolves into the single-sample HDR target the tonemap reads.
 pub(crate) const MSAA_SAMPLES: u32 = 4;
+/// web3d-M7: the main pass's second target, the surface record for
+/// screen-space reflections (see `g_surface` in the shader).
+pub(crate) const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Phase 25: separate shadow shader — depth-only, no fragment
 /// stage needed, just the vertex pass that emits clip-space
@@ -1915,9 +1955,35 @@ fn surface_pipeline(
     shader: &wgpu::ShaderModule,
     fs_entry: &str,
     double_sided: bool,
+    surface: bool,
 ) -> wgpu::RenderPipeline {
     let cull = if double_sided { None } else { Some(wgpu::Face::Back) };
-    surface_pipeline_with(device, layout, shader, fs_entry, cull, false)
+    surface_pipeline_with(device, layout, shader, fs_entry, cull, false, surface)
+}
+
+/// web3d-M7: the lit-surface pipelines of the main passes, without or
+/// with the surface record target (`surface`) that reflections read.
+/// Frames without reflections use the first set, so they don't pay for
+/// a second multisampled target.
+struct LitPipelines {
+    opaque: wgpu::RenderPipeline,
+    /// Back faces drawn too (glTF `doubleSided` materials).
+    double: wgpu::RenderPipeline,
+    /// The transparent pass, front faces and back faces.
+    blend_front: wgpu::RenderPipeline,
+    blend_back: wgpu::RenderPipeline,
+}
+
+impl LitPipelines {
+    fn new(device: &wgpu::Device, layout: &wgpu::PipelineLayout, shader: &wgpu::ShaderModule, surface: bool) -> Self {
+        let blend = |cull| surface_pipeline_with(device, layout, shader, "fs_main", Some(cull), true, surface);
+        LitPipelines {
+            opaque: surface_pipeline(device, layout, shader, "fs_main", false, surface),
+            double: surface_pipeline(device, layout, shader, "fs_main", true, surface),
+            blend_front: blend(wgpu::Face::Back),
+            blend_back: blend(wgpu::Face::Front),
+        }
+    }
 }
 
 /// web3d-M7: the lit surface culling `cull`, either opaque (depth
@@ -1930,6 +1996,7 @@ fn surface_pipeline_with(
     fs_entry: &str,
     cull: Option<wgpu::Face>,
     blend: bool,
+    surface: bool,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(fs_entry),
@@ -1945,15 +2012,28 @@ fn surface_pipeline_with(
             entry_point: Some(fs_entry),
             // Phase 26: main pipeline always targets HDR. The
             // tonemap pass converts to the swapchain's sRGB.
-            targets: &[Some(wgpu::ColorTargetState {
-                format: HDR_FORMAT,
-                blend: Some(if blend {
-                    wgpu::BlendState::ALPHA_BLENDING
-                } else {
-                    wgpu::BlendState::REPLACE
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(if blend {
+                        wgpu::BlendState::ALPHA_BLENDING
+                    } else {
+                        wgpu::BlendState::REPLACE
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
                 }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+                // web3d-M7: the surface record for reflections; blended
+                // surfaces leave the one beneath.
+                surface.then_some(wgpu::ColorTargetState {
+                    format: SURFACE_FORMAT,
+                    blend: None,
+                    write_mask: if blend {
+                        wgpu::ColorWrites::empty()
+                    } else {
+                        wgpu::ColorWrites::ALL
+                    },
+                }),
+            ],
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
@@ -2388,14 +2468,14 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    /// web3d-M7: the same surface with back faces drawn (glTF
-    /// `doubleSided` materials).
-    pipeline_double: wgpu::RenderPipeline,
-    /// web3d-M7: the blended surface for the transparent pass, front
-    /// faces and back faces.
-    blend_front: wgpu::RenderPipeline,
-    blend_back: wgpu::RenderPipeline,
+    /// web3d-M7: the lit-surface pipelines, and (built on the first
+    /// frame with reflections) the set writing the surface record.
+    lit: LitPipelines,
+    lit_ssr: Option<LitPipelines>,
+    /// The main shader, for `lit_ssr`.
+    main_shader: wgpu::ShaderModule,
+    /// Whether this frame writes the surface record.
+    ssr_frame: std::cell::Cell<bool>,
     /// web3d-M7: height fog.
     fog_buffer: wgpu::Buffer,
     /// web3d-M3: the main pipeline's layout, reused by material
@@ -2403,7 +2483,8 @@ pub struct Renderer {
     pipeline_layout: wgpu::PipelineLayout,
     /// Material pipelines keyed by their WGSL, not by id: ids restart
     /// with every program (and on hot reload), the source doesn't lie.
-    material_pipelines: HashMap<String, wgpu::RenderPipeline>,
+    /// Index 1: with the surface record (see `lit_ssr`).
+    material_pipelines: [HashMap<String, wgpu::RenderPipeline>; 2],
     /// web3d-M3: the sRGB format frames are drawn in — the surface's
     /// own format, or an sRGB view of it (browsers often give a
     /// WebGPU canvas a non-sRGB format).
@@ -2448,6 +2529,9 @@ pub struct Renderer {
     gpu_cull: crate::kernel::gpu_cull::GpuCull,
     /// web3d-M7: GPU particles.
     particles: crate::kernel::particles::Particles,
+    /// web3d-M7: screen-space reflections and volumetric fog.
+    ssr: crate::kernel::ssr::Ssr,
+    volumetric: crate::kernel::volumetric::Volumetric,
     /// web3d-M7: the clustered point / spot light list.
     clusters: crate::kernel::clusters::Clusters,
     frame_index: std::cell::Cell<u32>,
@@ -2881,7 +2965,9 @@ async fn init_renderer(
         entries: &[
             // web3d-M3: fragments read `camera.time` (materials).
             uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
-            uniform_entry(1, wgpu::ShaderStages::FRAGMENT),
+            // web3d-M7: the fog volume (kernel/volumetric.rs) reads the
+            // lights and clusters in a compute pass.
+            uniform_entry(1, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE),
             // web3d-M7: the environment.
             uniform_entry(2, wgpu::ShaderStages::FRAGMENT),
             texture_entry(3, wgpu::TextureViewDimension::Cube),
@@ -2898,7 +2984,7 @@ async fn init_renderer(
             // web3d-M7: clustered lights (list, grid, parameters).
             wgpu::BindGroupLayoutEntry {
                 binding: 11,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
@@ -2908,7 +2994,7 @@ async fn init_renderer(
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 12,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
@@ -2916,7 +3002,7 @@ async fn init_renderer(
                 },
                 count: None,
             },
-            uniform_entry(13, wgpu::ShaderStages::FRAGMENT),
+            uniform_entry(13, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE),
         ],
     });
     let fog_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2932,6 +3018,7 @@ async fn init_renderer(
     let transmission = crate::kernel::post::Transmission::new(&device, &queue);
     let gpu_cull = crate::kernel::gpu_cull::GpuCull::new(&device);
     let particles = crate::kernel::particles::Particles::new(&device);
+    let ssr = crate::kernel::ssr::Ssr::new(&device);
     let dof = crate::kernel::post::Dof::new(&device);
     let motion = crate::kernel::post::MotionBlur::new(&device);
     let lut = LutState {
@@ -3019,7 +3106,7 @@ async fn init_renderer(
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -3029,7 +3116,7 @@ async fn init_renderer(
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Depth,
                     view_dimension: wgpu::TextureViewDimension::D2Array,
@@ -3039,7 +3126,7 @@ async fn init_renderer(
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 count: None,
             },
@@ -3067,12 +3154,8 @@ async fn init_renderer(
         ],
         immediate_size: 0,
     });
-    let pipeline = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main", false);
-    let pipeline_double = surface_pipeline(&device, &pipeline_layout, &shader, "fs_main", true);
-    // web3d-M7: the transparent pass — front faces, and back faces
-    // (drawn first for double-sided surfaces).
-    let blend_front = surface_pipeline_with(&device, &pipeline_layout, &shader, "fs_main", Some(wgpu::Face::Back), true);
-    let blend_back = surface_pipeline_with(&device, &pipeline_layout, &shader, "fs_main", Some(wgpu::Face::Front), true);
+    let lit = LitPipelines::new(&device, &pipeline_layout, &shader, false);
+    let volumetric = crate::kernel::volumetric::Volumetric::new(&device, &frame_bgl, &shadow_combined_bgl);
 
     // Phase 28 session 2: cascaded shadow maps. The shadow texture
     // is a 2D array with `CASCADE_COUNT` layers; each shadow pass
@@ -3367,13 +3450,13 @@ async fn init_renderer(
         device,
         queue,
         config,
-        pipeline,
-        pipeline_double,
-        blend_front,
-        blend_back,
+        lit,
+        lit_ssr: None,
+        main_shader: shader,
+        ssr_frame: std::cell::Cell::new(false),
         fog_buffer,
         pipeline_layout,
-        material_pipelines: HashMap::new(),
+        material_pipelines: [HashMap::new(), HashMap::new()],
         target_format,
         hud,
         cube_vertex_buffer,
@@ -3400,6 +3483,8 @@ async fn init_renderer(
         transmission,
         gpu_cull,
         particles,
+        ssr,
+        volumetric,
         clusters,
         frame_index: std::cell::Cell::new(0),
         point_shadows,
@@ -4563,6 +4648,13 @@ impl Renderer {
         // offset each frame; the resolve reprojects with the unjittered
         // matrices.
         let taa_on = snap.post.taa;
+        // web3d-M7: screen-space reflections need the main passes to
+        // write the surface record, through the pipelines that do.
+        let ssr_on = snap.post.ssr > 0.0;
+        state.ssr_frame.set(ssr_on);
+        if ssr_on && state.lit_ssr.is_none() {
+            state.lit_ssr = Some(LitPipelines::new(&state.device, &state.pipeline_layout, &state.main_shader, true));
+        }
         let unjittered_view_proj = mul(proj, view);
         let view_proj = if taa_on {
             let j = state.taa.jitter(state.config.width, state.config.height);
@@ -5108,6 +5200,41 @@ impl Renderer {
             }
             _ => FogUniform::zeroed(),
         };
+        // web3d-M7: volumetric fog replaces the closed-form fog.
+        let volumetric_on = fog_uniform.params[3] > 0.5 && snap.fog.is_some_and(|f| f.volumetric);
+        let mut fog_uniform = fog_uniform;
+        if volumetric_on {
+            state.volumetric.prepare(
+                &state.queue,
+                &crate::kernel::volumetric::VolumeFrame {
+                    inv_view_proj: camera_uniform.inv_view_proj,
+                    eye,
+                    forward,
+                    density: fog_uniform.params[0],
+                    falloff: fog_uniform.params[1],
+                    far,
+                    color: [fog_uniform.color[0], fog_uniform.color[1], fog_uniform.color[2]],
+                    glow: fog_uniform.sun[3],
+                    screen: (state.config.width, state.config.height),
+                },
+            );
+            fog_uniform.params[3] = 0.0;
+        }
+        if ssr_on {
+            state.ssr.prepare(
+                &state.queue,
+                (state.config.width, state.config.height),
+                &crate::kernel::ssr::SsrFrame {
+                    view_proj,
+                    inv_view_proj: camera_uniform.inv_view_proj,
+                    eye,
+                    strength: snap.post.ssr,
+                    frame: state.frame_index.get(),
+                    env: [env_uniform.params[0], env_uniform.params[1], env_uniform.params[2]],
+                    ambient: [lights_uniform.ambient[0], lights_uniform.ambient[1], lights_uniform.ambient[2]],
+                },
+            );
+        }
         let fog_on = fog_uniform.params[3] > 0.5;
         state
             .queue
@@ -5170,7 +5297,8 @@ impl Renderer {
             let Some(pixel) = snap.materials.get(m as usize).filter(|_| m != 0) else {
                 continue;
             };
-            if !state.material_pipelines.contains_key(pixel) {
+            let variant = usize::from(ssr_on);
+            if !state.material_pipelines[variant].contains_key(pixel) {
                 let module = state
                     .device
                     .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -5183,8 +5311,9 @@ impl Renderer {
                     &module,
                     "fs_material",
                     false,
+                    ssr_on,
                 );
-                state.material_pipelines.insert(pixel.clone(), pipeline);
+                state.material_pipelines[variant].insert(pixel.clone(), pipeline);
             }
         }
 
@@ -5259,6 +5388,20 @@ impl Renderer {
             samples: MSAA_SAMPLES,
             ..TextureDesc::new("depth (msaa)", Extent::FULL, DEPTH_FORMAT)
         });
+        // web3d-M7: with reflections, the main passes also write the
+        // surface record (multisampled, resolved).
+        let surface = ssr_on.then(|| {
+            let msaa = graph.create(TextureDesc {
+                samples: MSAA_SAMPLES,
+                ..TextureDesc::new("surface (msaa)", Extent::FULL, SURFACE_FORMAT)
+            });
+            (msaa, graph.create(TextureDesc::new("surface", Extent::FULL, SURFACE_FORMAT)))
+        });
+        let mut main_writes = vec![(hdr_msaa, Access::Attach), (depth, Access::Attach), (hdr, Access::Attach)];
+        if let Some((msaa, resolved)) = surface {
+            main_writes.push((msaa, Access::Attach));
+            main_writes.push((resolved, Access::Attach));
+        }
         if shadows_on {
             for cascade in 0..CASCADE_COUNT {
                 graph.add_pass(
@@ -5317,11 +5460,7 @@ impl Renderer {
             FramePass::Main,
             "main",
             &main_reads,
-            &[
-                (hdr_msaa, Access::Attach),
-                (depth, Access::Attach),
-                (hdr, Access::Attach),
-            ],
+            &main_writes,
         );
         if gpu_cull {
             let late_set = graph.import("culled late", false);
@@ -5335,11 +5474,7 @@ impl Renderer {
                 FramePass::MainLate,
                 "main (late)",
                 &[(late_set, Access::Sample)],
-                &[
-                    (hdr_msaa, Access::Attach),
-                    (depth, Access::Attach),
-                    (hdr, Access::Attach),
-                ],
+                &main_writes,
             );
         }
         // web3d-M7: with transmission, the opaque frame is copied into the
@@ -5357,11 +5492,45 @@ impl Renderer {
                 FramePass::MainTransparent,
                 "transparent",
                 &[(source, Access::Sample)],
-                &[
-                    (hdr_msaa, Access::Attach),
-                    (depth, Access::Attach),
-                    (hdr, Access::Attach),
-                ],
+                &main_writes,
+            );
+        }
+        // web3d-M7: reflections, then fog, over the drawn scene.
+        let reflection = if let Some((_, surface_resolved)) = surface {
+            let reflection = graph.create(TextureDesc::new(
+                "reflection",
+                Extent::FULL,
+                crate::kernel::ssr::REFLECTION_FORMAT,
+            ));
+            graph.add_pass(
+                FramePass::Ssr,
+                "ssr trace",
+                &[(hdr, Access::Sample), (depth, Access::Sample), (surface_resolved, Access::Sample)],
+                &[(reflection, Access::Attach)],
+            );
+            graph.add_pass(
+                FramePass::SsrComposite,
+                "ssr composite",
+                &[(reflection, Access::Sample)],
+                &[(hdr, Access::Attach)],
+            );
+            Some((reflection, surface_resolved))
+        } else {
+            None
+        };
+        if volumetric_on {
+            let volume = graph.import("fog volume", false);
+            graph.add_pass(
+                FramePass::FogVolume,
+                "fog volume",
+                &[(shadow_map, Access::Sample)],
+                &[(volume, Access::Storage)],
+            );
+            graph.add_pass(
+                FramePass::FogApply,
+                "fog apply",
+                &[(volume, Access::Sample), (depth, Access::Sample)],
+                &[(hdr, Access::Attach)],
             );
         }
         // web3d-M7: particles, after everything that draws the scene:
@@ -5666,6 +5835,31 @@ impl Renderer {
             }
         };
         let post_input = view_of(tonemap_input).ok_or("render graph: no post input")?;
+        // web3d-M7: the main passes' second target, the surface record
+        // (resolved only when reflections read it).
+        let surface_views = match surface {
+            Some((msaa, resolved)) => Some((
+                state.pool.view(&plan, msaa).ok_or("render graph: no surface target")?,
+                state.pool.view(&plan, resolved).ok_or("render graph: no surface resolve")?,
+            )),
+            None => None,
+        };
+        let surface_target = |clear: bool, keep: bool| {
+            let (view, resolved) = surface_views?;
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: Some(resolved),
+                ops: wgpu::Operations {
+                    load: if clear {
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    store: if keep { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                },
+            })
+        };
         for pass in &plan.passes {
             match *pass {
                 FramePass::Prepass => {
@@ -5721,12 +5915,14 @@ impl Renderer {
                                     wgpu::StoreOp::Discard
                                 },
                             },
-                        })],
+                        }),
+                        surface_target(false, transmission_on),
+                    ],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
-                                store: if taa_on || dof_on || motion_on || transmission_on || particles_on {
+                                store: if taa_on || dof_on || motion_on || transmission_on || particles_on || ssr_on || volumetric_on {
                                     wgpu::StoreOp::Store
                                 } else {
                                     wgpu::StoreOp::Discard
@@ -5743,6 +5939,33 @@ impl Renderer {
                     rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
                     draw_opaque(&mut rpass, state, snap.materials, &opaque_draws, &cull_groups, OpaqueSource::Late);
                     finish_scene(&mut rpass, state, env_uniform.params[3] > 0.5 || fog_on, &transparent, transmission_on);
+                }
+                FramePass::Ssr => {
+                    let (reflection, surface_resolved) = reflection.ok_or("render graph: ssr without targets")?;
+                    let view = |r| state.pool.view(&plan, r).ok_or("render graph: no ssr target");
+                    state.ssr.record_trace(
+                        &state.device,
+                        &mut encoder,
+                        [main_color_view, depth_view, view(surface_resolved)?, &state.env.current.specular],
+                        view(reflection)?,
+                    );
+                }
+                FramePass::SsrComposite => {
+                    let (reflection, _) = reflection.ok_or("render graph: ssr without targets")?;
+                    let reflection = state.pool.view(&plan, reflection).ok_or("render graph: no ssr target")?;
+                    state
+                        .ssr
+                        .record_composite(&state.device, &mut encoder, reflection, main_color_view);
+                }
+                FramePass::FogVolume => {
+                    state
+                        .volumetric
+                        .record_volume(&mut encoder, &state.frame_bind_group, &state.shadow_combined_bg);
+                }
+                FramePass::FogApply => {
+                    state
+                        .volumetric
+                        .record_apply(&state.device, &mut encoder, depth_view, main_color_view);
                 }
                 FramePass::ParticlesSim => {
                     state.particles.record_sim(&state.device, &mut encoder, depth_view);
@@ -5775,12 +5998,14 @@ impl Renderer {
                                 load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Discard,
                             },
-                        })],
+                        }),
+                        surface_target(false, false),
+                    ],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
-                                store: if taa_on || dof_on || motion_on || particles_on {
+                                store: if taa_on || dof_on || motion_on || particles_on || ssr_on || volumetric_on {
                                     wgpu::StoreOp::Store
                                 } else {
                                     wgpu::StoreOp::Discard
@@ -5896,12 +6121,14 @@ impl Renderer {
                                         wgpu::StoreOp::Discard
                                     },
                                 },
-                            })],
+                            }),
+                            surface_target(true, transmission_on || gpu_cull),
+                        ],
                             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                                 view: depth_view,
                                 depth_ops: Some(wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(1.0),
-                                    store: if taa_on || dof_on || motion_on || transmission_on || gpu_cull || particles_on {
+                                    store: if taa_on || dof_on || motion_on || transmission_on || gpu_cull || particles_on || ssr_on || volumetric_on {
                                         wgpu::StoreOp::Store
                                     } else {
                                         wgpu::StoreOp::Discard
@@ -5914,7 +6141,7 @@ impl Renderer {
                             multiview_mask: None,
                         });
                         if !instances.is_empty() {
-                            rpass.set_pipeline(&state.pipeline);
+                            rpass.set_pipeline(&state.lit().opaque);
                             rpass.set_bind_group(0, &state.frame_bind_group, &[]);
                             // Phase 24: bind the shared identity joint UBO as the
                             // default for unskinned draws (cube, sphere, glb
@@ -5987,6 +6214,14 @@ impl Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn gpu_cull_counts(&self) -> Option<(u32, u32, u32)> {
         self.gpu_cull.last_counts(&self.device, &self.queue)
+    }
+
+    /// web3d-M7: this frame's lit-surface pipelines.
+    fn lit(&self) -> &LitPipelines {
+        match (&self.lit_ssr, self.ssr_frame.get()) {
+            (Some(p), true) => p,
+            _ => &self.lit,
+        }
     }
 
     /// web3d-M7 diagnostics: how many particles the GPU pool holds.
@@ -6078,7 +6313,8 @@ struct EnvState {
     dfg: wgpu::TextureView,
     sampler: wgpu::Sampler,
     clamp_sampler: wgpu::Sampler,
-    sky_pipeline: wgpu::RenderPipeline,
+    /// Index 1: with the (unwritten) surface record target.
+    sky_pipelines: [wgpu::RenderPipeline; 2],
 }
 
 impl EnvState {
@@ -6104,7 +6340,7 @@ impl EnvState {
             bind_group_layouts: &[Some(frame_bgl)],
             immediate_size: 0,
         });
-        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let sky_pipeline = |surface: bool| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("twe-kernel sky"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -6116,11 +6352,19 @@ impl EnvState {
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_sky"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: HDR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    // The backdrop reflects nothing (the target's clear).
+                    surface.then_some(wgpu::ColorTargetState {
+                        format: SURFACE_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::empty(),
+                    }),
+                ],
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
@@ -6151,7 +6395,7 @@ impl EnvState {
             dfg: crate::kernel::environment::dfg_texture(device, queue),
             sampler: linear(wgpu::AddressMode::Repeat, "twe-kernel env sampler"),
             clamp_sampler: linear(wgpu::AddressMode::ClampToEdge, "twe-kernel clamp sampler"),
-            sky_pipeline,
+            sky_pipelines: [sky_pipeline(false), sky_pipeline(true)],
         }
     }
 }
@@ -6467,8 +6711,8 @@ fn draw_opaque(
         materials
             .get(mat as usize)
             .filter(|_| mat != 0)
-            .and_then(|src| state.material_pipelines.get(src))
-            .unwrap_or(&state.pipeline)
+            .and_then(|src| state.material_pipelines[usize::from(state.ssr_frame.get())].get(src))
+            .unwrap_or(&state.lit().opaque)
     };
     if source == OpaqueSource::Direct {
         pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
@@ -6506,9 +6750,9 @@ fn draw_opaque(
             OpaqueSurface::Submesh(si) => {
                 let Some(sub) = skin.and_then(|m| m.submeshes.get(si)) else { continue };
                 pass.set_pipeline(if sub.double_sided {
-                    &state.pipeline_double
+                    &state.lit().double
                 } else {
-                    &state.pipeline
+                    &state.lit().opaque
                 });
                 pass.set_bind_group(1, &sub.material, &[]);
             }
@@ -6539,7 +6783,7 @@ fn finish_scene(
     transmission_on: bool,
 ) {
     if backdrop {
-        pass.set_pipeline(&state.env.sky_pipeline);
+        pass.set_pipeline(&state.env.sky_pipelines[usize::from(state.ssr_frame.get())]);
         pass.set_bind_group(0, &state.frame_bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
@@ -6632,10 +6876,10 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
             }
         };
         if d.double_sided {
-            pass.set_pipeline(&state.blend_back);
+            pass.set_pipeline(&state.lit().blend_back);
             pass.draw_indexed(range.clone(), 0, instances.clone());
         }
-        pass.set_pipeline(&state.blend_front);
+        pass.set_pipeline(&state.lit().blend_front);
         pass.draw_indexed(range, 0, instances);
         if skinned {
             pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
@@ -6850,6 +7094,12 @@ enum FramePass {
     /// web3d-M7: the transparent list over the opaque frame (when the
     /// main pass is split for transmission).
     MainTransparent,
+    /// web3d-M7: trace screen-space reflections, then add them.
+    Ssr,
+    SsrComposite,
+    /// web3d-M7: light and integrate the fog volume, then blend it.
+    FogVolume,
+    FogApply,
     /// web3d-M7: spawn and update the GPU particles.
     ParticlesSim,
     /// web3d-M7: draw the particles into the WBOIT targets.

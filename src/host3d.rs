@@ -128,6 +128,7 @@ pub fn render_frame(
             density,
             falloff,
             color,
+            volumetric: crate::stdlib::fog_volumetric(),
         }),
         camera: Camera3d::new(eye, target, up),
         lut: lut.as_ref().map(|(path, strength)| crate::kernel::render::LutSettings {
@@ -156,6 +157,7 @@ pub fn render_frame(
             dof_focus: crate::stdlib::dof_settings().0,
             dof_f_stop: crate::stdlib::dof_settings().1,
             motion_blur: crate::stdlib::motion_blur_shutter(),
+            ssr: crate::stdlib::ssr_strength(),
         },
         draws: &draws,
         mesh_paths: &env.mesh_paths,

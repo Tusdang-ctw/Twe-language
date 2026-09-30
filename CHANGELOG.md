@@ -13,6 +13,7 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **Reflections and volumetric fog in 3D** (web3d-M7): `postfx.ssr(strength)` turns on screen-space reflections (glossy surfaces reflect what's on screen); `light.volumetric(true)` lights `light.fog`'s fog per point, with light shafts through the sun's shadows and halos around lights.
 - **GPU particles in 3D** (web3d-M7): a `particles` block runs on the GPU in 3D (up to a million particles) when its bodies compile, and on the CPU otherwise; `collide: true` bounces particles off the scene.
 - **Hundreds of lights and spot lights in 3D** (web3d-M7): up to 1024 point and spot lights (was 8), shaded through a clustered light grid; `light.cone(handle, direction, angle)` makes a spot light.
 - **GPU culling in 3D** (web3d-M7): from 4096 opaque objects up, the GPU culls objects outside the view or hidden behind others (two-phase hierarchical-Z occlusion culling, indirect draws).

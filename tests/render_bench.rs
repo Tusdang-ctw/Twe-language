@@ -63,13 +63,30 @@ fn measure_lit(
     point_lights: &[twec::kernel::render::PointLightU],
     cull: bool,
 ) -> (f64, f64) {
+    let post = PostFx {
+        frustum_cull: cull,
+        ..PostFx::default()
+    };
+    measure_with(name, camera, draws, point_lights, post, None, cull)
+}
+
+/// `measure_lit` with any post-processing and fog.
+fn measure_with(
+    name: &str,
+    camera: Camera3d,
+    draws: &[DrawCall3d],
+    point_lights: &[twec::kernel::render::PointLightU],
+    post: PostFx,
+    fog: Option<twec::kernel::render::FogSettings>,
+    cull: bool,
+) -> (f64, f64) {
     let mut renderer = pollster::block_on(Renderer::new_headless(W, H)).expect("gpu");
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
     let snap = || RenderSnapshot {
         lut: None,
         point_lights,
-        fog: None,
+        fog,
         particles: Default::default(),
         camera,
         environment: None,
@@ -84,10 +101,7 @@ fn measure_lit(
             enabled: false,
             extent: 10.0,
         },
-        post: PostFx {
-            frustum_cull: cull,
-            ..PostFx::default()
-        },
+        post,
         draws,
         mesh_paths: &[],
         texture_paths: &[],
@@ -261,4 +275,48 @@ fn render_particles() {
         eprintln!("{n:>8} particles collide={collide:<5}: {ms:6.2} ms/frame");
     }
     measure("no particles", camera, &small, true);
+}
+
+/// web3d-M7 session 14: screen-space reflections and volumetric fog
+/// over the small scene (300 cubes and a floor, top-down).
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn render_ssr_and_fog() {
+    if pollster::block_on(Renderer::new_headless(64, 64)).is_err() {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    }
+    let mut small = vec![cube(0.0, -50.0, 0.0, 100.0, [0.3, 0.3, 0.3, 1.0])];
+    for i in 0..300 {
+        let a = i as f32 * 0.37;
+        let r = 3.0 + (i % 17) as f32;
+        small.push(cube(r * a.cos(), 0.5, r * a.sin(), 1.0, [0.9, 0.4, 0.3, 1.0]));
+    }
+    let top = Camera3d {
+        far: 200.0,
+        ..Camera3d::new([0.0, 18.0, 12.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    };
+    let lights: Vec<_> = (0..100)
+        .map(|i| {
+            let a = i as f32 * 2.399;
+            let r = 20.0 * ((i as f32 + 0.5) / 100.0).sqrt();
+            twec::kernel::render::PointLightU::point([r * a.cos(), 1.0, r * a.sin()], [1.0, 0.7, 0.4], 3.0)
+        })
+        .collect();
+    let fog = |volumetric| {
+        Some(twec::kernel::render::FogSettings {
+            density: 0.03,
+            falloff: 0.2,
+            color: [0.7, 0.75, 0.8],
+            volumetric,
+        })
+    };
+    let ssr = PostFx {
+        ssr: 1.0,
+        ..PostFx::default()
+    };
+    measure_with("plain", top, &small, &lights, PostFx::default(), None, true);
+    measure_with("ssr", top, &small, &lights, ssr, None, true);
+    measure_with("fog", top, &small, &lights, PostFx::default(), fog(false), true);
+    measure_with("vol fog", top, &small, &lights, PostFx::default(), fog(true), true);
 }
