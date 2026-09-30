@@ -167,6 +167,11 @@ visual Lava:
   dot cross length normalize. No assignment, loops, strings or other calls.
   `verify` reports violations as `visual-error`.
 
+Scene-wide 3D settings are plain calls at the top level: `sun.direction(v)`, `sun.shadow(true)`,
+`light.add(at, color, radius)` (a handle; up to 1024), `light.environment("sky.hdr", 1.0)`
+(image-based lighting), `postfx.ao(1.0)` / `bloom(0.4)` / `ssr(1.0)`, and `camera.far = 500.0`
+(view distance, default 100 m).
+
 ## Stdlib map (call `stdlib_lookup` for exact signatures)
 
 `math.*` (sqrt, floor, clamp, sin, noise, mix, pi…) · `random.*` (float, int(0..<n), choice, shuffle) ·

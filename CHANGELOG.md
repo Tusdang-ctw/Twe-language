@@ -13,6 +13,9 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **`light.environment(path, intensity)`** lights a 3D scene from an HDR sky image (image-based lighting), and **`camera.far`** sets the 3D view distance (default 100 m, as before).
+- **`twec verify` warns when a `particles` block will run on the CPU** (`particles-cpu`), with the reason; a million CPU particles is a slideshow.
+- **`survive3d` looks the part** (web3d-M7): a computed sky, sun shadows, torches, ambient occlusion and bloom, a procedural floor, wobbling slimes, glowing gems and spark bursts, at 67 fps on an integrated GPU in Chrome. New `examples/stress_3d.twe`: 100k animated blocks, 500 lights, a million particles.
 - **Procedural surface materials** (web3d-M7): a `visual` block can describe a whole surface in code, with no textures. `surface(uv, time, pos, normal) -> material` returns `material(albedo:, normal:, roughness:, metalness:, emission:)`, and an optional `displace(uv, time, pos, normal) -> vec3` moves the mesh's vertices (shadows and lighting follow). `math.clamp`, `mod`, `atan2`, `dot`, `cross`, `length` and `normalize` now work inside visuals, as do `if` expressions. New example: `examples/procedural_materials_3d.twe`.
 - **`twec verify` reports `visual` block problems** (`visual-error`), including type errors such as a tuple where a number belongs.
 - **Reflections and volumetric fog in 3D** (web3d-M7): `postfx.ssr(strength)` turns on screen-space reflections (glossy surfaces reflect what's on screen); `light.volumetric(true)` lights `light.fog`'s fog per point, with light shafts through the sun's shadows and halos around lights.
@@ -150,6 +153,7 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- **3D rendering is faster:** untextured cubes and spheres skip the glTF material path (about 2.5× cheaper on an integrated GPU), ambient occlusion runs at half resolution, looks of entities that don't change aren't regathered every frame, and a frame with 100k material draws no longer spends 90 ms checking pipelines.
 - **Colours from a `visual` material are sRGB**, like every other colour a script writes; a material's midtones render slightly darker than before. Unknown method names in a `visual` block are now an error instead of being ignored.
 - **Particle randomness** (web3d-M7): `random.float()` inside `on_spawn` / `on_update` now draws from the emitter's own random stream, so spawning particles no longer changes the script's random numbers. In 3D, a particle's default `size` is 0.1 (a radius in world units).
 - When more than four lights ask for shadows, the four nearest the camera get them (it was the first four added).

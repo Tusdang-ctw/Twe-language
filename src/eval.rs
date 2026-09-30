@@ -42,6 +42,7 @@ pub fn run(program: &Program) -> Result<String, RuntimeError> {
 pub fn run_with_frames(program: &Program, frames: u32, dt: f64) -> Result<String, RuntimeError> {
     let mut env = Env::new();
     stdlib::install(&mut env);
+    headless(&mut env);
     run_top_level(&mut env, program)?;
     for _ in 0..frames {
         tick_frame(&mut env, dt)?;
@@ -70,6 +71,13 @@ pub fn run_top_level(env: &mut Env, program: &Program) -> Result<(), RuntimeErro
 /// Advance the active scene and any global on-update handler by `dt`
 /// seconds. Side-effects (prints, field mutations, transitions) are
 /// applied to `env`.
+/// web3d-M7 session 16: mark `env` as running with no renderer (see
+/// [`Env::particles_unseen`]).
+pub fn headless(env: &mut Env) {
+    env.gpu_particles = true;
+    env.particles_unseen = true;
+}
+
 pub fn tick_frame(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     let _profile = crate::profile::scope("tick");
     // web3d-M0: guaranteed per-tick safepoint. Nothing lives on the
@@ -295,13 +303,15 @@ fn seed_particle_emitter(
         .or(if at.is_none() { Some([0.0; 3]) } else { None });
     if env.gpu_particles {
         if let (Some(at), Some(program)) = (gpu_at, env.intern_particle_program(&class.name)) {
-            env.particle_emissions.push(crate::kernel::particles::ParticleEmission {
-                program,
-                at,
-                count: count.min(u32::MAX as usize) as u32,
-                lifetime: lifetime as f32,
-                seed,
-            });
+            if !env.particles_unseen {
+                env.particle_emissions.push(crate::kernel::particles::ParticleEmission {
+                    program,
+                    at,
+                    count: count.min(u32::MAX as usize) as u32,
+                    lifetime: lifetime as f32,
+                    seed,
+                });
+            }
             let mut e = emitter.borrow_mut();
             e.insert_field("__gpu_age", Value::from_float(0.0));
             e.insert_field("__gpu_lifetime", Value::from_float(if count == 0 { f64::NEG_INFINITY } else { lifetime }));
@@ -393,6 +403,7 @@ fn tick_particle_emitter(
         // Alive while `age < lifetime`, exactly the CPU's test.
         if age.partial_cmp(&lifetime.as_float()) != Some(std::cmp::Ordering::Less) {
             e.despawned = true;
+            crate::value::bump_look_epoch();
         }
         return Ok(());
     }
@@ -486,6 +497,7 @@ fn tick_particle_emitter(
     });
     if particles.borrow().is_empty() {
         emitter.borrow_mut().despawned = true;
+        crate::value::bump_look_epoch();
     }
     Ok(())
 }
@@ -784,51 +796,117 @@ struct LookValues {
 /// `look:` (`docs/06` §4.9a). Shared keys are evaluated once per class;
 /// per-entity keys once per entity, with `self` bound to it.
 fn draw_looks(env: &mut Env) -> Result<(), RuntimeError> {
-    // Per-class shared values, keyed by class identity. Few classes
-    // have looks, so a linear scan beats hashing.
-    let mut shared: Vec<(*const ClassDef, LookValues)> = Vec::new();
-    // Index loop: a per-entity key may call a function that spawns.
-    let mut i = 0;
-    while i < env.active_entities.len() {
-        let entity = env.active_entities[i].clone();
-        i += 1;
-        let (class, pos) = {
-            let inst = entity.borrow();
-            if inst.despawned || inst.class.look.is_none() {
-                continue;
-            }
-            (inst.class.clone(), inst.get_field("pos"))
+    // web3d-M7 session 16: gather the entities with looks only when
+    // something that could change them happened (`look_epoch`).
+    if env.look_cache.as_ref().is_none_or(|c| c.epoch != crate::value::look_epoch()) {
+        env.look_cache = Some(gather_looks(env)?);
+    }
+    // Taken out while look keys run (they may spawn, or read `env`).
+    let cache = env.look_cache.take().expect("gathered above");
+    let result = emit_looks(env, &cache);
+    if env.look_cache.is_none() {
+        env.look_cache = Some(cache);
+    }
+    result
+}
+
+/// Every live entity with a look: those whose keys read nothing of the
+/// entity grouped by class with their positions, the rest listed.
+fn gather_looks(env: &mut Env) -> Result<crate::value::LookCache, RuntimeError> {
+    let mut cache = crate::value::LookCache {
+        epoch: crate::value::look_epoch(),
+        ..Default::default()
+    };
+    // Per-class slot in `cache.shared`, keyed by class identity. Few
+    // classes have looks, so a linear scan beats hashing.
+    let mut slots: Vec<(*const ClassDef, usize)> = Vec::new();
+    for entity in &env.active_entities {
+        let inst = entity.borrow();
+        let Some(look) = inst.class.look.as_ref() else {
+            continue;
         };
-        let look = class.look.clone().expect("checked above");
-        let key = Rc::as_ptr(&class);
-        let base = match shared.iter().find(|(k, _)| *k == key) {
-            Some((_, v)) => *v,
+        if inst.despawned {
+            continue;
+        }
+        if look_has_own_keys(look) {
+            cache.own.push(entity.clone());
+            continue;
+        }
+        let at = look_pos(&inst)?;
+        let key = Rc::as_ptr(&inst.class);
+        match slots.iter().find(|(k, _)| *k == key) {
+            Some((_, i)) => cache.shared[*i].1.push(at),
             None => {
-                let v = look_values(env, &entity, &look, false, LookValues::default_look())?;
-                shared.push((key, v));
-                v
+                slots.push((key, cache.shared.len()));
+                cache.shared.push((entity.clone(), vec![at]));
             }
-        };
-        let values = look_values(env, &entity, &look, true, base)?;
-        let at = match pos {
-            Some(p) => crate::stdlib::xyz_of(&p, "pos").ok(),
-            None => None,
-        };
-        let Some(at) = at else {
-            return Err(RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!(
-                    "`{}` has a look: but its `pos` is not a vec3 (it is {})",
-                    class.name,
-                    pos.map(|p| p.type_name()).unwrap_or("missing")
-                ),
-                help: Some(format!(
-                    "give `{}` a field `var pos = vec3(0, 0, 0)`, or spawn it with `spawn {} at vec3(...)`",
-                    class.name, class.name
-                )),
-            });
-        };
+        }
+    }
+    Ok(cache)
+}
+
+fn look_has_own_keys(look: &crate::value::LookDef) -> bool {
+    [&look.mesh, &look.tint, &look.scale, &look.facing, &look.material]
+        .iter()
+        .any(|s| s.as_ref().is_some_and(|s| s.per_entity))
+}
+
+/// An entity's `pos` as the point its look is drawn at.
+fn look_pos(inst: &Instance) -> Result<[f32; 3], RuntimeError> {
+    let pos = inst.get_field("pos");
+    match pos.map(|p| crate::stdlib::xyz_of(&p, "pos")) {
+        Some(Ok(at)) => Ok(at),
+        _ => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "`{}` has a look: but its `pos` is not a vec3 (it is {})",
+                inst.class.name,
+                pos.map(|p| p.type_name()).unwrap_or("missing")
+            ),
+            help: Some(format!(
+                "give `{}` a field `var pos = vec3(0, 0, 0)`, or spawn it with `spawn {} at vec3(...)`",
+                inst.class.name, inst.class.name
+            )),
+        }),
+    }
+}
+
+/// Queue this frame's draws: each class's shared keys once, then its
+/// cached positions; per-entity keys for the entities that have them.
+fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), RuntimeError> {
+    let mut shared: Vec<(*const ClassDef, LookValues)> = Vec::new();
+    let mut class_values = |env: &mut Env, entity: &Rc<RefCell<Instance>>| -> Result<LookValues, RuntimeError> {
+        let class = entity.borrow().class.clone();
+        let key = Rc::as_ptr(&class);
+        if let Some((_, v)) = shared.iter().find(|(k, _)| *k == key) {
+            return Ok(*v);
+        }
+        let look = class.look.clone().expect("gathered with a look");
+        let v = look_values(env, entity, &look, false, LookValues::default_look())?;
+        shared.push((key, v));
+        Ok(v)
+    };
+    for (entity, positions) in &cache.shared {
+        let values = class_values(env, entity)?;
+        env.render_queue3d.extend(positions.iter().map(|&at| crate::value::DrawCall3d {
+            primitive: values.primitive,
+            at,
+            color: values.color,
+            size: values.size,
+            texture: 0,
+            yaw: values.yaw,
+            material: values.material,
+        }));
+    }
+    for entity in &cache.own {
+        if entity.borrow().despawned {
+            continue;
+        }
+        let base = class_values(env, entity)?;
+        let look = entity.borrow().class.look.clone().expect("gathered with a look");
+        let values = look_values(env, entity, &look, true, base)?;
+        let at = look_pos(&entity.borrow())?;
         env.render_queue3d.push(crate::value::DrawCall3d {
             primitive: values.primitive,
             at,
@@ -2711,6 +2789,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     seed_particle_emitter(env, &rc, at_value.as_ref(), *line, *col)?;
                 }
                 env.active_entities.push(rc.clone());
+                crate::value::bump_look_epoch();
             }
             Ok(())
         }
@@ -2719,6 +2798,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             if v.is_instance() {
                 let rc = v.as_instance();
                 rc.borrow_mut().despawned = true;
+                crate::value::bump_look_epoch();
                 Ok(())
             } else {
                 let other = v;

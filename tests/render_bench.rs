@@ -395,3 +395,50 @@ fn render_procedural_materials() {
     // Again, in case the first run paid for clocks ramping up.
     measure_materials("plain", top, &scene(0), &[], post, &materials);
 }
+
+/// web3d-M7 session 16: the stress scene (examples/stress_3d.twe)
+/// through the whole native path: script, looks, snapshot, kernel.
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn render_stress_scene() {
+    let Ok(mut renderer) = pollster::block_on(Renderer::new_headless(W, H)) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let src = std::fs::read_to_string("examples/stress_3d.twe").expect("read");
+    let tokens = twec::lexer::lex(&src).expect("lex");
+    let program = twec::parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    env.gpu_particles = true;
+    let t = std::time::Instant::now();
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    eprintln!("top level: {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+    let mut assets = twec::play3d::NativeAssets::default();
+    for _ in 0..5 {
+        twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+        twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+    }
+    renderer.read_pixels().expect("sync");
+    let (mut tick, mut script, mut kernel) = (0.0, 0.0, 0.0);
+    let start = std::time::Instant::now();
+    for _ in 0..FRAMES {
+        let t = std::time::Instant::now();
+        twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+        tick += t.elapsed().as_secs_f64();
+        let times = twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+        script += times.script_ms;
+        kernel += times.kernel_ms;
+    }
+    let rgba = renderer.read_pixels().expect("sync");
+    std::fs::create_dir_all("target/kernel-render").expect("output dir");
+    image::save_buffer("target/kernel-render/stress.png", &rgba, W, H, image::ColorType::Rgba8).expect("png");
+    let n = f64::from(FRAMES);
+    eprintln!(
+        "stress: tick {:.2} ms, looks {:.2} ms, kernel {:.2} ms (CPU), {:.2} ms/frame",
+        tick * 1e3 / n,
+        script / n,
+        kernel / n,
+        start.elapsed().as_secs_f64() * 1e3 / n
+    );
+}

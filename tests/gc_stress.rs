@@ -24,6 +24,13 @@ const WRITES_FILES: &[&str] = &[
     "v1_0_2_sugar.twe",
 ];
 
+/// Benchmarks whose size is the point: `stress_3d.twe` spawns 100,000
+/// entities, and collecting at every one of the spawn loop's
+/// safepoints makes stress mode quadratic (minutes). The constructs it
+/// uses (spawn loops, looks, lists of handles, particles) are covered by
+/// the smaller programs; its normal run is in `tests/examples_run.rs`.
+const TOO_BIG_FOR_STRESS: &[&str] = &["stress_3d.twe"];
+
 /// Frame counts: 0 = top-level evaluation only; 10 = also tick
 /// scenes, states, clocks and entities.
 const FRAME_COUNTS: &[u32] = &[0, 10];
@@ -69,7 +76,7 @@ fn check_dir(dir: &str) {
     let mut checked = 0;
     for path in twe_files(dir) {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        if WRITES_FILES.contains(&name.as_str()) {
+        if WRITES_FILES.contains(&name.as_str()) || TOO_BIG_FOR_STRESS.contains(&name.as_str()) {
             continue;
         }
         for &frames in FRAME_COUNTS {

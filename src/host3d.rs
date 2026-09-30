@@ -18,10 +18,13 @@ use std::collections::BTreeSet;
 /// env's `camera` Object. Missing or malformed fields fall back to
 /// the stdlib defaults (eye 3 units back + 1.5 up, looking at the
 /// origin, +y up). Phase 5 task 5 session (d).
-fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
+/// The script's `camera`: eye, target, up, and (web3d-M7 session 16)
+/// `camera.far`, the view distance.
+fn read_camera(env: &Env) -> Camera3d {
     let eye_default = [0.0, 1.5, 3.0];
     let target_default = [0.0, 0.0, 0.0];
     let up_default = [0.0, 1.0, 0.0];
+    let fallback = || Camera3d::new(eye_default, target_default, up_default);
     let camera = {
         let __opt = env.get("camera");
         if let Some(__t) = (__opt).as_ref() {
@@ -29,10 +32,10 @@ fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
                 let rc = __t.as_object();
                 rc.clone()
             } else {
-                return (eye_default, target_default, up_default);
+                return fallback();
             }
         } else {
-            return (eye_default, target_default, up_default);
+            return fallback();
         }
     };
     let cam = camera.borrow();
@@ -51,7 +54,12 @@ fn read_camera(env: &Env) -> ([f32; 3], [f32; 3], [f32; 3]) {
         .as_ref()
         .and_then(value_as_vec3)
         .unwrap_or(up_default);
-    (eye, target, up)
+    let mut camera3d = Camera3d::new(eye, target, up);
+    if let Some(far) = cam.get_field("far").as_ref().and_then(number) {
+        // At least a metre past the near plane; finite.
+        camera3d.far = (far as f32).clamp(camera3d.near + 1.0, 1.0e6);
+    }
+    camera3d
 }
 
 fn value_as_vec3(v: &Value) -> Option<[f32; 3]> {
@@ -110,10 +118,11 @@ pub fn render_frame(
             e.line, e.col, e.message
         ));
     }
-    let (eye, target, up) = read_camera(env);
+    let camera = read_camera(env);
     let draws = std::mem::take(&mut env.render_queue3d);
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let lut = crate::stdlib::color_lut();
+    let environment = crate::stdlib::environment_settings();
     let point_lights = crate::stdlib::point_lights_snapshot();
     let emissions = std::mem::take(&mut env.particle_emissions);
     let cpu_particles = eval::cpu_particles_3d(env);
@@ -130,12 +139,16 @@ pub fn render_frame(
             color,
             volumetric: crate::stdlib::fog_volumetric(),
         }),
-        camera: Camera3d::new(eye, target, up),
+        camera,
         lut: lut.as_ref().map(|(path, strength)| crate::kernel::render::LutSettings {
             path,
             strength: *strength,
         }),
-        environment: None,
+        environment: environment.as_ref().map(|(path, intensity)| crate::kernel::render::EnvironmentSettings {
+            path,
+            intensity: *intensity,
+            backdrop: false,
+        }),
         background: [0.06, 0.10, 0.16],
         lights: crate::stdlib::lights_snapshot(),
         shadow: ShadowSettings {

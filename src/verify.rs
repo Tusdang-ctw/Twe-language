@@ -349,6 +349,35 @@ pub fn verify_program_with_options(
                 fix: None,
             }),
     );
+    // web3d-M7 session 16: a `particles` block the GPU can't run falls
+    // back to the CPU interpreter, which is fine for a few hundred
+    // particles and ruinous for a million. Say so, and why.
+    for stmt in &program.stmts {
+        if let Stmt::Decl {
+            kind: crate::ast::DeclKind::Particles,
+            name,
+            members,
+            line,
+            col,
+            ..
+        } = stmt
+        {
+            if let Err(why) = crate::particles_wgsl::compile(name, members) {
+                diagnostics.push(VerifyDiagnostic {
+                    kind: "particles-cpu".to_string(),
+                    severity: Severity::Warning,
+                    line: *line,
+                    col: *col,
+                    message: format!("particles `{name}` will run on the CPU, not the GPU: {why}"),
+                    help: Some(
+                        "fine for a few hundred particles; for thousands, keep the bodies to what the GPU runs (docs/06 §4.10)"
+                            .to_string(),
+                    ),
+                    fix: None,
+                });
+            }
+        }
+    }
     diagnostics.sort_by_key(|d| (d.line, d.col));
     VerifyReport {
         file,

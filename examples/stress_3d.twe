@@ -1,0 +1,92 @@
+# @task: M7's stress scene: 100,000 animated blocks, 500 moving lights, 1,000,000 particles
+# @inputs: none
+# @expected: a field of blocks rolls in waves under hundreds of coloured lights while a million motes drift above it
+# @category: 3d
+# @difficulty: medium
+#
+# `twec build --target web examples/stress_3d.twe`, then measure with
+# `node bench/graphics/fps.mjs <out dir>` (the M7 exit benchmark), or
+# `twec play3d examples/stress_3d.twe`.
+#
+# web3d-M7 exit criterion 2: this holds 60 fps in Chrome on the
+# reference laptop. What it exercises:
+# - 100,000 entities with a constant `look:`: no script runs per block
+#   per frame. They move through a `visual` material's `displace`: the
+#   GPU animates them, the interpreter doesn't.
+# - GPU-driven culling and indirect draws (above 4096 opaque
+#   instances), clustered lighting with 500 point lights, and a
+#   million GPU particles in one `particles` block.
+
+let side = 316            # 316 × 316 ≈ 100,000 blocks
+let spacing = 2.0
+let half = side * spacing * 0.5
+
+# Colour by position and a rolling swell: all on the GPU.
+visual Swell:
+    surface(uv, time, pos) -> material:
+        let t = noise((pos.x, pos.z) * 0.015) * 0.5 + 0.5
+        return material(albedo: mix((0.85, 0.4, 0.25), (0.25, 0.5, 0.9), t), roughness: 0.45)
+
+    displace(uv, time, pos) -> vec3:
+        let h = math.sin(pos.x * 0.05 + time * 1.2) * math.cos(pos.z * 0.04 + time * 0.8)
+        return (0, h * 2.5, 0)
+
+entity Block:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "cube"
+        scale: 1.2
+        material: Swell
+
+for i in 0..<side:
+    for j in 0..<side:
+        spawn Block at vec3(i * spacing - half, 0, j * spacing - half)
+
+# A million motes drifting over the field, alive for the whole run.
+# (Particle bodies run on the GPU, so they read the emitter's own fields,
+# like `extent`, not script globals; `twec verify` warns when a block
+# would fall back to the CPU.)
+particles Motes:
+    count: 1000000
+    lifetime: 100000.0
+    extent: 316.0
+
+    on_spawn(p):
+        p.pos = (random.float() * 2.0 * extent - extent, 3.0 + random.float() * 12.0, random.float() * 2.0 * extent - extent)
+        p.color = (1.0, 0.85, 0.55, 0.6)
+        p.size = 0.12
+
+    on_update(p, dt):
+        let swirl = noise((p.pos.x * 0.05 + p.age * 0.1, p.pos.z * 0.05))
+        p.pos += (swirl, math.sin(p.age + p.pos.x) * 0.3, math.cos(p.age * 0.7 + p.pos.z) * 0.5) * dt
+
+spawn Motes at vec3(0, 0, 0)
+
+# 500 lights on a sunflower spiral, circling slowly.
+let lamp_count = 500
+var lamps = []
+var lamp_colors = []
+for k in 0..<lamp_count:
+    let hue = math.mod(k * 0.618, 1.0) * 6.283
+    let c = (0.5 + 0.5 * math.cos(hue), 0.5 + 0.5 * math.cos(hue - 2.1), 0.5 + 0.5 * math.cos(hue + 2.1), 1.0)
+    lamp_colors.append(c)
+    lamps.append(light.add((0, 4, 0), c, 14.0))
+
+# The whole field is in view from ~420 m away.
+camera.far = 1200.0
+light.ambient((0.08, 0.09, 0.12, 1.0))
+sun.direction(vec3(-0.3, 0.9, 0.2))
+sun.intensity(0.6)
+postfx.bloom(0.3)
+
+var t = 0.0
+
+on update(dt):
+    t += dt
+    for k in 0..<lamp_count:
+        let a = k * 2.39996 + t * 0.1
+        let r = half * math.sqrt((k + 0.5) / lamp_count)
+        light.set(lamps[k], (r * math.cos(a), 4.0, r * math.sin(a)), lamp_colors[k], 14.0)
+    let orbit = t * 0.05
+    camera.eye = vec3(math.sin(orbit) * 380.0, 190.0, math.cos(orbit) * 380.0)
+    camera.target = vec3(0, 0, 0)

@@ -1142,10 +1142,11 @@ fn surface_light(p: Lobes, l: vec3<f32>, radiance: vec3<f32>) -> vec3<f32> {
     return out * radiance;
 }
 
-// web3d-M7: this pixel's screen-space ambient occlusion.
+// web3d-M7: this pixel's screen-space ambient occlusion (computed at
+// half resolution; a 1×1 white texture when off).
 fn screen_ao(frag: vec2<f32>) -> f32 {
     let dim = textureDimensions(t_ao);
-    let p = min(vec2<u32>(frag), dim - vec2<u32>(1u));
+    let p = min(vec2<u32>(frag * 0.5), dim - vec2<u32>(1u));
     return textureLoad(t_ao, p, 0).r;
 }
 
@@ -1485,6 +1486,21 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> SurfaceOut {
     }
     let lit = shade(in, s);
     return SurfaceOut(vec4<f32>(lit, alpha), g_surface);
+}
+
+// web3d-M7 session 16: an untextured script draw (`cube`, `sphere`, a
+// look without a material): the plain material's surface — the
+// instance colour, roughness 0.5, not metal — without `fs_main`'s nine
+// texture reads and tangent frame, which it would spend on 1×1 white
+// textures. Same result; about half the cost on an integrated GPU.
+@fragment
+fn fs_script(in: VertexOutput, @builtin(front_facing) front: bool) -> SurfaceOut {
+    var n = normalize(in.world_normal);
+    if (!front) {
+        n = -n;
+    }
+    let s = surface_plain(in.base_color.rgb * in.vertex_color.rgb, 0.0, 0.5, n, 1.0, vec3<f32>(0.0));
+    return SurfaceOut(vec4<f32>(shade(in, s), in.base_color.a), g_surface);
 }
 "#;
 
@@ -2089,6 +2105,8 @@ fn surface_pipeline(
 /// a second multisampled target.
 struct LitPipelines {
     opaque: wgpu::RenderPipeline,
+    /// web3d-M7 session 16: untextured script draws (`fs_script`).
+    script: wgpu::RenderPipeline,
     /// Back faces drawn too (glTF `doubleSided` materials).
     double: wgpu::RenderPipeline,
     /// The transparent pass, front faces and back faces.
@@ -2102,6 +2120,7 @@ impl LitPipelines {
         let blend = |cull| surface_pipeline_with(device, layout, shader, entries, Some(cull), true, surface);
         LitPipelines {
             opaque: surface_pipeline(device, layout, shader, entries, false, surface),
+            script: surface_pipeline(device, layout, shader, ("vs_main", "fs_script"), false, surface),
             double: surface_pipeline(device, layout, shader, entries, true, surface),
             blend_front: blend(wgpu::Face::Back),
             blend_back: blend(wgpu::Face::Front),
@@ -5419,9 +5438,13 @@ impl Renderer {
 
         // web3d-M3: a pipeline per material used this frame, built on
         // first use from the visual's WGSL. An unknown id draws as the
-        // plain surface.
-        for d in queue {
-            let m = d.material;
+        // plain surface. web3d-M7 session 16: per material, not per
+        // draw — the pipeline maps are keyed by the WGSL source, and
+        // hashing it for each of 100k draws cost 90 ms a frame.
+        let mut used: Vec<u32> = queue.iter().map(|d| d.material).filter(|&m| m != 0).collect();
+        used.sort_unstable();
+        used.dedup();
+        for m in used {
             let Some(pixel) = snap.materials.get(m as usize).filter(|_| m != 0) else {
                 continue;
             };
@@ -6973,7 +6996,11 @@ fn draw_opaque(
         };
         match d.surface {
             OpaqueSurface::Script { tex, mat } => {
-                pass.set_pipeline(pipeline_for(mat));
+                pass.set_pipeline(if tex == 0 && mat == 0 {
+                    &state.lit().script
+                } else {
+                    pipeline_for(mat)
+                });
                 pass.set_bind_group(1, texture_group(tex), &[]);
             }
             OpaqueSurface::Submesh(si) => {
@@ -7356,6 +7383,10 @@ pub(crate) const GPU_CULL_MIN_INSTANCES: u32 = 4096;
 /// battery). The browser picks the adapter itself (Chrome ignores the
 /// hint on Windows and warns about it), so the web build doesn't ask.
 fn power_preference() -> wgpu::PowerPreference {
+    // In the browser the browser chooses. (web3d-M7 session 16 tried
+    // "high-performance": Chrome on Windows ignores it and logs a
+    // warning, crbug.com/369219127; the player picks the GPU in the
+    // OS's graphics settings.)
     #[cfg(target_arch = "wasm32")]
     {
         wgpu::PowerPreference::None

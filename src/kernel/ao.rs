@@ -18,6 +18,13 @@
 //! - Slice rotation and step offsets follow a 4×4 pattern, and a 4×4
 //!   depth-aware blur averages it away (TAA also rotates it per frame).
 //!
+//! - web3d-M7 session 16: occlusion is computed and blurred at **half
+//!   resolution** (each texel from the full-resolution depth at its
+//!   top-left pixel), a quarter of the pixels: on an integrated GPU in
+//!   Chrome, full-resolution GTAO cost `survive3d` about 18 ms a frame.
+//!   Occlusion is low-frequency, and the main pass reads the half-size
+//!   result.
+//!
 //! The result multiplies **indirect light only** (the environment or
 //! ambient term, with Jimenez's multi-bounce fit and Lagarde's specular
 //! occlusion in the main shader): direct light has its own shadows.
@@ -94,7 +101,9 @@ fn pattern(px: vec2<i32>) -> f32 {
 
 @fragment
 fn fs_gtao(in: VOut) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(in.pos.xy);
+    // A half-resolution texel, at its full-resolution pixel.
+    let hpx = vec2<i32>(in.pos.xy);
+    let px = min(hpx * 2, size_i() - vec2<i32>(1));
     let d = textureLoad(t_depth, px, 0);
     if (d >= 1.0) {
         return vec4<f32>(1.0);
@@ -132,8 +141,8 @@ fn fs_gtao(in: VOut) -> @location(0) vec4<f32> {
     let falloff_mul = -1.0 / falloff_range;
     let falloff_add = falloff_from / falloff_range + 1.0;
 
-    let noise_slice = fract(pattern(px) + ao.params.y);
-    let noise_step = fract(pattern(px.yx) * 0.618 + 0.25 + ao.params.y * 1.618);
+    let noise_slice = fract(pattern(hpx) + ao.params.y);
+    let noise_step = fract(pattern(hpx.yx) * 0.618 + 0.25 + ao.params.y * 1.618);
 
     var visibility = 0.0;
     for (var s: i32 = 0; s < SLICES; s = s + 1) {
@@ -156,7 +165,7 @@ fn fs_gtao(in: VOut) -> @location(0) vec4<f32> {
         for (var j: i32 = 0; j < STEPS; j = j + 1) {
             var t = (f32(j) + noise_step) / f32(STEPS);
             t = t * t;
-            let off = vec2<i32>(round(omega * max(t * radius_px, f32(j) + 1.0)));
+            let off = vec2<i32>(round(omega * max(t * radius_px, 2.0 * f32(j) + 2.0)));
             let dp = view_pos(px + off) - p;
             let dn = view_pos(px - off) - p;
             let lp = length(dp);
@@ -179,12 +188,13 @@ fn fs_gtao(in: VOut) -> @location(0) vec4<f32> {
     return vec4<f32>(pow(visibility, ao.size.w));
 }
 
-// 4x4 blur, weighted by depth similarity so occlusion doesn't bleed
-// across silhouettes.
+// 4x4 blur (at half resolution), weighted by depth similarity so
+// occlusion doesn't bleed across silhouettes.
 @fragment
 fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(in.pos.xy);
-    let d = textureLoad(t_depth, px, 0);
+    let hpx = vec2<i32>(in.pos.xy);
+    let half = vec2<i32>(textureDimensions(t_raw));
+    let d = textureLoad(t_depth, min(hpx * 2, size_i() - vec2<i32>(1)), 0);
     if (d >= 1.0) {
         return vec4<f32>(1.0);
     }
@@ -193,8 +203,8 @@ fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
     var weight = 0.0;
     for (var y: i32 = -2; y < 2; y = y + 1) {
         for (var x: i32 = -2; x < 2; x = x + 1) {
-            let q = clamp(px + vec2<i32>(x, y), vec2<i32>(0), size_i() - vec2<i32>(1));
-            let l = linear_depth(textureLoad(t_depth, q, 0));
+            let q = clamp(hpx + vec2<i32>(x, y), vec2<i32>(0), half - vec2<i32>(1));
+            let l = linear_depth(textureLoad(t_depth, min(q * 2, size_i() - vec2<i32>(1)), 0));
             let w = max(1.0 - abs(l - center) / (0.05 * center), 0.0) + 1e-4;
             sum = sum + textureLoad(t_raw, q, 0).r * w;
             weight = weight + w;
@@ -225,7 +235,7 @@ pub(crate) struct Ao {
     blur: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniform: wgpu::Buffer,
-    /// Raw and blurred occlusion, at the target's size.
+    /// Raw and blurred occlusion, at half the target's size.
     raw: Option<wgpu::TextureView>,
     blurred: Option<wgpu::TextureView>,
     size: (u32, u32),
@@ -351,8 +361,8 @@ impl Ao {
                     .create_texture(&wgpu::TextureDescriptor {
                         label: Some(label),
                         size: wgpu::Extent3d {
-                            width,
-                            height,
+                            width: width.div_ceil(2),
+                            height: height.div_ceil(2),
                             depth_or_array_layers: 1,
                         },
                         mip_level_count: 1,

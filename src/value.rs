@@ -76,6 +76,22 @@ pub struct LookDef {
     pub material: Option<LookSlot>,
 }
 
+/// web3d-M7 session 16: a class whose look reads nothing of the
+/// entity: one entity (to evaluate the class's shared keys against)
+/// and every entity's position.
+pub type SharedLooks = (Rc<RefCell<Instance>>, Vec<[f32; 3]>);
+
+/// web3d-M7 session 16: the entities with looks, as gathered at
+/// `epoch` (see [`look_epoch`]).
+#[derive(Default)]
+pub struct LookCache {
+    pub epoch: u64,
+    /// Per class whose look reads nothing of the entity.
+    pub shared: Vec<SharedLooks>,
+    /// Entities whose look reads their own state: evaluated each frame.
+    pub own: Vec<Rc<RefCell<Instance>>>,
+}
+
 /// One look key: its expression, where it was written, and whether it
 /// reads the entity (so must be evaluated per entity) or is shared by
 /// every entity of the class in a frame.
@@ -97,8 +113,35 @@ pub struct LookSlot {
 #[derive(Debug, Clone, Default)]
 pub struct Fields(Vec<(Rc<str>, TaggedValue)>);
 
+thread_local! {
+    static LOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// web3d-M7 session 16: a counter bumped by anything that can change
+/// what the entities' looks draw — a write to any instance field (bar
+/// runtime-internal `__` ones), an instance created, an entity
+/// despawned. While it stands still, `eval::draw_looks` reuses last
+/// frame's gathered positions instead of visiting every entity (100k
+/// static blocks cost 9.6 ms a frame to gather). Vectors are
+/// immutable, so a position can't change without a field write.
+pub fn look_epoch() -> u64 {
+    LOOK_EPOCH.with(|e| e.get())
+}
+
+pub fn bump_look_epoch() {
+    LOOK_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
+#[inline]
+fn touched(name: &str) {
+    if !name.starts_with("__") {
+        bump_look_epoch();
+    }
+}
+
 impl Fields {
     pub fn from_layout(layout: &[(Rc<str>, TaggedValue)]) -> Self {
+        bump_look_epoch();
         Fields(layout.to_vec())
     }
 
@@ -111,6 +154,7 @@ impl Fields {
     }
 
     pub fn get_mut(&mut self, name: &str) -> Option<&mut TaggedValue> {
+        touched(name);
         self.0
             .iter_mut()
             .find(|(n, _)| **n == *name)
@@ -126,7 +170,10 @@ impl Fields {
         let name = name.as_ref();
         match self.get_mut(name) {
             Some(slot) => *slot = value,
-            None => self.0.push((Rc::from(name), value)),
+            None => {
+                touched(name);
+                self.0.push((Rc::from(name), value));
+            }
         }
     }
 
@@ -145,6 +192,7 @@ impl Fields {
     pub fn set_at(&mut self, i: u32, name: &str, value: TaggedValue) -> bool {
         match self.0.get_mut(i as usize) {
             Some((n, v)) if **n == *name => {
+                touched(name);
                 *v = value;
                 true
             }
@@ -541,6 +589,14 @@ pub struct Env {
     particle_program_names: Vec<String>,
     /// GPU emissions since the host last drained them.
     pub particle_emissions: Vec<crate::kernel::particles::ParticleEmission>,
+    /// web3d-M7 session 16: a headless run (`twec run`, `eval::run`):
+    /// nothing will draw particles, so a block that compiles for the
+    /// GPU — pure by construction: no globals, no output — only ages
+    /// its emitter, exactly as on a 3D host, and its particles are
+    /// never simulated (a million of them in the interpreter made the
+    /// stress scene's headless run take minutes). Blocks that stay on
+    /// the CPU run as before, so any output they make is kept.
+    pub particles_unseen: bool,
     /// Counts emitters, seeding each one's random stream.
     pub particle_seed: u32,
     /// web3d-M1: the module object being initialised when this env runs
@@ -552,6 +608,9 @@ pub struct Env {
     /// `play3d` render loop drains and consumes after the body
     /// finishes. Cleared at the start of each frame.
     pub render_queue3d: Vec<DrawCall3d>,
+    /// web3d-M7 session 16: the looks gathered at `look_epoch()`
+    /// (`eval::draw_looks`).
+    pub look_cache: Option<LookCache>,
     /// Path-interning registry for `Primitive::Mesh(id)`. Indices
     /// are stable across frames (and across hot-reloads, as long as
     /// the new env intern-orders match — typically yes since
@@ -630,9 +689,11 @@ impl Env {
             particle_programs: Vec::new(),
             particle_program_names: Vec::new(),
             particle_emissions: Vec::new(),
+            particles_unseen: false,
             particle_seed: 0,
             current_module: None,
             render_queue3d: Vec::new(),
+            look_cache: None,
             mesh_paths: Vec::new(),
             texture_paths: Vec::new(),
             // xorshift64* seeded from a fixed constant for deterministic

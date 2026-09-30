@@ -361,6 +361,11 @@ pub fn install(env: &mut Env) {
         "volumetric".to_string(),
         Value::from_builtin("light.volumetric", &["enabled"], light_volumetric_impl),
     );
+    // web3d-M7 session 16: image-based lighting from an HDR sky.
+    light_fields.insert(
+        "environment".to_string(),
+        Value::from_builtin("light.environment", &["path", "intensity"], light_environment_impl),
+    );
     light_fields.insert(
         "clear".to_string(),
         Value::from_builtin("light.clear", &[], light_clear_impl),
@@ -1123,6 +1128,10 @@ thread_local! {
     /// web3d-M7 session 14: volumetric fog (`light.volumetric`) and
     /// screen-space reflections (`postfx.ssr`).
     static FOG_VOLUMETRIC: RefCell<bool> = const { RefCell::new(false) };
+    /// web3d-M7 session 16: the image-based lighting environment
+    /// (`light.environment`): an equirectangular `.hdr` and its
+    /// intensity, or none.
+    static ENVIRONMENT: RefCell<Option<(String, f32)>> = const { RefCell::new(None) };
     static SSR: RefCell<f32> = const { RefCell::new(0.0) };
     static COLOR_LUT: RefCell<Option<(String, f32)>> = const { RefCell::new(None) };
     /// web3d-M7: temporal anti-aliasing (`postfx.taa`), off by default.
@@ -1229,6 +1238,12 @@ pub fn fog_settings() -> Option<(f32, f32, [f32; 3])> {
 /// web3d-M7: depth of field as (focus distance, f-number); (0, 0) = off.
 pub fn dof_settings() -> (f32, f32) {
     DOF.with(|s| *s.borrow())
+}
+
+/// web3d-M7 session 16: the lighting environment as (`.hdr` path,
+/// intensity), if one is set.
+pub fn environment_settings() -> Option<(String, f32)> {
+    ENVIRONMENT.with(|s| s.borrow().clone())
 }
 
 /// web3d-M7: whether fog is lit per point (`light.volumetric`).
@@ -10810,6 +10825,9 @@ fn install_3d(env: &mut Env) {
         Value::from_tuple(vec![Value::from_float(0.0), Value::from_float(0.0)]),
     );
     fields.insert("zoom".to_string(), Value::from_float(1.0));
+    // web3d-M7 session 16: 3D view distance in metres (the far clip
+    // plane); nothing further away is drawn.
+    fields.insert("far".to_string(), Value::from_float(100.0));
     fields.insert(
         "follow".to_string(),
         Value::from_builtin("camera.follow", &["target", "lerp"], camera_follow_impl),
@@ -11589,6 +11607,36 @@ fn light_volumetric_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
     }
     let on = args[0].as_bool();
     FOG_VOLUMETRIC.with(|s| *s.borrow_mut() = on);
+    Ok(Value::NIL)
+}
+
+// web3d-M7 session 16: `light.environment(path, intensity)` — light the
+// scene from an equirectangular HDR image (Radiance `.hdr`): diffuse
+// light from every direction and reflections in glossy surfaces
+// (image-based lighting). It replaces `light.ambient`'s flat colour;
+// the sun and point lights still add. Intensity 0 turns it off.
+fn light_environment_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "light.environment")?;
+    let help = "e.g. `light.environment(\"assets/sky.hdr\", 1.0)`; intensity 0 turns it off";
+    if !args[0].is_str() || !args[0].as_string().ends_with(".hdr") {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "light.environment expects the path of a Radiance .hdr image".to_string(),
+            help: Some(help.to_string()),
+        });
+    }
+    let intensity = number(&args[1], "light.environment.intensity")? as f32;
+    if intensity < 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "light.environment: intensity can't be negative".to_string(),
+            help: Some(help.to_string()),
+        });
+    }
+    let path = args[0].as_string();
+    ENVIRONMENT.with(|s| *s.borrow_mut() = (intensity > 0.0).then_some((path, intensity)));
     Ok(Value::NIL)
 }
 

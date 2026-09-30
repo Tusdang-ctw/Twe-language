@@ -3420,3 +3420,19 @@ fn text_and_rect_queue_a_hud_in_3d() {
     eval::render_frame3d(&mut env).expect("render");
     assert_eq!(env.hud_queue.len(), 3);
 }
+
+/// web3d-M7 session 16: `light.environment(path, intensity)` sets the
+/// image-based lighting environment; 0 turns it off; non-`.hdr` paths
+/// and negative intensities are errors.
+#[test]
+fn light_environment_setter() {
+    run_program_str("light.environment(\"assets/sky.hdr\", 0.7)\n").expect("should run");
+    assert_eq!(
+        twec::stdlib::environment_settings(),
+        Some(("assets/sky.hdr".to_string(), 0.7))
+    );
+    run_program_str("light.environment(\"assets/sky.hdr\", 0)\n").expect("should run");
+    assert_eq!(twec::stdlib::environment_settings(), None);
+    assert!(run_program_str("light.environment(\"sky.png\", 1)\n").is_err(), "needs a .hdr");
+    assert!(run_program_str("light.environment(\"sky.hdr\", -1)\n").is_err(), "negative intensity");
+}

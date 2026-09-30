@@ -1923,3 +1923,76 @@ on render():
         .count();
     assert!(darker as u32 > W * H / 50, "the wall's shadow darkens the fog: {darker} pixels");
 }
+
+/// web3d-M7 session 16: `camera.far` is the view distance. A block
+/// 150 m away is clipped at the default 100 m and drawn at 300 m.
+#[test]
+fn camera_far_sets_the_view_distance() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |far: &str| {
+        format!(
+            r#"
+camera.eye = vec3(0, 0, 150)
+camera.target = vec3(0, 0, 0)
+{far}
+on render():
+    cube(at: vec3(0, 0, 0), color: (0.9, 0.2, 0.2, 1), size: 20.0)
+"#
+        )
+    };
+    let near = render_once(&scene(""));
+    let far = render_once(&scene("camera.far = 300.0"));
+    let centre = |rgba: &[u8]| pixel(rgba, W / 2, H / 2);
+    assert_eq!(centre(&near), pixel(&near, 2, 2), "clipped at the default 100 m");
+    let [r, g, b] = centre(&far);
+    assert!(r > g + 60 && r > b + 60, "drawn with camera.far = 300: {:?}", [r, g, b]);
+}
+
+/// web3d-M7 session 16: looks that read nothing of their entity are
+/// gathered once and reused while nothing changes; moving, spawning
+/// and despawning an entity must still show on the next frame.
+#[test]
+fn cached_looks_follow_moves_spawns_and_despawns() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let src = r#"
+camera.eye = vec3(0, 10, 0.001)
+camera.target = vec3(0, 0, 0)
+entity Block:
+    var pos = vec3(0, 0, 0)
+    look:
+        tint: (0.9, 0.2, 0.2)
+        scale: 2.0
+spawn Block at vec3(-3, 0, 0)
+"#;
+    let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    let mut assets = twec::play3d::NativeAssets::default();
+    let mut frame = |env: &mut twec::value::Env, code: &str| -> Vec<u8> {
+        if !code.is_empty() {
+            let p = twec::parser::parse(&twec::lexer::lex(code).expect("lex")).expect("parse");
+            twec::eval::run_top_level(env, &p).expect("run");
+        }
+        twec::host3d::render_frame(&mut renderer, env, &mut assets).expect("render");
+        renderer.read_pixels().expect("read pixels")
+    };
+    let red = |rgba: &[u8], x: u32| {
+        let [r, g, b] = pixel(rgba, x, H / 2);
+        r > g + 60 && r > b + 60
+    };
+    let (left, middle, right) = (W / 2 - 60, W / 2, W / 2 + 60);
+    let a = frame(&mut env, "");
+    let b = frame(&mut env, "");
+    assert!(red(&a, left) && red(&b, left), "drawn on the left, and again from the cache");
+    let moved = frame(&mut env, "for e in entities.of(Block):\n    e.pos = vec3(3, 0, 0)\n");
+    assert!(red(&moved, right) && !red(&moved, left), "the move shows");
+    let spawned = frame(&mut env, "spawn Block at vec3(0, 0, 0)\n");
+    assert!(red(&spawned, middle) && red(&spawned, right), "the spawn shows");
+    let gone = frame(&mut env, "for e in entities.of(Block):\n    despawn e\n");
+    assert!(!red(&gone, middle) && !red(&gone, right), "the despawns show");
+}

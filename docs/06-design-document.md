@@ -639,6 +639,8 @@ Each particle has implicit fields: `pos`, `velocity`, `color`, `size`, `age` (in
 - **`collide: true`** (a field) bounces particles off whatever the camera sees, using the depth buffer.
 - **`size`** is a radius in world units, default 0.1.
 - **Randomness.** Particle bodies draw `random.float()` from their emitter's own random stream, on the CPU as well: spawning particles never changes the script's random numbers, so replays match whichever path a block takes.
+- **`twec verify` says when a block will run on the CPU** *(web3d-M7 session 16)*, as a `particles-cpu` warning naming the reason. The CPU path is fine for a few hundred particles and ruinous for a million: a block reading one script global dropped the stress scene to 0.5 fps before this warning existed. Put such values in the block's own fields (`extent: 316.0`).
+- **Headless** (`twec run`, the test and eval harnesses): nothing draws, so a block that would run on the GPU only ages its emitter, as on a 3D host, and its particles aren't simulated. Such a block is pure (no globals, no output), so nothing a script can observe changes. Blocks that stay on the CPU run as before.
 
 ### 4.10a Dialogue runtime (Phase 5 task 3, partial)
 
@@ -1030,6 +1032,7 @@ The HDR pipeline always runs. The steps from scene light to the display, in orde
 - It only affects indirect light. The sun and point lights have their own shadows (§7.7c).
 - On bright surfaces, light bouncing between occluders softens it.
 - It costs an extra depth-only pass over the scene. Alpha-masked glTF materials (leaves, fences) are cut out in that pass too.
+- It is computed and blurred at half resolution *(web3d-M7 session 16)*: occlusion is soft, and at full resolution it cost `survive3d` about 18 ms a frame on an integrated GPU in Chrome.
 
 **Anti-aliasing** *(web3d-M7)*. The scene always renders with 4× MSAA, which smooths geometric edges. `postfx.taa(true)` adds temporal anti-aliasing on top, which also smooths shading detail (specular sparkle, thin highlights):
 - each frame is rendered with a sub-pixel jitter and blended into a history of earlier frames;
@@ -1061,7 +1064,16 @@ light.remove(torch)
 light.clear()                             # remove every point light
 light.fog(0.05, 0.3, (0.7, 0.75, 0.8))    # height fog: density, falloff, colour; density 0 = off
 light.volumetric(true)                    # light the fog per point: shafts, halos
+light.environment("assets/sky.hdr", 1.0)  # image-based lighting from an HDR sky; intensity 0 = off
 ```
+
+- **Image-based lighting** *(web3d-M7 session 16)*. `light.environment(path, intensity)` lights the scene from an equirectangular Radiance `.hdr` image:
+  - diffuse light from every direction (spherical-harmonic irradiance);
+  - reflections in glossy and metal surfaces (a prefiltered specular map with the split-sum DFG table), which `postfx.ssr` replaces where it finds the scene;
+  - it takes the place of `light.ambient`'s flat colour; the sun and point lights still add, and it casts no shadows;
+  - the background stays the plain background colour.
+
+  The image can be computed rather than downloaded: `survive3d`'s dusk sky is written by `tests/gen_survive3d_sky.rs`. A path that isn't a `.hdr`, or a negative intensity, is an error.
 
 - **Up to 1024 point and spot lights** *(web3d-M7)*. `light.add` errors past that. Shading is clustered: the view is divided into a 16 × 9 × 24 grid, each cluster lists the lights that reach it, and a surface shades only its cluster's lights. A scene can hold hundreds of lights while each pixel pays for the few near it. (Before web3d-M7 there were 8.)
 - `light.cone(h, direction, angle)` turns a light into a spot light shining along `direction`, lighting `angle` degrees either side of it. The edge fades over the outer fifth of the angle. An angle of 180 or more makes it a point light again.
@@ -1106,7 +1118,7 @@ camera.shake(8.0, 0.3)            # amplitude px, duration s
 camera.reset()                    # snap to defaults
 ```
 
-**3D** (`twec play3d`): `camera.eye`, `camera.target`, `camera.up` are 3-tuples.
+**3D** (`twec play3d`): `camera.eye`, `camera.target`, `camera.up` are 3-tuples. `camera.far` *(web3d-M7 session 16)* is the view distance in metres, default 100: nothing further from the camera is drawn. Raise it for large scenes (`camera.far = 1200.0` shows a 600 m field from 400 m away).
 
 The `camera2d.*` namespace (v1.0.1 Session 8) adds **follow with deadzone**, **animated zoom**, **cinematic pan**, and **world bounds clamp** — the four Survivors/platformer/RPG camera patterns scripts were re-implementing by hand:
 

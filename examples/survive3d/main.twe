@@ -12,6 +12,11 @@
 # (playing / level_up / paused / game_over) draw the HUD and menus with
 # `text()` / `rect()`. World units are metres; the arena is 60 × 60 on
 # the XZ plane, seen from a camera above and behind the player.
+#
+# web3d-M7: the arena floor, the slimes, the gems and the bolts are
+# procedural `visual` materials (no textures); the scene is lit by a
+# computed sky (`assets/sky.hdr`, from tests/gen_survive3d_sky.rs), a
+# shadowing sun and torches; deaths burst into GPU particles.
 
 let arena = 30.0          # half-width: the arena spans -30..30 on X and Z
 let player_radius = 0.5
@@ -49,6 +54,16 @@ if save.try_read(best_path):
 var boss_wave_counter = 0
 
 random.seed(20260928)
+
+# Light and look (web3d-M7).
+light.clear()
+light.environment("assets/sky.hdr", 0.6)
+sun.direction(vec3(-0.4, 0.8, 0.35))
+sun.shadow(true)
+sun.shadow_extent(16.0)
+postfx.ao(1.0)
+postfx.bloom(0.35)
+postfx.taa(false)
 # Tabbing away (or hiding the browser tab) freezes the run.
 auto_pause_on_blur(true)
 
@@ -68,6 +83,110 @@ function take_player_damage(amount):
     player_hp -= amount
     player_iframes = 0.6
     sound.play(snd_hurt)
+
+# ---------------------------------------------------------------
+# Materials: every look below that isn't a model is written here.
+# ---------------------------------------------------------------
+
+# The arena floor: 4 m flagstones in two tones, worn by noise, with
+# grout lines that glow faintly as runes pulse along them.
+visual ArenaFloor:
+    surface(uv, time, pos) -> material:
+        let cell = (math.mod(pos.x, 4) / 4, math.mod(pos.z, 4) / 4)
+        let odd = math.mod(math.floor(pos.x / 4) + math.floor(pos.z / 4), 2)
+        let edge = math.min(math.min(cell.x, 1 - cell.x), math.min(cell.y, 1 - cell.y))
+        let grout = 1 - smoothstep(0.008, 0.02, edge)
+        let wear = noise((pos.x, pos.z) * 0.9) * 0.5 + noise((pos.x, pos.z) * 4) * 0.25
+        let stone = mix((0.11, 0.12, 0.15), (0.15, 0.15, 0.19), odd) * (0.85 + wear * 0.3)
+        let rune = math.max(math.sin(pos.x * 0.35 + pos.z * 0.2 - time * 1.5), 0)
+        let glow = grout * math.max(rune * 4 - 3, 0) * 1.2
+        return material(albedo: mix(stone, (0.06, 0.06, 0.08), grout), roughness: 0.55 + wear * 0.25 - grout * 0.3, emission: (0.2, 0.55, 1.0) * glow)
+
+# Slimes: glossy, mottled, and wobbling.
+visual SlimeSkin:
+    surface(uv, time, pos) -> material:
+        let mottle = noise((uv.x * 6, uv.y * 6)) * 0.15
+        return material(albedo: (0.85 + mottle, 0.9 + mottle, 0.85), roughness: 0.18, emission: (0.02, 0.12, 0.04))
+
+    displace(uv, time, pos, normal) -> vec3:
+        let wobble = math.sin(time * 7 + uv.y * 9) * 0.05
+        return normal * wobble + (0, math.max(normal.y, 0) * math.sin(time * 5 + pos.x) * 0.04, 0)
+
+# XP gems: a blue glow the bloom picks up.
+visual GemGlow:
+    surface(uv, time) -> material:
+        let pulse = 0.75 + 0.25 * math.sin(time * 4)
+        return material(albedo: (0.3, 0.55, 1.0), roughness: 0.1, emission: (0.25, 0.5, 1.0) * pulse * 2)
+
+# Bolts: white-hot cores.
+visual BoltGlow:
+    surface(uv, time) -> material:
+        return material(albedo: (1.0, 0.9, 0.4), emission: (1.0, 0.8, 0.3) * 4)
+
+# Torch flames on the arena's rim.
+visual Flame:
+    surface(uv, time, pos) -> material:
+        let flicker = 0.8 + 0.2 * noise((time * 6, pos.x))
+        return material(albedo: (1.0, 0.6, 0.2), emission: (1.0, 0.5, 0.15) * flicker * 5)
+
+# The ground, one entity: a 64 × 64 m grid drawn with ArenaFloor.
+entity Ground:
+    var pos = vec3(0, -0.5, 0)
+    look:
+        mesh: "assets/grid_plane.glb"
+        scale: 64.0
+        material: ArenaFloor
+
+spawn Ground
+
+# Torches: a flame on each post, and a flickering point light.
+entity Torch:
+    var pos = vec3(0, 0, 0)
+    var light_id = -1
+    var phase = 0.0
+    look:
+        mesh: "sphere"
+        scale: 0.45
+        material: Flame
+
+    function update(dt):
+        if light_id < 0:
+            light_id = light.add(pos, (1.0, 0.55, 0.2, 1.0), 9.0)
+            phase = pos.x * 0.7 + pos.z * 1.3
+        phase += dt * 9.0
+        let f = 0.85 + 0.15 * math.sin(phase) * math.sin(phase * 0.37)
+        light.set(light_id, pos, (1.0 * f, 0.55 * f, 0.2 * f, 1.0), 9.0)
+
+for i in 0..<16:
+    let side = math.floor(i / 4)
+    let t = -arena + 8.0 + math.mod(i, 4) * ((2.0 * arena - 16.0) / 3.0)
+    let e = arena + 0.6
+    if side == 0:
+        spawn Torch at vec3(t, 0.7, -e)
+    elif side == 1:
+        spawn Torch at vec3(t, 0.7, e)
+    elif side == 2:
+        spawn Torch at vec3(-e, 0.7, t)
+    else:
+        spawn Torch at vec3(e, 0.7, t)
+
+# Deaths burst into sparks that bounce off the floor (GPU particles).
+particles DeathBurst:
+    count: 48
+    lifetime: 0.7
+    collide: true
+
+    on_spawn(p):
+        let a = random.float() * 2.0 * math.pi
+        let r = 2.0 + random.float() * 3.0
+        p.velocity = (math.cos(a) * r, 2.5 + random.float() * 3.0, math.sin(a) * r)
+        p.color = (1.0, 0.75, 0.35, 1.0)
+        p.size = 0.05 + random.float() * 0.04
+
+    on_update(p, dt):
+        p.velocity -= (0.0, 9.8, 0.0) * dt
+        p.pos += p.velocity * dt
+        p.color = (1.0, 0.75 * (1.0 - p.age_ratio), 0.35 * (1.0 - p.age_ratio), 1.0 - p.age_ratio)
 
 # The player's body: an animated model (built by
 # tests/gen_survive3d_hero.rs) standing where `player` is, feet on the
@@ -195,6 +314,7 @@ entity Slime:
         mesh: "sphere"
         tint: (0.25, 0.85, 0.45)
         scale: 0.9
+        material: SlimeSkin
 
     function update(dt):
         if frozen:
@@ -297,6 +417,7 @@ entity Projectile:
         mesh: "sphere"
         tint: (1.0, 0.9, 0.3)
         scale: 0.3
+        material: BoltGlow
 
     function update(dt):
         if frozen:
@@ -443,21 +564,6 @@ entity Pulse:
         if age > 0.18:
             despawn self
 
-# Death poof: shrinks to nothing.
-entity Spark:
-    var pos = vec3(0, 0, 0)
-    var life = 0.3
-    look:
-        mesh: "cube"
-        tint: (1.0, 0.7, 0.3)
-        scale: life * 2.0
-        facing: life * 20.0
-
-    function update(dt):
-        life -= dt
-        if life <= 0.0:
-            despawn self
-
 entity XPGem:
     var pos = vec3(0, 0, 0)
     var value = 1
@@ -467,6 +573,7 @@ entity XPGem:
         tint: (0.3, 0.55, 1.0)
         scale: 0.4
         facing: spin
+        material: GemGlow
 
     function update(dt):
         if frozen:
@@ -483,42 +590,30 @@ entity XPGem:
 
 on Slime.death(s):
     spawn XPGem at s.pos
-    spawn Spark at s.pos
+    spawn DeathBurst at s.pos
     sound.play(snd_hit)
 
 on Bat.death(b):
     spawn XPGem at b.pos
-    spawn Spark at b.pos
+    spawn DeathBurst at b.pos
     sound.play(snd_hit)
 
 on Skeleton.death(k):
     spawn XPGem at k.pos
     spawn XPGem at vec3(k.pos.x + 0.4, 0, k.pos.z)
-    spawn Spark at k.pos
+    spawn DeathBurst at k.pos
     sound.play(snd_hit)
 
 on Boss.death(b):
     for i in 0..<10:
         spawn XPGem at vec3(b.pos.x + math.cos(i * 0.628) * 1.5, 0, b.pos.z + math.sin(i * 0.628) * 1.5)
-    spawn Spark at b.pos
+    spawn DeathBurst at b.pos
 
 # ---------------------------------------------------------------
 # The world, drawn every frame by every state.
 # ---------------------------------------------------------------
 function draw_world():
-    # Ground: a checkerboard of 4 m tiles (top faces at y = -0.5), so
-    # movement reads; only the tiles around the camera are drawn.
-    let cx = math.floor(player.x / 4.0) * 4.0
-    let cz = math.floor(player.z / 4.0) * 4.0
-    for i in -6..6:
-        for j in -6..5:
-            let tx = cx + i * 4.0
-            let tz = cz + j * 4.0
-            if tx >= -arena - 2.0 and tx <= arena + 2.0 and tz >= -arena - 2.0 and tz <= arena + 2.0:
-                var shade = 0.13
-                if math.mod(math.floor(tx / 4.0) + math.floor(tz / 4.0), 2) == 0:
-                    shade = 0.17
-                cube(at: vec3(tx + 2.0, -2.5, tz + 2.0), color: (shade, shade * 1.05, shade * 1.2, 1.0), size: 4.0)
+    # The floor is the `Ground` entity; the rim is a wall of blocks.
     let e = arena + 0.6
     for i in 0..<20:
         let t = -e + i * (2.0 * e / 19.0)

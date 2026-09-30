@@ -1908,6 +1908,7 @@ fn run_file_tree(path: &str, frames: u32) -> i32 {
     let result = if crate::module::has_imports(&program) {
         match crate::module::prepare_entry(std::path::Path::new(path), &src) {
             Ok(mut env) => (|| {
+                crate::eval::headless(&mut env);
                 for _ in 0..frames {
                     crate::eval::tick_frame(&mut env, 1.0 / 60.0)?;
                     if env.returning.take().is_some() {

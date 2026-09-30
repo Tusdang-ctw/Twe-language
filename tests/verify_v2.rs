@@ -285,3 +285,28 @@ fn look_block_diagnostics_and_fix_round_trip() {
         assert!(r.ok(), "{path}: {}", r.to_json());
     }
 }
+
+/// web3d-M7 session 16: a `particles` block the GPU can't run is a
+/// `particles-cpu` warning naming the reason; one it can run is clean.
+#[test]
+fn verify_warns_when_particles_fall_back_to_the_cpu() {
+    let block = |body: &str| {
+        format!(
+            "let spread = 3.0\nparticles Sparks:\n    count: 100\n    lifetime: 1.0\n\n    on_spawn(p):\n        {body}\n"
+        )
+    };
+    let report = verify_program(&block("p.velocity = (spread, 1, 0)"));
+    let d = report
+        .diagnostics
+        .iter()
+        .find(|d| d.kind == "particles-cpu")
+        .expect("a CPU fallback warning");
+    assert!(d.message.contains("`spread`"), "names the reason: {}", d.message);
+    assert!(report.ok(), "a warning, not an error");
+    let clean = verify_program(&block("p.velocity = (3.0, 1, 0)"));
+    assert!(clean.diagnostics.is_empty(), "{}", clean.to_json());
+    for path in ["examples/stress_3d.twe", "examples/particles_3d.twe", "examples/survive3d/main.twe"] {
+        let r = verify_program(&std::fs::read_to_string(path).unwrap());
+        assert!(r.diagnostics.is_empty(), "{path}: {}", r.to_json());
+    }
+}
