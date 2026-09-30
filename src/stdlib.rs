@@ -346,6 +346,11 @@ pub fn install(env: &mut Env) {
         "shadow".to_string(),
         Value::from_builtin("light.shadow", &["handle", "enabled"], light_shadow_impl),
     );
+    // web3d-M7: spot lights.
+    light_fields.insert(
+        "cone".to_string(),
+        Value::from_builtin("light.cone", &["handle", "direction", "angle"], light_cone_impl),
+    );
     // web3d-M7: exponential height fog; density 0 turns it off.
     light_fields.insert(
         "fog".to_string(),
@@ -1065,6 +1070,10 @@ thread_local! {
     /// returns the slot index (1-based, so 0 means "all full").
     static LIGHTS_STATE: RefCell<crate::render3d_types::LightsUniform> =
         RefCell::new(crate::render3d_types::LightsUniform::new());
+    /// web3d-M7: point and spot lights (`light.add` handle = index + 1;
+    /// a removed light's slot is reused).
+    static POINT_LIGHTS: RefCell<Vec<crate::render3d_types::PointLightU>> =
+        const { RefCell::new(Vec::new()) };
     /// Phase 25: shadow-pass enable flag (default off — opt-in via
     /// `sun.shadow(true)`). When off, the play3d frame loop still
     /// writes the shadow uniform, but with `flags.w = 0` so the
@@ -1141,6 +1150,21 @@ pub fn take_pending_screenshot() -> Option<String> {
 /// straight into a wgpu buffer without holding the thread-local.
 pub fn lights_snapshot() -> crate::render3d_types::LightsUniform {
     LIGHTS_STATE.with(|s| *s.borrow())
+}
+
+/// web3d-M7: the point and spot lights for this frame.
+pub fn point_lights_snapshot() -> Vec<crate::render3d_types::PointLightU> {
+    POINT_LIGHTS.with(|s| s.borrow().clone())
+}
+
+/// Run `f` on light `handle` (1-based), if it exists.
+fn with_light(handle: u32, f: impl FnOnce(&mut crate::render3d_types::PointLightU)) {
+    POINT_LIGHTS.with(|s| {
+        let mut lights = s.borrow_mut();
+        if let Some(slot) = (handle as usize).checked_sub(1).and_then(|i| lights.get_mut(i)) {
+            f(slot);
+        }
+    });
 }
 
 /// Phase 25: read the script-controlled shadow enable flag.
@@ -11449,39 +11473,34 @@ fn light_add_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             help: Some("a 0-radius light is disabled by definition".to_string()),
         });
     }
-    let mut handle = 0;
-    LIGHTS_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        for (i, slot) in st.point_lights.iter_mut().enumerate() {
-            if slot.color_radius[3] <= 0.0 {
-                slot.pos = [at[0], at[1], at[2], 0.0];
-                slot.color_radius = [color[0], color[1], color[2], radius];
-                handle = (i + 1) as i64;
-                return;
-            }
+    let light = crate::render3d_types::PointLightU::point(at, [color[0], color[1], color[2]], radius);
+    let handle = POINT_LIGHTS.with(|s| {
+        let mut lights = s.borrow_mut();
+        if let Some(i) = lights.iter().position(|l| l.color_radius[3] <= 0.0) {
+            lights[i] = light;
+            return Some(i + 1);
         }
+        if lights.len() < crate::render3d_types::MAX_LIGHTS {
+            lights.push(light);
+            return Some(lights.len());
+        }
+        None
     });
-    if handle == 0 {
-        return Err(RuntimeError {
+    match handle {
+        Some(h) => Ok(Value::from_int(h as i64)),
+        None => Err(RuntimeError {
             line: 0,
             col: 0,
-            message: "light.add: all 8 light slots full".to_string(),
+            message: format!("light.add: all {} light slots are in use", crate::render3d_types::MAX_LIGHTS),
             help: Some("call light.remove(h) to free a slot".to_string()),
-        });
+        }),
     }
-    Ok(Value::from_int(handle))
 }
 
 fn light_remove_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "light.remove")?;
     let handle = handle_int(&args[0], "light.remove")?;
-    LIGHTS_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        if let Some(slot) = st.point_lights.get_mut((handle - 1) as usize) {
-            slot.pos = [0.0; 4];
-            slot.color_radius = [0.0; 4];
-        }
-    });
+    with_light(handle, |slot| *slot = bytemuck::Zeroable::zeroed());
     Ok(Value::NIL)
 }
 
@@ -11501,13 +11520,11 @@ fn light_set_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     let at = xyz_of(&args[1], "light.set.at")?;
     let color = rgba_of(&args[2], "light.set.color")?;
     let radius = number(&args[3], "light.set.radius")? as f32;
-    LIGHTS_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        if let Some(slot) = st.point_lights.get_mut((handle - 1) as usize) {
-            // pos.w is the light's shadow flag (`light.shadow`): kept.
-            slot.pos = [at[0], at[1], at[2], slot.pos[3]];
-            slot.color_radius = [color[0], color[1], color[2], radius];
-        }
+    with_light(handle, |slot| {
+        // pos.w is the light's shadow flag (`light.shadow`) and the
+        // cone stays: kept.
+        slot.pos = [at[0], at[1], at[2], slot.pos[3]];
+        slot.color_radius = [color[0], color[1], color[2], radius];
     });
     Ok(Value::NIL)
 }
@@ -11545,10 +11562,41 @@ fn light_shadow_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         });
     }
     let on = args[1].as_bool();
-    LIGHTS_STATE.with(|s| {
-        if let Some(slot) = s.borrow_mut().point_lights.get_mut((handle - 1) as usize) {
-            slot.pos[3] = if on { 1.0 } else { 0.0 };
-        }
+    with_light(handle, |slot| slot.pos[3] = if on { 1.0 } else { 0.0 });
+    Ok(Value::NIL)
+}
+
+// web3d-M7: `light.cone(handle, direction, angle)` — makes the light a
+// spot light shining along `direction`, lighting a cone of `angle`
+// degrees either side of it (the edge fades over its outer fifth).
+// An angle of 180 or more makes it a point light again.
+fn light_cone_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "light.cone")?;
+    let handle = handle_int(&args[0], "light.cone")?;
+    let dir = xyz_of(&args[1], "light.cone.direction")?;
+    let angle = number(&args[2], "light.cone.angle")? as f32;
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    if len < 1e-6 || angle <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "light.cone needs a direction and an angle above 0".to_string(),
+            help: Some("e.g. `light.cone(lamp, vec3(0, -1, 0), 30)` shines straight down in a 60-degree cone".to_string()),
+        });
+    }
+    let (cone, params) = if angle >= 180.0 {
+        ([0.0, -1.0, 0.0, -2.0], [-2.0, 0.0, 0.0, 0.0])
+    } else {
+        let outer = angle.to_radians();
+        let inner = outer * 0.8;
+        (
+            [dir[0] / len, dir[1] / len, dir[2] / len, outer.cos()],
+            [inner.cos(), 0.0, 0.0, 0.0],
+        )
+    };
+    with_light(handle, |slot| {
+        slot.cone = cone;
+        slot.params = params;
     });
     Ok(Value::NIL)
 }
@@ -11557,23 +11605,12 @@ fn light_set_radius_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
     arity(args, 2, "light.set_radius")?;
     let handle = handle_int(&args[0], "light.set_radius")?;
     let radius = number(&args[1], "light.set_radius.radius")? as f32;
-    LIGHTS_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        if let Some(slot) = st.point_lights.get_mut((handle - 1) as usize) {
-            slot.color_radius[3] = radius;
-        }
-    });
+    with_light(handle, |slot| slot.color_radius[3] = radius);
     Ok(Value::NIL)
 }
 
 fn light_clear_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
-    LIGHTS_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        for slot in st.point_lights.iter_mut() {
-            slot.pos = [0.0; 4];
-            slot.color_radius = [0.0; 4];
-        }
-    });
+    POINT_LIGHTS.with(|s| s.borrow_mut().clear());
     Ok(Value::NIL)
 }
 

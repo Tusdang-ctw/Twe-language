@@ -126,6 +126,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
     for frame in 0.. {
         let snap = RenderSnapshot {
             lut: None,
+            point_lights: &[],
             fog: None,
             camera,
             background: [0.0, 0.0, 0.0],

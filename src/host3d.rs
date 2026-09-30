@@ -112,7 +112,9 @@ pub fn render_frame(
     let draws = std::mem::take(&mut env.render_queue3d);
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let lut = crate::stdlib::color_lut();
+    let point_lights = crate::stdlib::point_lights_snapshot();
     let snap = RenderSnapshot {
+        point_lights: &point_lights,
         fog: crate::stdlib::fog_settings().map(|(density, falloff, color)| crate::kernel::render::FogSettings {
             density,
             falloff,

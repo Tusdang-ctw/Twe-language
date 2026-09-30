@@ -140,6 +140,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-30: don't draw what nobody can see.** Twe's 3D now asks the graphics card to skip objects that are off-screen or hidden behind something else, checked with a small pyramid of depth images, before drawing them. On this laptop's built-in graphics chip, 100,000 cubes behind a wall went from 23 to under 9 milliseconds a frame. The same measurements showed something more embarrassing: every 3D game had been running on the laptop's weaker built-in graphics instead of its real graphics card. That's fixed too.
 
+- **2026-09-30: a thousand candles.** Twe's 3D scenes used to allow eight lamps. Now they can hold a thousand, because the view is split into thousands of small boxes and each spot on screen only pays for the few lights near it. Lights can be spotlights too, and when many lamps want to cast shadows, the ones nearest the player get them. A pleasant side effect: scenes with no lamps at all got faster, because every pixel used to check eight empty lamp slots.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

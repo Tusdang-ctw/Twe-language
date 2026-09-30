@@ -6,20 +6,45 @@
 //! layout derives are unconditional. Moves with the kernel when the
 //! workspace splits.
 
-/// Phase 20: per-frame lighting uniform. Up to 8 point lights +
-/// one directional sun + a global ambient. Padded to vec4-aligned
-/// fields per std140 / wgsl uniform layout rules. Disabled lights
-/// have `radius = 0.0` so the shader can early-out cheaply.
+/// web3d-M7: the most point and spot lights a scene holds (clustered
+/// shading draws each pixel with only the lights near it).
+pub const MAX_LIGHTS: usize = 1024;
+
+/// A point or spot light, as scripts set it (`light.*`) and the
+/// renderer's light list stores it. Disabled slots have `radius = 0`.
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PointLightU {
-    /// xyz = world-space position. w padding.
+    /// xyz = world-space position. w = 1 if the light should cast
+    /// shadows (`light.shadow`); in the renderer's copy, the shadow
+    /// cube it was given + 1 (0 = none).
     pub pos: [f32; 4],
     /// xyz = light color (linear-ish, treat as gain). w = radius.
     /// `radius == 0.0` means "slot disabled".
     pub color_radius: [f32; 4],
+    /// web3d-M7 spot lights (`light.cone`): xyz = the direction it
+    /// shines (unit), w = cosine of the cone's half-angle; w ≤ -1 for
+    /// a point light.
+    pub cone: [f32; 4],
+    /// x = cosine of the half-angle where the edge's fade begins.
+    pub params: [f32; 4],
 }
 
+impl PointLightU {
+    /// A point light (no cone).
+    pub fn point(at: [f32; 3], color: [f32; 3], radius: f32) -> Self {
+        PointLightU {
+            pos: [at[0], at[1], at[2], 0.0],
+            color_radius: [color[0], color[1], color[2], radius],
+            cone: [0.0, -1.0, 0.0, -2.0],
+            params: [-2.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// Phase 20: per-frame lighting uniform: the global ambient and the
+/// directional sun. (web3d-M7: point and spot lights moved to a list,
+/// `PointLightU`, clustered by the renderer.)
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightsUniform {
@@ -28,7 +53,6 @@ pub struct LightsUniform {
     /// xyz = normalized direction TOWARD the sun (i.e. light comes
     /// from this direction). w = sun intensity (0..1+).
     pub sun_dir: [f32; 4],
-    pub point_lights: [PointLightU; 8],
 }
 
 impl LightsUniform {
@@ -36,10 +60,6 @@ impl LightsUniform {
         Self {
             ambient: [0.20, 0.20, 0.22, 0.0],
             sun_dir: [0.4, 0.85, 0.35, 1.0],
-            point_lights: [PointLightU {
-                pos: [0.0; 4],
-                color_radius: [0.0; 4],
-            }; 8],
         }
     }
 }

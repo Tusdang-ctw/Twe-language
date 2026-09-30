@@ -20,7 +20,7 @@ use crate::kernel::material::{
     upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS,
 };
 
-pub use crate::render3d_types::{AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive};
+pub use crate::render3d_types::{AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive, MAX_LIGHTS};
 
 /// Camera placement for a frame.
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +172,9 @@ pub struct RenderSnapshot<'a> {
     pub camera: Camera3d,
     /// web3d-M7: colour grading, applied after the tonemap curve.
     pub lut: Option<LutSettings<'a>>,
+    /// web3d-M7: point and spot lights (up to `MAX_LIGHTS`; the rest are
+    /// ignored), clustered for shading.
+    pub point_lights: &'a [PointLightU],
     /// web3d-M7: height fog.
     pub fog: Option<FogSettings>,
     /// web3d-M7: image-based lighting; `None` lights with the uniform
@@ -547,20 +550,40 @@ struct Material {
 @group(1) @binding(17) var s_ext2: sampler;
 @group(1) @binding(18) var s_ext3: sampler;
 
-// Phase 20: lighting uniform — global ambient, directional sun,
-// 8 point lights. Bound once per frame (group 2) alongside camera.
-struct PointLight {
-    pos: vec4<f32>,
-    color_radius: vec4<f32>,  // xyz=color, w=radius (0 = disabled)
-};
-
+// Phase 20: lighting uniform — global ambient and the directional sun.
 struct Lights {
     ambient: vec4<f32>,
     sun_dir: vec4<f32>,        // xyz=normalized dir TOWARD light, w=intensity
-    point_lights: array<PointLight, 8>,
 };
 
 @group(0) @binding(1) var<uniform> lights: Lights;
+
+// web3d-M7: point and spot lights, clustered (kernel/clusters.rs): the
+// light list, each cluster's count and indices, and the grid.
+struct PointLight {
+    pos: vec4<f32>,           // xyz, w = shadow cube + 1 (0 = none)
+    color_radius: vec4<f32>,  // xyz=color, w=radius (0 = disabled)
+    cone: vec4<f32>,          // spot: xyz = direction, w = cos(half-angle); w <= -1: point
+    params: vec4<f32>,        // x = cos of the fade's inner angle
+};
+struct Clusters {
+    view: mat4x4<f32>,
+    inv_proj: mat4x4<f32>,
+    grid: vec4<f32>,          // x, y, z, light count
+    depth: vec4<f32>,         // near, far, slice scale, slice bias
+    screen: vec4<f32>,
+};
+@group(0) @binding(11) var<storage, read> point_lights: array<PointLight>;
+@group(0) @binding(12) var<storage, read> light_grid: array<u32>;
+@group(0) @binding(13) var<uniform> clusters: Clusters;
+
+// The cluster holding a pixel at view depth `z`.
+fn cluster_of(frag: vec2<f32>, z: f32) -> u32 {
+    let g = vec2<u32>(clusters.grid.xy);
+    let tile = min(vec2<u32>(frag / (clusters.screen.xy / clusters.grid.xy)), g - vec2<u32>(1u));
+    let slice = u32(clamp(floor(log(max(z, 1e-4)) * clusters.depth.z - clusters.depth.w), 0.0, clusters.grid.z - 1.0));
+    return tile.x + g.x * (tile.y + g.y * slice);
+}
 
 // web3d-M7: image-based lighting (kernel/environment.rs). `sh` is the
 // cosine-convolved irradiance SH9; params = (intensity, max specular
@@ -1237,26 +1260,37 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
         let shadow = sample_shadow(in.world_pos, in.view_z, n, in.clip_position.xy);
         color = color + surface_light(p, l, vec3<f32>(lights.sun_dir.w * shadow));
     }
-    // Up to 8 point lights, radius 0 = off; a smooth-edged falloff that
-    // reaches zero at the radius (game-friendly, predictable to tune).
-    for (var i: u32 = 0u; i < 8u; i = i + 1u) {
-        let pl = lights.point_lights[i];
-        let r = pl.color_radius.w;
-        if (r <= 0.0) {
-            continue;
+    // Point and spot lights: only those listed for this pixel's cluster
+    // (web3d-M7). A smooth-edged falloff reaches zero at the radius
+    // (game-friendly, predictable to tune); a spot light's cone fades
+    // between its inner and outer angles.
+    if (clusters.grid.w > 0.0) {
+        let base = cluster_of(in.clip_position.xy, in.view_z) * 129u;
+        let count = light_grid[base];
+        for (var k: u32 = 0u; k < count; k = k + 1u) {
+            let pl = point_lights[light_grid[base + 1u + k]];
+            let r = pl.color_radius.w;
+            let to_light = pl.pos.xyz - in.world_pos;
+            let dist = length(to_light);
+            if (r <= 0.0 || dist >= r) {
+                continue;
+            }
+            let l = to_light / dist;
+            var spot = 1.0;
+            if (pl.cone.w > -1.5) {
+                spot = smoothstep(pl.cone.w, pl.params.x, dot(-l, pl.cone.xyz));
+                if (spot <= 0.0) {
+                    continue;
+                }
+            }
+            let t = 1.0 - (dist / r);
+            var visible = 1.0;
+            let layer = i32(pl.pos.w + 0.5) - 1;
+            if (layer >= 0) {
+                visible = point_shadow(layer, in.world_pos, pl.pos.xyz, r, n);
+            }
+            color = color + surface_light(p, l, pl.color_radius.rgb * (t * t * visible * spot));
         }
-        let to_light = pl.pos.xyz - in.world_pos;
-        let dist = length(to_light);
-        if (dist >= r) {
-            continue;
-        }
-        let t = 1.0 - (dist / r);
-        var visible = 1.0;
-        let layer = i32(pl.pos.w + 0.5) - 1;
-        if (layer >= 0) {
-            visible = point_shadow(layer, in.world_pos, pl.pos.xyz, r, n);
-        }
-        color = color + surface_light(p, to_light / dist, pl.color_radius.rgb * (t * t * visible));
     }
     return apply_fog(color + s.emissive * p.cc_atten, in.world_pos);
 }
@@ -2409,6 +2443,8 @@ pub struct Renderer {
     transmission: crate::kernel::post::Transmission,
     /// web3d-M7: GPU-driven culling and indirect draws.
     gpu_cull: crate::kernel::gpu_cull::GpuCull,
+    /// web3d-M7: the clustered point / spot light list.
+    clusters: crate::kernel::clusters::Clusters,
     frame_index: std::cell::Cell<u32>,
     /// web3d-M7: point-light shadow cubes.
     point_shadows: PointShadows,
@@ -2854,6 +2890,28 @@ async fn init_renderer(
             uniform_entry(9, wgpu::ShaderStages::FRAGMENT),
             // web3d-M7: the transmission source.
             texture_entry(10, wgpu::TextureViewDimension::D2),
+            // web3d-M7: clustered lights (list, grid, parameters).
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 12,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            uniform_entry(13, wgpu::ShaderStages::FRAGMENT),
         ],
     });
     let fog_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -2877,13 +2935,17 @@ async fn init_renderer(
         loaded: None,
         generation: 0,
     };
+    let clusters = crate::kernel::clusters::Clusters::new(&device);
     let frame_bind_group = frame_bind_group(
         &device,
         &frame_bgl,
-        &camera_buffer,
-        &lights_buffer,
+        &FrameBuffers {
+            camera: &camera_buffer,
+            lights: &lights_buffer,
+            fog: &fog_buffer,
+            clusters: &clusters,
+        },
         &env,
-        &fog_buffer,
         [ao.view(false), transmission.view(false)],
     );
 
@@ -3331,6 +3393,7 @@ async fn init_renderer(
         frame_ao_key: (0, 0),
         transmission,
         gpu_cull,
+        clusters,
         frame_index: std::cell::Cell::new(0),
         point_shadows,
         lights_buffer,
@@ -4511,16 +4574,43 @@ impl Renderer {
             .queue
             .write_buffer(&state.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
 
-        let mut lights_uniform = snap.lights;
-        let mut point_shadow_lights: Vec<([f32; 3], f32)> = Vec::new();
-        for pl in lights_uniform.point_lights.iter_mut() {
-            let wants = pl.pos[3] > 0.5 && pl.color_radius[3] > 0.0;
-            pl.pos[3] = 0.0;
-            if wants && point_shadow_lights.len() < POINT_SHADOW_LIGHTS {
-                point_shadow_lights.push(([pl.pos[0], pl.pos[1], pl.pos[2]], pl.color_radius[3]));
-                pl.pos[3] = point_shadow_lights.len() as f32;
+        let lights_uniform = snap.lights;
+        // web3d-M7: the frame's point and spot lights, with the shadow
+        // budget: the POINT_SHADOW_LIGHTS shadow-casting lights nearest
+        // the camera get a shadow cube (pos.w = cube + 1), the rest light
+        // without shadows.
+        let mut point_lights: Vec<PointLightU> = snap.point_lights.iter().take(MAX_LIGHTS).copied().collect();
+        let mut wanting: Vec<usize> = Vec::new();
+        for (i, pl) in point_lights.iter_mut().enumerate() {
+            if pl.pos[3] > 0.5 && pl.color_radius[3] > 0.0 {
+                wanting.push(i);
             }
+            pl.pos[3] = 0.0;
         }
+        let reach = |pl: &PointLightU| {
+            let d = sub([pl.pos[0], pl.pos[1], pl.pos[2]], eye);
+            dot(d, d).sqrt() - pl.color_radius[3]
+        };
+        wanting.sort_by(|&a, &b| reach(&point_lights[a]).total_cmp(&reach(&point_lights[b])));
+        let mut point_shadow_lights: Vec<([f32; 3], f32)> = Vec::new();
+        for &i in wanting.iter().take(POINT_SHADOW_LIGHTS) {
+            let pl = &mut point_lights[i];
+            point_shadow_lights.push(([pl.pos[0], pl.pos[1], pl.pos[2]], pl.color_radius[3]));
+            pl.pos[3] = point_shadow_lights.len() as f32;
+        }
+        let light_count = point_lights.len() as u32;
+        state.clusters.prepare(
+            &state.queue,
+            &point_lights,
+            &crate::kernel::clusters::ClusterUniform::new(
+                view,
+                invert4(proj),
+                near,
+                far,
+                (state.config.width, state.config.height),
+                light_count,
+            ),
+        );
         for (light, (pos, radius)) in point_shadow_lights.iter().enumerate() {
             for face in 0..6 {
                 let pass_uniform = ShadowPassUniform {
@@ -4675,10 +4765,13 @@ impl Renderer {
                             state.frame_bind_group = frame_bind_group(
                                 &state.device,
                                 &state.frame_bgl,
-                                &state.camera_buffer,
-                                &state.lights_buffer,
+                                &FrameBuffers {
+                                    camera: &state.camera_buffer,
+                                    lights: &state.lights_buffer,
+                                    fog: &state.fog_buffer,
+                                    clusters: &state.clusters,
+                                },
                                 &state.env,
-                                &state.fog_buffer,
                                 [state.ao.view(false), state.transmission.view(false)],
                             );
                             state.frame_ao_key = (0, 0);
@@ -5183,6 +5276,12 @@ impl Renderer {
         } else {
             None
         };
+        // web3d-M7: the light clusters, before anything shades.
+        if light_count > 0 {
+            let grid = graph.import("light clusters", false);
+            graph.add_pass(FramePass::Clusters, "light clusters", &[], &[(grid, Access::Storage)]);
+            main_reads.push((grid, Access::Sample));
+        }
         // web3d-M7: with GPU culling, a compute pass picks the early set
         // before the main pass, and after it the depth pyramid, the late
         // cull and a second opaque pass run.
@@ -5413,10 +5512,13 @@ impl Renderer {
             state.frame_bind_group = frame_bind_group(
                 &state.device,
                 &state.frame_bgl,
-                &state.camera_buffer,
-                &state.lights_buffer,
+                &FrameBuffers {
+                    camera: &state.camera_buffer,
+                    lights: &state.lights_buffer,
+                    fog: &state.fog_buffer,
+                    clusters: &state.clusters,
+                },
                 &state.env,
-                &state.fog_buffer,
                 [state.ao.view(ao_on), state.transmission.view(transmission_on)],
             );
             state.frame_ao_key = frame_key;
@@ -5540,6 +5642,7 @@ impl Renderer {
                         .ok_or("render graph: no prepass depth")?;
                     state.ao.record(&state.device, &mut encoder, view);
                 }
+                FramePass::Clusters => state.clusters.record(&mut encoder),
                 FramePass::CullEarly => {
                     state
                         .gpu_cull
@@ -5978,16 +6081,29 @@ impl EnvState {
     }
 }
 
-/// Bind group 0: camera, lights and the environment.
+/// The frame group's buffers.
+struct FrameBuffers<'a> {
+    camera: &'a wgpu::Buffer,
+    lights: &'a wgpu::Buffer,
+    fog: &'a wgpu::Buffer,
+    clusters: &'a crate::kernel::clusters::Clusters,
+}
+
+/// Bind group 0: camera, lights, the environment, fog, AO, the
+/// transmission source and the clustered light list.
 fn frame_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    camera: &wgpu::Buffer,
-    lights: &wgpu::Buffer,
+    buffers: &FrameBuffers<'_>,
     env: &EnvState,
-    fog: &wgpu::Buffer,
     [ao, transmission]: [&wgpu::TextureView; 2],
 ) -> wgpu::BindGroup {
+    let FrameBuffers {
+        camera,
+        lights,
+        fog,
+        clusters,
+    } = *buffers;
     let view = |v| wgpu::BindingResource::TextureView(v);
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twe-kernel frame bg"),
@@ -6036,6 +6152,18 @@ fn frame_bind_group(
             wgpu::BindGroupEntry {
                 binding: 10,
                 resource: view(transmission),
+            },
+            wgpu::BindGroupEntry {
+                binding: 11,
+                resource: clusters.lights.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 12,
+                resource: clusters.grid.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 13,
+                resource: clusters.uniform.as_entire_binding(),
             },
         ],
     })
@@ -6633,6 +6761,8 @@ enum FramePass {
     Ao,
     /// The lit scene into the HDR target.
     Main,
+    /// web3d-M7: list each cluster's lights.
+    Clusters,
     /// web3d-M7: GPU culling — the early set (frustum + visible last
     /// frame), then the depth pyramid and the late set.
     CullEarly,
@@ -7379,6 +7509,7 @@ mod tests {
         let [cull, hiz] = crate::kernel::gpu_cull::shader_sources();
         validate_wgsl("CULL", cull);
         validate_wgsl("HIZ", hiz);
+        validate_wgsl("CLUSTERS", crate::kernel::clusters::shader_source());
     }
 
     /// Phase 27: the Vertex layout's stride must match what the

@@ -446,6 +446,7 @@ fn environment_lights_and_backs_the_scene() {
     for _ in 0..3 {
         let snap = RenderSnapshot {
             lut: None,
+            point_lights: &[],
             fog: None,
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: Some(EnvironmentSettings {
@@ -705,6 +706,7 @@ fn backdrop_pixel(
     for i in 0..frames {
         let snap = RenderSnapshot {
             lut: None,
+            point_lights: &[],
             fog: None,
             camera: Camera3d::new([0.0, 0.0, 3.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             environment: None,
@@ -1390,6 +1392,7 @@ fn gpu_culling_is_invisible_and_culls() {
         for _ in 0..4 {
             let snap = RenderSnapshot {
                 lut: None,
+                point_lights: &[],
                 fog: None,
                 camera: Camera3d {
                     far: 400.0,
@@ -1430,4 +1433,117 @@ fn gpu_culling_is_invisible_and_culls() {
     assert!(drawn > 50, "the cubes beside the wall are drawn: {drawn}");
     assert!(drawn < total / 3, "most cubes are culled: {drawn} of {total} drawn");
     assert!(early > late, "after a few frames the early set carries the scene: {early} early, {late} late");
+}
+
+/// web3d-M7: render a floor seen from straight above with only the given
+/// point / spot lights (no sun, no ambient). Returns the pixels and a
+/// world (x, z) → pixel mapping.
+fn floor_with_lights(lights: &[twec::kernel::render::PointLightU]) -> (Vec<u8>, impl Fn(f32, f32) -> (u32, u32)) {
+    use twec::kernel::render::{Camera3d, PostFx, RenderSnapshot, ShadowSettings, Tonemapper};
+    use twec::render3d_types::{DrawCall3d, Primitive};
+    let mut renderer = headless().expect("gpu");
+    let height = 20.0f32;
+    let draws = [DrawCall3d {
+        primitive: Primitive::Cube,
+        at: [0.0, -50.0, 0.0],
+        color: [1.0, 1.0, 1.0, 1.0],
+        size: 100.0,
+        texture: 0,
+        yaw: 0.0,
+        material: 0,
+    }];
+    let anim = |_: u32| Default::default();
+    let mut assets = twec::play3d::NativeAssets::default();
+    let snap = RenderSnapshot {
+        lut: None,
+        point_lights: lights,
+        fog: None,
+        camera: Camera3d::new([0.0, height, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        environment: None,
+        background: [0.0; 3],
+        lights: bytemuck::Zeroable::zeroed(),
+        shadow: ShadowSettings {
+            enabled: false,
+            extent: 10.0,
+        },
+        post: PostFx {
+            tonemapper: Tonemapper::None,
+            ..PostFx::default()
+        },
+        draws: &draws,
+        mesh_paths: &[],
+        texture_paths: &[],
+        time: 0.0,
+        materials: &[],
+        hud: &[],
+        anim: &anim,
+    };
+    renderer.render(&snap, &mut assets).expect("render");
+    let rgba = renderer.read_pixels().expect("pixels");
+    // Looking straight down with -z up the screen, 60° vertical field.
+    let half_h = height * 30f32.to_radians().tan();
+    let half_w = half_h * W as f32 / H as f32;
+    let to_pixel = move |x: f32, z: f32| {
+        (
+            ((0.5 + 0.5 * x / half_w) * W as f32) as u32,
+            ((0.5 + 0.5 * z / half_h) * H as f32) as u32,
+        )
+    };
+    (rgba, to_pixel)
+}
+
+/// web3d-M7: clustered lighting drops no light: 300 small lights, each
+/// lighting only its own patch of floor, all show, and the floor
+/// between them stays dark.
+#[test]
+fn hundreds_of_lights_all_shine() {
+    use twec::kernel::render::PointLightU;
+    if headless().is_none() {
+        return;
+    }
+    let spacing = 1.2;
+    let mut lights = Vec::new();
+    for i in 0..20 {
+        for j in 0..15 {
+            let (x, z) = ((i as f32 - 9.5) * spacing, (j as f32 - 7.0) * spacing);
+            let color = [4.0 * (i % 3) as f32 / 2.0 + 1.0, 4.0 * (j % 2) as f32 + 1.0, 3.0];
+            lights.push(PointLightU::point([x, 0.3, z], color, 0.6));
+        }
+    }
+    let (rgba, to_pixel) = floor_with_lights(&lights);
+    save_png("many_lights", &rgba);
+    let luma = |p: [u8; 3]| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+    let mut dark = Vec::new();
+    for l in &lights {
+        let (px, py) = to_pixel(l.pos[0], l.pos[2]);
+        if luma(pixel(&rgba, px, py)) < 120 {
+            dark.push((l.pos[0], l.pos[2]));
+        }
+    }
+    assert!(dark.is_empty(), "{} of 300 lights didn't light their patch: {:?}", dark.len(), &dark[..dark.len().min(5)]);
+    // Diagonally between four lights, beyond every radius.
+    let (px, py) = to_pixel(0.0, 0.6);
+    assert!(luma(pixel(&rgba, px, py)) < 30, "between lights: {:?}", pixel(&rgba, px, py));
+}
+
+/// web3d-M7: a spot light lights inside its cone and not outside it,
+/// though both are within its radius.
+#[test]
+fn spot_lights_light_their_cone() {
+    use twec::kernel::render::PointLightU;
+    if headless().is_none() {
+        return;
+    }
+    let mut spot = PointLightU::point([0.0, 4.0, 0.0], [3.0, 3.0, 3.0], 12.0);
+    let (outer, inner) = (20f32.to_radians(), 16f32.to_radians());
+    spot.cone = [0.0, -1.0, 0.0, outer.cos()];
+    spot.params = [inner.cos(), 0.0, 0.0, 0.0];
+    let (rgba, to_pixel) = floor_with_lights(&[spot]);
+    save_png("spot_light", &rgba);
+    let luma = |p: [u8; 3]| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+    let (cx, cy) = to_pixel(0.0, 0.0);
+    // The cone reaches the floor within tan(20°) · 4 ≈ 1.46 of the centre.
+    let (ox, oy) = to_pixel(3.0, 0.0);
+    assert!(luma(pixel(&rgba, cx, cy)) > 300, "under the spot: {:?}", pixel(&rgba, cx, cy));
+    assert!(luma(pixel(&rgba, ox, oy)) < 10, "outside the cone: {:?}", pixel(&rgba, ox, oy));
 }

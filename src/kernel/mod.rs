@@ -5,6 +5,7 @@
 //! `twe-kernel` crate when the workspace splits.
 
 pub(crate) mod ao;
+pub(crate) mod clusters;
 pub(crate) mod environment;
 pub(crate) mod gpu_cull;
 pub mod graph;

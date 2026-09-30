@@ -52,11 +52,23 @@ fn grid() -> Vec<DrawCall3d> {
 /// Frames per second-ish numbers for one scene: (CPU ms in `render`,
 /// total ms per frame).
 fn measure(name: &str, camera: Camera3d, draws: &[DrawCall3d], cull: bool) -> (f64, f64) {
+    measure_lit(name, camera, draws, &[], cull)
+}
+
+/// `measure` with point lights.
+fn measure_lit(
+    name: &str,
+    camera: Camera3d,
+    draws: &[DrawCall3d],
+    point_lights: &[twec::kernel::render::PointLightU],
+    cull: bool,
+) -> (f64, f64) {
     let mut renderer = pollster::block_on(Renderer::new_headless(W, H)).expect("gpu");
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
     let snap = || RenderSnapshot {
         lut: None,
+        point_lights,
         fog: None,
         camera,
         environment: None,
@@ -138,6 +150,18 @@ fn render_large_scenes() {
     };
     measure("small", top, &small, false);
     measure("small", top, &small, true);
+    // Clustered lights over the small scene: 100 and 1000 lights of
+    // radius 3 scattered over the view.
+    for n in [100usize, 1000] {
+        let lights: Vec<_> = (0..n)
+            .map(|i| {
+                let a = i as f32 * 2.399;
+                let r = 20.0 * ((i as f32 + 0.5) / n as f32).sqrt();
+                twec::kernel::render::PointLightU::point([r * a.cos(), 1.0, r * a.sin()], [1.0, 0.7, 0.4], 3.0)
+            })
+            .collect();
+        measure_lit(if n == 100 { "100 lights" } else { "1000 lights" }, top, &small, &lights, true);
+    }
     // Fixed costs: nothing to draw, and everything behind the camera.
     measure("empty", low, &[], true);
     let away = Camera3d {

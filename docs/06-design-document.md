@@ -986,13 +986,15 @@ let torch = light.add((2, 2, 0), color.orange, 8.0)   # at, color, radius -> han
 light.set(torch, (2, 2.2, 0), color.orange, 8.0)      # move / recolour
 light.set_radius(torch, 9.0)
 light.shadow(torch, true)                 # this light casts shadows
+light.cone(torch, vec3(0, -1, 0), 30)     # a spot light: direction, half-angle in degrees (180 = point again)
 light.remove(torch)
 light.clear()                             # remove every point light
 light.fog(0.05, 0.3, (0.7, 0.75, 0.8))    # height fog: density, falloff, colour; density 0 = off
 ```
 
-- There are 8 point-light slots; `light.add` errors when all are taken.
-- `light.shadow(h, true)` makes a point light cast shadows (web3d-M7). Up to 4 shadowed lights are drawn per frame, each with a 512² cube map; beyond 4, the first four in slot order keep their shadows and the rest light without them. A new or removed light starts without shadows.
+- **Up to 1024 point and spot lights** *(web3d-M7)*. `light.add` errors past that. Shading is clustered: the view is divided into a 16 × 9 × 24 grid, each cluster lists the lights that reach it, and a surface shades only its cluster's lights. A scene can hold hundreds of lights while each pixel pays for the few near it. (Before web3d-M7 there were 8.)
+- `light.cone(h, direction, angle)` turns a light into a spot light shining along `direction`, lighting `angle` degrees either side of it. The edge fades over the outer fifth of the angle. An angle of 180 or more makes it a point light again.
+- `light.shadow(h, true)` makes a light cast shadows (web3d-M7). At most 4 lights have shadows in a frame, each a 512² cube map. When more ask, the 4 nearest the camera get them and the others light without shadows, so the budget follows the player. A new or removed light starts without shadows.
 - **Sun shadows** *(web3d-M7)* use three cascades fitted to the camera's view:
   - they reach `4 × sun.shadow_extent` metres from the camera;
   - casters up to `sun.shadow_extent` outside the view still cast into it;

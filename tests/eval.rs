@@ -1347,6 +1347,33 @@ fn light_fog_setter() {
 ").is_err());
 }
 
+/// web3d-M7: lights are no longer capped at 8 (clustered shading);
+/// `light.cone` makes a spot light; bad cones are errors.
+#[test]
+fn many_lights_and_cones() {
+    let src = "light.clear()
+var last = 0
+for i in 0..<40:
+    last = light.add((i, 1, 0), (1, 1, 1, 1), 3)
+print(last)
+light.cone(last, vec3(0, -1, 0), 30)
+";
+    let out = run_program_str(src).expect("should run");
+    assert_eq!(out.trim(), "40", "the 40th light's handle");
+    let lights = twec::stdlib::point_lights_snapshot();
+    assert_eq!(lights.len(), 40);
+    let cone = lights[39].cone;
+    assert!((cone[3] - 30f32.to_radians().cos()).abs() < 1e-5 && cone[1] == -1.0, "{cone:?}");
+    assert!(lights[0].cone[3] < -1.0, "the others stay point lights");
+    assert!(run_program_str("light.clear()
+let l = light.add((0, 1, 0), (1, 1, 1, 1), 3)
+light.cone(l, vec3(0, 0, 0), 30)
+").is_err());
+    run_program_str("light.clear()
+").expect("clears");
+    assert!(twec::stdlib::point_lights_snapshot().is_empty());
+}
+
 #[test]
 fn postfx_bloom_clamps_negative_intensity_to_zero() {
     let _ = run_program_str("postfx.bloom(-0.5)\n").expect("should run");
