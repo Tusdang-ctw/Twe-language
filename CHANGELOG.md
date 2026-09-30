@@ -13,6 +13,11 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **The M7 graphics comparison is published** in `bench/graphics/`:
+  - `results.md`, now with a like-for-like column (Twe without AO/SSR) and the scenes where Twe loses;
+  - `comparison.jpg`, every scene rendered by Cycles, Twe and Three.js;
+  - `fps.mjs`, frame rates in Chrome;
+  - `three/stress.html`, the Three.js version of the stress scene.
 - **`light.environment(path, intensity)`** lights a 3D scene from an HDR sky image (image-based lighting), and **`camera.far`** sets the 3D view distance (default 100 m, as before).
 - **`twec verify` warns when a `particles` block will run on the CPU** (`particles-cpu`), with the reason; a million CPU particles is a slideshow.
 - **`survive3d` looks the part** (web3d-M7): a computed sky, sun shadows, torches, ambient occlusion and bloom, a procedural floor, wobbling slimes, glowing gems and spark bursts, at 67 fps on an integrated GPU in Chrome. New `examples/stress_3d.twe`: 100k animated blocks, 500 lights, a million particles.

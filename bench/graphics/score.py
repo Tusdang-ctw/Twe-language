@@ -40,7 +40,11 @@ def load(path, size):
 
 
 def main():
-    columns = ["twe", "three"] + SUITE["alsoScored"]
+    # web3d-M7 session 17: Twe with ambient occlusion and reflections
+    # off, the settings Three.js runs with here, when rendered
+    # (`TWE_BENCH_OUT=twe-plain TWE_BENCH_AO=0 TWE_BENCH_SSR=0`).
+    plain = (OUT / "twe-plain").is_dir()
+    columns = ["twe"] + (["twe-plain"] if plain else []) + ["three"] + SUITE["alsoScored"]
     rows = {}
     (OUT / "flip").mkdir(parents=True, exist_ok=True)
     for name in SUITE["scenarios"]:
@@ -55,6 +59,8 @@ def main():
             "twe": OUT / "twe" / f"{name}.png",
             "three": OUT / "three" / f"{name}.png",
         }
+        if plain:
+            candidates["twe-plain"] = OUT / "twe-plain" / f"{name}.png"
         for r in SUITE["alsoScored"]:
             if r in scene["goldens"]:
                 candidates[r] = CACHE / name / scene["goldens"][r]
@@ -82,6 +88,7 @@ def main():
 
     names = {
         "twe": "Twe",
+        "twe-plain": "Twe, no AO/SSR",
         "three": "Three.js",
         "model-viewer": "model-viewer*",
         "gltf-sample-viewer": "glTF Sample Viewer*",
@@ -98,7 +105,8 @@ def main():
         "|---|" + "---:|" * len(columns),
     ]
     for name, row in rows.items():
-        present = [v for v in row.values()]
+        # The plain column is Twe again: bold the best engine.
+        present = [v for c, v in row.items() if c != "twe-plain"]
         best = min(present) if present else None
         lines.append(
             f"| {name.removeprefix('khronos-')} | "
@@ -112,7 +120,7 @@ def main():
             for c in columns
             if all(c in rows[n] for n in common)
         }
-        best = min(means.values())
+        best = min(v for c, v in means.items() if c != "twe-plain")
         lines.append(
             f"| **Mean ({len(common)} scenes)** | "
             + " | ".join(fmt(means.get(c), best) for c in columns)
@@ -131,6 +139,17 @@ def main():
         "Twe renders with ambient occlusion and screen-space reflections on",
         "(`TWE_BENCH_AO`, `TWE_BENCH_SSR`); Three.js as this harness sets it up",
         "uses neither (three ships GTAOPass and SSRPass addons, not used here).",
+    ]
+    if plain:
+        lines += [
+            "The **Twe, no AO/SSR** column renders Twe with both off, like for like",
+            "with Three.js (not bolded: it is Twe again).",
+        ]
+    losses = [n for n, r in rows.items() if "twe" in r and "three" in r and r["twe"] > r["three"]]
+    lines += [
+        "",
+        f"**Per scene, Twe scores worse than Three.js on {len(losses)} of {len(rows)}:** "
+        + ", ".join(n.removeprefix("khronos-") for n in losses) + ".",
     ]
     notes = SUITE.get("notes", {})
     if notes:

@@ -186,7 +186,13 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
 #[ignore = "needs bench/graphics/cache (node bench/graphics/fetch.mjs) and a GPU"]
 fn render_the_graphics_suite() {
     let cache = Path::new("bench/graphics/cache");
-    let out = Path::new("bench/graphics/out/twe");
+    // web3d-M7 session 17: `TWE_BENCH_OUT=twe-plain` (with AO and SSR
+    // off) renders the like-for-like column `score.py` adds.
+    let out_dir = format!(
+        "bench/graphics/out/{}",
+        std::env::var("TWE_BENCH_OUT").unwrap_or_else(|_| "twe".to_string())
+    );
+    let out = Path::new(&out_dir);
     std::fs::create_dir_all(out).expect("create out dir");
     let wanted: Vec<String> = std::env::var("TWE_BENCH_SCENES")
         .map(|s| s.split(',').map(str::to_string).collect())

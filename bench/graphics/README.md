@@ -53,6 +53,30 @@ Requirements:
   - `TWE_BENCH_AO_RADIUS` sets the AO radius as a fraction of the model's bounding radius.
   - `TWE_BENCH_SSR=0` turns screen-space reflections off (default 1, web3d-M7 session 14).
 - `python score.py`
+- `python contact.py`: `comparison.jpg`, the reference, Twe and Three.js side by side per scene with their scores (web3d-M7 session 17).
+
+**The like-for-like column** (session 17). Three.js as this harness sets it up has no ambient occlusion or reflections. Render Twe the same way into `out/twe-plain/`:
+
+```sh
+TWE_BENCH_OUT=twe-plain TWE_BENCH_AO=0 TWE_BENCH_SSR=0 cargo test --release --test graphics_bench -- --ignored --nocapture
+```
+
+`score.py` then adds a "Twe, no AO/SSR" column.
+
+## Frame rates in Chrome
+
+`node fps.mjs <dir> [--page p.html] [--gpu high] [--seconds N] [--warmup N] [--shot out.png]` serves a folder, opens it in the installed Chrome, and prints frames per second and ms per frame:
+- **Throttles and vsync are off,** so the result is throughput, independent of the window being visible.
+- **Twe pages** also report the runtime's own split: script tick, script render, kernel CPU.
+- **Which GPU:** Chrome uses the integrated GPU by default on a laptop with two; `--gpu high` forces the discrete one. WebGPU's `powerPreference` is ignored on Windows.
+
+The M7 stress scene, both sides:
+
+```sh
+twec build --target web --out /tmp/stress examples/stress_3d.twe   # from the repo root
+node fps.mjs /tmp/stress --warmup 12 [--gpu high]
+node fps.mjs . --page three/stress.html --warmup 12 [--gpu high]    # the Three.js equivalent
+```
 
 ## Rules
 

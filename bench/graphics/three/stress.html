@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Three.js stress scene</title>
+<!-- web3d-M7 session 17: examples/stress_3d.twe in the pinned Three.js,
+     for the exit criterion's comparison. Built the way Three.js does
+     this best: WebGPURenderer, one InstancedMesh for the 100k blocks
+     displaced in the vertex shader, ClusteredLighting for the 500 point
+     lights, a compute-shader particle system for the million motes,
+     4x MSAA, ACES and bloom. Everything moves as in the Twe scene:
+     blocks by a wave on the GPU, lights by JavaScript each frame,
+     particles by compute. Measured with fps.mjs. -->
+<script type="importmap">
+{ "imports": {
+  "three": "/node_modules/three/build/three.webgpu.js",
+  "three/webgpu": "/node_modules/three/build/three.webgpu.js",
+  "three/tsl": "/node_modules/three/build/three.tsl.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
+} }
+</script>
+<style>html, body { margin: 0; background: #0f1115; overflow: hidden; }</style>
+</head>
+<body>
+<script type="module">
+  import * as THREE from "three/webgpu";
+  import {
+    Fn, instanceIndex, instancedArray, vec3, vec4, float, uint, sin, cos, hash, time,
+    deltaTime, positionLocal, mix, color, mx_noise_float, varying, pass,
+  } from "three/tsl";
+  import { ClusteredLighting } from "three/addons/lighting/ClusteredLighting.js";
+  import { bloom } from "three/addons/tsl/display/BloomNode.js";
+
+  const SIDE = 316;          // 316 x 316 ~ 100,000 blocks, as in stress_3d.twe
+  const SPACING = 2.0;
+  const HALF = SIDE * SPACING * 0.5;
+  const LAMPS = 500;
+  const MOTES = 1_000_000;
+
+  const renderer = new THREE.WebGPURenderer({ antialias: true });
+  renderer.setPixelRatio(1);
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.lighting = new ClusteredLighting(1024);
+  document.body.appendChild(renderer.domElement);
+  await renderer.init();
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0.06, 0.1, 0.16);
+  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1200);
+
+  scene.add(new THREE.AmbientLight(new THREE.Color(0.08, 0.09, 0.12), 1.0));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.6 * Math.PI);
+  sun.position.set(-0.3, 0.9, 0.2);
+  scene.add(sun);
+
+  // The blocks: grid position from the instance index, a wave in the
+  // vertex shader, colour from noise over the ground position.
+  const ix = instanceIndex.div(uint(SIDE)).toFloat();
+  const iz = instanceIndex.mod(uint(SIDE)).toFloat();
+  const ground = vec3(ix.mul(SPACING).sub(HALF), 0, iz.mul(SPACING).sub(HALF));
+  const wave = sin(ground.x.mul(0.05).add(time.mul(1.2))).mul(cos(ground.z.mul(0.04).add(time.mul(0.8)))).mul(2.5);
+  const blockMaterial = new THREE.MeshStandardNodeMaterial({ roughness: 0.45, metalness: 0 });
+  blockMaterial.positionNode = positionLocal.add(ground).add(vec3(0, wave, 0));
+  const g = varying(ground);
+  const t = mx_noise_float(vec3(g.x.mul(0.015), 0, g.z.mul(0.015))).mul(0.5).add(0.5);
+  blockMaterial.colorNode = mix(color(0.85, 0.4, 0.25), color(0.25, 0.5, 0.9), t);
+  const blocks = new THREE.InstancedMesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), blockMaterial, SIDE * SIDE);
+  // Positions come from the shader; identity matrices, generous bounds.
+  blocks.frustumCulled = false;
+  scene.add(blocks);
+
+  // The lamps: 500 point lights on a sunflower spiral, moved each frame.
+  const lamps = [];
+  for (let k = 0; k < LAMPS; k++) {
+    const hue = ((k * 0.618) % 1) * 6.283;
+    const c = new THREE.Color(0.5 + 0.5 * Math.cos(hue), 0.5 + 0.5 * Math.cos(hue - 2.1), 0.5 + 0.5 * Math.cos(hue + 2.1));
+    const light = new THREE.PointLight(c, 40, 14, 2);
+    scene.add(light);
+    lamps.push(light);
+  }
+
+  // The motes: a million particles in a storage buffer, drifted by a
+  // compute shader, drawn as sprites.
+  const positions = instancedArray(MOTES, "vec3");
+  const init = Fn(() => {
+    const p = positions.element(instanceIndex);
+    p.assign(vec3(
+      hash(instanceIndex).mul(2 * HALF).sub(HALF),
+      hash(instanceIndex.add(1)).mul(12).add(3),
+      hash(instanceIndex.add(2)).mul(2 * HALF).sub(HALF),
+    ));
+  })().compute(MOTES);
+  const update = Fn(() => {
+    const p = positions.element(instanceIndex);
+    const swirl = mx_noise_float(vec3(p.x.mul(0.05).add(time.mul(0.1)), 0, p.z.mul(0.05)));
+    p.addAssign(vec3(swirl, sin(time.add(p.x)).mul(0.3), cos(time.mul(0.7).add(p.z)).mul(0.5)).mul(deltaTime));
+  })().compute(MOTES);
+  const moteMaterial = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
+  moteMaterial.positionNode = positions.toAttribute();
+  moteMaterial.colorNode = vec4(1.0, 0.85, 0.55, 0.6);
+  moteMaterial.scaleNode = float(0.24);
+  const motes = new THREE.Sprite(moteMaterial);
+  motes.count = MOTES;
+  motes.frustumCulled = false;
+  scene.add(motes);
+  await renderer.computeAsync(init);
+
+  const pipeline = new THREE.RenderPipeline(renderer);
+  const scenePass = pass(scene, camera);
+  // Strength 0.3 over a threshold of 1, as Twe's bloom.
+  pipeline.outputNode = scenePass.add(bloom(scenePass, 0.3, 0, 1));
+
+  const start = performance.now();
+  renderer.setAnimationLoop(() => {
+    const s = (performance.now() - start) / 1000;
+    for (let k = 0; k < LAMPS; k++) {
+      const a = k * 2.39996 + s * 0.1;
+      const r = HALF * Math.sqrt((k + 0.5) / LAMPS);
+      lamps[k].position.set(r * Math.cos(a), 4, r * Math.sin(a));
+    }
+    const orbit = s * 0.05;
+    camera.position.set(Math.sin(orbit) * 380, 190, Math.cos(orbit) * 380);
+    camera.lookAt(0, 0, 0);
+    renderer.compute(update);
+    pipeline.render();
+  });
+</script>
+</body>
+</html>
