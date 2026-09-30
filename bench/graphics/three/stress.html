@@ -39,7 +39,10 @@
 
   const renderer = new THREE.WebGPURenderer({ antialias: true });
   renderer.setPixelRatio(1);
-  renderer.setSize(innerWidth, innerHeight);
+  // The same pixels and framing as Twe's page: a 1280x960 (4:3) canvas,
+  // shown letterboxed in the window.
+  renderer.setSize(1280, 960, false);
+  Object.assign(renderer.domElement.style, { width: "min(100vw, 133.33vh)", aspectRatio: "4 / 3", display: "block", margin: "0 auto" });
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.lighting = new ClusteredLighting(1024);
   document.body.appendChild(renderer.domElement);
@@ -47,7 +50,7 @@
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0.06, 0.1, 0.16);
-  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1200);
+  const camera = new THREE.PerspectiveCamera(60, 4 / 3, 0.1, 1200);
 
   scene.add(new THREE.AmbientLight(new THREE.Color(0.08, 0.09, 0.12), 1.0));
   const sun = new THREE.DirectionalLight(0xffffff, 0.6 * Math.PI);

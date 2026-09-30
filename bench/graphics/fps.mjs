@@ -106,6 +106,10 @@ try {
       running = false;
       const elapsed = (performance.now() - t0) / 1000;
       const stats = twe ? Array.from(twe.frame_stats()) : null;
+      // The pixels actually rendered (canvases can be sized apart from
+      // the window).
+      const canvas = document.querySelector("canvas");
+      const pixels = canvas ? `${canvas.width}x${canvas.height}` : "?";
       const adapter = navigator.gpu ? await navigator.gpu.requestAdapter() : null;
       const info = adapter?.info ?? {};
       return {
@@ -114,21 +118,24 @@ try {
         gpu: `${info.vendor ?? "?"} ${info.architecture ?? ""} ${info.description ?? ""}`.trim(),
         // [frames, ticks/frame, ms/tick, script render ms, kernel ms].
         stats,
+        pixels,
       };
     },
     { warmup, seconds },
   );
   console.log(
     `${target}: ${result.fps.toFixed(1)} fps, ${result.msPerFrame.toFixed(2)} ms/frame ` +
-      `(${width}x${height}, ${seconds}s after ${warmup}s, vsync ${args.includes("--vsync") ? "on" : "off"}, gpu ${result.gpu})`,
+      `(window ${width}x${height}, canvas ${result.pixels}, ${seconds}s after ${warmup}s, vsync ${args.includes("--vsync") ? "on" : "off"}, gpu ${result.gpu})`,
   );
   if (result.stats) {
-    const [, ticks, tickMs, renderMs, kernelMs] = result.stats;
+    const [, ticks, tickMs, renderMs, kernelMs, culled] = result.stats;
     console.log(
       `  per frame: ${ticks.toFixed(2)} ticks x ${tickMs.toFixed(2)} ms script, ` +
-        `${renderMs.toFixed(2)} ms script render, ${kernelMs.toFixed(2)} ms kernel (CPU)`,
+        `${renderMs.toFixed(2)} ms script render, ${kernelMs.toFixed(2)} ms kernel (CPU)` +
+        (culled === undefined ? "" : `, GPU-culled ${(culled * 100).toFixed(0)}% of frames`),
     );
   }
+  if (process.env.FPS_STATS) console.log("  stats", JSON.stringify(result.stats));
   if (errors.length) console.log(errors.slice(0, 10).join("\n"));
   const shot = opt("shot", null);
   if (shot) {

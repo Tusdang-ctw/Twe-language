@@ -17,9 +17,9 @@ use wgpu::util::DeviceExt;
 
 use crate::render3d_types::{PointLightU, MAX_LIGHTS};
 
-pub(crate) const GRID_X: u32 = 16;
-pub(crate) const GRID_Y: u32 = 9;
-pub(crate) const GRID_Z: u32 = 24;
+pub(crate) const GRID_X: u32 = 32;
+pub(crate) const GRID_Y: u32 = 18;
+pub(crate) const GRID_Z: u32 = 64;
 pub(crate) const CLUSTERS: u32 = GRID_X * GRID_Y * GRID_Z;
 /// Most lights one cluster lists (a count, then the indices). Beyond
 /// this a cluster drops the rest; at 128 overlapping lights per cluster
@@ -89,18 +89,24 @@ fn at_depth(ndc: vec2<f32>, z: f32) -> vec3<f32> {
     return dir * (z / -dir.z);
 }
 
+// web3d-M7 follow-up: lights go through workgroup memory in batches of
+// 64 — loaded and moved to view space once per workgroup, not once per
+// cluster — so the build reads each light 1/64th as often (500 lights
+// over 36,864 clusters cost 2.4 ms a frame on an integrated GPU).
+var<workgroup> batch_lights: array<vec4<f32>, 64>;
+
 @compute @workgroup_size(64)
-fn cs_build(@builtin(global_invocation_id) id: vec3<u32>) {
+fn cs_build(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let gx = u32(clusters.grid.x);
     let gy = u32(clusters.grid.y);
     let gz = u32(clusters.grid.z);
     let c = id.x;
-    if (c >= gx * gy * gz) {
-        return;
-    }
+    // Every invocation reaches the barriers; out-of-range ones only
+    // help load.
+    let valid = c < gx * gy * gz;
     let tx = c % gx;
     let ty = (c / gx) % gy;
-    let tz = c / (gx * gy);
+    let tz = min(c / (gx * gy), gz - 1u);
     // The cluster's view-space box: its tile's corners at the slice's
     // near and far depths.
     let near = clusters.depth.x;
@@ -123,23 +129,35 @@ fn cs_build(@builtin(global_invocation_id) id: vec3<u32>) {
     let count_max = u32(clusters.grid.w);
     let base = c * (MAX_PER_CLUSTER + 1u);
     var n = 0u;
-    for (var i = 0u; i < count_max; i = i + 1u) {
-        let l = lights[i];
-        let r = l.color_radius.w;
-        if (r <= 0.0) {
-            continue;
-        }
-        let center = (clusters.view * vec4<f32>(l.pos.xyz, 1.0)).xyz;
-        let closest = clamp(center, lo, hi);
-        let d = center - closest;
-        if (dot(d, d) <= r * r) {
-            if (n < MAX_PER_CLUSTER) {
-                grid[base + 1u + n] = i;
-                n = n + 1u;
+    for (var start = 0u; start < count_max; start = start + 64u) {
+        let i = start + li;
+        var entry = vec4<f32>(0.0, 0.0, 0.0, -1.0);
+        if (i < count_max) {
+            let l = lights[i];
+            if (l.color_radius.w > 0.0) {
+                entry = vec4<f32>((clusters.view * vec4<f32>(l.pos.xyz, 1.0)).xyz, l.color_radius.w);
             }
         }
+        batch_lights[li] = entry;
+        workgroupBarrier();
+        if (valid) {
+            let m = min(64u, count_max - start);
+            for (var j = 0u; j < m; j = j + 1u) {
+                let e = batch_lights[j];
+                if (e.w > 0.0) {
+                    let d = e.xyz - clamp(e.xyz, lo, hi);
+                    if (dot(d, d) <= e.w * e.w && n < MAX_PER_CLUSTER) {
+                        grid[base + 1u + n] = start + j;
+                        n = n + 1u;
+                    }
+                }
+            }
+        }
+        workgroupBarrier();
     }
-    grid[base] = n;
+    if (valid) {
+        grid[base] = n;
+    }
 }
 "#;
 

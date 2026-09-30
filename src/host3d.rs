@@ -109,6 +109,8 @@ pub fn render_frame(
     let start = crate::clock::now_secs();
     // web3d-M7: from here on, particles that can run on the GPU do.
     env.gpu_particles = true;
+    // web3d-M7 follow-up: the looks the renderer already holds.
+    env.retained_looks = renderer.retained_generation();
     if let Err(e) = eval::render_frame3d(env) {
         // Surface the runtime error to stderr but keep rendering — a
         // broken render frame shouldn't tear down the window.
@@ -173,6 +175,7 @@ pub fn render_frame(
             ssr: crate::stdlib::ssr_strength(),
         },
         draws: &draws,
+        draws_generation: env.draws_generation,
         mesh_paths: &env.mesh_paths,
         texture_paths: &env.texture_paths,
         time: env.sim_time as f32,

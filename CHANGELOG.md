@@ -12,7 +12,12 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Changed
+- **3D renders closer to the path-traced reference** (web3d-M7): energy-conserving diffuse, correct normal-map tangents, iridescence over metals, sharper environment reflections, and glass that no longer shows its back faces. Twe now scores at or below Three.js on all 12 comparison scenes.
+- **Large static 3D worlds are much cheaper** (web3d-M7): entities without `update` cost nothing per tick, unchanged `look:` draws are kept instead of rebuilt, GPU occlusion culling switches itself off when it doesn't pay, and many lights shade faster. The stress scene (100k blocks, 500 lights, 1M particles) now runs faster than Three.js's version in Chrome.
+
 ### Added
+- **`TWE_GPU_PROFILE=1`** prints per-pass GPU times natively; `bench/graphics/compare.sh` compares the stress scene against Three.js.
 - **The M7 graphics comparison is published** in `bench/graphics/`:
   - `results.md`, now with a like-for-like column (Twe without AO/SSR) and the scenes where Twe loses;
   - `comparison.jpg`, every scene rendered by Cycles, Twe and Three.js;

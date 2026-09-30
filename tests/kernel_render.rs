@@ -601,6 +601,7 @@ fn environment_lights_and_backs_the_scene() {
                 ..PostFx::default()
             },
             draws: &draws,
+            draws_generation: None,
             mesh_paths: &[],
             texture_paths: &[],
             time: 0.0,
@@ -849,6 +850,7 @@ fn backdrop_pixel(
             },
             post,
             draws: &[],
+            draws_generation: None,
             mesh_paths: &[],
             texture_paths: &[],
             time: t0 + i as f32 / 60.0,
@@ -1549,6 +1551,7 @@ fn gpu_culling_is_invisible_and_culls() {
                     ..PostFx::default()
                 },
                 draws: &draws,
+                draws_generation: None,
                 mesh_paths: &[],
                 texture_paths: &[],
                 time: 0.0,
@@ -1611,6 +1614,7 @@ fn floor_with_lights(lights: &[twec::kernel::render::PointLightU]) -> (Vec<u8>, 
             ..PostFx::default()
         },
         draws: &draws,
+        draws_generation: None,
         mesh_paths: &[],
         texture_paths: &[],
         time: 0.0,
@@ -1995,4 +1999,32 @@ spawn Block at vec3(-3, 0, 0)
     assert!(red(&spawned, middle) && red(&spawned, right), "the spawn shows");
     let gone = frame(&mut env, "for e in entities.of(Block):\n    despawn e\n");
     assert!(!red(&gone, middle) && !red(&gone, right), "the despawns show");
+}
+
+/// web3d-M7 follow-up: a static look whose mesh loads after its draws
+/// were kept (retained on the first frame, before the upload lands)
+/// still appears: the renderer rebuilds from the kept draws when an
+/// asset arrives.
+#[test]
+fn kept_draws_rebuild_when_a_mesh_arrives() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some("examples".into()));
+    let src = r#"
+camera.eye = vec3(0, 6, 0.001)
+camera.target = vec3(0, 0, 0)
+entity Floor:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "assets/grid_plane.glb"
+        scale: 8.0
+        tint: (0.9, 0.2, 0.2)
+spawn Floor
+"#;
+    let rgba = render_source(&mut renderer, "kept_mesh_arrives", src);
+    save_png("kept_mesh_arrives", &rgba);
+    let [r, g, b] = pixel(&rgba, W / 2, H / 2);
+    assert!(r > g + 60 && r > b + 60, "the loaded mesh draws: {:?}", [r, g, b]);
 }

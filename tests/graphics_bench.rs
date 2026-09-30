@@ -157,6 +157,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
                 ..PostFx::default()
             },
             draws: &draws,
+            draws_generation: None,
             mesh_paths: &mesh_paths,
             texture_paths: &[],
             time: 0.0,

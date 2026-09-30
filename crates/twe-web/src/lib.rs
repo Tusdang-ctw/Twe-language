@@ -134,6 +134,8 @@ struct Stats {
     tick_ms: f64,
     script_render_ms: f64,
     kernel_ms: f64,
+    /// Frames the renderer culled on the GPU.
+    culled: f64,
 }
 
 thread_local! {
@@ -142,7 +144,8 @@ thread_local! {
 
 /// Averages since the previous call, then resets: `[frames, ticks per
 /// frame, ms per tick (script update), ms per frame in the script's
-/// render, ms per frame in the kernel]`. For measuring from the page
+/// render, ms per frame in the kernel, share of frames culled on the
+/// GPU]`. For measuring from the page
 /// or DevTools (`(await import("./twe_web.js")).frame_stats()`).
 #[wasm_bindgen]
 pub fn frame_stats() -> Vec<f64> {
@@ -155,6 +158,7 @@ pub fn frame_stats() -> Vec<f64> {
             per(s.tick_ms, s.ticks),
             per(s.script_render_ms, s.frames),
             per(s.kernel_ms, s.frames),
+            per(s.culled, s.frames),
         ]
     })
 }
@@ -309,6 +313,7 @@ fn frame(shell: &mut Shell) {
         s.tick_ms += tick_ms;
         s.script_render_ms += times.script_ms;
         s.kernel_ms += times.kernel_ms;
+        s.culled += f64::from(u8::from(shell.renderer.last_frame_culled()));
     });
 }
 

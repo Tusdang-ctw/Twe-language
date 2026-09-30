@@ -198,6 +198,12 @@ pub struct RenderSnapshot<'a> {
     pub shadow: ShadowSettings,
     pub post: PostFx,
     pub draws: &'a [DrawCall3d],
+    /// web3d-M7 follow-up: `Some(g)` when `draws` are the same every
+    /// frame `g` is sent (a world of unchanged looks). The renderer keeps
+    /// the instances it built for `g`; while [`Renderer::retained_generation`]
+    /// is `g`, the host may send `g` with empty `draws` and the renderer
+    /// reuses them. `None`: build from `draws`, keep nothing.
+    pub draws_generation: Option<u64>,
     /// `Primitive::Mesh(id)` -> asset path.
     pub mesh_paths: &'a [String],
     /// `DrawCall3d::texture` id -> asset path (id 0 = untextured).
@@ -2663,6 +2669,8 @@ pub struct Renderer {
     /// displacing material, keyed like `material_pipelines`.
     depth_layout: wgpu::PipelineLayout,
     displaced_depth: HashMap<String, DisplacedDepth>,
+    /// web3d-M7 follow-up: see [`RetainedDraws`].
+    retained: Option<RetainedDraws>,
     /// web3d-M3: the sRGB format frames are drawn in — the surface's
     /// own format, or an sRGB view of it (browsers often give a
     /// WebGPU canvas a non-sRGB format).
@@ -2713,6 +2721,11 @@ pub struct Renderer {
     /// web3d-M7: the clustered point / spot light list.
     clusters: crate::kernel::clusters::Clusters,
     frame_index: std::cell::Cell<u32>,
+    /// web3d-M7 follow-up: per-pass GPU times (`TWE_GPU_PROFILE`).
+    gpu_profile: Option<std::cell::RefCell<crate::kernel::gpu_profile::GpuProfile>>,
+    /// web3d-M7 follow-up: whether the last frame culled on the GPU
+    /// (diagnostics: the web shell's `frame_stats`).
+    last_culled: std::cell::Cell<bool>,
     /// web3d-M7: point-light shadow cubes.
     point_shadows: PointShadows,
     /// Phase 20: lighting uniform buffer, written once per frame from
@@ -2997,7 +3010,8 @@ async fn init_renderer(
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("twe-kernel device"),
-            required_features: wgpu::Features::empty(),
+            // web3d-M7 follow-up: timestamps, only for `TWE_GPU_PROFILE`.
+            required_features: crate::kernel::gpu_profile::wanted_features(&adapter),
             required_limits,
             memory_hints: wgpu::MemoryHints::default(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -3426,6 +3440,7 @@ async fn init_renderer(
     });
     let point_shadows = PointShadows::new(&device, &shadow_uniform_bgl, &joints_bgl, &shadow_shader);
     let prepass = Prepass::new(&device, &shadow_uniform_bgl, &joints_bgl, &materials.layout, &shadow_shader);
+    let gpu_profile = crate::kernel::gpu_profile::GpuProfile::new(&device, &queue).map(std::cell::RefCell::new);
     let shadow_combined_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twec-play3d shadow combined bg"),
         layout: &shadow_combined_bgl,
@@ -3637,6 +3652,7 @@ async fn init_renderer(
         material_pipelines: [HashMap::new(), HashMap::new()],
         depth_layout: shadow_pipeline_layout,
         displaced_depth: HashMap::new(),
+        retained: None,
         target_format,
         hud,
         cube_vertex_buffer,
@@ -3667,6 +3683,8 @@ async fn init_renderer(
         volumetric,
         clusters,
         frame_index: std::cell::Cell::new(0),
+        gpu_profile,
+        last_culled: std::cell::Cell::new(false),
         point_shadows,
         lights_buffer,
         joints_bgl,
@@ -4972,14 +4990,26 @@ impl Renderer {
             .queue
             .write_buffer(&state.shadow_buffer, 0, bytemuck::bytes_of(&shadow_uniform));
 
-        let queue: &[DrawCall3d] = snap.draws;
-        let mut instances: Vec<Instance> = Vec::with_capacity(queue.len());
+        // web3d-M7 follow-up: the draws, or (when the host sent this
+        // generation without them) the ones kept from it.
+        let retained = state.retained.take();
+        let kept = matches!(
+            (snap.draws_generation, &retained),
+            (Some(g), Some(r)) if snap.draws.is_empty() && r.generation == g
+        );
+        let kept_draws = retained.as_ref().filter(|_| kept).map(|r| r.draws.clone());
+        let queue: &[DrawCall3d] = match &kept_draws {
+            Some(d) => d,
+            None => snap.draws,
+        };
+        let mut instances: Vec<Instance> = Vec::new();
         let cap = usize::MAX;
 
         // Asset requests: first sight of a mesh / texture id asks the
         // host's `AssetSource` to load it; finished loads are uploaded
         // on this thread. A mesh draws from the frame its upload lands.
-        for d in queue {
+        // (Kept draws were seen when they were sent: skip the walk.)
+        for d in queue.iter().filter(|_| !kept) {
             if let Primitive::Mesh(id) = d.primitive {
                 if !state.mesh_cache.contains_key(&id)
                     && !state.mesh_load_failures.contains(&id)
@@ -5095,6 +5125,22 @@ impl Renderer {
             }
         }
 
+        let assets_key = (state.mesh_cache.len(), state.mesh_load_failures.len(), state.texture_cache.len());
+        // Reuse outright: same generation, nothing new loaded.
+        let reuse = retained.as_ref().filter(|r| kept && r.assets == assets_key);
+        let (cube_ranges, sphere_ranges, mesh_ranges, cull_groups, opaque_draws, opaque_count, transparent) =
+            if let Some(r) = reuse {
+                (
+                    r.cube_ranges.clone(),
+                    r.sphere_ranges.clone(),
+                    r.mesh_ranges.clone(),
+                    r.cull_groups.clone(),
+                    r.opaque_draws.clone(),
+                    r.opaque_count,
+                    Vec::new(),
+                )
+            } else {
+        instances.reserve(queue.len());
         // Phase 17 session 3: group draws by (primitive, texture_id).
         // Each unique combination becomes its own instanced draw call
         // because group 1's bind group changes between textures.
@@ -5260,12 +5306,6 @@ impl Renderer {
             let last = opaque_draws.iter().rev().find(|d| d.group == cull_groups.len() as u32 - 1);
             last.map_or(g.base, |d| d.range.1)
         });
-        // web3d-M7: GPU culling (frustum + hierarchical-Z occlusion) with
-        // `postfx.frustum_cull` on and enough opaque instances for it to
-        // pay: the depth pyramid costs per pixel, not per object, so a
-        // small scene draws faster without it (measured in
-        // tests/render_bench.rs: 300 cubes, +1.1 ms on an integrated GPU).
-        let gpu_cull = snap.post.frustum_cull && opaque_count >= GPU_CULL_MIN_INSTANCES;
 
         // web3d-M7: the transparent pass's draws — translucent draws, one
         // instance each, and the blended glTF primitives of opaque mesh
@@ -5343,6 +5383,23 @@ impl Renderer {
             }
         }
         transparent.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+        (cube_ranges, sphere_ranges, mesh_ranges, cull_groups, opaque_draws, opaque_count, transparent)
+            };
+        let instance_count = match reuse {
+            Some(r) => r.instance_count,
+            None => instances.len(),
+        };
+        // web3d-M7: GPU culling (frustum + hierarchical-Z occlusion) with
+        // `postfx.frustum_cull` on and enough opaque instances for it to
+        // pay: the depth pyramid costs per pixel, not per object, so a
+        // small scene draws faster without it (measured in
+        // tests/render_bench.rs: 300 cubes, +1.1 ms on an integrated GPU).
+        // web3d-M7 follow-up: and only while it rejects enough to pay
+        // (`gpu_cull::CullProbe`).
+        let gpu_cull = state
+            .gpu_cull
+            .should_cull(snap.post.frustum_cull && opaque_count >= GPU_CULL_MIN_INSTANCES);
+        state.last_culled.set(gpu_cull);
         // web3d-M7: transmissive surfaces need the opaque scene as a
         // texture: the main pass splits around a copy of it.
         let transmission_on = transparent.iter().any(|d| match d.shape {
@@ -5421,7 +5478,7 @@ impl Renderer {
             .queue
             .write_buffer(&state.fog_buffer, 0, bytemuck::bytes_of(&fog_uniform));
 
-        if !instances.is_empty() {
+        if instance_count != 0 {
             // Phase 23: grow the instance buffer if this frame needs
             // more instances than the current capacity. Doubling keeps
             // amortized growth cost O(1); the realloc is rare in
@@ -5444,6 +5501,35 @@ impl Renderer {
                 .queue
                 .write_buffer(&state.instance_buffer, 0, bytemuck::cast_slice(&instances));
         }
+        // web3d-M7 follow-up: keep what was built for a generation the
+        // host will repeat (not with transparent draws: they sort by the
+        // camera each frame).
+        let reused = reuse.is_some();
+        state.retained = match (snap.draws_generation, retained) {
+            (Some(_), Some(r)) if reused => Some(r),
+            (Some(g), old) if transparent.is_empty() => Some(RetainedDraws {
+                generation: g,
+                assets: assets_key,
+                draws: match (old, &kept_draws) {
+                    (_, Some(d)) => d.clone(),
+                    _ => queue.into(),
+                },
+                instance_count,
+                cube_ranges: cube_ranges.clone(),
+                sphere_ranges: sphere_ranges.clone(),
+                mesh_ranges: mesh_ranges.clone(),
+                cull_groups: cull_groups.clone(),
+                opaque_draws: opaque_draws.clone(),
+                opaque_count,
+                materials: {
+                    let mut m: Vec<u32> = queue.iter().map(|d| d.material).filter(|&m| m != 0).collect();
+                    m.sort_unstable();
+                    m.dedup();
+                    m
+                },
+            }),
+            _ => None,
+        };
 
         // 4d. Phase 24: update each skinned mesh's joint UBO from
         //     the script-driven animation state. Walks every mesh
@@ -5453,7 +5539,7 @@ impl Renderer {
         //     matrices, uploads to the per-mesh joint UBO. Unskinned
         //     meshes skip this work.
         let mesh_ids_this_frame: HashSet<u32> =
-            mesh_groups.iter().map(|((id, _, _), _)| *id).collect();
+            mesh_ranges.iter().map(|((id, _, _), _)| *id).collect();
         for mesh_id in mesh_ids_this_frame {
             let gpu_mesh = match state.mesh_cache.get(&mesh_id) {
                 Some(m) => m,
@@ -5475,7 +5561,11 @@ impl Renderer {
         // plain surface. web3d-M7 session 16: per material, not per
         // draw — the pipeline maps are keyed by the WGSL source, and
         // hashing it for each of 100k draws cost 90 ms a frame.
-        let mut used: Vec<u32> = queue.iter().map(|d| d.material).filter(|&m| m != 0).collect();
+        // (Kept draws: the materials recorded with them.)
+        let mut used: Vec<u32> = match state.retained.as_ref().filter(|_| kept) {
+            Some(r) => r.materials.clone(),
+            None => queue.iter().map(|d| d.material).filter(|&m| m != 0).collect(),
+        };
         used.sort_unstable();
         used.dedup();
         for m in used {
@@ -5564,7 +5654,7 @@ impl Renderer {
         // Passes declare what they read and write; the graph orders
         // and culls them, and the HDR colour and depth targets come
         // from its pool (reallocated only on resize).
-        let shadows_on = shadow_uniform.flags[3] > 0.5 && !instances.is_empty();
+        let shadows_on = shadow_uniform.flags[3] > 0.5 && instance_count != 0;
         let mut graph = FrameGraph::new();
         let target = graph.import("target", true);
         let shadow_map = graph.import("shadow map", false);
@@ -5617,7 +5707,7 @@ impl Renderer {
         // web3d-M7: ambient occlusion needs the camera's depth before
         // the main pass shades: a depth prepass, then GTAO into the
         // persistent AO texture the main pass reads.
-        let ao_on = snap.post.ao > 0.0 && !instances.is_empty();
+        let ao_on = snap.post.ao > 0.0 && instance_count != 0;
         let mut main_reads = vec![(shadow_map, Access::Sample), (point_shadow_map, Access::Sample)];
         let prepass_depth = if ao_on {
             let prepass_depth = graph.create(TextureDesc::new("prepass depth", Extent::FULL, DEPTH_FORMAT));
@@ -5773,7 +5863,7 @@ impl Renderer {
         // target read by the next step.
         let (width, height) = (state.config.width, state.config.height);
         let dof_on = snap.post.dof_focus > 0.0
-            && !instances.is_empty()
+            && instance_count != 0
             && state.dof.prepare(
                 &state.device,
                 &state.queue,
@@ -6053,6 +6143,9 @@ impl Renderer {
             })
         };
         for pass in &plan.passes {
+            if let Some(profile) = &state.gpu_profile {
+                profile.borrow_mut().mark(&mut encoder, format!("{pass:?}"));
+            }
             match *pass {
                 FramePass::Prepass => {
                     let view = prepass_depth
@@ -6332,7 +6425,7 @@ impl Renderer {
                             occlusion_query_set: None,
                             multiview_mask: None,
                         });
-                        if !instances.is_empty() {
+                        if instance_count != 0 {
                             rpass.set_pipeline(&state.lit().opaque);
                             rpass.set_bind_group(0, &state.frame_bind_group, &[]);
                             // Phase 24: bind the shared identity joint UBO as the
@@ -6389,7 +6482,13 @@ impl Renderer {
             }
         }
 
+        if let Some(profile) = &state.gpu_profile {
+            profile.borrow_mut().finish(&mut encoder);
+        }
         state.queue.submit(Some(encoder.finish()));
+        if let Some(profile) = &state.gpu_profile {
+            profile.borrow_mut().collect(&state.device);
+        }
         if taa_on {
             state.taa.advance();
         }
@@ -6425,6 +6524,18 @@ impl Renderer {
             (DepthPass::Point, None) => &self.point_shadows.pipeline,
             (DepthPass::Prepass, None) => &self.prepass.opaque,
         }
+    }
+
+    /// web3d-M7 follow-up: the `draws_generation` whose draws this
+    /// renderer holds, if any (the host may then send it with no draws).
+    /// web3d-M7 follow-up diagnostics: whether the last frame culled on
+    /// the GPU.
+    pub fn last_frame_culled(&self) -> bool {
+        self.last_culled.get()
+    }
+
+    pub fn retained_generation(&self) -> Option<u64> {
+        self.retained.as_ref().map(|r| r.generation)
     }
 
     fn lit(&self) -> &LitPipelines {
@@ -6743,6 +6854,28 @@ fn draw_depth(
             pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
         }
     }
+}
+
+/// web3d-M7 follow-up: a frame's opaque draw list as built, kept while
+/// the host keeps sending the same `draws_generation`: the draws (to
+/// rebuild from if an asset lands), and what was built from them, whose
+/// instances stay in the instance buffer.
+struct RetainedDraws {
+    generation: u64,
+    /// Mesh uploads, failures and textures when built: any change (a
+    /// mesh arriving) rebuilds from `draws`.
+    assets: (usize, usize, usize),
+    draws: std::rc::Rc<[DrawCall3d]>,
+    instance_count: usize,
+    cube_ranges: Vec<(SurfaceKey, InstanceRange)>,
+    sphere_ranges: Vec<(SurfaceKey, InstanceRange)>,
+    mesh_ranges: Vec<(MeshKey, InstanceRange)>,
+    cull_groups: Vec<CullGroup>,
+    opaque_draws: Vec<OpaqueDraw>,
+    opaque_count: u32,
+    /// The `visual` materials the draws use (their pipelines are
+    /// readied every frame: a switch of SSR needs the other variant).
+    materials: Vec<u32>,
 }
 
 /// web3d-M7: the instance ranges a depth pass draws: cubes, spheres,

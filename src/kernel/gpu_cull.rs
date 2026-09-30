@@ -307,6 +307,96 @@ pub(crate) struct GpuCull {
     group_count: usize,
     draw_count: u32,
     instance_count: u32,
+    /// web3d-M7 follow-up: whether culling pays (see [`CullProbe`]).
+    probe: std::cell::RefCell<CullProbe>,
+}
+
+/// web3d-M7 follow-up: culling on the GPU pays only in some scenes.
+/// Where much is off screen or hidden it saves most of the frame; where
+/// every instance is on screen and nothing hides anything (the M7
+/// stress scene) its two-phase split only costs: ~3.5 ms natively on an
+/// integrated GPU, ~18 ms in Chrome, where storing and reloading the
+/// multisampled targets between the early and late passes is
+/// expensive. So the renderer times it: every [`CYCLE`] frames it runs
+/// [`WINDOW`] frames with culling and [`WINDOW`] without, and keeps
+/// culling only if its frames were at least 5% shorter. Under a vsync
+/// cap both come out alike and culling stays off (less GPU work for the
+/// same frame rate). Timing needs no GPU readback: an earlier version
+/// read the late pass's counts back, and in Chrome a GPU-saturated page
+/// never saw those `mapAsync` calls resolve.
+pub(crate) struct CullProbe {
+    /// Frames since culling became possible.
+    frame: u32,
+    /// The mode between probes.
+    cull: bool,
+    /// The previous frame's start and whether it culled (its duration
+    /// is known at the next frame's start).
+    last: Option<(f64, Window)>,
+    /// Summed frame times and counts of this probe's two windows.
+    on: (f64, u32),
+    off: (f64, u32),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Window {
+    On,
+    Off,
+    /// Between probes, or settling after a switch: not measured.
+    None,
+}
+
+/// Frames per probe window (the first few settle and aren't timed).
+const WINDOW: u32 = 60;
+const SETTLE: u32 = 4;
+/// Frames from one probe to the next.
+const CYCLE: u32 = 720;
+
+impl CullProbe {
+    fn new() -> Self {
+        CullProbe {
+            frame: 0,
+            cull: false,
+            last: None,
+            on: (0.0, 0),
+            off: (0.0, 0),
+        }
+    }
+
+    /// This frame's mode, given that culling is possible (`eligible`)
+    /// and the time now (seconds; `None` without a clock: cull always).
+    fn decide(&mut self, eligible: bool, now: Option<f64>) -> bool {
+        let Some(now) = now else { return eligible };
+        // Credit the previous frame's duration to its window.
+        if let Some((start, window)) = self.last.take() {
+            let dt = now - start;
+            match window {
+                Window::On => self.on = (self.on.0 + dt, self.on.1 + 1),
+                Window::Off => self.off = (self.off.0 + dt, self.off.1 + 1),
+                Window::None => {}
+            }
+        }
+        if !eligible {
+            self.frame = 0;
+            return false;
+        }
+        let f = self.frame % CYCLE;
+        self.frame = self.frame.wrapping_add(1);
+        let (cull, window) = if f < WINDOW {
+            (true, if f >= SETTLE { Window::On } else { Window::None })
+        } else if f < 2 * WINDOW {
+            (false, if f >= WINDOW + SETTLE { Window::Off } else { Window::None })
+        } else {
+            if f == 2 * WINDOW {
+                let mean = |(t, n): (f64, u32)| if n > 0 { t / f64::from(n) } else { f64::INFINITY };
+                self.cull = mean(self.on) < 0.95 * mean(self.off);
+                self.on = (0.0, 0);
+                self.off = (0.0, 0);
+            }
+            (self.cull, Window::None)
+        };
+        self.last = Some((now, window));
+        cull
+    }
 }
 
 impl GpuCull {
@@ -484,7 +574,15 @@ impl GpuCull {
             group_count: 0,
             draw_count: 0,
             instance_count: 0,
+            probe: std::cell::RefCell::new(CullProbe::new()),
         }
+    }
+
+    /// web3d-M7 follow-up: whether this frame should cull on the GPU,
+    /// given that it could (`eligible`): see [`CullProbe`]. Call once
+    /// per frame, before `prepare`.
+    pub fn should_cull(&self, eligible: bool) -> bool {
+        self.probe.borrow_mut().decide(eligible, crate::clock::now_secs())
     }
 
     /// Size the buffers and pyramid, and upload this frame's groups,
@@ -774,5 +872,44 @@ impl GpuCull {
         let end = start + u64::from(group_len.max(1)) * INSTANCE_BYTES;
         pass.set_vertex_buffer(1, phase.out.slice(start..end));
         pass.draw_indexed_indirect(&phase.args, u64::from(d) * ARGS_BYTES);
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::{CullProbe, CYCLE, WINDOW};
+
+    /// Run the probe through one cycle where culled frames take `on` and
+    /// unculled frames `off` seconds; return the mode it settles on.
+    fn settle(on: f64, off: f64) -> bool {
+        let mut p = CullProbe::new();
+        let mut t = 0.0;
+        let mut culled = false;
+        for _ in 0..(2 * WINDOW + 5) {
+            culled = p.decide(true, Some(t));
+            t += if culled { on } else { off };
+        }
+        culled
+    }
+
+    #[test]
+    fn keeps_culling_only_when_it_is_faster() {
+        assert!(settle(0.008, 0.020), "culling much faster: keep it");
+        assert!(!settle(0.020, 0.012), "culling slower: drop it");
+        assert!(!settle(0.0167, 0.0167), "no difference (a vsync cap): drop it");
+    }
+
+    #[test]
+    fn probes_again_each_cycle_and_culls_without_a_clock() {
+        let mut p = CullProbe::new();
+        let mut t = 0.0;
+        // Settle on "off", then the next cycle's first window culls again.
+        for _ in 0..CYCLE {
+            let c = p.decide(true, Some(t));
+            t += if c { 0.020 } else { 0.010 };
+        }
+        assert!(p.decide(true, Some(t)), "a new probe starts with culling on");
+        assert!(!p.decide(false, Some(t)), "never culls when it can't");
+        assert!(CullProbe::new().decide(true, None), "no clock: cull whenever it can");
     }
 }

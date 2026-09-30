@@ -76,7 +76,13 @@ The M7 stress scene, both sides:
 twec build --target web --out /tmp/stress examples/stress_3d.twe   # from the repo root
 node fps.mjs /tmp/stress --warmup 12 [--gpu high]
 node fps.mjs . --page three/stress.html --warmup 12 [--gpu high]    # the Three.js equivalent
+bash compare.sh /tmp/stress [rounds]                                 # both, interleaved, medians per GPU
 ```
+
+- **Canvas size:** both pages draw a 1280×960 canvas (Twe letterboxes 4:3); `fps.mjs` prints the window and canvas sizes so a mismatch shows.
+- **Runtime stats:** Twe pages also print the share of frames the GPU culled; `FPS_STATS=1` prints the raw counters.
+- **Interleaving:** `compare.sh` alternates the two sides, since a laptop's GPUs throttle and back-to-back runs of one side would see a different thermal state.
+- **Natively,** `TWE_GPU_PROFILE=1` prints per-pass GPU times (timestamp queries) for any 3D run, e.g. `TWE_STRESS_SCRIPT=examples/stress_3d.twe cargo test --release --test render_bench -- --ignored`.
 
 ## Rules
 

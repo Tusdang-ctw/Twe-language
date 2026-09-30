@@ -116,6 +116,7 @@ fn measure_materials(
         },
         post,
         draws,
+        draws_generation: None,
         mesh_paths: &[],
         texture_paths: &[],
         time: 0.0,
@@ -268,6 +269,7 @@ fn render_particles() {
             },
             post: PostFx::default(),
             draws: &small,
+            draws_generation: None,
             mesh_paths: &[],
             texture_paths: &[],
             time: frame as f32 / 60.0,
@@ -405,7 +407,9 @@ fn render_stress_scene() {
         eprintln!("no GPU adapter; skipping");
         return;
     };
-    let src = std::fs::read_to_string("examples/stress_3d.twe").expect("read");
+    // `TWE_STRESS_SCRIPT` swaps in a variant (for splitting the cost).
+    let path = std::env::var("TWE_STRESS_SCRIPT").unwrap_or_else(|_| "examples/stress_3d.twe".to_string());
+    let src = std::fs::read_to_string(path).expect("read");
     let tokens = twec::lexer::lex(&src).expect("lex");
     let program = twec::parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();

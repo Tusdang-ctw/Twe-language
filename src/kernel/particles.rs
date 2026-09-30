@@ -277,10 +277,14 @@ fn cs_update(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= params.capacity) {
         return;
     }
-    var p = pool[i];
+    // Dead particles cost two reads.
+    var p: Particle;
+    p.age = pool[i].age;
+    p.lifetime = pool[i].lifetime;
     if (!(p.age < p.lifetime)) {
         return;
     }
+    TWE_READ_FIELDS
     twe_rng = twe_hash(p.seed ^ (params.frame * 2654435769u));
     let prev = p.pos;
     let program = p.program;
@@ -294,7 +298,7 @@ fn cs_update(@builtin(global_invocation_id) id: vec3<u32>) {
     if (twe_collides(program)) {
         p = collide(p, prev);
     }
-    pool[i] = p;
+    TWE_WRITE_BACK
 }
 "#;
 
@@ -318,19 +322,29 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_particle(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> VOut {
-    let p = particles[i];
+    // web3d-M7 follow-up: read the fields drawing needs, not the whole
+    // 64-byte record (four times per particle): a million particles'
+    // draw was bound by this fetch on an integrated GPU.
     var out: VOut;
-    if (!(p.age < p.lifetime) || p.size <= 0.0 || p.color.a <= 0.0) {
-        // Dead or invisible: a degenerate triangle outside the clip box.
+    let age = particles[i].age;
+    let lifetime = particles[i].lifetime;
+    if (!(age < lifetime)) {
+        // Dead: a degenerate triangle outside the clip box.
+        out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+        return out;
+    }
+    let size = particles[i].size;
+    let color = particles[i].color;
+    if (size <= 0.0 || color.a <= 0.0) {
         out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         return out;
     }
     // A four-vertex strip: (-1, -1), (1, -1), (-1, 1), (1, 1).
     let c = vec2<f32>(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
-    let world = p.pos + (params.right.xyz * c.x + params.up.xyz * c.y) * p.size;
+    let world = particles[i].pos + (params.right.xyz * c.x + params.up.xyz * c.y) * size;
     out.pos = params.view_proj * vec4<f32>(world, 1.0);
     out.corner = c;
-    out.color = vec4<f32>(srgb_to_linear(p.color.rgb), clamp(p.color.a, 0.0, 1.0));
+    out.color = vec4<f32>(srgb_to_linear(color.rgb), clamp(color.a, 0.0, 1.0));
     out.depth = out.pos.w;
     return out;
 }
@@ -423,8 +437,71 @@ pub fn sim_source(programs: &[ParticleProgram]) -> String {
     src.push_str(&format!(
         "fn twe_collides(program: u32) -> bool {{\n    return {collides};\n}}\n"
     ));
-    src.push_str(SIM_MAIN);
+    // web3d-M7 follow-up: write back only what an update can change —
+    // age and its ratio, and the fields some program's update assigns —
+    // not the whole 64-byte particle: the simulation of a million
+    // particles is bound by this traffic.
+    let mut write_back = String::from("pool[i].age = p.age;
+    pool[i].age_ratio = p.age_ratio;
+");
+    let collide_any = programs.iter().any(|p| p.collide);
+    for field in ["pos", "velocity", "color", "size"] {
+        let assigned = programs.iter().any(|p| assigns(&p.update, field));
+        // A bounce moves the particle and turns its velocity.
+        if assigned || (collide_any && (field == "pos" || field == "velocity")) {
+            write_back.push_str(&format!("    pool[i].{field} = p.{field};
+"));
+        }
+    }
+    // web3d-M7 follow-up: likewise read only what the runtime needs and
+    // what some program's update mentions (a bounce needs position and
+    // velocity).
+    let mut read = String::from("p.program = pool[i].program;
+    p.seed = pool[i].seed;
+");
+    for field in ["pos", "velocity", "color", "size", "age_ratio"] {
+        let used = programs.iter().any(|p| mentions(&p.update, field));
+        if used || (collide_any && (field == "pos" || field == "velocity")) {
+            read.push_str(&format!("    p.{field} = pool[i].{field};
+"));
+        }
+    }
+    src.push_str(
+        &SIM_MAIN
+            .replace("TWE_WRITE_BACK", write_back.trim_end())
+            .replace("TWE_READ_FIELDS", read.trim_end()),
+    );
     src
+}
+
+/// Whether generated WGSL `code` reads or writes particle field `field`.
+fn mentions(code: &str, field: &str) -> bool {
+    let needle = format!("pt.{field}");
+    code.match_indices(&needle).any(|(at, _)| {
+        !code[at + needle.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Whether generated WGSL `code` assigns particle field `field`
+/// (`pt.field = …`, `pt.field += …`, or one component of it).
+fn assigns(code: &str, field: &str) -> bool {
+    let needle = format!("pt.{field}");
+    code.match_indices(&needle).any(|(at, _)| {
+        let rest = &code[at + needle.len()..];
+        // Not a longer name (`pt.size` vs `pt.size_x`).
+        if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            return false;
+        }
+        // Skip one swizzle component (`pt.pos.x = …`).
+        let rest = match rest.strip_prefix('.') {
+            Some(r) => r.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_'),
+            None => rest,
+        };
+        let rest = rest.trim_start();
+        ["=", "+=", "-=", "*=", "/="]
+            .iter()
+            .any(|op| rest.starts_with(op) && !rest.starts_with("=="))
+    })
 }
 
 /// Live particles by when they die, oldest emission first: an estimate

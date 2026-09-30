@@ -1001,9 +1001,12 @@ postfx.frustum_cull(true)         # cull hidden objects on the GPU (default on)
 **Culling** *(web3d-M7)*. With `postfx.frustum_cull(true)` and 4096 or more opaque objects in a frame, the GPU culls them in two phases:
 - first it draws what was visible last frame, from the frame's depth builds a depth pyramid, then draws whatever else the pyramid shows is visible;
 - objects outside the view and objects hidden behind others (a building, a wall, a hill) are never drawn, and the picture is identical with and without it;
-- below 4096 objects everything is drawn directly, because the pyramid costs more than it saves on a small scene.
+- below 4096 objects everything is drawn directly, because the pyramid costs more than it saves on a small scene;
+- *(web3d-M7 follow-up)* it culls only while it pays. Every 720 frames the renderer times 60 frames with it and 60 without, and keeps it only if its frames were at least 5% shorter. Where everything is on screen and nothing is hidden, splitting the frame costs more than it saves (18 ms a frame in Chrome on an integrated GPU for the M7 stress scene). Under a vsync cap both come out alike and it stays off.
 
-Natively the renderer asks for the discrete GPU on machines with two; the environment variable `TWE_GPU_POWER=low` asks for the integrated one. In the browser, the browser chooses.
+Natively the renderer asks for the discrete GPU on machines with two; the environment variable `TWE_GPU_POWER=low` asks for the integrated one. In the browser, the browser chooses: Chrome on Windows ignores a page's WebGPU `powerPreference` and uses the integrated GPU unless Chrome is set to "High performance" in Windows' graphics settings.
+
+`TWE_GPU_PROFILE=1` (native) prints each frame pass's GPU time, averaged over 60 frames, to stderr: a diagnostic that stalls on the GPU every frame.
 
 The HDR pipeline always runs. The steps from scene light to the display, in order *(web3d-M7)*:
 
@@ -1075,7 +1078,7 @@ light.environment("assets/sky.hdr", 1.0)  # image-based lighting from an HDR sky
 
   The image can be computed rather than downloaded: `survive3d`'s dusk sky is written by `tests/gen_survive3d_sky.rs`. A path that isn't a `.hdr`, or a negative intensity, is an error.
 
-- **Up to 1024 point and spot lights** *(web3d-M7)*. `light.add` errors past that. Shading is clustered: the view is divided into a 16 × 9 × 24 grid, each cluster lists the lights that reach it, and a surface shades only its cluster's lights. A scene can hold hundreds of lights while each pixel pays for the few near it. (Before web3d-M7 there were 8.)
+- **Up to 1024 point and spot lights** *(web3d-M7)*. `light.add` errors past that. Shading is clustered: the view is divided into a 32 × 18 × 64 grid (depth slices growing exponentially), each cluster lists the lights that reach it, and a surface shades only its cluster's lights. *(16 × 9 × 24 until the M7 follow-up: seen from a distance, each of those clusters spanned so much ground that it listed dozens of lights.)* A scene can hold hundreds of lights while each pixel pays for the few near it. (Before web3d-M7 there were 8.)
 - `light.cone(h, direction, angle)` turns a light into a spot light shining along `direction`, lighting `angle` degrees either side of it. The edge fades over the outer fifth of the angle. An angle of 180 or more makes it a point light again.
 - `light.shadow(h, true)` makes a light cast shadows (web3d-M7). At most 4 lights have shadows in a frame, each a 512² cube map. When more ask, the 4 nearest the camera get them and the others light without shadows, so the budget follows the player. A new or removed light starts without shadows.
 - **Sun shadows** *(web3d-M7)* use three cascades fitted to the camera's view:

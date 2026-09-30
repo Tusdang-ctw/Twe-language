@@ -546,6 +546,12 @@ pub struct Env {
     pub death_handlers: HashMap<String, Vec<OnDeathHandler>>,
     pub active_scene: Option<Rc<RefCell<Instance>>>,
     pub active_entities: Vec<Rc<RefCell<Instance>>>,
+    /// web3d-M7 follow-up: the active entities with something to run
+    /// each tick (an `update` method, or a particle emitter), in spawn
+    /// order: `eval::tick_entities` walks only these, so a world of
+    /// static entities (100k blocks with looks) costs nothing a tick.
+    /// A subset of `active_entities`, pruned with it.
+    pub tickable_entities: Vec<Rc<RefCell<Instance>>>,
     pub self_value: Option<TaggedValue>,
     pub returning: Option<TaggedValue>,
     pub transitioning: Option<String>,
@@ -611,6 +617,18 @@ pub struct Env {
     /// web3d-M7 session 16: the looks gathered at `look_epoch()`
     /// (`eval::draw_looks`).
     pub look_cache: Option<LookCache>,
+    /// web3d-M7 follow-up: set by every despawn; `eval::prune_despawned`
+    /// only walks the entity list when it is.
+    pub despawned_since_prune: bool,
+    /// web3d-M7 follow-up: set by the host before a 3D frame: the look
+    /// fingerprint whose draws the renderer holds
+    /// (`Renderer::retained_generation`).
+    pub retained_looks: Option<u64>,
+    /// web3d-M7 follow-up: after `eval::render_frame3d`, the frame's
+    /// `RenderSnapshot::draws_generation`: the look fingerprint when the
+    /// frame's draws are only looks that read nothing of their entities.
+    /// If it equals `retained_looks` the draws were not queued at all.
+    pub draws_generation: Option<u64>,
     /// Path-interning registry for `Primitive::Mesh(id)`. Indices
     /// are stable across frames (and across hot-reloads, as long as
     /// the new env intern-orders match — typically yes since
@@ -668,6 +686,7 @@ impl Env {
             death_handlers: HashMap::new(),
             active_scene: None,
             active_entities: Vec::new(),
+            tickable_entities: Vec::new(),
             self_value: None,
             returning: None,
             transitioning: None,
@@ -694,6 +713,9 @@ impl Env {
             current_module: None,
             render_queue3d: Vec::new(),
             look_cache: None,
+            despawned_since_prune: false,
+            retained_looks: None,
+            draws_generation: None,
             mesh_paths: Vec::new(),
             texture_paths: Vec::new(),
             // xorshift64* seeded from a fixed constant for deterministic

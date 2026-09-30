@@ -137,14 +137,38 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
     // continue updating. Entities with no explicit state (the
     // pre-state-machine default) freeze with the rest of the world.
     let paused = crate::stdlib::is_paused();
-    let entities = env.active_entities.clone();
     // web3d-M3: consecutive entities are usually the same class; reuse
     // its `update` lookup instead of hashing the method name per entity.
     let mut last: Option<(*const ClassDef, Option<Rc<MethodDef>>)> = None;
-    for entity in entities {
-        if entity.borrow().despawned {
+    // web3d-M7 follow-up: walk only the entities with something to run
+    // (100k static blocks cost ~1.9 ms a tick natively when every
+    // entity was visited), by index rather than cloning the list;
+    // entities spawned during the walk start next tick, as before.
+    let count = env.tickable_entities.len();
+    for index in 0..count {
+        let idle = {
+            let e = env.tickable_entities[index].borrow();
+            if e.despawned {
+                true
+            } else if e.class.kind == "particles" || paused {
+                false
+            } else {
+                let key = Rc::as_ptr(&e.class);
+                match &last {
+                    Some((k, m)) if *k == key => m.is_none(),
+                    _ => {
+                        let m = find_method(&e.class, "update");
+                        let none = m.is_none();
+                        last = Some((key, m));
+                        none
+                    }
+                }
+            }
+        };
+        if idle {
             continue;
         }
+        let entity = env.tickable_entities[index].clone();
         let class = entity.borrow().class.clone();
         if class.kind == "particles" {
             tick_particle_emitter(env, &entity, &class, dt)?;
@@ -187,6 +211,12 @@ fn tick_entities(env: &mut Env, dt: f64) -> Result<(), RuntimeError> {
 }
 
 fn prune_despawned(env: &mut Env) {
+    // web3d-M7 follow-up: nothing to prune unless something despawned
+    // since the last prune (a 100k-entity world paid for the walk every
+    // tick).
+    if !std::mem::take(&mut env.despawned_since_prune) {
+        return;
+    }
     // Phase 9 session 7b: fire `on <Class>.death(e):` handlers for any
     // entity whose `despawned` flag was set this frame and whose death
     // hasn't fired yet. The dying entity is still in `active_entities`
@@ -217,6 +247,7 @@ fn prune_despawned(env: &mut Env) {
         }
     }
     env.active_entities.retain(|e| !e.borrow().despawned);
+    env.tickable_entities.retain(|e| !e.borrow().despawned);
 }
 
 /// Bind the handler's `param` to the dying entity and run the body.
@@ -404,6 +435,8 @@ fn tick_particle_emitter(
         if age.partial_cmp(&lifetime.as_float()) != Some(std::cmp::Ordering::Less) {
             e.despawned = true;
             crate::value::bump_look_epoch();
+            drop(e);
+            env.despawned_since_prune = true;
         }
         return Ok(());
     }
@@ -498,6 +531,7 @@ fn tick_particle_emitter(
     if particles.borrow().is_empty() {
         emitter.borrow_mut().despawned = true;
         crate::value::bump_look_epoch();
+        env.despawned_since_prune = true;
     }
     Ok(())
 }
@@ -520,9 +554,11 @@ pub fn cpu_particles_3d(env: &Env) -> Vec<crate::kernel::particles::GpuParticle>
         v.and_then(|v| v.with_tuple(|e| e.iter().filter_map(num).collect()))
             .unwrap_or_default()
     };
-    for entity in &env.active_entities {
+    // Emitters are tickable entities: walk those, not every entity
+    // (web3d-M7 follow-up: 1.3 ms a frame with 100k static blocks).
+    for entity in &env.tickable_entities {
         let e = entity.borrow();
-        if e.despawned {
+        if e.despawned || e.class.kind != "particles" {
             continue;
         }
         let Some(list) = e.get_field("__particles").filter(|v| v.is_list()) else {
@@ -803,7 +839,26 @@ fn draw_looks(env: &mut Env) -> Result<(), RuntimeError> {
     }
     // Taken out while look keys run (they may spawn, or read `env`).
     let cache = env.look_cache.take().expect("gathered above");
-    let result = emit_looks(env, &cache);
+    // web3d-M7 follow-up: a frame of nothing but looks that read nothing
+    // of their entities is the same frame while their gathering and
+    // each class's shared values stand still. Fingerprint it; if the
+    // renderer already holds those draws, don't queue 100k of them again.
+    env.draws_generation = None;
+    let result = if env.render_queue3d.is_empty() && cache.own.is_empty() {
+        match looks_fingerprint(env, &cache) {
+            Ok(fp) => {
+                env.draws_generation = Some(fp);
+                if env.retained_looks == Some(fp) {
+                    Ok(())
+                } else {
+                    emit_looks(env, &cache)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        emit_looks(env, &cache)
+    };
     if env.look_cache.is_none() {
         env.look_cache = Some(cache);
     }
@@ -870,6 +925,29 @@ fn look_pos(inst: &Instance) -> Result<[f32; 3], RuntimeError> {
             )),
         }),
     }
+}
+
+/// web3d-M7 follow-up: a fingerprint of the draws `emit_looks` would
+/// queue for a cache of shared-look classes only: the gathering (its
+/// epoch) and each class's shared values this frame.
+fn looks_fingerprint(env: &mut Env, cache: &crate::value::LookCache) -> Result<u64, RuntimeError> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cache.epoch.hash(&mut h);
+    for (entity, positions) in &cache.shared {
+        let look = entity.borrow().class.look.clone().expect("gathered with a look");
+        let v = look_values(env, entity, &look, false, LookValues::default_look())?;
+        match v.primitive {
+            crate::value::Primitive::Cube => 0u32.hash(&mut h),
+            crate::value::Primitive::Sphere => 1u32.hash(&mut h),
+            crate::value::Primitive::Mesh(id) => (2u32, id).hash(&mut h),
+        }
+        for x in v.color {
+            x.to_bits().hash(&mut h);
+        }
+        (v.size.to_bits(), v.yaw.to_bits(), v.material, positions.len()).hash(&mut h);
+    }
+    Ok(h.finish())
 }
 
 /// Queue this frame's draws: each class's shared keys once, then its
@@ -2789,6 +2867,9 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                     seed_particle_emitter(env, &rc, at_value.as_ref(), *line, *col)?;
                 }
                 env.active_entities.push(rc.clone());
+                if class_rc.kind == "particles" || find_method(&class_rc, "update").is_some() {
+                    env.tickable_entities.push(rc.clone());
+                }
                 crate::value::bump_look_epoch();
             }
             Ok(())
@@ -2799,6 +2880,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
                 let rc = v.as_instance();
                 rc.borrow_mut().despawned = true;
                 crate::value::bump_look_epoch();
+                env.despawned_since_prune = true;
                 Ok(())
             } else {
                 let other = v;

@@ -146,11 +146,14 @@ def main():
             "with Three.js (not bolded: it is Twe again).",
         ]
     losses = [n for n, r in rows.items() if "twe" in r and "three" in r and r["twe"] > r["three"]]
-    lines += [
-        "",
-        f"**Per scene, Twe scores worse than Three.js on {len(losses)} of {len(rows)}:** "
-        + ", ".join(n.removeprefix("khronos-") for n in losses) + ".",
-    ]
+    lines.append("")
+    if losses:
+        lines.append(
+            f"**Per scene, Twe scores worse than Three.js on {len(losses)} of {len(rows)}:** "
+            + ", ".join(n.removeprefix("khronos-") for n in losses) + "."
+        )
+    else:
+        lines.append(f"**Per scene, Twe scores at or below Three.js on all {len(rows)}.**")
     notes = SUITE.get("notes", {})
     if notes:
         lines += ["", "## Notes", ""]

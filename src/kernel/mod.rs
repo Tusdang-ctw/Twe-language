@@ -8,6 +8,7 @@ pub(crate) mod ao;
 pub(crate) mod clusters;
 pub(crate) mod environment;
 pub(crate) mod gpu_cull;
+pub(crate) mod gpu_profile;
 pub mod graph;
 pub mod hud;
 pub(crate) mod material;
