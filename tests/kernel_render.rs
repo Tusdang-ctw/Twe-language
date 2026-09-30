@@ -1348,3 +1348,86 @@ on render():
     assert!(clear[0] > clear[1] + 60, "the red block shows through: {clear:?}");
     assert!(absorbed[0] + 40 < clear[0], "the blue volume absorbs the red: {absorbed:?} vs {clear:?}");
 }
+
+/// web3d-M7: GPU culling changes no pixels, and it culls: 6400 cubes
+/// behind a wall render identically with and without it, and with it
+/// most of them are never drawn (the wall hides them from the
+/// hierarchical-Z test). Several frames, so the "visible last frame"
+/// set settles.
+#[test]
+fn gpu_culling_is_invisible_and_culls() {
+    use twec::kernel::render::{Camera3d, PostFx, RenderSnapshot, ShadowSettings};
+    use twec::render3d_types::{DrawCall3d, Primitive};
+    if headless().is_none() {
+        return;
+    }
+    let cube = |at: [f32; 3], size: f32, color: [f32; 4]| DrawCall3d {
+        primitive: Primitive::Cube,
+        at,
+        color,
+        size,
+        texture: 0,
+        yaw: 0.0,
+        material: 0,
+    };
+    let mut draws = Vec::new();
+    for i in 0..80 {
+        for j in 0..80 {
+            let (x, z) = ((i as f32 - 40.0) * 2.0, -(j as f32) * 2.0 - 10.0);
+            draws.push(cube([x, 0.5, z], 1.0, [0.2 + (i % 5) as f32 * 0.15, 0.6, 0.3, 1.0]));
+        }
+    }
+    // The wall covers the middle of the view; cubes to its sides stay
+    // visible, so both sets are exercised.
+    draws.push(cube([0.0, 2.0, -4.0], 6.0, [0.8, 0.8, 0.8, 1.0]));
+    let render = |cull: bool| -> (Vec<u8>, Option<(u32, u32, u32)>) {
+        let mut renderer = headless().expect("gpu");
+        let anim = |_: u32| Default::default();
+        let mut assets = twec::play3d::NativeAssets::default();
+        let mut lights: twec::render3d_types::LightsUniform = bytemuck::Zeroable::zeroed();
+        lights.ambient = [0.4, 0.4, 0.4, 0.0];
+        lights.sun_dir = [0.3, 0.8, 0.5, 1.0];
+        for _ in 0..4 {
+            let snap = RenderSnapshot {
+                lut: None,
+                fog: None,
+                camera: Camera3d {
+                    far: 400.0,
+                    ..Camera3d::new([0.0, 3.0, 4.0], [0.0, 2.0, -20.0], [0.0, 1.0, 0.0])
+                },
+                environment: None,
+                background: [0.05, 0.07, 0.1],
+                lights,
+                shadow: ShadowSettings {
+                    enabled: false,
+                    extent: 10.0,
+                },
+                post: PostFx {
+                    frustum_cull: cull,
+                    ..PostFx::default()
+                },
+                draws: &draws,
+                mesh_paths: &[],
+                texture_paths: &[],
+                time: 0.0,
+                materials: &[],
+                hud: &[],
+                anim: &anim,
+            };
+            renderer.render(&snap, &mut assets).expect("render");
+        }
+        (renderer.read_pixels().expect("pixels"), renderer.gpu_cull_counts())
+    };
+    let (plain, _) = render(false);
+    let (culled, counts) = render(true);
+    save_png("gpu_cull", &culled);
+    let differing = plain.chunks(4).zip(culled.chunks(4)).filter(|(a, b)| a != b).count();
+    assert!(differing < 20, "{differing} pixels differ with GPU culling");
+    let (early, late, total) = counts.expect("the frame was GPU-culled");
+    assert_eq!(total, draws.len() as u32);
+    let drawn = early + late;
+    eprintln!("gpu cull: {early} early + {late} late of {total}; {differing} pixels differ");
+    assert!(drawn > 50, "the cubes beside the wall are drawn: {drawn}");
+    assert!(drawn < total / 3, "most cubes are culled: {drawn} of {total} drawn");
+    assert!(early > late, "after a few frames the early set carries the scene: {early} early, {late} late");
+}

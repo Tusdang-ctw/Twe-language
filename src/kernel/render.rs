@@ -15,6 +15,7 @@ use wgpu::util::DeviceExt;
 
 use crate::kernel::graph::{Access, Extent, FrameGraph, TextureDesc, TexturePool};
 use crate::kernel::environment::EnvUniform;
+use crate::kernel::gpu_cull::{CullDraw, CullGroup};
 use crate::kernel::material::{
     upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS,
 };
@@ -322,9 +323,11 @@ impl Vertex {
 struct Instance {
     position: [f32; 3],
     size: f32,
+    /// sRGB (the vertex shader decodes it), alpha for translucency.
     color: [f32; 4],
-    /// web3d-M3: (sin yaw, cos yaw, 0, 0) — rotation about +Y, applied
-    /// by both vertex shaders.
+    /// web3d-M3: (sin yaw, cos yaw) — rotation about +Y, applied by the
+    /// vertex shaders. web3d-M7: z = the instance's GPU-cull group, w = 1
+    /// for a skinned mesh (only those blend joints).
     rot: [f32; 4],
 }
 
@@ -699,17 +702,31 @@ struct VertexOutput {
     @location(8) model_scale: f32,
 };
 
+fn srgb_to_linear3(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
 @vertex
 fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     // Phase 24: linear blend skinning. The four joint indices select
     // four mat4 from the joint UBO, weighted by `weights`. For
     // unskinned meshes joint 0 is identity and weights = (1,0,0,0),
     // so skin_mat collapses to identity.
-    let skin_mat: mat4x4<f32> =
-          vert.weights.x * joints_u.matrices[vert.joints.x]
-        + vert.weights.y * joints_u.matrices[vert.joints.y]
-        + vert.weights.z * joints_u.matrices[vert.joints.z]
-        + vert.weights.w * joints_u.matrices[vert.joints.w];
+    // web3d-M7: only skinned meshes (rot.w = 1) blend joints.
+    var skin_mat = mat4x4<f32>(
+        vec4<f32>(1.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 1.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 1.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 1.0),
+    );
+    if (inst.inst_rot.w > 0.5) {
+        skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
+            + vert.weights.y * joints_u.matrices[vert.joints.y]
+            + vert.weights.z * joints_u.matrices[vert.joints.z]
+            + vert.weights.w * joints_u.matrices[vert.joints.w];
+    }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
     let skinned_tangent = (skin_mat * vec4<f32>(vert.tangent.xyz, 0.0)).xyz;
@@ -721,7 +738,9 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     out.vertex_color = vert.color;
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
     out.world_normal = yaw_rotate(skinned_normal, inst.inst_rot);
-    out.base_color = inst.inst_color;
+    // web3d-M7: instance colours arrive sRGB (as scripts write them) and
+    // are decoded here, per vertex, rather than per instance on the CPU.
+    out.base_color = vec4<f32>(srgb_to_linear3(inst.inst_color.rgb), inst.inst_color.a);
     out.model_scale = inst.inst_pos_size.w;
     out.tex_coord = vert.uv;
     out.world_pos = model_pos;
@@ -1735,11 +1754,19 @@ fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<f32> {
-    let skin_mat: mat4x4<f32> =
-          vert.weights.x * joints_u.matrices[vert.joints.x]
-        + vert.weights.y * joints_u.matrices[vert.joints.y]
-        + vert.weights.z * joints_u.matrices[vert.joints.z]
-        + vert.weights.w * joints_u.matrices[vert.joints.w];
+    // web3d-M7: only skinned meshes (rot.w = 1) blend joints.
+    var skin_mat = mat4x4<f32>(
+        vec4<f32>(1.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 1.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 1.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 1.0),
+    );
+    if (inst.inst_rot.w > 0.5) {
+        skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
+            + vert.weights.y * joints_u.matrices[vert.joints.y]
+            + vert.weights.z * joints_u.matrices[vert.joints.z]
+            + vert.weights.w * joints_u.matrices[vert.joints.w];
+    }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
         + inst.inst_pos_size.xyz;
@@ -1800,11 +1827,19 @@ fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_mask(vert: VertexInput, inst: InstanceInput) -> MaskOut {
-    let skin_mat: mat4x4<f32> =
-          vert.weights.x * joints_u.matrices[vert.joints.x]
-        + vert.weights.y * joints_u.matrices[vert.joints.y]
-        + vert.weights.z * joints_u.matrices[vert.joints.z]
-        + vert.weights.w * joints_u.matrices[vert.joints.w];
+    // web3d-M7: only skinned meshes (rot.w = 1) blend joints.
+    var skin_mat = mat4x4<f32>(
+        vec4<f32>(1.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 1.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 1.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 1.0),
+    );
+    if (inst.inst_rot.w > 0.5) {
+        skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
+            + vert.weights.y * joints_u.matrices[vert.joints.y]
+            + vert.weights.z * joints_u.matrices[vert.joints.z]
+            + vert.weights.w * joints_u.matrices[vert.joints.w];
+    }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
         + inst.inst_pos_size.xyz;
@@ -2372,6 +2407,8 @@ pub struct Renderer {
     frame_ao_key: (u64, u64),
     /// web3d-M7: the opaque scene behind transmissive surfaces.
     transmission: crate::kernel::post::Transmission,
+    /// web3d-M7: GPU-driven culling and indirect draws.
+    gpu_cull: crate::kernel::gpu_cull::GpuCull,
     frame_index: std::cell::Cell<u32>,
     /// web3d-M7: point-light shadow cubes.
     point_shadows: PointShadows,
@@ -2643,7 +2680,7 @@ async fn init_renderer(
 ) -> Result<Renderer, String> {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
+            power_preference: power_preference(),
             compatible_surface: surface.as_ref(),
             force_fallback_adapter: false,
             apply_limit_buckets: false,
@@ -2750,7 +2787,7 @@ async fn init_renderer(
     let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("twec-play3d instances"),
         size: INITIAL_INSTANCE_CAPACITY * std::mem::size_of::<Instance>() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let instance_capacity = INITIAL_INSTANCE_CAPACITY;
@@ -2830,6 +2867,7 @@ async fn init_renderer(
     let bloom = crate::kernel::post::Bloom::new(&device, &queue);
     let exposure = crate::kernel::post::AutoExposure::new(&device);
     let transmission = crate::kernel::post::Transmission::new(&device, &queue);
+    let gpu_cull = crate::kernel::gpu_cull::GpuCull::new(&device);
     let dof = crate::kernel::post::Dof::new(&device);
     let motion = crate::kernel::post::MotionBlur::new(&device);
     let lut = LutState {
@@ -3292,6 +3330,7 @@ async fn init_renderer(
         lut,
         frame_ao_key: (0, 0),
         transmission,
+        gpu_cull,
         frame_index: std::cell::Cell::new(0),
         point_shadows,
         lights_buffer,
@@ -4084,23 +4123,6 @@ fn extract_frustum_planes(vp: [[f32; 4]; 4]) -> [[f32; 4]; 6] {
     out
 }
 
-/// Phase 26: returns true when the sphere is entirely on the
-/// outside (negative side) of any single plane — the standard
-/// "if outside any plane, definitely outside the frustum" cull.
-/// False positives (sphere inside frustum but flagged outside) are
-/// impossible; false negatives (sphere outside frustum but inside
-/// a plane's bounded region) are possible at the corners and are
-/// the standard accuracy tradeoff for fast culling.
-fn sphere_outside_frustum(center: [f32; 3], radius: f32, planes: &[[f32; 4]; 6]) -> bool {
-    for p in planes {
-        let signed = p[0] * center[0] + p[1] * center[1] + p[2] * center[2] + p[3];
-        if signed < -radius {
-            return true;
-        }
-    }
-    false
-}
-
 /// Phase 25: orthographic projection — column-major, matches WGSL
 /// expectations. NDC z is [0, 1] for wgpu (D3D-style), so the
 /// near→far range maps to that.
@@ -4733,44 +4755,21 @@ impl Renderer {
         // for per-instance sphere culling. `frustum_culling_enabled`
         // is a script-controlled toggle (default on); disable for
         // benchmarking the cull path's contribution.
-        let cull_enabled = snap.post.frustum_cull;
-        let planes = if cull_enabled {
-            Some(extract_frustum_planes(view_proj))
-        } else {
-            None
-        };
-        let cull_sphere = |center: [f32; 3], radius: f32| -> bool {
-            match &planes {
-                Some(pl) => sphere_outside_frustum(center, radius, pl),
-                None => false,
-            }
-        };
-
+        // web3d-M7: culling moved to the GPU (kernel/gpu_cull.rs); every
+        // instance is uploaded, colours still sRGB (the vertex shader
+        // decodes them).
         let push_group =
-            |group: &[&DrawCall3d], out: &mut Vec<Instance>, mesh_radius: f32| -> (u32, u32) {
+            |group: &[&DrawCall3d], out: &mut Vec<Instance>, _mesh_radius: f32| -> (u32, u32) {
                 let start = out.len() as u32;
                 for d in group {
                     if out.len() >= cap {
                         break;
                     }
-                    // Phase 26: cull instances whose bounding sphere is
-                    // entirely outside the view frustum. The sphere center
-                    // is the instance's world-space position; the radius
-                    // scales the mesh-local bound by `instance.size`.
-                    let world_radius = mesh_radius * d.size.max(0.0);
-                    if cull_sphere(d.at, world_radius) {
-                        continue;
-                    }
                     let (s, c) = d.yaw.sin_cos();
                     out.push(Instance {
                         position: d.at,
                         size: d.size,
-                        color: [
-                            srgb_to_linear(d.color[0]),
-                            srgb_to_linear(d.color[1]),
-                            srgb_to_linear(d.color[2]),
-                            d.color[3],
-                        ],
+                        color: d.color,
                         rot: [s, c, 0.0, 0.0],
                     });
                 }
@@ -4800,6 +4799,88 @@ impl Renderer {
                 (*k, push_group(list, &mut instances, r))
             })
             .collect();
+        // web3d-M7: the opaque draw list. Every group of instances (cube /
+        // sphere / mesh with a texture and material) is a cull group; each
+        // draw (a shape, a mesh, or one glTF primitive of a mesh) draws one
+        // group's instances, directly or through the GPU cull.
+        let mut cull_groups: Vec<CullGroup> = Vec::new();
+        let mut opaque_draws: Vec<OpaqueDraw> = Vec::new();
+        let mut add_group = |range: InstanceRange, radius: f32, instances: &mut [Instance]| -> u32 {
+            let g = cull_groups.len() as u32;
+            for inst in &mut instances[range.0 as usize..range.1 as usize] {
+                inst.rot[2] = g as f32;
+            }
+            cull_groups.push(CullGroup {
+                radius,
+                base: range.0,
+                _pad: [0; 2],
+            });
+            g
+        };
+        for ((tex, mat), range) in &cube_ranges {
+            let group = add_group(*range, cube_radius, &mut instances);
+            opaque_draws.push(OpaqueDraw {
+                shape: OpaqueShape::Cube,
+                surface: OpaqueSurface::Script { tex: *tex, mat: *mat },
+                group,
+                range: *range,
+                indices: 0..state.cube_index_count,
+            });
+        }
+        for ((tex, mat), range) in &sphere_ranges {
+            let group = add_group(*range, sphere_radius, &mut instances);
+            opaque_draws.push(OpaqueDraw {
+                shape: OpaqueShape::Sphere,
+                surface: OpaqueSurface::Script { tex: *tex, mat: *mat },
+                group,
+                range: *range,
+                indices: 0..state.sphere_index_count,
+            });
+        }
+        for ((id, tex, mat), range) in &mesh_ranges {
+            let Some(mesh) = state.mesh_cache.get(id) else { continue };
+            let group = add_group(*range, mesh.bound_radius, &mut instances);
+            // Skinned meshes' instances blend joints (rot.w); nothing
+            // else pays for it.
+            if mesh.skin.is_some() {
+                for inst in &mut instances[range.0 as usize..range.1 as usize] {
+                    inst.rot[3] = 1.0;
+                }
+            }
+            if *tex != 0 || *mat != 0 {
+                // A script texture or a `visual` material covers the whole
+                // mesh as one surface.
+                opaque_draws.push(OpaqueDraw {
+                    shape: OpaqueShape::Mesh(*id),
+                    surface: OpaqueSurface::Script { tex: *tex, mat: *mat },
+                    group,
+                    range: *range,
+                    indices: 0..mesh.index_count,
+                });
+            } else {
+                // Each glTF primitive with its own material.
+                for (si, sub) in mesh.submeshes.iter().enumerate().filter(|(_, s)| !s.sorted()) {
+                    opaque_draws.push(OpaqueDraw {
+                        shape: OpaqueShape::Mesh(*id),
+                        surface: OpaqueSurface::Submesh(si),
+                        group,
+                        range: *range,
+                        indices: sub.first..sub.first + sub.count,
+                    });
+                }
+            }
+        }
+        let opaque_count = cull_groups.last().map_or(0, |g| {
+            let last = opaque_draws.iter().rev().find(|d| d.group == cull_groups.len() as u32 - 1);
+            last.map_or(g.base, |d| d.range.1)
+        });
+        // web3d-M7: GPU culling (frustum + hierarchical-Z occlusion) with
+        // `postfx.frustum_cull` on and enough opaque instances for it to
+        // pay: the depth pyramid costs per pixel, not per object, so a
+        // small scene draws faster without it (measured in
+        // tests/render_bench.rs: 300 cubes, +1.1 ms on an integrated GPU).
+        let gpu_cull = snap.post.frustum_cull && opaque_count >= GPU_CULL_MIN_INSTANCES;
+
         // web3d-M7: the transparent pass's draws — translucent draws, one
         // instance each, and the blended glTF primitives of opaque mesh
         // instances — sorted back to front by distance to the eye.
@@ -4844,6 +4925,11 @@ impl Renderer {
             let (start, end) = push_group(&[d], &mut instances, radius);
             if end == start {
                 continue;
+            }
+            if let Primitive::Mesh(id) = d.primitive {
+                if state.mesh_cache.get(&id).is_some_and(|m| m.skin.is_some()) {
+                    instances[start as usize].rot[3] = 1.0;
+                }
             }
             let inst = instances[start as usize];
             match shape {
@@ -4925,7 +5011,7 @@ impl Renderer {
                 state.instance_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("twec-play3d instances (grown)"),
                     size: new_cap * std::mem::size_of::<Instance>() as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
                 state.instance_capacity = new_cap;
@@ -5097,6 +5183,14 @@ impl Renderer {
         } else {
             None
         };
+        // web3d-M7: with GPU culling, a compute pass picks the early set
+        // before the main pass, and after it the depth pyramid, the late
+        // cull and a second opaque pass run.
+        if gpu_cull {
+            let early_set = graph.import("culled early", false);
+            graph.add_pass(FramePass::CullEarly, "cull early", &[], &[(early_set, Access::Storage)]);
+            main_reads.push((early_set, Access::Sample));
+        }
         graph.add_pass(
             FramePass::Main,
             "main",
@@ -5107,6 +5201,25 @@ impl Renderer {
                 (hdr, Access::Attach),
             ],
         );
+        if gpu_cull {
+            let late_set = graph.import("culled late", false);
+            graph.add_pass(
+                FramePass::CullLate,
+                "hi-z + cull late",
+                &[(depth, Access::Sample)],
+                &[(late_set, Access::Storage)],
+            );
+            graph.add_pass(
+                FramePass::MainLate,
+                "main (late)",
+                &[(late_set, Access::Sample)],
+                &[
+                    (hdr_msaa, Access::Attach),
+                    (depth, Access::Attach),
+                    (hdr, Access::Attach),
+                ],
+            );
+        }
         // web3d-M7: with transmission, the opaque frame is copied into the
         // transmission source, and a second pass draws the transparent
         // list over the same multisampled targets.
@@ -5272,6 +5385,29 @@ impl Renderer {
         if transmission_on {
             state.transmission.prepare(&state.device, width, height);
         }
+        if gpu_cull {
+            let cull_draws: Vec<CullDraw> = opaque_draws
+                .iter()
+                .map(|d| CullDraw {
+                    index_count: d.indices.end - d.indices.start,
+                    first_index: d.indices.start,
+                    base_vertex: 0,
+                    group: d.group,
+                })
+                .collect();
+            state.gpu_cull.prepare(
+                &state.device,
+                &state.queue,
+                &crate::kernel::gpu_cull::CullFrame {
+                    size: (width, height),
+                    view_proj: unjittered_view_proj,
+                    planes: extract_frustum_planes(unjittered_view_proj),
+                    instances: opaque_count,
+                },
+                &cull_groups,
+                &cull_draws,
+            );
+        }
         let frame_key = (state.ao.key(ao_on), state.transmission.key(transmission_on));
         if frame_key != state.frame_ao_key {
             state.frame_bind_group = frame_bind_group(
@@ -5404,6 +5540,54 @@ impl Renderer {
                         .ok_or("render graph: no prepass depth")?;
                     state.ao.record(&state.device, &mut encoder, view);
                 }
+                FramePass::CullEarly => {
+                    state
+                        .gpu_cull
+                        .record_early(&state.device, &mut encoder, &state.instance_buffer);
+                }
+                FramePass::CullLate => {
+                    state
+                        .gpu_cull
+                        .record_late(&state.device, &mut encoder, &state.instance_buffer, depth_view);
+                }
+                FramePass::MainLate => {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("twe-kernel main pass (late)"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: msaa_view,
+                            depth_slice: None,
+                            resolve_target: Some(main_color_view),
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: if transmission_on {
+                                    wgpu::StoreOp::Store
+                                } else {
+                                    wgpu::StoreOp::Discard
+                                },
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: if taa_on || dof_on || motion_on || transmission_on {
+                                    wgpu::StoreOp::Store
+                                } else {
+                                    wgpu::StoreOp::Discard
+                                },
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    rpass.set_bind_group(0, &state.frame_bind_group, &[]);
+                    rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+                    rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
+                    draw_opaque(&mut rpass, state, snap.materials, &opaque_draws, &cull_groups, OpaqueSource::Late);
+                    finish_scene(&mut rpass, state, env_uniform.params[3] > 0.5 || fog_on, &transparent, transmission_on);
+                }
                 FramePass::TransmissionCopy => {
                     state.transmission.record(&state.device, &mut encoder, main_color_view);
                 }
@@ -5533,7 +5717,7 @@ impl Renderer {
                                     }),
                                     // Kept for the transparent pass when
                                     // it runs separately.
-                                    store: if transmission_on {
+                                    store: if transmission_on || gpu_cull {
                                         wgpu::StoreOp::Store
                                     } else {
                                         wgpu::StoreOp::Discard
@@ -5544,7 +5728,7 @@ impl Renderer {
                                 view: depth_view,
                                 depth_ops: Some(wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(1.0),
-                                    store: if taa_on || dof_on || motion_on || transmission_on {
+                                    store: if taa_on || dof_on || motion_on || transmission_on || gpu_cull {
                                         wgpu::StoreOp::Store
                                     } else {
                                         wgpu::StoreOp::Discard
@@ -5568,119 +5752,15 @@ impl Renderer {
                             // shadow uniform + texture + comparison sampler. The
                             // shader short-circuits when flags.w == 0.
                             rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
-                            rpass.set_vertex_buffer(1, state.instance_buffer.slice(..));
-                            // Phase 17 session 3: helper closure that picks the
-                            // right texture bind group for a given texture id.
-                            // 0 = white fallback; loaded ids look up texture_cache;
-                            // missing/failed ids fall through to white.
-                            let bind_for = |tex_id: u32| -> &wgpu::BindGroup {
-                                if tex_id == 0 {
-                                    return &state.plain_material;
-                                }
-                                state
-                                    .texture_cache
-                                    .get(&tex_id)
-                                    .unwrap_or(&state.plain_material)
-                            };
-                            // web3d-M3: the plain surface, or a material's pipeline.
-                            let pipeline_for = |mat: u32| -> &wgpu::RenderPipeline {
-                                snap.materials
-                                    .get(mat as usize)
-                                    .filter(|_| mat != 0)
-                                    .and_then(|src| state.material_pipelines.get(src))
-                                    .unwrap_or(&state.pipeline)
-                            };
-                            // Cube draws — one per (texture, material) group.
-                            for ((tex, mat), range) in &cube_ranges {
-                                if range.1 <= range.0 {
-                                    continue;
-                                }
-                                rpass.set_pipeline(pipeline_for(*mat));
-                                rpass.set_bind_group(1, bind_for(*tex), &[]);
-                                rpass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
-                                rpass.set_index_buffer(
-                                    state.cube_index_buffer.slice(..),
-                                    wgpu::IndexFormat::Uint16,
-                                );
-                                rpass.draw_indexed(0..state.cube_index_count, 0, range.0..range.1);
-                            }
-                            // Sphere draws — one per (texture, material) group.
-                            for ((tex, mat), range) in &sphere_ranges {
-                                if range.1 <= range.0 {
-                                    continue;
-                                }
-                                rpass.set_pipeline(pipeline_for(*mat));
-                                rpass.set_bind_group(1, bind_for(*tex), &[]);
-                                rpass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-                                rpass.set_index_buffer(
-                                    state.sphere_index_buffer.slice(..),
-                                    wgpu::IndexFormat::Uint16,
-                                );
-                                rpass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
-                            }
-                            // Mesh draws — one per (mesh id, texture) group. Each
-                            // unique combination is its own instanced draw call.
-                            for ((mesh_id, tex, mat), range) in &mesh_ranges {
-                                if range.1 <= range.0 {
-                                    continue;
-                                }
-                                let gpu_mesh = match state.mesh_cache.get(mesh_id) {
-                                    Some(m) => m,
-                                    None => continue,
-                                };
-                                // Phase 24: bind per-mesh joint UBO when the mesh
-                                // has a skin; the joint matrices were uploaded in
-                                // step 4c above. Unskinned meshes leave slot 3
-                                // bound to the identity UBO from the outer setup.
-                                if let Some(skin) = &gpu_mesh.skin {
-                                    rpass.set_bind_group(2, &skin.joint_bind_group, &[]);
-                                }
-                                rpass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                                rpass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
-                                if *tex != 0 || *mat != 0 {
-                                    // A script texture or a `visual` material
-                                    // covers the whole mesh as one surface.
-                                    rpass.set_pipeline(pipeline_for(*mat));
-                                    rpass.set_bind_group(1, bind_for(*tex), &[]);
-                                    rpass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
-                                } else {
-                                    // web3d-M7: each glTF primitive with its
-                                    // own material.
-                                    for sub in gpu_mesh.submeshes.iter().filter(|s| !s.sorted()) {
-                                        rpass.set_pipeline(if sub.double_sided {
-                                            &state.pipeline_double
-                                        } else {
-                                            &state.pipeline
-                                        });
-                                        rpass.set_bind_group(1, &sub.material, &[]);
-                                        rpass.draw_indexed(
-                                            sub.first..sub.first + sub.count,
-                                            0,
-                                            range.0..range.1,
-                                        );
-                                    }
-                                }
-                                // Re-bind the identity joints for the next draw if
-                                // we just used a skinned bind group, so subsequent
-                                // unskinned draws don't accidentally read this
-                                // mesh's joint matrices.
-                                if gpu_mesh.skin.is_some() {
-                                    rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
-                                }
-                            }
+                            // web3d-M7: the opaque draw list, directly or (GPU
+                            // culling) the early set through indirect draws.
+                            let source = if gpu_cull { OpaqueSource::Early } else { OpaqueSource::Direct };
+                            draw_opaque(&mut rpass, state, snap.materials, &opaque_draws, &cull_groups, source);
                         }
-                        // web3d-M7: the environment as the backdrop,
-                        // wherever no geometry was drawn.
-                        // With fog, the background fogs too.
-                        if env_uniform.params[3] > 0.5 || fog_on {
-                            rpass.set_pipeline(&state.env.sky_pipeline);
-                            rpass.set_bind_group(0, &state.frame_bind_group, &[]);
-                            rpass.draw(0..3, 0..1);
-                        }
-                        // web3d-M7: translucent surfaces, back to front,
-                        // over the finished opaque scene.
-                        if !transparent.is_empty() && !transmission_on {
-                            draw_transparent(&mut rpass, state, &transparent);
+                        // With GPU culling the late opaque pass finishes
+                        // the scene; otherwise it's finished here.
+                        if !gpu_cull {
+                            finish_scene(&mut rpass, state, env_uniform.params[3] > 0.5 || fog_on, &transparent, transmission_on);
                         }
                     }
                 }
@@ -5726,6 +5806,14 @@ impl Renderer {
             state.queue.present(frame);
         }
         Ok(())
+    }
+
+    /// web3d-M7 diagnostics (native only; blocks on the GPU): the last
+    /// GPU-culled frame's (instances drawn early, drawn late, opaque
+    /// instances in all), or `None` if it wasn't culled on the GPU.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn gpu_cull_counts(&self) -> Option<(u32, u32, u32)> {
+        self.gpu_cull.last_counts(&self.device, &self.queue)
     }
 
     /// Read back the last headless frame as tightly packed RGBA8
@@ -6115,6 +6203,148 @@ impl Prepass {
     }
 }
 
+/// web3d-M7: the geometry an opaque draw uses.
+#[derive(Clone, Copy, Debug)]
+enum OpaqueShape {
+    Cube,
+    Sphere,
+    Mesh(u32),
+}
+
+/// web3d-M7: the surface an opaque draw is shaded with: a script
+/// texture / `visual` material (plain surface when both are 0), or one
+/// glTF primitive's own material.
+#[derive(Clone, Copy, Debug)]
+enum OpaqueSurface {
+    Script { tex: u32, mat: u32 },
+    Submesh(usize),
+}
+
+/// web3d-M7: one draw of the opaque list: shape, surface, index range,
+/// and the cull group whose instances it draws (their range in the
+/// instance buffer when drawn directly).
+#[derive(Clone, Debug)]
+struct OpaqueDraw {
+    shape: OpaqueShape,
+    surface: OpaqueSurface,
+    group: u32,
+    range: InstanceRange,
+    indices: std::ops::Range<u32>,
+}
+
+/// Where the opaque list's instances come from.
+#[derive(Clone, Copy, PartialEq)]
+enum OpaqueSource {
+    /// The instance buffer, every instance.
+    Direct,
+    /// The GPU cull's early or late set, through indirect draws.
+    Early,
+    Late,
+}
+
+/// Draw the opaque list. Expects bind groups 0 (frame), 2 (identity
+/// joints) and 3 (shadows) bound.
+fn draw_opaque(
+    pass: &mut wgpu::RenderPass<'_>,
+    state: &Renderer,
+    materials: &[String],
+    draws: &[OpaqueDraw],
+    groups: &[CullGroup],
+    source: OpaqueSource,
+) {
+    // A script texture's material (0 = the plain surface), and a
+    // `visual` material's pipeline (0 = the plain surface).
+    let texture_group = |tex: u32| -> &wgpu::BindGroup {
+        if tex == 0 {
+            return &state.plain_material;
+        }
+        state.texture_cache.get(&tex).unwrap_or(&state.plain_material)
+    };
+    let pipeline_for = |mat: u32| -> &wgpu::RenderPipeline {
+        materials
+            .get(mat as usize)
+            .filter(|_| mat != 0)
+            .and_then(|src| state.material_pipelines.get(src))
+            .unwrap_or(&state.pipeline)
+    };
+    if source == OpaqueSource::Direct {
+        pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+    }
+    for (i, d) in draws.iter().enumerate() {
+        if d.range.1 <= d.range.0 {
+            continue;
+        }
+        let skin = match d.shape {
+            OpaqueShape::Cube => {
+                pass.set_vertex_buffer(0, state.cube_vertex_buffer.slice(..));
+                pass.set_index_buffer(state.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                None
+            }
+            OpaqueShape::Sphere => {
+                pass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
+                pass.set_index_buffer(state.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                None
+            }
+            OpaqueShape::Mesh(id) => {
+                let Some(mesh) = state.mesh_cache.get(&id) else { continue };
+                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
+                if let Some(skin) = &mesh.skin {
+                    pass.set_bind_group(2, &skin.joint_bind_group, &[]);
+                }
+                Some(mesh)
+            }
+        };
+        match d.surface {
+            OpaqueSurface::Script { tex, mat } => {
+                pass.set_pipeline(pipeline_for(mat));
+                pass.set_bind_group(1, texture_group(tex), &[]);
+            }
+            OpaqueSurface::Submesh(si) => {
+                let Some(sub) = skin.and_then(|m| m.submeshes.get(si)) else { continue };
+                pass.set_pipeline(if sub.double_sided {
+                    &state.pipeline_double
+                } else {
+                    &state.pipeline
+                });
+                pass.set_bind_group(1, &sub.material, &[]);
+            }
+        }
+        match source {
+            OpaqueSource::Direct => pass.draw_indexed(d.indices.clone(), 0, d.range.0..d.range.1),
+            OpaqueSource::Early | OpaqueSource::Late => {
+                let g = &groups[d.group as usize];
+                state
+                    .gpu_cull
+                    .draw(pass, source == OpaqueSource::Late, i as u32, g, d.range.1 - d.range.0);
+            }
+        }
+        if skin.is_some_and(|m| m.skin.is_some()) {
+            pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+        }
+    }
+}
+
+/// web3d-M7: the end of the main pass: the backdrop where nothing was
+/// drawn (the environment, or with fog the fogged background), then the
+/// transparent list unless transmission draws it in its own pass.
+fn finish_scene(
+    pass: &mut wgpu::RenderPass<'_>,
+    state: &Renderer,
+    backdrop: bool,
+    transparent: &[TransparentDraw],
+    transmission_on: bool,
+) {
+    if backdrop {
+        pass.set_pipeline(&state.env.sky_pipeline);
+        pass.set_bind_group(0, &state.frame_bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    if !transparent.is_empty() && !transmission_on {
+        draw_transparent(pass, state, transparent);
+    }
+}
+
 /// web3d-M7: what a transparent draw draws.
 #[derive(Clone, Copy, Debug)]
 enum TransparentShape {
@@ -6403,6 +6633,13 @@ enum FramePass {
     Ao,
     /// The lit scene into the HDR target.
     Main,
+    /// web3d-M7: GPU culling — the early set (frustum + visible last
+    /// frame), then the depth pyramid and the late set.
+    CullEarly,
+    CullLate,
+    /// web3d-M7: the late opaque draws, then the backdrop and
+    /// transparent surfaces (when GPU culling splits the main pass).
+    MainLate,
     /// web3d-M7: the opaque frame into the transmission source's mips.
     TransmissionCopy,
     /// web3d-M7: the transparent list over the opaque frame (when the
@@ -6420,6 +6657,32 @@ enum FramePass {
     Exposure,
     /// HDR to the display (tonemap, bloom, vignette), then the HUD.
     Tonemap,
+}
+
+/// web3d-M7: the fewest opaque instances worth culling on the GPU
+/// (below this they are drawn directly; the GPU clips what's outside
+/// the view). See `render()`.
+pub(crate) const GPU_CULL_MIN_INSTANCES: u32 = 4096;
+
+/// web3d-M7: which GPU to ask for. Natively, a 3D game wants the
+/// discrete GPU on machines with two (the wgpu default picks the
+/// integrated one); `TWE_GPU_POWER=low` asks for the integrated,
+/// power-saving one (benchmarking the weakest target, or a laptop on
+/// battery). The browser picks the adapter itself (Chrome ignores the
+/// hint on Windows and warns about it), so the web build doesn't ask.
+fn power_preference() -> wgpu::PowerPreference {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wgpu::PowerPreference::None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if std::env::var("TWE_GPU_POWER").is_ok_and(|v| v.eq_ignore_ascii_case("low")) {
+            wgpu::PowerPreference::LowPower
+        } else {
+            wgpu::PowerPreference::HighPerformance
+        }
+    }
 }
 
 /// Headless colour target matching `config`'s size + format.
@@ -7113,6 +7376,9 @@ mod tests {
         validate_wgsl("DOF", crate::kernel::post::dof_shader_source());
         validate_wgsl("MOTION", crate::kernel::post::motion_shader_source());
         validate_wgsl("TRANSMISSION", crate::kernel::post::transmission_shader_source());
+        let [cull, hiz] = crate::kernel::gpu_cull::shader_sources();
+        validate_wgsl("CULL", cull);
+        validate_wgsl("HIZ", hiz);
     }
 
     /// Phase 27: the Vertex layout's stride must match what the

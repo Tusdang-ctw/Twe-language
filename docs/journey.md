@@ -138,6 +138,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-09-29: velvet, lacquer, soap film and glass.** Twe now reads the parts of the glTF format that describe fancy materials: the soft sheen of velvet, a clear lacquer coat over a painted surface, the rainbow shimmer of a soap bubble, and real glass that bends and tints what's behind it. On the scoreboard Twe's average error now ties the best renderer in the reference set (Khronos's own sample viewer) and sits clearly ahead of Three.js. Along the way, a stress check found an intermittent crash in the test suite that predates this work, which the notes chase down.
 
+- **2026-09-30: don't draw what nobody can see.** Twe's 3D now asks the graphics card to skip objects that are off-screen or hidden behind something else, checked with a small pyramid of depth images, before drawing them. On this laptop's built-in graphics chip, 100,000 cubes behind a wall went from 23 to under 9 milliseconds a frame. The same measurements showed something more embarrassing: every 3D game had been running on the laptop's weaker built-in graphics instead of its real graphics card. That's fixed too.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

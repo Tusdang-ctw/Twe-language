@@ -929,8 +929,15 @@ postfx.bloom_threshold(1.0)       # HDR brightness where bloom starts; 0 = every
 postfx.dof(8, 1.4)                # depth of field: focus distance, f-number; (0, 0) = off
 postfx.motion_blur(0.5)           # camera motion blur, shutter as a fraction of a frame; 0 = off
 postfx.lut("looks/warm.cube", 1)  # colour grading: a .cube 3D LUT and its strength; 0 = off
-postfx.frustum_cull(true)         # skip culled draw calls (default on)
+postfx.frustum_cull(true)         # cull hidden objects on the GPU (default on)
 ```
+
+**Culling** *(web3d-M7)*. With `postfx.frustum_cull(true)` and 4096 or more opaque objects in a frame, the GPU culls them in two phases:
+- first it draws what was visible last frame, from the frame's depth builds a depth pyramid, then draws whatever else the pyramid shows is visible;
+- objects outside the view and objects hidden behind others (a building, a wall, a hill) are never drawn, and the picture is identical with and without it;
+- below 4096 objects everything is drawn directly, because the pyramid costs more than it saves on a small scene.
+
+Natively the renderer asks for the discrete GPU on machines with two; the environment variable `TWE_GPU_POWER=low` asks for the integrated one. In the browser, the browser chooses.
 
 The HDR pipeline always runs. The steps from scene light to the display, in order *(web3d-M7)*:
 

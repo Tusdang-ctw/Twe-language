@@ -6,6 +6,7 @@
 
 pub(crate) mod ao;
 pub(crate) mod environment;
+pub(crate) mod gpu_cull;
 pub mod graph;
 pub mod hud;
 pub(crate) mod material;

@@ -13,6 +13,7 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **GPU culling in 3D** (web3d-M7): from 4096 opaque objects up, the GPU culls objects outside the view or hidden behind others (two-phase hierarchical-Z occlusion culling, indirect draws).
 - **glTF material extensions** (web3d-M7): `.glb` models render clearcoat, sheen, iridescence, transmission with volume absorption, IOR and specular (`KHR_materials_*`).
 - **Translucency and fog in 3D** (web3d-M7): a draw colour with alpha below 1 and glTF `BLEND` materials draw translucent (sorted back to front); `light.fog(density, falloff, color)` adds exponential height fog.
 - **Depth of field, motion blur and colour grading in 3D** (web3d-M7): `postfx.dof(focus, f_stop)` (a physical thin lens), `postfx.motion_blur(shutter)` (camera motion) and `postfx.lut(path, strength)` (`.cube` 3D LUTs).
@@ -144,6 +145,7 @@ removal would be load-bearing.
   §5.5.
 
 ### Changed
+- Native 3D picks the discrete GPU on machines with two (it picked the integrated one); `TWE_GPU_POWER=low` asks for the integrated GPU.
 - `postfx.bloom` is now a multi-level bloom chain (Jimenez 2014) instead of a 12-pixel inline kernel: the glare reaches much further with a soft falloff. `postfx.tonemap` takes a curve name; `true` / `false` still mean ACES / none.
 - `sun.shadow_extent(r)` now means shadows reach `4 × r` from the camera,
   including casters up to `r` outside the view (it used to be the radius
