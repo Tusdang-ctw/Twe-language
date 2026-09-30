@@ -8,7 +8,7 @@
 //!   chain, then GGX-prefiltered into a second cubemap whose mips hold
 //!   increasing roughness (Karis 2013's split sum, with filtered
 //!   importance sampling, Křivánek & Colbert 2008, so few samples stay
-//!   smooth). Shaders read it at `roughness * max_lod`.
+//!   smooth). Shaders read it at `sqrt(roughness) * max_lod`.
 //! - **Diffuse:** irradiance as 9 spherical-harmonic coefficients
 //!   (Ramamoorthi & Hanrahan 2001), projected on the CPU from the full-
 //!   resolution map, so it is exact and deterministic.
@@ -31,9 +31,13 @@ use wgpu::util::DeviceExt;
 /// Faces of the resampled source cubemap (its mips feed the prefilter).
 const SOURCE_SIZE: u32 = 512;
 /// Faces of the prefiltered specular cubemap, and its mip count: mip i
-/// holds roughness i / (SPECULAR_MIPS - 1).
-pub(crate) const SPECULAR_SIZE: u32 = 256;
-pub(crate) const SPECULAR_MIPS: u32 = 6;
+/// holds roughness (i / (SPECULAR_MIPS - 1))², so read at
+/// `sqrt(roughness) * max_lod` (web3d-M7 follow-up: spaced linearly,
+/// a roughness-0.1 visor blended the mirror half-and-half with the
+/// roughness-0.2 lobe and haloed every reflection; Three.js's PMREM
+/// likewise spends its levels on low roughness).
+pub(crate) const SPECULAR_SIZE: u32 = 512;
+pub(crate) const SPECULAR_MIPS: u32 = 7;
 /// GGX samples per prefiltered texel (mips above 0).
 const PREFILTER_SAMPLES: u32 = 1024;
 /// The DFG lookup table: `DFG_SIZE`² texels over (n·v, roughness).
@@ -601,14 +605,14 @@ pub(crate) fn build(device: &wgpu::Device, queue: &wgpu::Queue, img: &HdrImage) 
         }
     }
     // 3. The prefiltered specular cube: mip 0 is the mirror reflection
-    //    (a plain resample), mip i roughness i / (mips - 1).
+    //    (a plain resample), mip i roughness (i / (mips - 1))².
     let source_all = cube_view(&source, 0, None);
     for mip in 0..SPECULAR_MIPS {
-        let roughness = mip as f32 / (SPECULAR_MIPS - 1) as f32;
+        let roughness = (mip as f32 / (SPECULAR_MIPS - 1) as f32).powi(2);
         for face in 0..6 {
             let target = face_view(&specular, mip, face);
             if mip == 0 {
-                let top = cube_view(&source, 1, Some(1));
+                let top = cube_view(&source, 0, Some(1));
                 pass(&downsample, &target, params(face, 0.0, 0, 0), &top);
             } else {
                 pass(

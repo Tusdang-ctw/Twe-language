@@ -131,8 +131,13 @@ fn fs_trace(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         if (ndc.z > sd) {
             // Behind the depth buffer: a hit if only just (the surface's
             // assumed thickness grows with the step).
-            let behind = distance(u.eye.xyz, q) - distance(u.eye.xyz, world_at(quv, sd));
-            if (behind < 0.25 + 0.1 * (t - prev)) {
+            // web3d-M7 follow-up: relative to the view distance (2%) plus
+            // the step, not a fixed 25 cm, which let rays passing behind
+            // a helmet's thin lens rims count as hitting them (white
+            // streaks at silhouettes).
+            let surface_distance = distance(u.eye.xyz, world_at(quv, sd));
+            let behind = distance(u.eye.xyz, q) - surface_distance;
+            if (behind < 0.02 * surface_distance + (t - prev)) {
                 // Refine between the last step in front and this one.
                 var lo = prev;
                 var hi = t;
@@ -171,7 +176,8 @@ fn fs_trace(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let reflected = textureSampleLevel(t_hdr, s_linear, hit_uv, 0.0).rgb;
     var env = u.ambient.rgb;
     if (u.env.z > 0.5) {
-        env = textureSampleLevel(t_env, s_linear, r, roughness * u.env.y).rgb * u.env.x;
+        // The level the surface shader read (kernel/environment.rs).
+        env = textureSampleLevel(t_env, s_linear, r, sqrt(roughness) * u.env.y).rgb * u.env.x;
     }
     return vec4<f32>(weight * confidence * (reflected - env), 0.0);
 }

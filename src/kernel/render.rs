@@ -1124,7 +1124,9 @@ fn surface_light(p: Lobes, l: vec3<f32>, radiance: vec3<f32>) -> vec3<f32> {
             f = mix(f, p.irid, p.irid_w);
         }
         let spec = d_ggx(noh, p.a) * v_smith_ggx_correlated(p.nov, nol, p.a) * f * p.energy;
-        out = (p.diffuse_color / PI + spec) * (nol * PI);
+        // Light the specular lobe reflects doesn't reach the diffuse
+        // layer (glTF's fresnel_mix; web3d-M7 follow-up).
+        out = (p.diffuse_color * (vec3<f32>(1.0) - f) / PI + spec) * (nol * PI);
         if (p.sheen_scale < 1.0) {
             let sheen = p.sheen_color * d_charlie(noh, p.sheen_roughness) * v_neubelt(p.nov, nol);
             out = out * p.sheen_scale + sheen * (nol * PI);
@@ -1187,6 +1189,12 @@ struct SurfaceOut {
     @location(1) surface: vec4<f32>,
 };
 
+// The prefiltered environment's level for a roughness: mip i holds
+// roughness (i / max)² (kernel/environment.rs).
+fn env_lod(roughness: f32) -> f32 {
+    return sqrt(roughness) * env.params.y;
+}
+
 fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     let n = s.n;
     let v = normalize(camera.eye.xyz - in.world_pos);
@@ -1212,9 +1220,21 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     p.irid = p.f0;
     p.irid_w = 0.0;
     if (s.iridescence > 0.0) {
-        p.irid = eval_iridescence(1.0, s.iridescence_ior, nov, s.iridescence_thickness, p.f0);
+        // Over the dielectric base and over the metal base (the
+        // albedo), blended by metalness, as Three.js does; one film
+        // over the blended F0 (web3d-M7 follow-up) put strong colour on
+        // half-metallic glass that Cycles and Three.js keep neutral.
+        let irid_dielectric = eval_iridescence(1.0, s.iridescence_ior, nov, s.iridescence_thickness, s.specular_f0);
+        let irid_metal = eval_iridescence(1.0, s.iridescence_ior, nov, s.iridescence_thickness, s.albedo);
+        p.irid = mix(irid_dielectric, irid_metal, s.metallic);
         p.irid_w = s.iridescence;
-        specular_albedo = mix(specular_albedo, p.irid * (ab.x + ab.y) * p.energy, s.iridescence);
+        // The film's Fresnel as an equivalent F0 (Schlick inverted at
+        // this angle), through the same split sum as any F0 (Three.js's
+        // computeMultiscatteringIridescence; web3d-M7 follow-up).
+        let x5 = min(pow(1.0 - nov, 5.0), 0.9999);
+        let irid_f0 = clamp((p.irid - p.f90 * x5) / (1.0 - x5), vec3<f32>(0.0), vec3<f32>(1.0));
+        let fr = mix(p.f0, irid_f0, s.iridescence);
+        specular_albedo = (fr * ab.x + p.f90 * ab.y) * p.energy;
     }
     // Sheen scales the layer under it by the energy it reflects (the
     // DFG table's third channel integrates the sheen lobe).
@@ -1239,6 +1259,11 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     // indirect light), on the specular lobe through Lagarde's fit. The
     // material's occlusion and screen-space AO (web3d-M7) combine: the
     // product on diffuse (with multi-bounce), the minimum on specular.
+    // web3d-M7 follow-up: what the specular layer reflects (single and
+    // multiple scattering) doesn't reach the diffuse layer, as Three.js
+    // and the glTF reference BRDF have it; before this, every surface
+    // was a few percent too bright under environment light.
+    let diffuse_share = 1.0 - max3(specular_albedo);
     let ssao = screen_ao(in.clip_position.xy);
     let diffuse_ao = s.occlusion * ao_multibounce(ssao, s.albedo);
     let occlusion = min(s.occlusion, ssao);
@@ -1247,20 +1272,20 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     var cc_light = vec3<f32>(0.0);
     if (env.params.z > 0.5) {
         let r = reflect(-v, n);
-        let prefiltered = textureSampleLevel(t_env_specular, s_env, r, roughness * env.params.y).rgb;
+        let prefiltered = textureSampleLevel(t_env_specular, s_env, r, env_lod(roughness)).rgb;
         let spec_ao = clamp(pow(nov + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
-        irradiance = sh_irradiance(n) / PI * env.params.x;
-        color = p.diffuse_color * irradiance * diffuse_ao + prefiltered * specular_albedo * spec_ao * env.params.x;
+        irradiance = textureSampleLevel(t_env_specular, s_env, n, env.params.y).rgb * env.params.x;
+        color = p.diffuse_color * diffuse_share * irradiance * diffuse_ao + prefiltered * specular_albedo * spec_ao * env.params.x;
         if (s.clearcoat > 0.0) {
             let rc = reflect(-v, s.clearcoat_n);
             let abc = textureSampleLevel(t_dfg, s_clamp, vec2<f32>(p.cc_nov, cc_roughness), 0.0).xy;
-            let pc = textureSampleLevel(t_env_specular, s_env, rc, cc_roughness * env.params.y).rgb;
+            let pc = textureSampleLevel(t_env_specular, s_env, rc, env_lod(cc_roughness)).rgb;
             cc_light = pc * (0.04 * abc.x + abc.y) * s.clearcoat * spec_ao * env.params.x;
         }
     } else {
         // No environment: the ambient colour as a uniform one.
         irradiance = lights.ambient.rgb;
-        color = lights.ambient.rgb * (p.diffuse_color * diffuse_ao + specular_albedo * occlusion);
+        color = lights.ambient.rgb * (p.diffuse_color * diffuse_share * diffuse_ao + specular_albedo * occlusion);
         if (s.clearcoat > 0.0) {
             let abc = textureSampleLevel(t_dfg, s_clamp, vec2<f32>(p.cc_nov, cc_roughness), 0.0).xy;
             cc_light = lights.ambient.rgb * (0.04 * abc.x + abc.y) * s.clearcoat * occlusion;
@@ -1290,7 +1315,7 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
         // refracted ray still reaches the environment even when the
         // camera's background isn't it (as in a path tracer).
         if (env.params.z > 0.5 && env.params.w < 0.5) {
-            let sky = textureSampleLevel(t_env_specular, s_env, refracted, roughness * env.params.y).rgb * env.params.x;
+            let sky = textureSampleLevel(t_env_specular, s_env, refracted, env_lod(roughness)).rgb * env.params.x;
             behind = mix(sky, source.rgb, source.a);
         }
         if (s.attenuation_distance > 0.0) {
@@ -1422,7 +1447,13 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> SurfaceOut {
         t = dp2perp * duv1.x + dp1perp * duv2.x;
         b = dp2perp * duv1.y + dp1perp * duv2.y;
         let scale = inverseSqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
-        t = t * scale;
+        // web3d-M7 follow-up: WGSL's `dpdy` runs down the screen (GLSL's
+        // `dFdy` runs up), which turns the whole derived frame over;
+        // glTF's v axis running down the texture turns the bitangent
+        // back (three.js flips it for glTF, issue 11438). Net: the
+        // tangent is negated. Wrong, it bent DamagedHelmet's visor
+        // reflections the wrong way (ꟻLIP 0.081 → 0.059).
+        t = -t * scale;
         b = b * scale;
     }
     if (!front) {
@@ -5264,6 +5295,7 @@ impl Renderer {
                         instance: i,
                         depth: dist2(world_point(&instances[i as usize], sub.centroid)),
                         double_sided: sub.double_sided,
+                        solid: sub.transmissive && !sub.blend,
                     });
                 }
             }
@@ -5297,6 +5329,7 @@ impl Renderer {
                             instance: start,
                             depth: dist2(world_point(&inst, sub.centroid)),
                             double_sided: sub.double_sided,
+                            solid: false,
                         });
                     }
                 }
@@ -5305,6 +5338,7 @@ impl Renderer {
                     instance: start,
                     depth: dist2(inst.position),
                     double_sided: false,
+                    solid: false,
                 }),
             }
         }
@@ -7067,6 +7101,13 @@ struct TransparentDraw {
     instance: u32,
     depth: f32,
     double_sided: bool,
+    /// web3d-M7 follow-up: a transmissive (not blended) glTF primitive.
+    /// It already carries what's behind it, so it's drawn like an opaque
+    /// surface, depth written: a glass shell's far wall (a concave
+    /// mirror) no longer draws over its near wall when the two sort
+    /// alike, which showed IridescenceLamp's globe reflections upside
+    /// down.
+    solid: bool,
 }
 
 /// The average of a glTF primitive's vertex positions (mesh space).
@@ -7131,12 +7172,17 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
                 (range, mesh.skin.is_some())
             }
         };
-        if d.double_sided {
-            pass.set_pipeline(&state.lit().blend_back);
-            pass.draw_indexed(range.clone(), 0, instances.clone());
+        if d.solid {
+            pass.set_pipeline(if d.double_sided { &state.lit().double } else { &state.lit().opaque });
+            pass.draw_indexed(range, 0, instances);
+        } else {
+            if d.double_sided {
+                pass.set_pipeline(&state.lit().blend_back);
+                pass.draw_indexed(range.clone(), 0, instances.clone());
+            }
+            pass.set_pipeline(&state.lit().blend_front);
+            pass.draw_indexed(range, 0, instances);
         }
-        pass.set_pipeline(&state.lit().blend_front);
-        pass.draw_indexed(range, 0, instances);
         if skinned {
             pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
         }
