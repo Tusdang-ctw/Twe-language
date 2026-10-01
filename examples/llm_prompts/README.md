@@ -1,25 +1,36 @@
 # LLM seed prompts
 
 Seed prompts for `twec llm-loop`. Each `.md` file is a self-contained
-authoring task. Run one with:
+authoring task. Run one against a model API (needs a build with
+`--features llm-http`):
 
 ```sh
-twec llm-loop --command claude --arg "code" --arg "-p" \
+# with ANTHROPIC_API_KEY set
+twec llm-loop --provider anthropic --model claude-sonnet-5-5 --effort high \
   --prompt examples/llm_prompts/snake.md \
   --max-rounds 5 \
   --out generated/snake.twe \
   --trace-dir traces/
+
+# a local model through Ollama (or any OpenAI-compatible server, with --base-url)
+twec llm-loop --provider openai --model qwen2.5-coder:14b --prompt examples/llm_prompts/snake.md
 ```
 
-The `--command CMD --arg ARG --arg ARG ...` form points the loop at any
-process that reads a prompt on stdin and writes the model's reply on
-stdout. Any LLM you can wrap in a shell command works — Claude CLI, a
-Python script, a `curl` wrapper, or `llama-cli --grammar twe.gbnf` for
-constrained local generation.
+The loop can also go through any program that reads a prompt on stdin
+and prints the reply, with no HTTP feature needed:
+- `--command claude --arg -p`;
+- a Python script;
+- a `curl` wrapper;
+- `llama-cli --grammar twe.gbnf`, for constrained local generation.
 
-Each round's prompt + reply + structured `verify` JSON is appended to
-the trace directory as one JSONL line. Those traces are the seed corpus
-for the future Twe-fine-tuned model (Phase 33 §"Tier 3 — fine-tune").
+The Twe primer (`docs/llm-primer.md`) is the system prompt unless you
+pass `--no-primer`. `--starter FILE` starts from an existing file, which
+the model then changes with SEARCH/REPLACE blocks (see
+`crates/twe-llm/src/edit.rs`).
+
+Each round's prompt, reply, structured `verify` JSON, token usage and
+cost are appended to the trace directory as one JSONL line. These
+traces are the seed corpus for a future Twe-tuned model.
 
 ## Authoring contract
 
@@ -28,9 +39,10 @@ Every prompt should:
 1. State the task in one sentence.
 2. List the constraints (input modalities, expected behaviors).
 3. Show the expected output shape (a single `twe` fenced block).
-4. Reference the contracts the loop enforces — `twec verify` runs after
+4. Reference the contracts the loop enforces: `twec verify` runs after
    each round and feeds JSON v2 diagnostics back, so the model knows
    to apply structured fixes.
 
-Adding a new prompt: copy the shape of `snake.md` (smallest example
-that exercises a state machine) and `orbit.md` (smallest entity loop).
+To add a prompt, copy the shape of `snake.md` (the smallest example
+that exercises a state machine) or `orbit.md` (the smallest entity
+loop).

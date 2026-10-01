@@ -9,7 +9,7 @@ publish = false
 # browser shell. The kernel / language split into their own crates
 # follows once the web path is proven (see the M2 notes).
 [workspace]
-members = [".", "crates/twe-web"]
+members = [".", "crates/twe-web", "crates/twe-llm"]
 
 [lints.rust]
 # v0.2 Phase 8.5 (session 8a): eased from `forbid` to `deny` so
@@ -67,6 +67,13 @@ gltf = { version = "1", default-features = false, features = ["import", "utils",
 # is only needed by play3d which is native-only.
 # web3d-M7: "hdr" decodes Radiance environment maps (image-based lighting).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
+# web3d-M5: providers, token accounting and the edit protocol, shared
+# with Studio (crates/twe-llm). Pure Rust with no network code unless
+# the `llm-http` feature below turns it on.
+twe-llm = { path = "crates/twe-llm" }
+# web3d-M5: llm-loop traces and benchmark results. Already compiled in
+# through gltf, so no new code in the build.
+serde_json = "1"
 
 [features]
 # web3d-M0: scaffolding namespaces (console / platform services / mmo /
@@ -82,6 +89,10 @@ steam = ["dep:steamworks"]
 # from raw-UDP to SteamNetworkingMessages. NAT traversal + relay are
 # Steam's responsibility on this path.
 steam-net = ["steam"]
+# web3d-M5: the Anthropic and OpenAI-compatible providers for
+# `twec llm-loop` and `twec bench` (blocking HTTPS through ureq). Off by
+# default: the language and engine never need a network client.
+llm-http = ["twe-llm/http"]
 
 [dependencies.steamworks]
 version = "0.11"

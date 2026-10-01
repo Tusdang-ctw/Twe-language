@@ -13,6 +13,11 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Changed
+- **`twec llm-loop` talks to model APIs** (web3d-M5), in a build with `--features llm-http`:
+  - `--provider anthropic --model M [--effort E]`, or `--provider openai --model M [--base-url URL]` for Ollama and llama.cpp; `--command` still works for any program.
+  - Rounds are one conversation, and the model answers with SEARCH/REPLACE edits or a whole file.
+  - `--starter FILE` edits an existing program; the Twe primer is the system prompt unless `--no-primer`.
+  - Traces (version 2) and the summary report tokens and cost.
 - **3D renders closer to the path-traced reference** (web3d-M7): energy-conserving diffuse, correct normal-map tangents, iridescence over metals, sharper environment reflections, and glass that no longer shows its back faces. Twe now scores at or below Three.js on all 12 comparison scenes.
 - **Large static 3D worlds are much cheaper** (web3d-M7): entities without `update` cost nothing per tick, unchanged `look:` draws are kept instead of rebuilt, GPU occlusion culling switches itself off when it doesn't pay, and many lights shade faster. The stress scene (100k blocks, 500 lights, 1M particles) now runs faster than Three.js's version in Chrome.
 

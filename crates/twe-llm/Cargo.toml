@@ -1,0 +1,30 @@
+[package]
+name = "twe-llm"
+version = "0.1.0"
+edition = "2021"
+description = "Twe's LLM layer: providers, token accounting and the edit protocol, shared by twec and Studio"
+publish = false
+
+# web3d-M5: one provider and edit-protocol layer for `twec` (llm-loop,
+# the benchmark) and Studio, which had drifted into two. It knows
+# nothing about Twe itself (no dependency on twec), so Studio can use it
+# without pulling in the engine. See docs/changes/2026-10-01-web3d-m5-*.
+
+[dependencies]
+# Reads and writes the providers' JSON. Already compiled into twec
+# through gltf, so it adds no new code to the build.
+serde_json = "1"
+# Blocking HTTPS for the Anthropic and OpenAI-compatible providers. Off
+# by default (`--features http`, or twec's `llm-http`): the engine
+# never needs it, only benchmark runs and live LLM loops do. Blocking
+# fits the callers, which wait on one model reply at a time.
+ureq = { version = "3", optional = true }
+
+[features]
+http = ["dep:ureq"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

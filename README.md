@@ -59,7 +59,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | `twec grammar` — GBNF / JSON-Schema / EBNF export for constrained LLM decoding | post-v1.0 |
 | `twec verify` — JSON v2 with structured machine-applicable `fix` patches | post-v1.0 |
 | `twec stdlib --json` — manifest of every installed builtin (286 in the default build; LLM grounding surface) | post-v1.0 |
-| `twec llm-loop` — provider-agnostic prompt → generate → verify self-correction loop | post-v1.0 |
+| `twec llm-loop` — prompt → generate → verify self-correction loop; Anthropic or OpenAI-compatible APIs (`--features llm-http`) or any command; SEARCH/REPLACE edits; tokens and cost per round | post-v1.0; providers web3d-M5 |
 | `twec mcp` — stdio JSON-RPC MCP server (Claude Desktop, Cursor, future Studio) | post-v1.0 |
 | `twec corpus` — labelled `@task` / `@expected` / `@category` examples manifest | post-v1.0 |
 | `twec eval` — replay-based suite scorer for LLM-generated programs | post-v1.0 |

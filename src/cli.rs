@@ -14,7 +14,7 @@ const USAGE: &str = "usage: twec [run [--frames N] <file> | \
      verify [--warn-deprecated] <file> | \
      grammar [--format gbnf|json-schema|ebnf] [-o PATH] | \
      stdlib [--json] [--category NAME] [-o PATH] | \
-     llm-loop --command CMD [--arg ARG]* [--prompt PATH] [--max-rounds N] [--out PATH] [--trace-dir DIR] | \
+     llm-loop (--provider anthropic|openai --model M [--effort E] [--base-url URL] | --command CMD [--arg ARG]*) [--prompt PATH] [--starter PATH] [--no-primer] [--max-rounds N] [--out PATH] [--trace-dir DIR] | \
      mcp | \
      corpus [--json] [-o PATH] | \
      eval [SUITE] [--source FILE] [--source-dir DIR] [--root DIR] [--json] [-o PATH] | \
@@ -640,102 +640,78 @@ fn handle_stdlib(args: &[String]) -> i32 {
     }
 }
 
-/// Phase 33 session 4: `twec llm-loop --command CMD [--arg ARG]*
-/// [--prompt PATH] [--max-rounds N] [--out PATH] [--trace-dir DIR]`.
+/// Phase 33 session 4: `twec llm-loop`. web3d-M5: providers from
+/// `twe-llm` — an API (`--provider anthropic|openai --model M`, with the
+/// `llm-http` feature) or any command (`--command CMD [--arg A]*`,
+/// which gets the prompt on stdin and prints the reply).
 ///
-/// Drives an LLM authoring loop using a user-configured command
-/// provider. The command receives the prompt on stdin and returns
-/// the model's reply on stdout — point it at `claude code`, a
-/// Python wrapper, a local `llama-cli`, or anything that fits the
-/// pipe. Each round's prompt + reply + verify JSON is logged to the
-/// trace directory for fine-tune corpus harvesting.
+/// Drives the generate → verify → feed back loop on the task in
+/// `--prompt` (or stdin), from `--starter` if given. The Twe primer is
+/// the system prompt unless `--no-primer`. Each round is logged to the
+/// trace directory (prompt, reply, verify JSON, tokens, cost).
 fn handle_llm_loop(args: &[String]) -> i32 {
-    let mut command: Option<String> = None;
-    let mut cmd_args: Vec<String> = Vec::new();
+    let mut flags = ProviderFlags::default();
     let mut prompt_path: Option<String> = None;
+    let mut starter_path: Option<String> = None;
     let mut max_rounds: u32 = 5;
     let mut out_path: Option<String> = None;
     let mut trace_dir: Option<String> = None;
+    let mut primer = true;
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
-            "--command" | "--cmd" => {
-                if i + 1 >= args.len() {
-                    eprintln!("error: --command takes an argument");
+        let flag = args[i].as_str();
+        if flag == "--no-primer" {
+            primer = false;
+            i += 1;
+            continue;
+        }
+        let Some(value) = args.get(i + 1).cloned() else {
+            eprintln!("error: {flag} takes a value (or is unknown to `llm-loop`)");
+            eprintln!("{USAGE}");
+            return 2;
+        };
+        match flag {
+            "--prompt" => prompt_path = Some(value),
+            "--starter" => starter_path = Some(value),
+            "--out" | "-o" => out_path = Some(value),
+            "--trace-dir" => trace_dir = Some(value),
+            "--max-rounds" => match value.parse::<u32>() {
+                Ok(n) if n >= 1 => max_rounds = n,
+                _ => {
+                    eprintln!("error: --max-rounds must be a positive integer");
                     return 2;
                 }
-                command = Some(args[i + 1].clone());
-                i += 2;
-            }
-            "--arg" => {
-                if i + 1 >= args.len() {
-                    eprintln!("error: --arg takes an argument");
+            },
+            _ => {
+                if !flags.take(flag, value) {
+                    eprintln!("error: unknown argument for `llm-loop`: {flag}");
+                    eprintln!("{USAGE}");
                     return 2;
                 }
-                cmd_args.push(args[i + 1].clone());
-                i += 2;
-            }
-            "--prompt" => {
-                if i + 1 >= args.len() {
-                    eprintln!("error: --prompt takes a file path");
-                    return 2;
-                }
-                prompt_path = Some(args[i + 1].clone());
-                i += 2;
-            }
-            "--max-rounds" => {
-                if i + 1 >= args.len() {
-                    eprintln!("error: --max-rounds takes an integer");
-                    return 2;
-                }
-                match args[i + 1].parse::<u32>() {
-                    Ok(n) if n >= 1 => max_rounds = n,
-                    _ => {
-                        eprintln!("error: --max-rounds must be a positive integer");
-                        return 2;
-                    }
-                }
-                i += 2;
-            }
-            "--out" | "-o" => {
-                if i + 1 >= args.len() {
-                    eprintln!("error: --out takes a path argument");
-                    return 2;
-                }
-                out_path = Some(args[i + 1].clone());
-                i += 2;
-            }
-            "--trace-dir" => {
-                if i + 1 >= args.len() {
-                    eprintln!("error: --trace-dir takes a path argument");
-                    return 2;
-                }
-                trace_dir = Some(args[i + 1].clone());
-                i += 2;
-            }
-            other => {
-                eprintln!("error: unknown argument for `llm-loop`: {other}");
-                eprintln!("{USAGE}");
-                return 2;
             }
         }
+        i += 2;
     }
-    let Some(command) = command else {
-        eprintln!("error: `llm-loop` requires --command CMD");
-        eprintln!("       e.g. --command python --arg llm_wrapper.py");
-        return 2;
+    let mut provider = match flags.build() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
     };
-    let prompt = match prompt_path.as_ref() {
-        Some(p) => match fs::read_to_string(p) {
+    let read = |path: &str| {
+        fs::read_to_string(path).map_err(|e| {
+            eprintln!("error: cannot read `{path}`: {e}");
+            1
+        })
+    };
+    let prompt = match prompt_path.as_deref() {
+        Some(p) => match read(p) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("error: cannot read prompt `{p}`: {e}");
-                return 1;
-            }
+            Err(code) => return code,
         },
         None => {
-            // Read prompt from stdin so the command form composes
-            // well: `cat task.md | twec llm-loop --command claude`.
+            // `cat task.md | twec llm-loop --command claude --arg -p`.
             use std::io::Read;
             let mut s = String::new();
             if let Err(e) = std::io::stdin().read_to_string(&mut s) {
@@ -745,15 +721,28 @@ fn handle_llm_loop(args: &[String]) -> i32 {
             s
         }
     };
+    let starter = match starter_path.as_deref() {
+        Some(p) => match read(p) {
+            Ok(s) => s,
+            Err(code) => return code,
+        },
+        None => String::new(),
+    };
 
-    let mut provider = crate::llm_loop::CommandProvider::new(command, cmd_args);
     let options = crate::llm_loop::LoopOptions {
         max_rounds,
         trace_dir: trace_dir.map(std::path::PathBuf::from),
         source_path: out_path.clone(),
         log_prompts: true,
+        system: if primer {
+            crate::primer::guide().to_string()
+        } else {
+            String::new()
+        },
+        starter,
+        ..Default::default()
     };
-    let outcome = match crate::llm_loop::run_loop(&mut provider, &prompt, &options) {
+    let outcome = match crate::llm_loop::run_loop(provider.as_mut(), &prompt, &options) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("error: llm-loop failed: {e}");
@@ -768,10 +757,19 @@ fn handle_llm_loop(args: &[String]) -> i32 {
     } else {
         print!("{}", outcome.final_source);
     }
+    let u = outcome.usage;
     eprintln!(
-        "[twec llm-loop] {} after {} round(s){}",
+        "[twec llm-loop] {} after {} round(s); tokens: {} in, {} out, {} cache read, {} cache write{}{}",
         if outcome.passed { "PASSED" } else { "FAILED" },
         outcome.rounds.len(),
+        u.input,
+        u.output,
+        u.cache_read,
+        u.cache_write,
+        match outcome.cost_usd {
+            Some(c) => format!("; ${c:.4}"),
+            None => String::new(),
+        },
         match outcome.trace_path.as_ref() {
             Some(p) => format!(" (trace: {})", p.display()),
             None => String::new(),
@@ -781,6 +779,74 @@ fn handle_llm_loop(args: &[String]) -> i32 {
         0
     } else {
         1
+    }
+}
+
+/// web3d-M5: the flags that choose a model, shared by `llm-loop` and
+/// `bench`:
+///
+/// - `--provider anthropic --model M [--effort E]`
+/// - `--provider openai --model M [--base-url URL]` (default: Ollama's)
+/// - `--command CMD [--arg A]*` (or `--provider command`)
+#[derive(Default)]
+struct ProviderFlags {
+    provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    base_url: Option<String>,
+    command: Option<String>,
+    args: Vec<String>,
+}
+
+impl ProviderFlags {
+    /// Take `flag` with its `value` if it's a provider flag.
+    fn take(&mut self, flag: &str, value: String) -> bool {
+        match flag {
+            "--provider" => self.provider = Some(value),
+            "--model" => self.model = Some(value),
+            "--effort" => self.effort = Some(value),
+            "--base-url" => self.base_url = Some(value),
+            "--command" | "--cmd" => self.command = Some(value),
+            "--arg" => self.args.push(value),
+            _ => return false,
+        }
+        true
+    }
+
+    fn build(self) -> Result<Box<dyn twe_llm::Provider>, String> {
+        let kind = match (&self.provider, &self.command) {
+            (Some(p), _) => p.clone(),
+            (None, Some(_)) => "command".to_string(),
+            (None, None) => {
+                return Err(
+                    "choose a model: --provider anthropic|openai --model M, or --command CMD".into(),
+                )
+            }
+        };
+        let model = || {
+            self.model
+                .clone()
+                .ok_or_else(|| format!("--provider {kind} needs --model"))
+        };
+        match kind.as_str() {
+            "anthropic" => {
+                let mut p = twe_llm::anthropic::Anthropic::new(model()?);
+                p.effort = self.effort.clone();
+                Ok(Box::new(p))
+            }
+            "openai" => {
+                let base = self
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:11434/v1".into());
+                Ok(Box::new(twe_llm::openai::OpenAiCompatible::new(base, model()?)))
+            }
+            "command" => match self.command {
+                Some(c) => Ok(Box::new(twe_llm::CommandProvider::new(c, self.args))),
+                None => Err("--provider command needs --command CMD".into()),
+            },
+            other => Err(format!("unknown provider `{other}` (anthropic, openai, command)")),
+        }
     }
 }
 

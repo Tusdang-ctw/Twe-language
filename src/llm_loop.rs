@@ -1,174 +1,56 @@
-//! Phase 33 session 4: end-to-end LLM authoring loop.
+//! Phase 33 session 4: end-to-end LLM authoring loop. web3d-M5: on
+//! the shared `twe-llm` crate.
 //!
-//! The loop closes the contract Tier 1 set up:
+//! ```text
+//! task → model → edit applied → `twec verify` → clean? done
+//!                                             → else the diagnostics go back → repeat
+//! ```
 //!
-//!   prompt → generate → write file → `verify` → if errors,
-//!   feed structured JSON back → repeat → pass / give up
+//! The rounds are one conversation: each failed round appends the
+//! model's reply and the verify JSON (or why its edit didn't apply), so
+//! the model sees its own previous attempt rather than a restatement.
+//! Replies follow the one edit protocol in [`twe_llm::edit`]:
+//! SEARCH/REPLACE blocks against the current file, or a whole file in a
+//! ```` ```twe ```` block. A reply with neither is taken as raw Twe, for
+//! command providers that print bare source.
 //!
-//! and logs every round-trip to `traces/<timestamp>.jsonl` so the
-//! same machinery doubles as a fine-tuning corpus generator. A single
-//! converged session is one labelled training datum.
+//! Every round can be logged as one JSONL line (prompt, reply, verify
+//! JSON, tokens, cost), so the loop doubles as a training-corpus
+//! generator.
 //!
-//! ## Provider abstraction (no network deps in the binary)
-//!
-//! The HTTP path lands in a follow-on `--features llm-loop-http`
-//! session — pulling `reqwest` + `tokio` would inflate the default
-//! build by ~120 crates. Phase 33 ships two zero-dep providers
-//! sufficient to prove and exercise the loop:
-//!
-//! - [`FixtureProvider`] — in-memory canned responses, used in
-//!   `tests/llm_loop.rs`. Deterministic, network-free, fast.
-//! - [`CommandProvider`] — shells out to a user-configured command
-//!   (e.g. `claude code -p $PROMPT`, `python my_wrapper.py`,
-//!   `curl -s ...`). The command receives the prompt on stdin and
-//!   returns the model's reply on stdout. Lets a contributor wire
-//!   any provider — including local `llama.cpp` with our exported
-//!   GBNF grammar — without rebuilding `twec`.
-//!
-//! Custom providers in third-party tooling implement the
-//! [`LlmProvider`] trait directly.
+//! Providers come from `twe-llm`: Anthropic and OpenAI-compatible APIs
+//! (with the `llm-http` feature), any shell command, and fixtures for
+//! tests.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::verify::{verify_program_with_path, VerifyReport};
+pub use twe_llm::{CommandProvider, FixtureProvider, Provider};
+use twe_llm::edit::{self, Edit};
+use twe_llm::{Message, Reply, Request, StopReason, Usage};
 
-// ---------------------------------------------------------------------------
-// Provider trait
-// ---------------------------------------------------------------------------
-
-/// One synchronous round-trip with an LLM. Implementations are
-/// blocking — the loop driver runs sequentially on the calling
-/// thread because the cost is dominated by the model's latency,
-/// not local compute.
-pub trait LlmProvider: Send {
-    /// Send `prompt` and return the model's text reply, or an error
-    /// describing why no reply could be produced. Errors stop the
-    /// loop immediately — they're treated as infrastructure failures,
-    /// not model mistakes the loop should retry past.
-    fn complete(&mut self, prompt: &str) -> Result<String, String>;
-
-    /// Short identifier used in trace files (`provider: "claude"`).
-    /// Default `"unknown"` for ad-hoc providers in tests.
-    fn name(&self) -> &str {
-        "unknown"
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FixtureProvider — for tests. Returns canned responses in order.
-// ---------------------------------------------------------------------------
-
-/// Deterministic in-memory provider. Each `complete` call returns
-/// the next item from the pre-loaded queue. Panics if the queue
-/// runs dry — that indicates a test scenario that didn't model
-/// the loop's iteration count correctly.
-pub struct FixtureProvider {
-    pub responses: std::collections::VecDeque<String>,
-    pub captured_prompts: Vec<String>,
-}
-
-impl FixtureProvider {
-    pub fn new(responses: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            responses: responses.into_iter().collect(),
-            captured_prompts: Vec::new(),
-        }
-    }
-}
-
-impl LlmProvider for FixtureProvider {
-    fn complete(&mut self, prompt: &str) -> Result<String, String> {
-        self.captured_prompts.push(prompt.to_string());
-        self.responses
-            .pop_front()
-            .ok_or_else(|| "FixtureProvider queue is empty".to_string())
-    }
-    fn name(&self) -> &str {
-        "fixture"
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CommandProvider — shells out, no native deps.
-// ---------------------------------------------------------------------------
-
-/// Spawn a configured command, write the prompt to its stdin, and
-/// read the reply from stdout. The command is the contributor's
-/// integration point — point it at a `claude` CLI, a Python wrapper
-/// over the OpenAI client, a local `llama-cli` with `--grammar twe.gbnf`
-/// set, or anything else that fits the pipe.
-pub struct CommandProvider {
-    pub program: String,
-    pub args: Vec<String>,
-}
-
-impl CommandProvider {
-    pub fn new(program: impl Into<String>, args: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            program: program.into(),
-            args: args.into_iter().collect(),
-        }
-    }
-}
-
-impl LlmProvider for CommandProvider {
-    fn complete(&mut self, prompt: &str) -> Result<String, String> {
-        use std::io::Write;
-        let mut child = Command::new(&self.program)
-            .args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("spawn `{}` failed: {e}", self.program))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .map_err(|e| format!("writing prompt to `{}` stdin failed: {e}", self.program))?;
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("waiting on `{}` failed: {e}", self.program))?;
-        if !output.status.success() {
-            return Err(format!(
-                "`{}` exited with {}: {}",
-                self.program,
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        String::from_utf8(output.stdout)
-            .map_err(|e| format!("`{}` produced non-UTF-8 output: {e}", self.program))
-    }
-    fn name(&self) -> &str {
-        "command"
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Loop driver
-// ---------------------------------------------------------------------------
+use crate::verify::verify_program_with_path;
 
 /// Settings for one [`run_loop`] invocation.
 #[derive(Clone, Debug)]
 pub struct LoopOptions {
-    /// Maximum prompt+verify rounds before giving up. Includes the
-    /// initial generation; `max_rounds = 1` runs once with no
-    /// retries on errors.
+    /// Maximum rounds, including the first generation; `1` means no
+    /// retries.
     pub max_rounds: u32,
     /// Where to log per-round JSONL traces. `None` disables tracing.
     pub trace_dir: Option<PathBuf>,
-    /// Path to use in verify diagnostics + trace metadata. Doesn't
-    /// have to exist on disk; verify is run on the source string.
+    /// Path used in verify diagnostics and traces (needn't exist).
     pub source_path: Option<String>,
-    /// If true, every prompt sent to the provider is appended to
-    /// the trace under `prompt`. Costs a few KB per round per
-    /// trace. Default true.
+    /// Log each round's request in the trace (a few KB per round).
     pub log_prompts: bool,
+    /// The system prompt: grounding that stays the same across rounds
+    /// (the Twe primer, say). The edit protocol's instructions are
+    /// appended to it.
+    pub system: String,
+    /// The file the task starts from; empty for a new program.
+    pub starter: String,
+    /// Per-reply token ceiling.
+    pub max_tokens: u32,
 }
 
 impl Default for LoopOptions {
@@ -178,213 +60,217 @@ impl Default for LoopOptions {
             trace_dir: None,
             source_path: None,
             log_prompts: true,
+            system: String::new(),
+            starter: String::new(),
+            max_tokens: 16_000,
         }
     }
 }
 
-/// One round of the loop. Captured both for return-value introspection
-/// and for trace serialization.
+/// One round of the loop.
 #[derive(Clone, Debug)]
 pub struct LoopRound {
     pub round: u32,
+    /// The request's last user message (what this round asked).
     pub prompt: String,
     pub response: String,
+    /// The file after this round's edit.
+    pub source: String,
+    /// Verify's JSON report; empty when the edit didn't apply.
     pub verify_json: String,
+    /// Why the reply's edit couldn't be applied, if it couldn't.
+    pub edit_error: Option<String>,
     pub passed: bool,
+    pub stop: StopReason,
+    pub usage: Usage,
+    pub cost_usd: Option<f64>,
 }
 
-/// Result of running the loop to convergence (or to the round limit).
-/// `final_source` is the most recent generation, `passed` says whether
-/// it was clean under verify. `rounds` is the audit trail.
+/// The loop's result: the last file, whether verify accepted it, and
+/// the rounds that got there.
 #[derive(Clone, Debug)]
 pub struct LoopOutcome {
     pub final_source: String,
     pub passed: bool,
     pub rounds: Vec<LoopRound>,
     pub trace_path: Option<PathBuf>,
+    /// Tokens over all rounds.
+    pub usage: Usage,
+    /// Dollars over all rounds; `None` when no round's cost was known.
+    pub cost_usd: Option<f64>,
 }
 
-/// Run the loop. The initial prompt is the user's task description;
-/// each subsequent round appends the previous reply *and* the verify
-/// JSON to nudge the model toward a passing program. Returns when
-/// verify is clean or after `max_rounds` attempts, whichever comes
-/// first.
-///
-/// Failure modes:
-/// - Provider returns an error — propagated immediately, loop stops.
-/// - Tracing IO fails — logged to stderr but does not stop the loop.
+/// Run the loop on `task` until verify accepts the file or
+/// `max_rounds` run out. A provider error stops the loop and is
+/// returned (an infrastructure failure, not the model's); a trace write
+/// failure is reported on stderr and doesn't.
 pub fn run_loop(
-    provider: &mut dyn LlmProvider,
-    initial_prompt: &str,
+    provider: &mut dyn Provider,
+    task: &str,
     options: &LoopOptions,
 ) -> Result<LoopOutcome, String> {
     let trace_path = options
         .trace_dir
         .as_ref()
-        .map(|d| trace_filename(d, provider.name()));
-    if let Some(p) = trace_path.as_ref() {
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        .map(|d| trace_filename(d, &provider.id()));
+    if let Some(parent) = trace_path.as_ref().and_then(|p| p.parent()) {
+        let _ = std::fs::create_dir_all(parent);
     }
 
+    let protocol = edit::protocol_instructions("twe");
+    let system = if options.system.is_empty() {
+        protocol
+    } else {
+        format!("{}\n\n{protocol}", options.system)
+    };
+    let first = if options.starter.is_empty() {
+        task.to_string()
+    } else {
+        format!("{task}\n\nThe current file:\n```twe\n{}\n```", options.starter)
+    };
+    let mut request = Request {
+        system,
+        messages: vec![Message::user(first)],
+        max_tokens: options.max_tokens,
+    };
+    let mut source = options.starter.clone();
     let mut rounds: Vec<LoopRound> = Vec::new();
-    let mut current_prompt = initial_prompt.to_string();
 
     for round in 1..=options.max_rounds {
-        let response = provider.complete(&current_prompt)?;
-        let source = extract_twe_source(&response);
-        let report = verify_program_with_path(&source, options.source_path.as_deref());
-        let verify_json = report.to_json();
-        let passed = report.ok();
-
-        let logged_prompt = if options.log_prompts {
-            current_prompt.clone()
-        } else {
-            String::new()
+        let reply = provider.complete(&request).map_err(|e| e.to_string())?;
+        let applied = match edit::parse_reply(&reply.text, &["twe"]) {
+            Edit::Nothing => Ok(reply.text.trim().to_string()),
+            e => edit::apply(&source, &e).map_err(|e| e.to_string()),
+        };
+        let (verify_json, passed, edit_error, feedback) = match applied {
+            Ok(candidate) => {
+                source = candidate;
+                let report = verify_program_with_path(&source, options.source_path.as_deref());
+                let json = report.to_json();
+                let feedback = verify_feedback(&json, &reply);
+                (json, report.ok(), None, feedback)
+            }
+            Err(e) => {
+                let feedback = format!(
+                    "Your edit could not be applied: {e}. The file is unchanged:\n```twe\n{source}\n```\n\
+                     Reply with SEARCH/REPLACE blocks against this file, or the whole corrected file in one ```twe block."
+                );
+                (String::new(), false, Some(e), feedback)
+            }
         };
         let rec = LoopRound {
             round,
-            prompt: logged_prompt,
-            response: response.clone(),
-            verify_json: verify_json.clone(),
+            prompt: if options.log_prompts {
+                request.messages.last().map(|m| m.text.clone()).unwrap_or_default()
+            } else {
+                String::new()
+            },
+            response: reply.text.clone(),
+            source: source.clone(),
+            verify_json,
+            edit_error,
             passed,
+            stop: reply.stop,
+            usage: reply.usage,
+            cost_usd: reply.cost_usd,
         };
         if let Some(p) = trace_path.as_ref() {
-            if let Err(e) = append_trace(p, &rec, provider.name(), &report) {
+            if let Err(e) = append_trace(p, &rec, &reply) {
                 eprintln!("[twec llm-loop] trace write failed: {e}");
             }
         }
         rounds.push(rec);
-
-        if passed {
-            return Ok(LoopOutcome {
-                final_source: source,
-                passed: true,
-                rounds,
-                trace_path,
-            });
+        if passed || round == options.max_rounds {
+            break;
         }
-
-        if round == options.max_rounds {
-            return Ok(LoopOutcome {
-                final_source: source,
-                passed: false,
-                rounds,
-                trace_path,
-            });
-        }
-
-        current_prompt = build_followup_prompt(&source, &verify_json);
+        request.messages.push(Message::assistant(reply.text));
+        request.messages.push(Message::user(feedback));
     }
 
-    // Unreachable: the loop returns inside on every iteration.
-    unreachable!("run_loop iteration order is exhaustive")
+    let mut usage = Usage::default();
+    for r in &rounds {
+        usage.add(r.usage);
+    }
+    let costs: Vec<f64> = rounds.iter().filter_map(|r| r.cost_usd).collect();
+    Ok(LoopOutcome {
+        passed: rounds.last().is_some_and(|r| r.passed),
+        final_source: source,
+        rounds,
+        trace_path,
+        usage,
+        cost_usd: (!costs.is_empty()).then(|| costs.iter().sum()),
+    })
 }
 
-/// Pull a `.twe` source out of an LLM reply. Models are sloppy about
-/// fences — the contract here is permissive: if the reply contains a
-/// triple-backtick block (with or without a `twe` language tag), we
-/// take the *first* one. Otherwise the reply is treated as raw Twe.
-///
-/// This is the single most common LLM-side failure mode in code-gen
-/// loops; centralising it here keeps individual providers simple.
-pub fn extract_twe_source(reply: &str) -> String {
-    if let Some(after) = reply.find("```twe") {
-        let body = &reply[after + "```twe".len()..];
-        // Skip any newline immediately after the opening fence.
-        let body = body.strip_prefix('\n').unwrap_or(body);
-        if let Some(end) = body.find("```") {
-            return body[..end].trim_end().to_string();
-        }
-    }
-    if let Some(after) = reply.find("```") {
-        let body = &reply[after + 3..];
-        // Optional language tag on its own line.
-        let body = match body.find('\n') {
-            Some(nl) if !body[..nl].contains("```") => &body[nl + 1..],
-            _ => body,
-        };
-        if let Some(end) = body.find("```") {
-            return body[..end].trim_end().to_string();
-        }
-    }
-    reply.trim().to_string()
-}
-
-/// Build the follow-up prompt for the next round. Includes the
-/// previous source and the structured verify JSON — the latter is
-/// the LLM's machine-readable feedback channel. Prompts the model
-/// to produce a corrected version inside a `twe` fence.
-fn build_followup_prompt(prev_source: &str, verify_json: &str) -> String {
+/// The next round's message after verify rejected the file.
+fn verify_feedback(verify_json: &str, reply: &Reply) -> String {
+    let truncated = if reply.stop == StopReason::MaxTokens {
+        "Your reply was cut off at the token limit; keep the next one shorter (SEARCH/REPLACE blocks rather than the whole file).\n\n"
+    } else {
+        ""
+    };
     format!(
-        "Your previous Twe program failed verification. Below is the program you produced and the structured diagnostics from `twec verify`. Apply the suggested fixes (each diagnostic carries a `fix.edits` array with anchored replacements you can apply mechanically) and emit a corrected program inside a single ```twe fenced block.\n\nPrevious program:\n```twe\n{prev_source}\n```\n\nVerify diagnostics (JSON v2):\n{verify_json}\n\nReply with the corrected program only — no commentary outside the code fence."
+        "{truncated}`twec verify` rejected the program. Its diagnostics (JSON v2) follow; \
+         each carries `fix.edits`, anchored replacements you can apply. Reply with SEARCH/REPLACE blocks \
+         against the current file, or the whole corrected file in one ```twe block.\n\n{verify_json}"
     )
+}
+
+/// Pull a `.twe` source out of an LLM reply: the first ```` ```twe ````
+/// (or untagged) fenced block, or the whole reply trimmed when there's
+/// none.
+pub fn extract_twe_source(reply: &str) -> String {
+    edit::fenced_file(reply, &["twe"])
+        .map(|s| s.trim_end().to_string())
+        .unwrap_or_else(|| reply.trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
 // Trace logging
 // ---------------------------------------------------------------------------
 
-fn trace_filename(dir: &Path, provider_name: &str) -> PathBuf {
+fn trace_filename(dir: &Path, provider_id: &str) -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    dir.join(format!("llm_loop_{provider_name}_{ts}.jsonl"))
+    let safe: String = provider_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+        .collect();
+    dir.join(format!("llm_loop_{safe}_{ts}.jsonl"))
 }
 
-fn append_trace(
-    path: &Path,
-    rec: &LoopRound,
-    provider_name: &str,
-    report: &VerifyReport,
-) -> std::io::Result<()> {
+/// One JSONL line per round. Version 2 (web3d-M5) adds the model,
+/// stop reason, token usage, cost and edit errors.
+fn append_trace(path: &Path, rec: &LoopRound, reply: &Reply) -> std::io::Result<()> {
     use std::io::Write;
-    let mut s = String::with_capacity(rec.response.len() + rec.verify_json.len() + 128);
-    s.push('{');
-    s.push_str("\"tool\":\"twec-llm-loop\",\"version\":1");
-    s.push_str(",\"provider\":");
-    write_json_string(&mut s, provider_name);
-    s.push_str(",\"round\":");
-    s.push_str(&rec.round.to_string());
-    s.push_str(",\"passed\":");
-    s.push_str(if rec.passed { "true" } else { "false" });
-    s.push_str(",\"errors\":");
-    s.push_str(&report.errors().to_string());
-    s.push_str(",\"warnings\":");
-    s.push_str(&report.warnings().to_string());
-    s.push_str(",\"prompt\":");
-    write_json_string(&mut s, &rec.prompt);
-    s.push_str(",\"response\":");
-    write_json_string(&mut s, &rec.response);
-    s.push_str(",\"verify\":");
-    s.push_str(&rec.verify_json);
-    s.push_str("}\n");
-
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    file.write_all(s.as_bytes())
-}
-
-fn write_json_string(out: &mut String, value: &str) {
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if (ch as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", ch as u32));
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
+    let verify = if rec.verify_json.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(&rec.verify_json).unwrap_or(serde_json::Value::Null)
+    };
+    let line = serde_json::json!({
+        "tool": "twec-llm-loop",
+        "version": 2,
+        "model": reply.model,
+        "round": rec.round,
+        "passed": rec.passed,
+        "stop": rec.stop.as_str(),
+        "usage": {
+            "input": rec.usage.input,
+            "output": rec.usage.output,
+            "cache_read": rec.usage.cache_read,
+            "cache_write": rec.usage.cache_write,
+        },
+        "cost_usd": rec.cost_usd,
+        "edit_error": rec.edit_error,
+        "prompt": rec.prompt,
+        "response": rec.response,
+        "verify": verify,
+    });
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{line}")
 }
 
 // ---------------------------------------------------------------------------
@@ -396,101 +282,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_handles_twe_fenced_block() {
-        let reply =
-            "Sure, here's the program:\n\n```twe\nlet x = 1\nlet y = 2\n```\n\nHope that helps!";
+    fn extract_handles_fences_and_raw_text() {
+        let reply = "Sure:\n\n```twe\nlet x = 1\nlet y = 2\n```\n\nHope that helps!";
         assert_eq!(extract_twe_source(reply), "let x = 1\nlet y = 2");
-    }
-
-    #[test]
-    fn extract_handles_unlanguaged_fence() {
-        let reply = "```\nlet x = 1\n```";
-        assert_eq!(extract_twe_source(reply), "let x = 1");
-    }
-
-    #[test]
-    fn extract_returns_raw_when_no_fence() {
-        let reply = "let x = 1\n";
-        assert_eq!(extract_twe_source(reply), "let x = 1");
-    }
-
-    #[test]
-    fn fixture_provider_returns_canned_responses_in_order() {
-        let mut p = FixtureProvider::new(["one".into(), "two".into()]);
-        assert_eq!(p.complete("a").unwrap(), "one");
-        assert_eq!(p.complete("b").unwrap(), "two");
-        assert_eq!(p.captured_prompts, vec!["a", "b"]);
-        // Empty queue: error, not panic, so the loop can report
-        // cleanly.
-        assert!(p.complete("c").is_err());
+        assert_eq!(extract_twe_source("```\nlet x = 1\n```"), "let x = 1");
+        assert_eq!(extract_twe_source("let x = 1\n"), "let x = 1");
     }
 
     #[test]
     fn loop_passes_on_first_round_when_program_clean() {
         let mut p = FixtureProvider::new(["```twe\nlet x = 1\n```".into()]);
-        let outcome = run_loop(
-            &mut p,
-            "Write a Twe program that binds x to 1.",
-            &LoopOptions::default(),
-        )
-        .unwrap();
+        let outcome = run_loop(&mut p, "Bind x to 1.", &LoopOptions::default()).unwrap();
         assert!(outcome.passed);
         assert_eq!(outcome.rounds.len(), 1);
         assert_eq!(outcome.final_source, "let x = 1");
+        // The edit protocol rides in the system prompt.
+        assert!(p.requests[0].system.contains("<<<<<<< SEARCH"));
     }
 
     #[test]
-    fn loop_iterates_until_verify_clean() {
-        // Round 1 has a typo; round 2 fixes it.
+    fn loop_continues_the_conversation_until_verify_is_clean() {
         let mut p = FixtureProvider::new([
             "```twe\n# verified\nlet apple = 1\nlet y = aple\n```".into(),
-            "```twe\n# verified\nlet apple = 1\nlet y = apple\n```".into(),
+            "<<<<<<< SEARCH\nlet y = aple\n=======\nlet y = apple\n>>>>>>> REPLACE".into(),
         ]);
-        let outcome = run_loop(
-            &mut p,
-            "Write a Twe program with a verified header.",
-            &LoopOptions {
-                max_rounds: 5,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(outcome.passed);
-        assert_eq!(outcome.rounds.len(), 2);
-        // The second prompt must include the verify JSON so the
-        // model knows what to fix.
-        assert!(p.captured_prompts[1].contains("\"version\":2"));
-        assert!(p.captured_prompts[1].contains("aple"));
+        let outcome = run_loop(&mut p, "task", &LoopOptions::default()).unwrap();
+        assert!(outcome.passed, "{:?}", outcome.rounds);
+        assert_eq!(outcome.final_source, "# verified\nlet apple = 1\nlet y = apple");
+        // Round 2 sees round 1's reply and the verify JSON.
+        let second = &p.requests[1].messages;
+        assert_eq!(second.len(), 3);
+        assert!(second[1].text.contains("aple"));
+        assert!(second[2].text.contains("\"version\":2"));
     }
 
     #[test]
-    fn loop_gives_up_after_max_rounds_when_unfixed() {
+    fn an_edit_that_does_not_apply_is_sent_back() {
         let mut p = FixtureProvider::new([
-            "```twe\n# verified\nlet x = oops\n```".into(),
-            "```twe\n# verified\nlet x = oops\n```".into(),
+            "<<<<<<< SEARCH\nlet z = 3\n=======\nlet z = 4\n>>>>>>> REPLACE".into(),
+            "<<<<<<< SEARCH\nlet x = 1\n=======\nlet x = 2\n>>>>>>> REPLACE".into(),
         ]);
-        let outcome = run_loop(
-            &mut p,
-            "task",
-            &LoopOptions {
-                max_rounds: 2,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let options = LoopOptions { starter: "let x = 1".into(), ..Default::default() };
+        let outcome = run_loop(&mut p, "task", &options).unwrap();
+        assert!(outcome.passed);
+        assert!(outcome.rounds[0].edit_error.as_deref().unwrap().contains("did not match"));
+        assert!(p.requests[0].messages[0].text.contains("The current file:\n```twe\nlet x = 1\n```"));
+        assert!(p.requests[1].messages[2].text.contains("could not be applied"));
+        assert_eq!(outcome.final_source, "let x = 2");
+    }
+
+    #[test]
+    fn loop_gives_up_after_max_rounds_and_sums_usage() {
+        let reply = || Reply {
+            text: "```twe\n# verified\nlet x = oops\n```".into(),
+            stop: StopReason::EndTurn,
+            usage: Usage { input: 10, output: 5, cache_read: 100, cache_write: 0 },
+            model: "claude-sonnet-5-5".into(),
+            cost_usd: Some(0.5),
+        };
+        let mut p = FixtureProvider::with_replies([reply(), reply()]);
+        let options = LoopOptions { max_rounds: 2, ..Default::default() };
+        let outcome = run_loop(&mut p, "task", &options).unwrap();
         assert!(!outcome.passed);
         assert_eq!(outcome.rounds.len(), 2);
+        assert_eq!(outcome.usage.cache_read, 200);
+        assert_eq!(outcome.cost_usd, Some(1.0));
     }
 
     #[test]
     fn provider_error_propagates() {
-        struct ErrProvider;
-        impl LlmProvider for ErrProvider {
-            fn complete(&mut self, _: &str) -> Result<String, String> {
-                Err("provider down".into())
-            }
-        }
-        let mut p = ErrProvider;
+        let mut p = FixtureProvider::new([]);
         assert!(run_loop(&mut p, "task", &LoopOptions::default()).is_err());
     }
 }

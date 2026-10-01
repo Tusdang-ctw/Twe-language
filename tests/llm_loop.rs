@@ -32,7 +32,7 @@ fn end_to_end_recovery_from_did_you_mean_typo() {
     // Round 2's prompt must include the structured fix payload —
     // that's the contract the LLM is supposed to act on.
     assert!(
-        p.captured_prompts[1].contains("\"replace\":\"apple\""),
+        p.requests[1].messages.last().unwrap().text.contains("\"replace\":\"apple\""),
         "follow-up prompt missing structured fix payload"
     );
 }
@@ -62,7 +62,7 @@ fn loop_writes_jsonl_trace_per_round() {
     let line = &lines[0];
     assert!(line.starts_with('{') && line.ends_with('}'));
     assert!(line.contains("\"tool\":\"twec-llm-loop\""));
-    assert!(line.contains("\"version\":1"));
+    assert!(line.contains("\"version\":2"));
     assert!(line.contains("\"round\":1"));
     assert!(line.contains("\"passed\":true"));
     assert!(line.contains("\"verify\":"));
