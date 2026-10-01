@@ -32,10 +32,13 @@ is **not Python** — the rules below differ in ways that matter.
 - **Keyword arguments must follow all positional args** and use `name: value` (e.g. `rect(at: (10,20), size: (100,50), color: color.red)`).
 - **4-space indentation.** Don't mix tabs and spaces in one file (parse error).
 - Prefer editing inside the block the user is focused on; keep changes minimal.
+- **`return` is only valid inside a `function` or an entity method.** In `on update`, `on render`, a state handler or top-level code it is an error: wrap the rest in an `if`, or move the body into a function.
+- **Lists:** `.length` (a field, not a call), `.append(x)`, `.prepend(x)`, `.pop_back()`, `.pop_front()`, `.contains(x)`, `.set(i, x)`, and `x in list`. Nothing else.
+- **`spawn` is a statement and returns nothing.** To give a new instance more than its position, use field defaults, or set shared state the instance reads in its first `update`.
 
 ## The six core block keywords
 
-```twe
+```text
 scene Pong:            # a screen / game mode; holds vars + a state machine
 entity Slime:          # a spawnable game object with fields, methods, lifecycle
 state playing:         # a state-machine state (inside scene/entity/ai)
@@ -67,13 +70,36 @@ desugar to `entity` + convention; the six above are the real keywords.
 ## Events, frames, time
 
 ```twe
-on update(dt):          # every frame; dt is fixed at 1/60s for determinism
-on render():            # every frame; ONLY place drawing is allowed
-on key_press.space:     # edge-triggered (one frame on press)
-on hp < 20%:            # predicate event — fires on false→true transition
-on Slime.death(s):      # named event when an instance is despawned
-every 150ms:            # timed clock (inside a state); fires on each interval
+scene Game:
+    var hp = 100
+    var score = 0
+    initial: playing
+
+    state playing:
+        on update(dt):          # every frame; dt is fixed at 1/60 s
+            score += 1
+        on render():            # every frame; the ONLY place drawing is allowed
+            text("Score: {score}", at: (10, 10), size: 20, color: color.white)
+        on key_press.space:     # edge-triggered: the frame the key goes down
+            hp -= 10
+        on hp < 20:             # predicate event: fires when it turns true
+            -> hurt
+        every 150ms:            # a clock: fires on each interval
+            score += 1
+
+    state hurt:
+        on key_press.r:
+            hp = 100
+            -> playing
+
+on Slime.death(s):              # top level: when an instance is despawned
+    print("a slime died")
+
+entity Slime:
+    var pos = vec3(0, 0, 0)
 ```
+
+At the top level a program has `on update(dt):`, `on render():` and `on Class.death(e):`. `on key_press.<key>:`, predicate events (`on <condition>:`) and `every` live inside a `state`; anywhere else, test input with `if key_press.space:`.
 
 - Input: `key.w` (held) vs `key_press.w` (one frame). `mouse.x`, `mouse_press.left`, `mouse_held.left`. `gamepad.a`, `gamepad_axis.lx`.
 - `time.dt` = seconds since last tick; `time.physics_dt` = constant 1/60s.
@@ -83,6 +109,7 @@ every 150ms:            # timed clock (inside a state); fires on each interval
 ```twe
 scene Game:
     var score = 0
+    var paused_count = 0
     initial: playing          # required: which state starts active
 
     state playing:
@@ -94,10 +121,10 @@ scene Game:
             text("Score: {score}", at: (10, 10), size: 20, color: color.white)
 
     state paused:
-        on enter:              # runs when state becomes active
-            sound.play(chime)
+        on enter:              # runs when the state becomes active
+            paused_count += 1
         on exit:               # runs when leaving (synchronous; no wait, no ->)
-            ...
+            print("resuming")
         on key_press.space:
             -> playing
 ```
@@ -109,20 +136,27 @@ on-entry body without leaving the state.
 ## Entities
 
 ```twe
-entity Slime extends Enemy:        # single inheritance via `extends`
+entity Enemy:
     var hp: int = 30
-    var speed = 40.0
+    var pos = vec3(0, 0, 0)
+
+entity Slime extends Enemy:         # single inheritance via `extends`
+    var speed = 4.0
     function hurt(amount: int):     # methods receive `self` implicitly
         self.hp -= amount
-    on update(dt):                  # runs for the lifetime of each instance
-        self.pos = self.pos + (self.speed * dt, 0)
+    function update(dt):            # runs every tick for each live instance
+        pos = pos + vec3(speed * dt, 0, 0)
 
 # elsewhere:
-spawn Slime at (100.0, 200.0)
+spawn Slime at vec3(1, 0, 2)        # sets `pos`; `spawn` is a statement and returns nothing
 for s in entities.of(Slime):
     s.hurt(1)
+    if s.hp <= 0:
+        despawn s
 let n = entities.count(Slime)
 ```
+
+Inside a method, fields are read and written by bare name (`pos`) or as `self.pos`. `spawn` sets `pos` from `at`; other fields start at their declared values.
 
 In 3D, an entity says how it is drawn with a `look:` block. There is no
 per-entity drawing code; `render()` methods are ignored in 3D.
@@ -130,14 +164,16 @@ per-entity drawing code; `render()` methods are ignored in 3D.
 ```twe
 entity Enemy:
     var pos = vec3(0, 0, 0)        # a look draws at `pos`, which must be a vec3
+    var vel = vec3(0, 0, 1)
     var hurt = false
     look:
         mesh: "cube"               # "cube" | "sphere" | "path/to/model.glb"
         scale: 0.35                # uniform size, default 1
         tint: if hurt: color.white else: color.red   # may read fields
         facing: math.atan2(vel.x, vel.z)             # yaw radians; 0 faces +Z
-        material: Fire                               # optional: a `visual` block as the surface
 ```
+
+`material: Fire` (optional) makes a `visual` block the surface; see below.
 
 The keys are exactly `mesh`, `tint`, `scale`, `facing` and `material`, and a subclass can
 override single keys. `look:` is 3D-only for now (`twec play3d`,

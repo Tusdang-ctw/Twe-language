@@ -456,28 +456,28 @@ scene Tetris:
             if key_press.z:
                 try_rotate(-1)
 
-            # ---- Hard drop ----
+            # ---- Hard drop, else soft drop / gravity ----
+            # (A handler can't `return`; web3d-M5's verify check found the
+            # `return` here crashed the game on every hard drop.)
             if key_press.space:
                 hard_drop()
                 drop_t = 0.0
-                return
-
-            # ---- Soft drop / gravity ----
-            var factor = 1.0
-            if key.down:
-                factor = soft_drop_factor
-            drop_t += dt * factor
-            let iv = drop_interval()
-            while drop_t >= iv:
-                drop_t -= iv
-                if not piece_collides(current_piece, current_rot, current_x, current_y + 1):
-                    current_y += 1
-                    if key.down:
-                        score += 1
-                else:
-                    lock_piece()
-                    drop_t = 0.0
-                    return
+            else:
+                var factor = 1.0
+                if key.down:
+                    factor = soft_drop_factor
+                drop_t += dt * factor
+                let iv = drop_interval()
+                while drop_t >= iv:
+                    drop_t -= iv
+                    if not piece_collides(current_piece, current_rot, current_x, current_y + 1):
+                        current_y += 1
+                        if key.down:
+                            score += 1
+                    else:
+                        lock_piece()
+                        drop_t = 0.0
+                        break
 
         on render():
             draw_board_bg()

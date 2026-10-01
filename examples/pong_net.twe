@@ -129,84 +129,83 @@ scene PongNet:
             # rendering still runs, the player sees the previous
             # frame for one extra display tick.
             net.send_input(tick)
-            if not net.tick_ready(tick):
-                return
-            net.advance_tick(tick)
+            if net.tick_ready(tick):
+                net.advance_tick(tick)
 
-            # ---- Left paddle (peer 0). Controlled by peer[0].key. ----
-            if peer[0].key.w:
-                left_y -= paddle_speed * dt
-            if peer[0].key.s:
-                left_y += paddle_speed * dt
-            if left_y < 0.0:
-                left_y = 0.0
-            if left_y > view_h - paddle_h:
-                left_y = view_h - paddle_h
+                # ---- Left paddle (peer 0). Controlled by peer[0].key. ----
+                if peer[0].key.w:
+                    left_y -= paddle_speed * dt
+                if peer[0].key.s:
+                    left_y += paddle_speed * dt
+                if left_y < 0.0:
+                    left_y = 0.0
+                if left_y > view_h - paddle_h:
+                    left_y = view_h - paddle_h
 
-            # ---- Right paddle (peer 1). Controlled by peer[1].key. ----
-            if peer[1].key.w:
-                right_y -= paddle_speed * dt
-            if peer[1].key.s:
-                right_y += paddle_speed * dt
-            if right_y < 0.0:
-                right_y = 0.0
-            if right_y > view_h - paddle_h:
-                right_y = view_h - paddle_h
+                # ---- Right paddle (peer 1). Controlled by peer[1].key. ----
+                if peer[1].key.w:
+                    right_y -= paddle_speed * dt
+                if peer[1].key.s:
+                    right_y += paddle_speed * dt
+                if right_y < 0.0:
+                    right_y = 0.0
+                if right_y > view_h - paddle_h:
+                    right_y = view_h - paddle_h
 
-            # ---- Ball physics — identical on both peers. ----
-            ball_x += ball_vx * dt
-            ball_y += ball_vy * dt
+                # ---- Ball physics — identical on both peers. ----
+                ball_x += ball_vx * dt
+                ball_y += ball_vy * dt
 
-            if ball_y < 0.0:
-                ball_y = 0.0
-                ball_vy = -ball_vy
-            if ball_y > view_h - ball_size:
-                ball_y = view_h - ball_size
-                ball_vy = -ball_vy
+                if ball_y < 0.0:
+                    ball_y = 0.0
+                    ball_vy = -ball_vy
+                if ball_y > view_h - ball_size:
+                    ball_y = view_h - ball_size
+                    ball_vy = -ball_vy
 
-            if ball_x < paddle_w and ball_vx < 0.0:
-                if ball_y + ball_size > left_y and ball_y < left_y + paddle_h:
-                    ball_x = paddle_w
-                    ball_vx = -ball_vx
-                    let offset = (ball_y + ball_size * 0.5) - (left_y + paddle_h * 0.5)
-                    ball_vy = offset * 6.0
+                if ball_x < paddle_w and ball_vx < 0.0:
+                    if ball_y + ball_size > left_y and ball_y < left_y + paddle_h:
+                        ball_x = paddle_w
+                        ball_vx = -ball_vx
+                        let offset = (ball_y + ball_size * 0.5) - (left_y + paddle_h * 0.5)
+                        ball_vy = offset * 6.0
 
-            if ball_x > view_w - paddle_w - ball_size and ball_vx > 0.0:
-                if ball_y + ball_size > right_y and ball_y < right_y + paddle_h:
-                    ball_x = view_w - paddle_w - ball_size
-                    ball_vx = -ball_vx
-                    let offset = (ball_y + ball_size * 0.5) - (right_y + paddle_h * 0.5)
-                    ball_vy = offset * 6.0
+                if ball_x > view_w - paddle_w - ball_size and ball_vx > 0.0:
+                    if ball_y + ball_size > right_y and ball_y < right_y + paddle_h:
+                        ball_x = view_w - paddle_w - ball_size
+                        ball_vx = -ball_vx
+                        let offset = (ball_y + ball_size * 0.5) - (right_y + paddle_h * 0.5)
+                        ball_vy = offset * 6.0
 
-            if ball_x < -ball_size:
-                right_score += 1
-                -> scored
-            if ball_x > view_w:
-                left_score += 1
-                -> scored
+                if ball_x < -ball_size:
+                    right_score += 1
+                    -> scored
+                if ball_x > view_w:
+                    left_score += 1
+                    -> scored
 
-            # Periodic state-hash broadcast. Hashing every tick would
-            # spam the network; once a second is enough to catch a
-            # desync inside two seconds wall-clock. The hashed tuple
-            # captures the full simulation state — paddle positions,
-            # ball position + velocity, scores. If two peers compute
-            # different hashes for the same tick, the runtime prints
-            # `[twec net] DESYNC at tick N` and the run is now
-            # divergent.
-            if math.mod(tick, 60) == 0:
-                let snap = (
-                    left_y,
-                    right_y,
-                    ball_x,
-                    ball_y,
-                    ball_vx,
-                    ball_vy,
-                    left_score,
-                    right_score,
-                )
-                net.send_state_hash(tick, net.hash(snap))
+                # Periodic state-hash broadcast. Hashing every tick would
+                # spam the network; once a second is enough to catch a
+                # desync inside two seconds wall-clock. The hashed tuple
+                # captures the full simulation state — paddle positions,
+                # ball position + velocity, scores. If two peers compute
+                # different hashes for the same tick, the runtime prints
+                # `[twec net] DESYNC at tick N` and the run is now
+                # divergent.
+                if math.mod(tick, 60) == 0:
+                    let snap = (
+                        left_y,
+                        right_y,
+                        ball_x,
+                        ball_y,
+                        ball_vx,
+                        ball_vy,
+                        left_score,
+                        right_score,
+                    )
+                    net.send_state_hash(tick, net.hash(snap))
 
-            tick += 1
+                tick += 1
 
         on render():
             var i = 0
@@ -245,25 +244,24 @@ scene PongNet:
             # tick exchange running — otherwise tick_ready(tick) on
             # one peer would stall on the other peer's missing input.
             net.send_input(tick)
-            if not net.tick_ready(tick):
-                return
-            net.advance_tick(tick)
-            tick += 1
+            if net.tick_ready(tick):
+                net.advance_tick(tick)
+                tick += 1
 
-            serve_timer -= dt
-            if serve_timer <= 0.0:
-                serve_timer = 0.8
-                ball_x = view_w * 0.5 - ball_size * 0.5
-                ball_y = view_h * 0.5 - ball_size * 0.5
-                if right_score > left_score:
-                    ball_vx = -ball_speed
-                else:
-                    ball_vx = ball_speed
-                ball_vy = ball_speed * 0.6
-                if left_score >= win_score or right_score >= win_score:
-                    -> game_over
-                else:
-                    -> playing
+                serve_timer -= dt
+                if serve_timer <= 0.0:
+                    serve_timer = 0.8
+                    ball_x = view_w * 0.5 - ball_size * 0.5
+                    ball_y = view_h * 0.5 - ball_size * 0.5
+                    if right_score > left_score:
+                        ball_vx = -ball_speed
+                    else:
+                        ball_vx = ball_speed
+                    ball_vy = ball_speed * 0.6
+                    if left_score >= win_score or right_score >= win_score:
+                        -> game_over
+                    else:
+                        -> playing
 
         on render():
             rect(at: (0.0, left_y), size: (paddle_w, paddle_h), color: color.white)
@@ -279,24 +277,23 @@ scene PongNet:
     state game_over:
         on update(dt):
             net.send_input(tick)
-            if not net.tick_ready(tick):
-                return
-            net.advance_tick(tick)
-            tick += 1
-            # No restart over network in v1.0 — closing the session
-            # cleanly is the right behavior. Pressing R closes the
-            # net session and returns to the lobby; both peers must
-            # do this independently to start a new match.
-            if peer[0].key_press.r or peer[1].key_press.r:
-                net.close()
-                left_score = 0
-                right_score = 0
-                ball_x = view_w * 0.5
-                ball_y = view_h * 0.5
-                ball_vx = ball_speed
-                ball_vy = ball_speed * 0.6
-                tick = 0
-                -> lobby
+            if net.tick_ready(tick):
+                net.advance_tick(tick)
+                tick += 1
+                # No restart over network in v1.0 — closing the session
+                # cleanly is the right behavior. Pressing R closes the
+                # net session and returns to the lobby; both peers must
+                # do this independently to start a new match.
+                if peer[0].key_press.r or peer[1].key_press.r:
+                    net.close()
+                    left_score = 0
+                    right_score = 0
+                    ball_x = view_w * 0.5
+                    ball_y = view_h * 0.5
+                    ball_vx = ball_speed
+                    ball_vy = ball_speed * 0.6
+                    tick = 0
+                    -> lobby
 
         on render():
             rect(at: (0, 0), size: (view_w, view_h), color: color.black)

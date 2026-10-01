@@ -48,12 +48,16 @@ e.g. `rect(at: (10,20), size: (100,50), color: color.red)`.\n\
 - Literals: tuples/vectors `(x, y)` (with `.x`/`.y` and tuple math); ranges `10..15` \
 and `0..<n`; units `0.5s 200ms 100px 90deg` (dimension-checked); interpolation `\"hi {name}\"`.\n\
 \n\
-EVENTS: `on update(dt):` (dt is fixed 1/60s), `on render():`, `on key_press.space:` \
-(edge), `on hp < 20%:` (predicate, false→true), `every 150ms:` (timed, in a state).\n\
+EVENTS: top level has `on update(dt):` (dt is fixed 1/60s), `on render():` and \
+`on Slime.death(s):`; inside a `state` also `on key_press.space:` (edge), `on hp < 20:` \
+(predicate, false→true), `every 150ms:` (timed). Elsewhere test input with `if key_press.space:`.\n\
+`return` is only valid in a `function` or entity method, never in a handler. Lists: `.length` \
+(a field), `.append`, `.prepend`, `.pop_back`, `.pop_front`, `.contains`, `.set`; nothing else.\n\
 STATE MACHINES: a container sets `initial: <state>`; each `state X:` holds `on enter:`/\
 `on exit:`, handlers, `every` clocks; `-> Y` switches state.\n\
-ENTITIES: `entity Slime extends Enemy:` with fields, `function m(...):` (implicit `self`), \
-lifecycle handlers; `spawn Slime at (x, y)`, `for s in entities.of(Slime):`.
+ENTITIES: `entity Slime extends Enemy:` with fields and `function m(...):` methods (implicit \
+`self`; fields by bare name); `function update(dt):` runs every tick per instance; \
+`spawn Slime at vec3(x, y, z)` is a statement (no handle), `for s in entities.of(Slime):`.
 3D LOOKS: an entity is drawn by a `look:` block (keys `mesh` \"cube\"|\"sphere\"|\"x.glb\", `tint` color, `scale` number, `facing` yaw radians (0 = +Z; `math.atan2(dx, dz)`), `material` a visual block; may read fields) at its vec3 `pos`; no per-entity draw code.\n\
 VISUALS: `pixel(uv, time) -> color:` or `surface(uv, time, pos, normal) -> material:` returning \
 `material(albedo:, normal:, roughness:, metalness:, emission:)` (named, all optional), plus optional \

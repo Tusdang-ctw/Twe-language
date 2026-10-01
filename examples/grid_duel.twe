@@ -104,81 +104,80 @@ scene GridDuel:
     state playing:
         on update(dt):
             net.send_input(tick)
-            if not net.tick_ready(tick):
-                return
-            net.advance_tick(tick)
+            if net.tick_ready(tick):
+                net.advance_tick(tick)
 
-            bump_flash -= dt
+                bump_flash -= dt
 
-            # ---- Player 0 movement (WASD), one move per move_interval ----
-            p0_move_cd -= dt
-            if p0_move_cd <= 0.0:
-                var dx = 0
-                var dy = 0
-                if peer[0].key.w:
-                    dy = -1
-                if peer[0].key.s:
-                    dy = 1
-                if peer[0].key.a:
-                    dx = -1
-                if peer[0].key.d:
-                    dx = 1
-                if dx != 0 or dy != 0:
-                    let nx = p0_x + dx
-                    let ny = p0_y + dy
-                    if nx >= 0 and nx < grid_size and ny >= 0 and ny < grid_size:
-                        if nx == p1_x and ny == p1_y:
-                            bump_flash = 0.2
-                        else:
-                            p0_x = nx
-                            p0_y = ny
-                            p0_move_cd = move_interval
+                # ---- Player 0 movement (WASD), one move per move_interval ----
+                p0_move_cd -= dt
+                if p0_move_cd <= 0.0:
+                    var dx = 0
+                    var dy = 0
+                    if peer[0].key.w:
+                        dy = -1
+                    if peer[0].key.s:
+                        dy = 1
+                    if peer[0].key.a:
+                        dx = -1
+                    if peer[0].key.d:
+                        dx = 1
+                    if dx != 0 or dy != 0:
+                        let nx = p0_x + dx
+                        let ny = p0_y + dy
+                        if nx >= 0 and nx < grid_size and ny >= 0 and ny < grid_size:
+                            if nx == p1_x and ny == p1_y:
+                                bump_flash = 0.2
+                            else:
+                                p0_x = nx
+                                p0_y = ny
+                                p0_move_cd = move_interval
 
-            # ---- Player 1 movement (arrows) ----
-            p1_move_cd -= dt
-            if p1_move_cd <= 0.0:
-                var dx = 0
-                var dy = 0
-                if peer[1].key.up:
-                    dy = -1
-                if peer[1].key.down:
-                    dy = 1
-                if peer[1].key.left:
-                    dx = -1
-                if peer[1].key.right:
-                    dx = 1
-                if dx != 0 or dy != 0:
-                    let nx = p1_x + dx
-                    let ny = p1_y + dy
-                    if nx >= 0 and nx < grid_size and ny >= 0 and ny < grid_size:
-                        if nx == p0_x and ny == p0_y:
-                            bump_flash = 0.2
-                        else:
-                            p1_x = nx
-                            p1_y = ny
-                            p1_move_cd = move_interval
+                # ---- Player 1 movement (arrows) ----
+                p1_move_cd -= dt
+                if p1_move_cd <= 0.0:
+                    var dx = 0
+                    var dy = 0
+                    if peer[1].key.up:
+                        dy = -1
+                    if peer[1].key.down:
+                        dy = 1
+                    if peer[1].key.left:
+                        dx = -1
+                    if peer[1].key.right:
+                        dx = 1
+                    if dx != 0 or dy != 0:
+                        let nx = p1_x + dx
+                        let ny = p1_y + dy
+                        if nx >= 0 and nx < grid_size and ny >= 0 and ny < grid_size:
+                            if nx == p0_x and ny == p0_y:
+                                bump_flash = 0.2
+                            else:
+                                p1_x = nx
+                                p1_y = ny
+                                p1_move_cd = move_interval
 
-            # ---- Flag capture ----
-            if p0_x == flag_x and p0_y == flag_y:
-                p0_flags += 1
-                respawn_flag()
-            if p1_x == flag_x and p1_y == flag_y:
-                p1_flags += 1
-                respawn_flag()
+                # ---- Flag capture ----
+                if p0_x == flag_x and p0_y == flag_y:
+                    p0_flags += 1
+                    respawn_flag()
+                if p1_x == flag_x and p1_y == flag_y:
+                    p1_flags += 1
+                    respawn_flag()
 
-            # ---- State-hash heartbeat for desync detection ----
-            if math.mod(tick, 60) == 0:
-                let snap = (
-                    p0_x, p0_y, p0_flags,
-                    p1_x, p1_y, p1_flags,
-                    flag_x, flag_y, flag_seed,
-                )
-                net.send_state_hash(tick, net.hash(snap))
+                # ---- State-hash heartbeat for desync detection ----
+                if math.mod(tick, 60) == 0:
+                    let snap = (
+                        p0_x, p0_y, p0_flags,
+                        p1_x, p1_y, p1_flags,
+                        flag_x, flag_y, flag_seed,
+                    )
+                    net.send_state_hash(tick, net.hash(snap))
 
-            tick += 1
+                tick += 1
 
-            if p0_flags >= win_flags or p1_flags >= win_flags:
-                -> game_over
+                if p0_flags >= win_flags or p1_flags >= win_flags:
+                    -> game_over
 
         on render():
             rect(at: (0, 0), size: (view_w, view_h), color: color.black)
@@ -263,23 +262,22 @@ scene GridDuel:
         on update(dt):
             # Both peers must keep the tick exchange running.
             net.send_input(tick)
-            if not net.tick_ready(tick):
-                return
-            net.advance_tick(tick)
-            tick += 1
-            if peer[0].key_press.r or peer[1].key_press.r:
-                net.close()
-                p0_x = 2
-                p0_y = 8
-                p1_x = 13
-                p1_y = 8
-                p0_flags = 0
-                p1_flags = 0
-                flag_x = 7
-                flag_y = 7
-                flag_seed = 1
-                tick = 0
-                -> lobby
+            if net.tick_ready(tick):
+                net.advance_tick(tick)
+                tick += 1
+                if peer[0].key_press.r or peer[1].key_press.r:
+                    net.close()
+                    p0_x = 2
+                    p0_y = 8
+                    p1_x = 13
+                    p1_y = 8
+                    p0_flags = 0
+                    p1_flags = 0
+                    flag_x = 7
+                    flag_y = 7
+                    flag_seed = 1
+                    tick = 0
+                    -> lobby
 
         on render():
             rect(at: (0, 0), size: (view_w, view_h), color: color.black)

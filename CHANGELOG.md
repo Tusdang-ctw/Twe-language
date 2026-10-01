@@ -12,6 +12,11 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Fixed
+- **`examples/tetris.twe` crashed on every hard drop**, and **`grid_duel`, `pong_net` and `pong_net_internet` crashed while waiting for a peer**: each used `return` in an event handler.
+- **`twec verify` now reports `return` outside a function or method body**, and a member a list doesn't have (`.len()`). Both used to fail only when the line ran.
+- **The LLM primer's examples are real Twe.** The entity example didn't parse, and the events example showed handlers that are only legal inside a state. Every example now verifies, and a test keeps it so.
+
 ### Added
 - **`twec bench run` / `twec bench regrade`** (web3d-M5): run a model on the benchmark tasks.
   - Each sample gets up to 4 rounds, with `twec verify` and a 2-second smoke run as feedback.

@@ -25,7 +25,7 @@
 //! file, and re-run `twec verify` — the rules are stable across
 //! the loop because the underlying inferer is.
 
-use crate::ast::{Deprecation, Expr, Stmt};
+use crate::ast::{DeclMember, Deprecation, Expr, StateMember, Stmt};
 use crate::infer;
 use crate::lexer;
 use crate::parser;
@@ -333,6 +333,9 @@ pub fn verify_program_with_options(
     // web3d-M3: `look:` keys are checked at class definition when the
     // program runs; report the same problems statically.
     diagnostics.append(&mut collect_look_issues(&program));
+    // web3d-M5: `return` outside a function or method body fails when
+    // it runs; report it before (the benchmark's pilot hit it).
+    diagnostics.append(&mut collect_misplaced_returns(&program));
     // web3d-M7: `visual` blocks are checked (GPU-safe subset, method
     // set, `material(...)` outputs, types through the WGSL codegen)
     // when a look first uses them; report the same problems statically.
@@ -448,6 +451,80 @@ fn collect_scope_issues(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> 
             }
         })
         .collect()
+}
+
+/// web3d-M5: every `return` outside a function or method body. The
+/// runtime rejects these when they run (`eval`, `call_depth == 0`):
+/// top-level code, `on update` / `on render` / class-event handlers,
+/// state bodies and their handlers, dialogues. A `return` reached only
+/// in a rare branch used to pass verify and short runs alike.
+fn collect_misplaced_returns(program: &crate::ast::Program) -> Vec<VerifyDiagnostic> {
+    fn walk(stmts: &[Stmt], in_function: bool, out: &mut Vec<VerifyDiagnostic>) {
+        for s in stmts {
+            match s {
+                Stmt::Return { line, col, .. } if !in_function => out.push(VerifyDiagnostic {
+                    kind: "scope-error.return".to_string(),
+                    severity: Severity::Error,
+                    line: *line,
+                    col: *col,
+                    message: "`return` is only valid inside a function or method body".to_string(),
+                    help: Some(
+                        "an event handler or state body can't return: wrap the rest in an `if`, or move the body into a `function` and call it; in a state, `-> <state>` leaves it"
+                            .to_string(),
+                    ),
+                    fix: None,
+                }),
+                Stmt::If { then_body, elifs, else_body, .. } => {
+                    walk(then_body, in_function, out);
+                    for (_, body) in elifs {
+                        walk(body, in_function, out);
+                    }
+                    if let Some(body) = else_body {
+                        walk(body, in_function, out);
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Then { body, .. } => {
+                    walk(body, in_function, out)
+                }
+                Stmt::Choice { branches, .. } => {
+                    for (_, body) in branches {
+                        walk(body, in_function, out);
+                    }
+                }
+                Stmt::FunctionDecl { body, .. } => walk(body, true, out),
+                Stmt::OnUpdate { body, .. }
+                | Stmt::OnRender { body, .. }
+                | Stmt::OnClassEvent { body, .. }
+                | Stmt::DialogueDecl { body, .. } => walk(body, false, out),
+                Stmt::Decl { members, .. } => {
+                    for m in members {
+                        match m {
+                            DeclMember::Method { body, .. } => walk(body, true, out),
+                            DeclMember::State { members, .. } => {
+                                for sm in members {
+                                    match sm {
+                                        StateMember::Stmt(s) => walk(std::slice::from_ref(s), false, out),
+                                        StateMember::Every { body, .. }
+                                        | StateMember::OnRender { body, .. }
+                                        | StateMember::OnKeyPress { body, .. }
+                                        | StateMember::OnUpdate { body, .. }
+                                        | StateMember::OnPredicate { body, .. }
+                                        | StateMember::OnEnter { body, .. }
+                                        | StateMember::OnExit { body, .. } => walk(body, false, out),
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&program.stmts, false, &mut out);
+    out
 }
 
 /// web3d-M3: problems in `look:` blocks — unknown keys (with a rename
@@ -1195,5 +1272,33 @@ mod tests {
         assert!(report.diagnostics[0].line < report.diagnostics[1].line);
         assert!(report.diagnostics[0].message.contains("`b`"));
         assert!(report.diagnostics[1].message.contains("`a`"));
+    }
+
+    /// web3d-M5: `return` outside a function or method is reported
+    /// (the runtime rejects it when it runs), and only there.
+    #[test]
+    fn return_is_only_allowed_in_functions_and_methods() {
+        let kinds = |src: &str| -> Vec<(u32, String)> {
+            verify_program(src).diagnostics.into_iter().map(|d| (d.line, d.kind)).collect()
+        };
+        let handler = "var dead = true\non update(dt):\n    if dead:\n        return\n";
+        assert_eq!(kinds(handler), vec![(4, "scope-error.return".to_string())]);
+        let state = "scene G:\n    var n = 0\n    initial: a\n    state a:\n        on update(dt):\n            while true:\n                return\n";
+        assert_eq!(kinds(state), vec![(7, "scope-error.return".to_string())]);
+        let fine = "function f(x):\n    if x > 1:\n        return 2\n    return 1\n\
+                    entity E:\n    var pos = vec3(0, 0, 0)\n    function update(dt):\n        for i in 0..<3:\n            return\n\
+                    on update(dt):\n    print(f(3))\n";
+        assert!(kinds(fine).is_empty(), "{:?}", kinds(fine));
+    }
+
+    /// web3d-M5: a member a list doesn't have is reported when the
+    /// value is known to be a list.
+    #[test]
+    fn unknown_list_members_are_reported() {
+        let report = verify_program("var l = [1, 2]\nprint(l.len())\n");
+        assert_eq!(report.errors(), 1);
+        assert!(report.diagnostics[0].message.contains("list has no field 'len'"));
+        let fine = "var l = [1, 2]\nl.append(3)\nl.set(0, 5)\nprint(l.length)\nprint(l.contains(2))\nprint(2 in l)\n";
+        assert!(verify_program(fine).ok(), "{}", verify_program(fine).to_json());
     }
 }

@@ -370,6 +370,8 @@ Twe has eager evaluation. Expressions are evaluated left to right. Function argu
 
 Functions are first-class values with exactly one return value (which may be a tuple). A function sees its own parameters and locals plus its module's globals (§4.2); it does **not** capture the locals of an enclosing function.
 
+`return` is only valid in a `function` or a method body. In top-level code, an event handler (`on update`, `on render`, `on Class.death`), a state body or handler, or a dialogue it is an error. `twec verify` reports it (`scope-error.return`, web3d-M5); before that, it was reported only when the `return` ran. Four shipped examples crashed that way: `tetris` on every hard drop, and the netplay demos while waiting for a peer.
+
 ```twe
 function add(a: int, b: int) -> int:
     return a + b
@@ -750,6 +752,8 @@ Conversion between compatible units is automatic at the type level (`30cm + 1m =
 | `set of T` | Hash set | `set[1, 2, 3]` |
 | `T?` | Optional T | (no literal; produced by computation) |
 | `A \| B` | Tagged union | (no literal; produced by computation) |
+
+**Lists** have exactly these members: the field `.length`, and the methods `.append(x)`, `.prepend(x)`, `.pop_back()`, `.pop_front()`, `.contains(x)` and `.set(i, x)`; `x in list` tests membership. Any other member is an error. `twec verify` reports it where the value is known to be a list (web3d-M5); before, `.len()` passed verify and failed when it ran.
 
 ### 6.1 List comprehensions  *(Snake NP3)*
 

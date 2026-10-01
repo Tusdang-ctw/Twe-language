@@ -38,6 +38,10 @@ use std::rc::Rc;
 use crate::ast::{BinOp, DeclMember, Expr, Program, Stmt, UnOp};
 use crate::types::{apply_subst, unify, Substitution, Type, TypeVarGen};
 
+/// Every member a list has: the `.length` field and the methods of
+/// `eval::list_method_call`.
+const LIST_MEMBERS: &[&str] = &["length", "append", "prepend", "pop_back", "pop_front", "contains", "set"];
+
 /// Result of inference over a program — top-level names bound to
 /// their (best-effort) type, with all type variables fully
 /// substituted. Names whose RHS we can't prove anything about
@@ -911,7 +915,7 @@ impl Inferer {
                     _ => Type::Unknown,
                 }
             }
-            Expr::Field { object, name, .. } => {
+            Expr::Field { object, name, line, col } => {
                 let obj_t = self.expr_type(object);
                 let resolved = self.resolve(&obj_t);
                 match (&resolved, name.as_str()) {
@@ -919,6 +923,22 @@ impl Inferer {
                     (Type::Tuple(elems), "y") if elems.len() >= 2 => elems[1].clone(),
                     (Type::Tuple(elems), "z") if elems.len() >= 3 => elems[2].clone(),
                     (Type::List(_), "length") => Type::Int,
+                    // web3d-M5: a list's members are fixed (`eval::list_method_call`
+                    // plus `.length`), so any other name on a value known to be a
+                    // list fails at run time. Report it here: the benchmark's pilot
+                    // wrote `.len()`, which verify passed and the run rejected.
+                    (Type::List(_), other) if !LIST_MEMBERS.contains(&other) => {
+                        self.errors.push(TypeError {
+                            line: *line,
+                            col: *col,
+                            message: format!("list has no field '{other}'"),
+                            help: Some(
+                                "lists expose .length; methods are .append, .prepend, .pop_back, .pop_front, .contains, .set"
+                                    .to_string(),
+                            ),
+                        });
+                        Type::Unknown
+                    }
                     (Type::Instance(class_name), field) => self
                         .class_shapes
                         .get(class_name.as_str())
