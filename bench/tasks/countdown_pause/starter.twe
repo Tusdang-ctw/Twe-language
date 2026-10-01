@@ -1,0 +1,12 @@
+var remaining = 10.0
+var finished = false
+
+on update(dt):
+    if key_press.r:
+        remaining = 10.0
+        finished = false
+    elif not finished:
+        remaining = remaining - dt
+        if remaining <= 0.0:
+            remaining = 0.0
+            finished = true

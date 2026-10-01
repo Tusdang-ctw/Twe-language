@@ -248,6 +248,10 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 }
 
 pub fn install(env: &mut Env) {
+    // web3d-M5: `nil`, the literal docs/06 §2.5.3 specifies, had never
+    // been bound: functions returned nil, but a program couldn't write
+    // it (`x == nil` failed to load). Bound here as a constant.
+    env.set("nil".to_string(), Value::NIL);
     env.set(
         "print".to_string(),
         Value::from_builtin("print", &[], print_impl),

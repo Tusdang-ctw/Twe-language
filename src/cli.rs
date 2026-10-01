@@ -815,10 +815,18 @@ struct LangFlags {
     rest: Vec<String>,
     lang: crate::bench::Lang,
     python: Option<std::path::PathBuf>,
+    /// Where the tasks live (`--tasks-root`; default `bench/tasks`). A
+    /// hidden task set is kept outside the repository and named here.
+    tasks_root: std::path::PathBuf,
 }
 
 fn take_lang_flags(args: &[String]) -> Result<LangFlags, i32> {
-    let mut out = LangFlags { rest: Vec::new(), lang: crate::bench::Lang::Twe, python: None };
+    let mut out = LangFlags {
+        rest: Vec::new(),
+        lang: crate::bench::Lang::Twe,
+        python: None,
+        tasks_root: "bench/tasks".into(),
+    };
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -839,6 +847,14 @@ fn take_lang_flags(args: &[String]) -> Result<LangFlags, i32> {
                     return Err(2);
                 };
                 out.python = Some(p.into());
+                i += 2;
+            }
+            "--tasks-root" => {
+                let Some(p) = args.get(i + 1) else {
+                    eprintln!("error: --tasks-root takes a directory");
+                    return Err(2);
+                };
+                out.tasks_root = p.into();
                 i += 2;
             }
             _ => {
@@ -873,7 +889,7 @@ fn make_grader(lang: crate::bench::Lang, python: Option<std::path::PathBuf>) -> 
 }
 
 fn bench_grade(args: &[String]) -> i32 {
-    let LangFlags { rest: args, lang, python } = match take_lang_flags(args) {
+    let LangFlags { rest: args, lang, python, .. } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
@@ -943,7 +959,7 @@ fn bench_grade(args: &[String]) -> i32 {
 /// web3d-M5 session 4: `twec bench run` — models write programs for
 /// the tasks, which are graded on behaviour (`src/bench_run.rs`).
 fn bench_run(args: &[String]) -> i32 {
-    let LangFlags { rest: args, lang, python } = match take_lang_flags(args) {
+    let LangFlags { rest: args, lang, python, tasks_root } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
@@ -1014,7 +1030,7 @@ fn bench_run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let root = std::path::Path::new("bench/tasks");
+    let root = tasks_root.as_path();
     let mut dirs: Vec<std::path::PathBuf> = match fs::read_dir(root) {
         Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.join("task.toml").exists()).collect(),
         Err(e) => {
@@ -1080,7 +1096,7 @@ fn bench_run(args: &[String]) -> i32 {
 /// `twec bench regrade <run-dir>`: grade a run's programs again with
 /// the current grader and tasks (no model calls).
 fn bench_regrade(args: &[String]) -> i32 {
-    let LangFlags { rest, python, .. } = match take_lang_flags(args) {
+    let LangFlags { rest, python, tasks_root, .. } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
@@ -1106,7 +1122,7 @@ fn bench_regrade(args: &[String]) -> i32 {
     match crate::bench_run::regrade(
         &grader,
         std::path::Path::new(dir),
-        std::path::Path::new("bench/tasks"),
+        &tasks_root,
         std::time::Duration::from_secs(30),
         jobs,
     ) {
@@ -1124,7 +1140,7 @@ fn bench_regrade(args: &[String]) -> i32 {
 }
 
 fn bench_check(args: &[String]) -> i32 {
-    let LangFlags { rest: args, lang, python } = match take_lang_flags(args) {
+    let LangFlags { rest: args, lang, python, tasks_root } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
@@ -1136,7 +1152,7 @@ fn bench_check(args: &[String]) -> i32 {
     while i < args.len() {
         match args[i].as_str() {
             "--all" => {
-                let root = std::path::Path::new("bench/tasks");
+                let root = tasks_root.as_path();
                 match fs::read_dir(root) {
                     Ok(rd) => {
                         let mut found: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.join("task.toml").exists()).collect();

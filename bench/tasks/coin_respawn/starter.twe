@@ -1,0 +1,29 @@
+var player = vec3(0, 0, 0)
+var score = 0
+
+entity Coin:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "sphere"
+        tint: color.yellow
+        scale: 0.4
+
+for x in [2, 4, 6, 8, 10]:
+    spawn Coin at vec3(x, 0, 0)
+
+on update(dt):
+    var dx = 0.0
+    if key.d:
+        dx = dx + 1.0
+    if key.a:
+        dx = dx - 1.0
+    player = vec3(player.x + dx * 4.0 * dt, 0, player.z)
+    for c in entities.of(Coin):
+        if math.length(c.pos - player) < 0.5:
+            despawn c
+            score = score + 1
+    camera.eye = vec3(player.x, 12, 8)
+    camera.target = player
+
+on render():
+    sphere(at: player, color: color.white, size: 0.6)

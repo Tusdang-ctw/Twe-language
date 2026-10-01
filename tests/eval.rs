@@ -3436,3 +3436,11 @@ fn light_environment_setter() {
     assert!(run_program_str("light.environment(\"sky.png\", 1)\n").is_err(), "needs a .hdr");
     assert!(run_program_str("light.environment(\"sky.hdr\", -1)\n").is_err(), "negative intensity");
 }
+
+/// web3d-M5: the `nil` literal docs/06 §2.5.3 specifies works (it was
+/// never bound before; the benchmark's inventory task hit it).
+#[test]
+fn runs_nil_literal() {
+    let out = run_program("tests/programs/nil_literal.twe").expect("program should run");
+    assert_eq!(out, "called\ntrue\ntrue\ntrue\ntrue\nnil is truthy\n");
+}

@@ -39,6 +39,17 @@ fn every_committed_task_is_valid() {
         for file in ["task.md", "twe.md"] {
             assert!(dir.join(file).exists(), "{}: missing {file}", task.id);
         }
+        // The canary marks the benchmark in any corpus it leaks into; it
+        // is in the task and both reference solutions, never in a prompt.
+        assert_eq!(task.canary.as_deref(), Some(twec::bench::CANARY), "{}: canary", task.id);
+        for file in ["solution.twe", "solution.py"] {
+            let src = std::fs::read_to_string(dir.join(file)).unwrap();
+            assert!(src.lines().next().unwrap_or("").contains(twec::bench::CANARY), "{}: {file} lacks the canary", task.id);
+        }
+        for file in ["task.md", "twe.md", "python.md", "starter.twe", "starter.py"] {
+            let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
+            assert!(!text.contains("canary GUID"), "{}: the canary would reach a model through {file}", task.id);
+        }
         let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 8).unwrap();
         assert!(v.ok(), "{}: {:?}", task.id, v.problems);
     }

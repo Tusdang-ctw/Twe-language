@@ -39,7 +39,7 @@ use crate::llm_loop::{self, LoopOptions, StaticVerdict};
 
 /// Bumped when tasks, prompts or grading change in a way that makes
 /// results incomparable with earlier runs.
-pub const BENCH_VERSION: &str = "v0";
+pub const BENCH_VERSION: &str = "v1";
 
 /// Game time the smoke check runs a program for, with no input.
 const SMOKE_TICKS: u32 = 120;
@@ -256,6 +256,11 @@ pub struct SampleRecord {
     pub cost_usd: Option<f64>,
     pub wall_ms: u64,
     pub cache_hits: u32,
+    /// The task started from a starter file (an edit task).
+    pub edit: bool,
+    /// The final program is nearly the reference solution: a sign the
+    /// model has seen the benchmark (flagged, not excluded).
+    pub copies_reference: bool,
 }
 
 impl SampleRecord {
@@ -279,6 +284,8 @@ impl SampleRecord {
             "cost_usd": self.cost_usd,
             "wall_ms": self.wall_ms,
             "cache_hits": self.cache_hits,
+            "edit": self.edit,
+            "copies_reference": self.copies_reference,
         })
     }
 
@@ -304,6 +311,8 @@ impl SampleRecord {
             cost_usd: v["cost_usd"].as_f64(),
             wall_ms: v["wall_ms"].as_u64().unwrap_or(0),
             cache_hits: v["cache_hits"].as_u64().unwrap_or(0) as u32,
+            edit: v["edit"].as_bool().unwrap_or(false),
+            copies_reference: v["copies_reference"].as_bool().unwrap_or(false),
         })
     }
 }
@@ -355,6 +364,40 @@ fn syntax_error(grader: &Grader, source: &str, limit: Duration) -> bool {
     }
 }
 
+/// How alike two programs are, ignoring comments and whitespace: the
+/// Jaccard similarity of their character trigrams (1.0 = the same text).
+pub fn similarity(a: &str, b: &str) -> f64 {
+    let norm = |s: &str| -> Vec<char> {
+        s.lines()
+            .map(|l| l.split('#').next().unwrap_or(""))
+            .flat_map(|l| l.chars().filter(|c| !c.is_whitespace()))
+            .collect()
+    };
+    let grams = |c: &[char]| -> std::collections::HashSet<[char; 3]> {
+        c.windows(3).map(|w| [w[0], w[1], w[2]]).collect()
+    };
+    let (ga, gb) = (grams(&norm(a)), grams(&norm(b)));
+    if ga.is_empty() && gb.is_empty() {
+        return 1.0;
+    }
+    ga.intersection(&gb).count() as f64 / ga.union(&gb).count() as f64
+}
+
+/// A hash of everything that defines a task set for `lang`: each
+/// task's text, interface and `task.toml`. Runs with different hashes
+/// aren't comparable.
+pub fn tasks_hash(tasks: &[Task], lang: Lang) -> String {
+    let mut all = String::new();
+    for t in tasks {
+        for f in ["task.md", lang.interface_file(), "task.toml"] {
+            all.push_str(&t.id);
+            all.push_str(f);
+            all.push_str(&std::fs::read_to_string(t.dir.join(f)).unwrap_or_default());
+        }
+    }
+    hash_hex(&all)
+}
+
 /// Run one sample: the loop, then the grade.
 pub fn run_sample(
     provider: &mut dyn Provider,
@@ -378,6 +421,8 @@ pub fn run_sample(
         cost_usd: None,
         wall_ms: 0,
         cache_hits: 0,
+        edit: false,
+        copies_reference: false,
     };
     let grader = &options.grader;
     let lang = grader.lang;
@@ -439,6 +484,10 @@ pub fn run_sample(
     let program_dir = options.out_dir.join("programs").join(&task.id);
     let _ = std::fs::create_dir_all(&program_dir);
     let _ = std::fs::write(program_dir.join(format!("{sample}.{}", lang.ext())), &outcome.final_source);
+    record.edit = !loop_options.starter.is_empty();
+    if let Ok(reference) = std::fs::read_to_string(task.dir.join(format!("solution.{}", lang.ext()))) {
+        record.copies_reference = similarity(&outcome.final_source, &reference) >= 0.9;
+    }
     record.grade = Some(grader.grade(task, &outcome.final_source, options.grade_limit));
     record
 }
@@ -461,6 +510,9 @@ pub fn run(
     let settings = json!({
         "bench_version": BENCH_VERSION,
         "lang": options.grader.lang.as_str(),
+        // The primer is frozen per bench version; its hash shows it.
+        "system_prompt_hash": hash_hex(&system_prompt(options.grader.lang, options.primer)),
+        "tasks_hash": tasks_hash(tasks, options.grader.lang),
         "provider": provider_id,
         "samples": options.samples,
         "max_rounds": options.max_rounds,
@@ -474,7 +526,7 @@ pub fn run(
     let run_json = options.out_dir.join("run.json");
     if let Ok(old) = std::fs::read_to_string(&run_json) {
         let old: Json = serde_json::from_str(&old).unwrap_or(Json::Null);
-        for key in ["bench_version", "lang", "provider", "max_rounds", "verify_feedback", "smoke_feedback", "primer", "max_tokens"] {
+        for key in ["bench_version", "lang", "system_prompt_hash", "tasks_hash", "provider", "max_rounds", "verify_feedback", "smoke_feedback", "primer", "max_tokens"] {
             if old[key] != settings[key] {
                 return Err(format!(
                     "{} holds a run with different settings ({key}: {} vs {}); use another --out",
@@ -731,6 +783,23 @@ pub fn summarize(tasks: &[Task], records: &[SampleRecord], settings: &Json) -> J
             json!({"k": k, "mean": m, "ci95": [lo, hi]})
         })
         .collect();
+    let edit_tasks: std::collections::HashSet<&str> =
+        graded.iter().filter(|r| r.edit).map(|r| r.task.as_str()).collect();
+    let by_kind: Vec<Json> = [("new", false), ("edit", true)]
+        .iter()
+        .filter_map(|(kind, edit)| {
+            let per: Vec<f64> = scores
+                .iter()
+                .filter(|s| edit_tasks.contains(s.id.as_str()) == *edit)
+                .map(|s| f64::from(s.c) / f64::from(s.n))
+                .collect();
+            if per.is_empty() {
+                return None;
+            }
+            let (m, lo, hi) = mean_ci(&per);
+            Some(json!({"kind": kind, "tasks": per.len(), "pass_at_1": m, "ci95": [lo, hi]}))
+        })
+        .collect();
     let by_tier: Vec<Json> = (1..=3u8)
         .filter_map(|tier| {
             let per: Vec<f64> = scores.iter().filter(|s| s.tier == tier).map(|s| f64::from(s.c) / f64::from(s.n)).collect();
@@ -767,6 +836,8 @@ pub fn summarize(tasks: &[Task], records: &[SampleRecord], settings: &Json) -> J
         "tasks": scores.len(),
         "pass_at_k": pass_k,
         "by_tier": by_tier,
+        "by_kind": by_kind,
+        "copies_reference_rate": rate(&|r| r.copies_reference),
         "per_task": scores.iter().map(|s| json!({"task": s.id, "tier": s.tier, "n": s.n, "passed": s.c})).collect::<Vec<_>>(),
         "first_round_syntax_error_rate": rate(&|r| r.first_syntax_error),
         "first_round_verify_clean_rate": rate(&|r| !r.first_syntax_error && r.first_verify_errors == 0),
@@ -824,8 +895,22 @@ pub fn summary_markdown(s: &Json) -> String {
             pct(&t["ci95"][1])
         ));
     }
+    for k in s["by_kind"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "| pass@1, {} tasks ({}) | {} | {} – {} |\n",
+            k["kind"].as_str().unwrap_or("?"),
+            k["tasks"],
+            pct(&k["pass_at_1"]),
+            pct(&k["ci95"][0]),
+            pct(&k["ci95"][1])
+        ));
+    }
     out.push_str(&format!(
-        "\n- Round 1: {} didn't parse; {} were verify-clean. Final programs verify-clean: {}.\n",
+        "\n- Final programs nearly identical to the reference solution (a contamination sign): {}.\n",
+        pct(&s["copies_reference_rate"])
+    ));
+    out.push_str(&format!(
+        "- Round 1: {} didn't parse; {} were checker-clean. Final programs checker-clean: {}.\n",
         pct(&s["first_round_syntax_error_rate"]),
         pct(&s["first_round_verify_clean_rate"]),
         pct(&s["final_verify_clean_rate"])
@@ -905,6 +990,12 @@ mod tests {
         assert_eq!(mean_ci(&values), (m, lo, hi));
         let (_, lo, hi) = mean_ci(&[1.0; 8]);
         assert_eq!((lo, hi), (1.0, 1.0));
+    }
+
+    #[test]
+    fn similarity_ignores_comments_and_layout() {
+        assert_eq!(similarity("var x = 1\nprint(x)", "var x = 1   # one\n\nprint( x )"), 1.0);
+        assert!(similarity("var x = 1\nprint(x)", "let total = 0\nfor i in 0..<9:\n    total += i") < 0.2);
     }
 
     #[test]

@@ -43,6 +43,12 @@ All four are rewritten: the rest of the handler sits under `if net.tick_ready(ti
 
 **`tests/primer.rs` keeps it that way:** every `twe` block in the primer, and every curated example, must pass `twec verify`.
 
+## Added during session 6: the `nil` literal
+
+`docs/06` §2.5.3 specifies `true`, `false` and `nil` as literals, and the primer names `nil` as a value. Functions already return nil, but the name was never bound, so `x == nil` failed to load with "name 'nil' is not defined". The new `inventory_stacks` task hit it, written the way a model would write it.
+
+`nil` is now bound by the stdlib as a constant (`stdlib::install`). This is the specified design, implemented before any measurement, not a new language feature. `tests/programs/nil_literal.twe` pins it.
+
 ## Verification
 
 - **Verify unit tests:**

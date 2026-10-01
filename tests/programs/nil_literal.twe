@@ -1,0 +1,12 @@
+# web3d-M5: `nil` is the literal docs/06 2.5.3 specifies (bound by the stdlib).
+function nothing():
+    print("called")
+let r = nothing()
+print(r == nil)
+var slots = [nil, ("a", 2)]
+print(slots[0] == nil)
+print(slots[1] != nil)
+slots.set(1, nil)
+print(slots == [nil, nil])
+if nil != false:
+    print("nil is truthy")

@@ -1,0 +1,19 @@
+var door_state = "closed"
+var door_progress = 0.0
+
+on update(dt):
+    if key_press.e:
+        if door_state == "closed" or door_state == "closing":
+            door_state = "opening"
+        else:
+            door_state = "closing"
+    if door_state == "opening":
+        door_progress = door_progress + dt
+        if door_progress >= 1.0:
+            door_progress = 1.0
+            door_state = "open"
+    elif door_state == "closing":
+        door_progress = door_progress - dt
+        if door_progress <= 0.0:
+            door_progress = 0.0
+            door_state = "closed"
