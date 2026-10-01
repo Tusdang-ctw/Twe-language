@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use twe_llm::{Error, Provider, Reply, Request};
-use twec::bench::load_task;
+use twec::bench::{load_task, Grader};
 use twec::bench_run::{read_samples, regrade, run, RunOptions};
 
 fn exe() -> &'static Path {
@@ -65,6 +65,7 @@ fn a_run_grades_resumes_and_regrades() {
     static CALLS: AtomicU32 = AtomicU32::new(0);
     let dir = temp_dir("plain");
     let options = RunOptions {
+        grader: Grader::twe(exe()),
         samples: 2,
         jobs: 3,
         out_dir: dir.join("run"),
@@ -73,7 +74,7 @@ fn a_run_grades_resumes_and_regrades() {
         ..Default::default()
     };
     let make = || Ok(Box::new(Solutions { typo_first: true, calls: &CALLS }) as Box<dyn Provider>);
-    let records = run(exe(), &tasks(), &make, "stand-in-typo", &options).unwrap();
+    let records = run(&tasks(), &make, "stand-in-typo", &options).unwrap();
     assert_eq!(records.len(), 6);
     assert!(records.iter().all(|r| r.passed() && r.rounds == 2), "{records:#?}");
     assert!(records.iter().all(|r| r.first_verify_errors > 0 && r.final_verify_errors == 0));
@@ -90,21 +91,21 @@ fn a_run_grades_resumes_and_regrades() {
 
     // Resuming a finished run does nothing; a fresh run directory with
     // the same cache answers from the cache.
-    run(exe(), &tasks(), &make, "stand-in-typo", &options).unwrap();
+    run(&tasks(), &make, "stand-in-typo", &options).unwrap();
     assert_eq!(CALLS.load(Ordering::SeqCst), 12);
     let again = RunOptions { out_dir: dir.join("run2"), ..options.clone() };
-    let records = run(exe(), &tasks(), &make, "stand-in-typo", &again).unwrap();
+    let records = run(&tasks(), &make, "stand-in-typo", &again).unwrap();
     assert_eq!(CALLS.load(Ordering::SeqCst), 12, "every reply came from the cache");
     assert!(records.iter().all(|r| r.cache_hits == 2));
 
     // A run directory refuses different settings.
     let other = RunOptions { max_rounds: 1, ..options.clone() };
-    assert!(run(exe(), &tasks(), &make, "stand-in-typo", &other).unwrap_err().contains("different settings"));
+    assert!(run(&tasks(), &make, "stand-in-typo", &other).unwrap_err().contains("different settings"));
 
     // Re-grading reads the programs, not the model: break one program
     // and its sample fails.
     std::fs::write(dir.join("run/programs/door/0.twe"), "var door_state = \"closed\"\n").unwrap();
-    let records = regrade(exe(), &dir.join("run"), Path::new("bench/tasks"), Duration::from_secs(30), 4).unwrap();
+    let records = regrade(&Grader::twe(exe()), &dir.join("run"), Path::new("bench/tasks"), Duration::from_secs(30), 4).unwrap();
     assert_eq!(records.iter().filter(|r| !r.passed()).count(), 1);
     assert_eq!(read_samples(&dir.join("run/samples.jsonl")).iter().filter(|r| r.passed()).count(), 5);
     let _ = std::fs::remove_dir_all(&dir);
@@ -115,6 +116,7 @@ fn without_feedback_a_broken_first_answer_fails() {
     static CALLS: AtomicU32 = AtomicU32::new(0);
     let dir = temp_dir("single");
     let options = RunOptions {
+        grader: Grader::twe(exe()),
         samples: 1,
         max_rounds: 1,
         jobs: 3,
@@ -123,7 +125,7 @@ fn without_feedback_a_broken_first_answer_fails() {
         ..Default::default()
     };
     let make = || Ok(Box::new(Solutions { typo_first: true, calls: &CALLS }) as Box<dyn Provider>);
-    let records = run(exe(), &tasks(), &make, "stand-in-typo", &options).unwrap();
+    let records = run(&tasks(), &make, "stand-in-typo", &options).unwrap();
     assert!(records.iter().all(|r| !r.passed() && r.rounds == 1));
     assert!(records.iter().all(|r| r.grade.as_ref().unwrap().stage == twec::bench::Stage::Load));
     let _ = std::fs::remove_dir_all(&dir);
@@ -141,9 +143,9 @@ fn a_failing_provider_stops_the_run() {
         }
     }
     let dir = temp_dir("down");
-    let options = RunOptions { samples: 3, jobs: 1, out_dir: dir.join("run"), cache_dir: None, ..Default::default() };
+    let options = RunOptions { grader: Grader::twe(exe()), samples: 3, jobs: 1, out_dir: dir.join("run"), cache_dir: None, ..Default::default() };
     let make = || Ok(Box::new(Down) as Box<dyn Provider>);
-    let err = run(exe(), &tasks(), &make, "down", &options).unwrap_err();
+    let err = run(&tasks(), &make, "down", &options).unwrap_err();
     assert!(err.contains("connection refused"), "{err}");
     // The failures are recorded, and retried on resume.
     assert_eq!(read_samples(&dir.join("run/samples.jsonl")).len(), 5);

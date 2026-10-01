@@ -18,18 +18,23 @@ hold = ["d"]
 name = "five coins to start"
 at = 0
 expr = 'entities.count(Coin) == 5 and score == 0'
+py = 'len(game.coins) == 5 and game.score == 0'
 [[check]]
 name = "the first coin is collected"
 at = 40
 expr = 'entities.count(Coin) == 4 and score == 1'
+py = 'len(game.coins) == 4 and game.score == 1'
 [[check]]
 name = "three collected after 1.5 s"
 at = 90
 expr = 'entities.count(Coin) == 2 and score == 3 and math.abs(player.x - 6.0) < 0.05'
+py = 'len(game.coins) == 2 and game.score == 3 and abs(game.player.x - 6.0) < 0.05'
 [[check]]
 name = "walking back collects nothing"
 at = 200
 expr = 'entities.count(Coin) == 2 and score == 3 and math.abs(player.x - 2.667) < 0.05'
+py = 'len(game.coins) == 2 and game.score == 3 and abs(game.player.x - 2.667) < 0.05'
 [[check]]
 name = "all collected"
 expr = 'entities.count(Coin) == 0 and score == 5 and math.abs(player.x - 11.333) < 0.05'
+py = 'len(game.coins) == 0 and game.score == 5 and abs(game.player.x - 11.333) < 0.05'

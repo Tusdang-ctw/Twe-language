@@ -19,23 +19,28 @@ hold = ["a", "s"]
 [[check]]
 name = "starts at the origin"
 at = 0
-expr = "player.x == 0 and player.y == 0 and player.z == 0"
+expr = 'player.x == 0 and player.y == 0 and player.z == 0'
+py = 'game.player.x == 0 and game.player.y == 0 and game.player.z == 0'
 
 [[check]]
 name = "D for 1 s moves 5 toward +x"
 at = 60
-expr = "math.abs(player.x - 5.0) < 0.01 and math.abs(player.z) < 0.01"
+expr = 'math.abs(player.x - 5.0) < 0.01 and math.abs(player.z) < 0.01'
+py = 'abs(game.player.x - 5.0) < 0.01 and abs(game.player.z) < 0.01'
 
 [[check]]
 name = "W for 0.5 s moves 2.5 toward -z"
 at = 90
-expr = "math.abs(player.z + 2.5) < 0.01 and math.abs(player.x - 5.0) < 0.01"
+expr = 'math.abs(player.z + 2.5) < 0.01 and math.abs(player.x - 5.0) < 0.01'
+py = 'abs(game.player.z + 2.5) < 0.01 and abs(game.player.x - 5.0) < 0.01'
 
 [[check]]
 name = "no key, no movement"
 at = 120
-expr = "math.abs(player.z + 2.5) < 0.01 and math.abs(player.x - 5.0) < 0.01"
+expr = 'math.abs(player.z + 2.5) < 0.01 and math.abs(player.x - 5.0) < 0.01'
+py = 'abs(game.player.z + 2.5) < 0.01 and abs(game.player.x - 5.0) < 0.01'
 
 [[check]]
 name = "A and S combine"
-expr = "math.abs(player.x) < 0.01 and math.abs(player.z - 2.5) < 0.01 and player.y == 0"
+expr = 'math.abs(player.x) < 0.01 and math.abs(player.z - 2.5) < 0.01 and player.y == 0'
+py = 'abs(game.player.x) < 0.01 and abs(game.player.z - 2.5) < 0.01 and game.player.y == 0'

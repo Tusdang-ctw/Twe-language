@@ -30,22 +30,28 @@ press = ["b"]
 name = "five enemies to start"
 at = 0
 expr = 'entities.count(Enemy) == 5 and score == 0'
+py = 'len(game.enemies) == 5 and game.score == 0'
 [[check]]
 name = "the first bomb reaches only the nearest"
 at = 6
 expr = 'entities.count(Enemy) == 4 and score == 10'
+py = 'len(game.enemies) == 4 and game.score == 10'
 [[check]]
 name = "the second bomb"
 at = 81
 expr = 'entities.count(Enemy) == 3 and score == 20 and math.abs(player.x - 5.0) < 0.05'
+py = 'len(game.enemies) == 3 and game.score == 20 and abs(game.player.x - 5.0) < 0.05'
 [[check]]
 name = "the third bomb"
 at = 131
 expr = 'entities.count(Enemy) == 2 and score == 30'
+py = 'len(game.enemies) == 2 and game.score == 30'
 [[check]]
 name = "the fourth bomb"
 at = 181
 expr = 'entities.count(Enemy) == 1 and score == 40'
+py = 'len(game.enemies) == 1 and game.score == 40'
 [[check]]
 name = "the far one survives"
 expr = 'entities.count(Enemy) == 1 and entities.of(Enemy)[0].pos.z == 3'
+py = 'len(game.enemies) == 1 and game.enemies[0].pos.z == 3'

@@ -30,26 +30,33 @@ press = ["space"]
 name = "the first dash goes +x"
 at = 6
 expr = 'math.abs(player.x - 3.0) < 0.05 and math.abs(player.z) < 0.01'
+py = 'abs(game.player.x - 3.0) < 0.05 and abs(game.player.z) < 0.01'
 [[check]]
 name = "walking"
 at = 45
 expr = 'math.abs(player.x - 5.0) < 0.05'
+py = 'abs(game.player.x - 5.0) < 0.05'
 [[check]]
 name = "no dash during the cooldown"
 at = 55
 expr = 'math.abs(player.x - 5.0) < 0.05 and math.abs(player.z) < 0.01'
+py = 'abs(game.player.x - 5.0) < 0.05 and abs(game.player.z) < 0.01'
 [[check]]
 name = "walking +z"
 at = 95
 expr = 'math.abs(player.z - 2.0) < 0.05 and math.abs(player.x - 5.0) < 0.05'
+py = 'abs(game.player.z - 2.0) < 0.05 and abs(game.player.x - 5.0) < 0.05'
 [[check]]
 name = "the dash follows the last move"
 at = 135
 expr = 'math.abs(player.z - 5.0) < 0.05 and math.abs(player.x - 5.0) < 0.05'
+py = 'abs(game.player.z - 5.0) < 0.05 and abs(game.player.x - 5.0) < 0.05'
 [[check]]
 name = "diagonal walk"
 at = 175
 expr = 'math.abs(player.x - 3.0) < 0.05 and math.abs(player.z - 3.0) < 0.05'
+py = 'abs(game.player.x - 3.0) < 0.05 and abs(game.player.z - 3.0) < 0.05'
 [[check]]
 name = "a diagonal dash covers 3 units"
 expr = 'math.abs(player.x - 0.879) < 0.05 and math.abs(player.z - 0.879) < 0.05 and player.y == 0'
+py = 'abs(game.player.x - 0.879) < 0.05 and abs(game.player.z - 0.879) < 0.05 and game.player.y == 0'

@@ -40,3 +40,6 @@ practice.twe
 # paid-for model output). Runs worth publishing are committed from
 # bench/runs/.
 bench/cache/
+
+# web3d-M5: the Python baseline's virtualenv (bench/python/requirements.txt).
+bench/python/.venv/

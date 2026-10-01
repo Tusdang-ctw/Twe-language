@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use twec::bench::{grade_in_child, load_task, parse_task, validate, Stage};
+use twec::bench::{grade_in_child, load_task, parse_task, validate, Grader, Stage};
 
 fn exe() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_twec"))
@@ -39,7 +39,7 @@ fn every_committed_task_is_valid() {
         for file in ["task.md", "twe.md"] {
             assert!(dir.join(file).exists(), "{}: missing {file}", task.id);
         }
-        let v = validate(exe(), &task, Duration::from_secs(30), 8).unwrap();
+        let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 8).unwrap();
         assert!(v.ok(), "{}: {:?}", task.id, v.problems);
     }
 }
@@ -82,7 +82,7 @@ fn validation_rejects_a_vacuous_check_and_a_failing_solution() {
     let solution = "var n = 0\non update(dt):\n    n = n + 1\n";
     let dir = temp_task("vacuous", toml, solution);
     let task = load_task(&dir).unwrap();
-    let v = validate(exe(), &task, Duration::from_secs(30), 4).unwrap();
+    let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 4).unwrap();
     assert!(v.solution.passed);
     assert_eq!(v.problems.len(), 1, "{:?}", v.problems);
     assert!(v.problems[0].contains("`always true`"));
@@ -90,7 +90,7 @@ fn validation_rejects_a_vacuous_check_and_a_failing_solution() {
 
     std::fs::write(dir.join("solution.twe"), "var n = 0\n").unwrap();
     std::fs::write(dir.join("starter.twe"), "var n = 0\non update(dt):\n    n = n + 1\n").unwrap();
-    let v = validate(exe(), &task, Duration::from_secs(30), 4).unwrap();
+    let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 4).unwrap();
     assert!(v.problems.iter().any(|p| p.starts_with("the solution fails")), "{:?}", v.problems);
     assert!(v.problems.iter().any(|p| p == "the starter already passes"), "{:?}", v.problems);
     let _ = std::fs::remove_dir_all(&dir);
@@ -104,11 +104,11 @@ fn hand_written_mutants_count() {
     let toml = "ticks = 3\n[[check]]\nname = \"named\"\nexpr = \"greeting == \\\"twe\\\"\"\n";
     let dir = temp_task("hand", toml, "let greeting = \"twe\"\nprint(greeting)\n");
     let task = load_task(&dir).unwrap();
-    let v = validate(exe(), &task, Duration::from_secs(30), 2).unwrap();
+    let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 2).unwrap();
     assert!(!v.ok(), "no mechanical mutant changes a string");
     std::fs::create_dir_all(dir.join("mutants")).unwrap();
     std::fs::write(dir.join("mutants/wrong_greeting.twe"), "let greeting = \"two\"\nprint(greeting)\n").unwrap();
-    let v = validate(exe(), &task, Duration::from_secs(30), 2).unwrap();
+    let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 2).unwrap();
     assert!(v.ok(), "{:?}", v.problems);
     let _ = std::fs::remove_dir_all(&dir);
     // parse_task is reachable from the public API too.

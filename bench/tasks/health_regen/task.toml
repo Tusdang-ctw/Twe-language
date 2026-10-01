@@ -24,37 +24,45 @@ press = ["h"]
 name = "starts full"
 at = 5
 expr = 'hp == 100 and dead == false'
+py = 'game.hp == 100 and game.dead == False'
 
 [[check]]
 name = "two hits leave 40"
 at = 21
 expr = 'math.abs(hp - 40) < 0.01'
+py = 'abs(game.hp - 40) < 0.01'
 
 [[check]]
 name = "no regeneration within 2 s of a hit"
 at = 130
 expr = 'math.abs(hp - 40) < 0.01'
+py = 'abs(game.hp - 40) < 0.01'
 
 [[check]]
 name = "regenerates 10 per second after 2 s"
 at = 200
 expr = 'math.abs(hp - 50) < 0.5'
+py = 'abs(game.hp - 50) < 0.5'
 
 [[check]]
 name = "still regenerating"
 at = 299
 expr = 'math.abs(hp - 66.5) < 0.5'
+py = 'abs(game.hp - 66.5) < 0.5'
 
 [[check]]
 name = "hurt but alive"
 at = 311
 expr = 'math.abs(hp - 6.67) < 0.5 and dead == false'
+py = 'abs(game.hp - 6.67) < 0.5 and game.dead == False'
 
 [[check]]
 name = "dies at 0, not below"
 at = 321
 expr = 'hp == 0 and dead == true'
+py = 'game.hp == 0 and game.dead == True'
 
 [[check]]
 name = "dead stays dead"
 expr = 'hp == 0 and dead == true'
+py = 'game.hp == 0 and game.dead == True'

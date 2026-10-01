@@ -18,26 +18,33 @@ press = ["space"]
 name = "a target with 3 health, no bullets"
 at = 0
 expr = 'entities.count(Target) == 1 and entities.of(Target)[0].hp == 3 and entities.count(Bullet) == 0'
+py = 'len(game.targets) == 1 and game.targets[0].hp == 3 and len(game.bullets) == 0'
 [[check]]
 name = "two bullets in flight"
 at = 30
 expr = 'entities.count(Bullet) == 2'
+py = 'len(game.bullets) == 2'
 [[check]]
 name = "both hit"
 at = 60
 expr = 'entities.count(Bullet) == 0 and entities.of(Target)[0].hp == 1'
+py = 'len(game.bullets) == 0 and game.targets[0].hp == 1'
 [[check]]
 name = "the target survives with 1 health"
 at = 120
 expr = 'entities.count(Target) == 1 and entities.of(Target)[0].hp == 1'
+py = 'len(game.targets) == 1 and game.targets[0].hp == 1'
 [[check]]
 name = "the third hit removes it"
 at = 140
 expr = 'entities.count(Target) == 0 and entities.count(Bullet) == 0'
+py = 'len(game.targets) == 0 and len(game.bullets) == 0'
 [[check]]
 name = "a bullet with nothing to hit flies on"
 at = 240
 expr = 'entities.count(Bullet) == 1 and entities.of(Bullet)[0].pos.x > 6.0'
+py = 'len(game.bullets) == 1 and game.bullets[0].pos.x > 6.0'
 [[check]]
 name = "and is removed after 8 units"
 expr = 'entities.count(Bullet) == 0'
+py = 'len(game.bullets) == 0'

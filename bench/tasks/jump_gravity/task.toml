@@ -15,26 +15,33 @@ press = ["space"]
 name = "on the ground"
 at = 5
 expr = 'height == 0 and jumps == 0'
+py = 'game.height == 0 and game.jumps == 0'
 [[check]]
 name = "rising"
 at = 20
 expr = 'math.abs(height - 1.06) < 0.15 and jumps == 1'
+py = 'abs(game.height - 1.06) < 0.15 and game.jumps == 1'
 [[check]]
 name = "the top of the arc"
 at = 34
 expr = 'math.abs(height - 1.6) < 0.15'
+py = 'abs(game.height - 1.6) < 0.15'
 [[check]]
 name = "falling; the press in the air did nothing"
 at = 45
 expr = 'math.abs(height - 1.26) < 0.15 and jumps == 1'
+py = 'abs(game.height - 1.26) < 0.15 and game.jumps == 1'
 [[check]]
 name = "landed"
 at = 70
 expr = 'height == 0 and jumps == 1'
+py = 'game.height == 0 and game.jumps == 1'
 [[check]]
 name = "jumps again"
 at = 110
 expr = 'height > 0.8 and jumps == 2'
+py = 'game.height > 0.8 and game.jumps == 2'
 [[check]]
 name = "landed again"
 expr = 'height == 0 and jumps == 2'
+py = 'game.height == 0 and game.jumps == 2'

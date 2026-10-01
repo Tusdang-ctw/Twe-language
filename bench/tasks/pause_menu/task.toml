@@ -36,30 +36,38 @@ press = ["enter"]
 name = "playing, the timer runs"
 at = 59
 expr = 'mode == "playing" and math.abs(elapsed - 0.983) < 0.05'
+py = 'game.mode == "playing" and abs(game.elapsed - 0.983) < 0.05'
 [[check]]
 name = "Escape pauses and stops the timer"
 at = 100
 expr = 'mode == "paused" and math.abs(elapsed - 1.0) < 0.05'
+py = 'game.mode == "paused" and abs(game.elapsed - 1.0) < 0.05'
 [[check]]
 name = "Escape resumes"
 at = 180
 expr = 'mode == "playing" and math.abs(elapsed - 2.0) < 0.05'
+py = 'game.mode == "playing" and abs(game.elapsed - 2.0) < 0.05'
 [[check]]
 name = "Q asks to confirm"
 at = 230
 expr = 'mode == "confirm_quit" and math.abs(elapsed - 2.333) < 0.05'
+py = 'game.mode == "confirm_quit" and abs(game.elapsed - 2.333) < 0.05'
 [[check]]
 name = "N goes back to paused, Y there does nothing"
 at = 255
 expr = 'mode == "paused"'
+py = 'game.mode == "paused"'
 [[check]]
 name = "Y quits to the title"
 at = 285
 expr = 'mode == "title"'
+py = 'game.mode == "title"'
 [[check]]
 name = "Escape on the title does nothing"
 at = 295
 expr = 'mode == "title"'
+py = 'game.mode == "title"'
 [[check]]
 name = "Enter starts a new game from 0"
 expr = 'mode == "playing" and math.abs(elapsed - 1.0) < 0.05'
+py = 'game.mode == "playing" and abs(game.elapsed - 1.0) < 0.05'

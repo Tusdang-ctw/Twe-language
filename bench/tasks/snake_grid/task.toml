@@ -18,30 +18,38 @@ press = ["up"]
 name = "starts 3 long"
 at = 5
 expr = 'snake == [(4, 5), (3, 5), (2, 5)] and over == false'
+py = 'game.snake == [(4, 5), (3, 5), (2, 5)] and game.over == False'
 [[check]]
 name = "one move"
 at = 22
 expr = 'snake == [(5, 5), (4, 5), (3, 5)]'
+py = 'game.snake == [(5, 5), (4, 5), (3, 5)]'
 [[check]]
 name = "eats the first food and grows"
 at = 52
 expr = 'snake[0] == (7, 5) and snake.length == 4'
+py = 'game.snake[0] == (7, 5) and len(game.snake) == 4'
 [[check]]
 name = "turns up"
 at = 97
 expr = 'snake[0] == (7, 2) and snake.length == 5'
+py = 'game.snake[0] == (7, 2) and len(game.snake) == 5'
 [[check]]
 name = "turns left"
 at = 172
 expr = 'snake[0] == (2, 2) and snake.length == 6 and snake[1] == (3, 2)'
+py = 'game.snake[0] == (2, 2) and len(game.snake) == 6 and game.snake[1] == (3, 2)'
 [[check]]
 name = "turns down to the last food"
 at = 262
 expr = 'snake[0] == (2, 8) and snake.length == 7'
+py = 'game.snake[0] == (2, 8) and len(game.snake) == 7'
 [[check]]
 name = "can't reverse"
 at = 280
 expr = 'snake[0] == (2, 9) and over == false'
+py = 'game.snake[0] == (2, 9) and game.over == False'
 [[check]]
 name = "the wall ends it"
 expr = 'over == true and snake[0] == (2, 9) and snake.length == 7'
+py = 'game.over == True and game.snake[0] == (2, 9) and len(game.snake) == 7'

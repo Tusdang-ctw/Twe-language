@@ -34,8 +34,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value as Json};
 use twe_llm::{Provider, Reply, Request, StopReason, Usage};
 
-use crate::bench::{self, Grade, Stage, Task};
-use crate::llm_loop::{self, LoopOptions};
+use crate::bench::{self, Grade, Grader, Lang, Stage, Task};
+use crate::llm_loop::{self, LoopOptions, StaticVerdict};
 
 /// Bumped when tasks, prompts or grading change in a way that makes
 /// results incomparable with earlier runs.
@@ -46,6 +46,8 @@ const SMOKE_TICKS: u32 = 120;
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
+    /// Which language the model writes, and how its programs are graded.
+    pub grader: Grader,
     pub samples: u32,
     /// Rounds per sample; 1 means a single attempt with no feedback.
     pub max_rounds: u32,
@@ -66,6 +68,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         RunOptions {
+            grader: Grader::twe(Path::new("twec")),
             samples: 5,
             max_rounds: 4,
             verify_feedback: true,
@@ -95,6 +98,19 @@ up, down, left, right. The program is tested automatically: a script presses key
 it reads the names listed under Interface, so use exactly those names. \
 Reply with the complete program in one ```twe fenced block.";
 
+/// The same facts for the Python + pygame-ce baseline.
+const HARNESS_PY: &str = "\
+Write the program in Python 3 with pygame-ce (`import pygame`). Define a class `Game` with \
+`__init__(self)` (the game starts here), `update(self, dt, events)` and `draw(self, screen)`. \
+It is run at a fixed 60 ticks per second: each tick, `update` is called with dt = 1/60 s and the list \
+of this tick's pygame events, then `draw` with a 640x480 pygame Surface. Do not write a main loop, \
+open a window or call `pygame.init()`: the test harness does that. Input: `pygame.key.get_pressed()` \
+for held keys; KEYDOWN events (or `pygame.key.get_just_pressed()`) for presses; `pygame.mouse.get_pos()`; \
+MOUSEBUTTONDOWN events and `pygame.mouse.get_pressed()` for buttons. Keys used: a–z, space, enter \
+(`K_RETURN`), escape, and the arrow keys. The program is tested automatically: a script presses keys, \
+and after given ticks it reads the attributes listed under Interface from your `Game` instance, so use \
+exactly those names. Reply with the complete program in one ```python fenced block.";
+
 /// The compact stdlib manifest: every builtin's name and parameters,
 /// grouped by category.
 pub fn stdlib_listing() -> String {
@@ -112,9 +128,13 @@ pub fn stdlib_listing() -> String {
     out
 }
 
-/// The system prompt: the primer and the stdlib listing (unless
-/// `primer` is off), then how the program is run.
-pub fn system_prompt(primer: bool) -> String {
+/// The system prompt: for Twe, the primer and the stdlib listing
+/// (unless `primer` is off), then how the program is run. For Python,
+/// how the program is run (models know Python and pygame already).
+pub fn system_prompt(lang: Lang, primer: bool) -> String {
+    if lang == Lang::Python {
+        return HARNESS_PY.to_string();
+    }
     if primer {
         format!("{}\n\n{}\n\n{HARNESS_TWE}", crate::primer::guide(), stdlib_listing())
     } else {
@@ -122,12 +142,13 @@ pub fn system_prompt(primer: bool) -> String {
     }
 }
 
-/// The task as the model sees it.
-pub fn task_prompt(task: &Task) -> Result<String, String> {
+/// The task as the model sees it: the shared text, and the interface
+/// for its language.
+pub fn task_prompt(task: &Task, lang: Lang) -> Result<String, String> {
     let read = |name: &str| {
         std::fs::read_to_string(task.dir.join(name)).map_err(|e| format!("{}: {name}: {e}", task.id))
     };
-    Ok(format!("# Task\n\n{}\n# Interface\n\n{}", read("task.md")?, read("twe.md")?))
+    Ok(format!("# Task\n\n{}\n# Interface\n\n{}", read("task.md")?, read(lang.interface_file())?))
 }
 
 // ---------------------------------------------------------------------------
@@ -290,9 +311,9 @@ impl SampleRecord {
 /// The smoke check: run `source` for 2 s of game time with no input in
 /// a child process; `Some(message)` when it doesn't load, crashes or
 /// hangs.
-pub fn smoke_check(exe: &Path, source: &str, limit: Duration) -> Option<String> {
+pub fn smoke_check(grader: &Grader, source: &str, limit: Duration) -> Option<String> {
     let task = bench::smoke_task(SMOKE_TICKS);
-    let g = bench::grade_in_child(exe, &task, source, limit);
+    let g = grader.grade(&task, source, limit);
     match g.stage {
         Stage::Checks => None,
         Stage::Timeout => Some(format!(
@@ -309,9 +330,33 @@ pub fn smoke_check(exe: &Path, source: &str, limit: Duration) -> Option<String> 
     }
 }
 
+/// The language's static check as the loop's verdict: `twec verify`
+/// (its JSON v2 goes back), or for Python `compile()` and pyflakes.
+fn static_verdict(grader: &Grader, source: &str, limit: Duration) -> StaticVerdict {
+    let (errors, report) = grader.static_check(source, limit);
+    let message = match grader.lang {
+        Lang::Twe => format!(
+            "`twec verify` rejected the program. Its diagnostics (JSON v2) follow; each carries `fix.edits`, \
+             anchored replacements you can apply.\n\n{report}"
+        ),
+        Lang::Python => format!("Python's checks (`compile()` and pyflakes) found errors:\n\n{report}"),
+    };
+    StaticVerdict { errors, report, message }
+}
+
+/// Whether `source` doesn't even parse.
+fn syntax_error(grader: &Grader, source: &str, limit: Duration) -> bool {
+    match grader.lang {
+        Lang::Twe => crate::lexer::lex(source)
+            .ok()
+            .and_then(|t| crate::parser::parse(&t).ok())
+            .is_none(),
+        Lang::Python => grader.static_check(source, limit).1.contains("SyntaxError"),
+    }
+}
+
 /// Run one sample: the loop, then the grade.
 pub fn run_sample(
-    exe: &Path,
     provider: &mut dyn Provider,
     task: &Task,
     sample: u32,
@@ -334,7 +379,9 @@ pub fn run_sample(
         wall_ms: 0,
         cache_hits: 0,
     };
-    let prompt = match task_prompt(task) {
+    let grader = &options.grader;
+    let lang = grader.lang;
+    let prompt = match task_prompt(task, lang) {
         Ok(p) => p,
         Err(e) => {
             record.infra_error = Some(e);
@@ -346,26 +393,29 @@ pub fn run_sample(
         trace_dir: Some(options.out_dir.join("transcripts").join(&task.id).join(sample.to_string())),
         source_path: None,
         log_prompts: true,
-        system: system_prompt(options.primer),
-        starter: std::fs::read_to_string(task.dir.join("starter.twe")).unwrap_or_default(),
+        system: system_prompt(lang, options.primer),
+        starter: std::fs::read_to_string(task.dir.join(format!("starter.{}", lang.ext()))).unwrap_or_default(),
         max_tokens: options.max_tokens,
         verify_feedback: options.verify_feedback,
+        lang: lang.fences()[0].to_string(),
+        lang_aliases: lang.fences()[1..].iter().map(|s| s.to_string()).collect(),
     };
     let smoke = |source: &str| {
         if options.smoke_feedback {
-            smoke_check(exe, source, options.grade_limit)
+            smoke_check(grader, source, options.grade_limit)
         } else {
             None
         }
     };
+    let verdict = |source: &str| static_verdict(grader, source, options.grade_limit);
     let outcome = match &options.cache_dir {
         Some(dir) => {
             let mut cached = Cached { inner: provider, dir: dir.clone(), sample, hits: 0 };
-            let outcome = llm_loop::run_loop_checked(&mut cached, &prompt, &loop_options, &smoke);
+            let outcome = llm_loop::run_loop_with(&mut cached, &prompt, &loop_options, &verdict, &smoke);
             record.cache_hits = cached.hits;
             outcome
         }
-        None => llm_loop::run_loop_checked(provider, &prompt, &loop_options, &smoke),
+        None => llm_loop::run_loop_with(provider, &prompt, &loop_options, &verdict, &smoke),
     };
     record.wall_ms = start.elapsed().as_millis() as u64;
     let outcome = match outcome {
@@ -377,10 +427,7 @@ pub fn run_sample(
     };
     record.rounds = outcome.rounds.len() as u32;
     if let Some(first) = outcome.rounds.first() {
-        record.first_syntax_error = crate::lexer::lex(&first.source)
-            .ok()
-            .and_then(|t| crate::parser::parse(&t).ok())
-            .is_none();
+        record.first_syntax_error = syntax_error(grader, &first.source, options.grade_limit);
         record.first_verify_errors = first.verify_errors;
     }
     if let Some(last) = outcome.rounds.last() {
@@ -391,8 +438,8 @@ pub fn run_sample(
     record.cost_usd = outcome.cost_usd;
     let program_dir = options.out_dir.join("programs").join(&task.id);
     let _ = std::fs::create_dir_all(&program_dir);
-    let _ = std::fs::write(program_dir.join(format!("{sample}.twe")), &outcome.final_source);
-    record.grade = Some(bench::grade_in_child(exe, task, &outcome.final_source, options.grade_limit));
+    let _ = std::fs::write(program_dir.join(format!("{sample}.{}", lang.ext())), &outcome.final_source);
+    record.grade = Some(grader.grade(task, &outcome.final_source, options.grade_limit));
     record
 }
 
@@ -405,7 +452,6 @@ pub fn run_sample(
 /// finishes, then write the summary. `make_provider` builds a provider
 /// per worker. Returns the records of the whole run.
 pub fn run(
-    exe: &Path,
     tasks: &[Task],
     make_provider: &(dyn Fn() -> Result<Box<dyn Provider>, String> + Sync),
     provider_id: &str,
@@ -414,12 +460,13 @@ pub fn run(
     std::fs::create_dir_all(&options.out_dir).map_err(|e| format!("{}: {e}", options.out_dir.display()))?;
     let settings = json!({
         "bench_version": BENCH_VERSION,
+        "lang": options.grader.lang.as_str(),
         "provider": provider_id,
         "samples": options.samples,
         "max_rounds": options.max_rounds,
         "verify_feedback": options.verify_feedback,
         "smoke_feedback": options.smoke_feedback,
-        "primer": options.primer,
+        "primer": options.primer && options.grader.lang == Lang::Twe,
         "max_tokens": options.max_tokens,
         "tasks": tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
         "twec": env!("CARGO_PKG_VERSION"),
@@ -427,7 +474,7 @@ pub fn run(
     let run_json = options.out_dir.join("run.json");
     if let Ok(old) = std::fs::read_to_string(&run_json) {
         let old: Json = serde_json::from_str(&old).unwrap_or(Json::Null);
-        for key in ["bench_version", "provider", "max_rounds", "verify_feedback", "smoke_feedback", "primer", "max_tokens"] {
+        for key in ["bench_version", "lang", "provider", "max_rounds", "verify_feedback", "smoke_feedback", "primer", "max_tokens"] {
             if old[key] != settings[key] {
                 return Err(format!(
                     "{} holds a run with different settings ({key}: {} vs {}); use another --out",
@@ -478,7 +525,7 @@ pub fn run(
                         return;
                     }
                     let Some((task, sample)) = queue.lock().unwrap().pop_front() else { return };
-                    let record = run_sample(exe, provider.as_mut(), task, sample, options);
+                    let record = run_sample(provider.as_mut(), task, sample, options);
                     {
                         let mut in_a_row = failures_in_a_row.lock().unwrap();
                         match &record.infra_error {
@@ -551,7 +598,8 @@ fn rewrite_samples(path: &Path, records: &[SampleRecord]) -> Result<(), String> 
 
 /// Re-grade every program in a run directory with the current grader
 /// (no model calls), then rewrite `samples.jsonl` and the summary.
-pub fn regrade(exe: &Path, run_dir: &Path, tasks_root: &Path, limit: Duration, jobs: usize) -> Result<Vec<SampleRecord>, String> {
+/// `grader` must be for the run's language (`run.json`'s `lang`).
+pub fn regrade(grader: &Grader, run_dir: &Path, tasks_root: &Path, limit: Duration, jobs: usize) -> Result<Vec<SampleRecord>, String> {
     let samples_path = run_dir.join("samples.jsonl");
     let mut records = read_samples(&samples_path);
     if records.is_empty() {
@@ -575,10 +623,10 @@ pub fn regrade(exe: &Path, run_dir: &Path, tasks_root: &Path, limit: Duration, j
                 .map(|&i| {
                     let r = &records[i];
                     let task = &tasks[&r.task];
-                    let path = run_dir.join("programs").join(&r.task).join(format!("{}.twe", r.sample));
+                    let path = run_dir.join("programs").join(&r.task).join(format!("{}.{}", r.sample, grader.lang.ext()));
                     s.spawn(move || {
                         let source = std::fs::read_to_string(&path).unwrap_or_default();
-                        (i, bench::grade_in_child(exe, task, &source, limit))
+                        (i, grader.grade(task, &source, limit))
                     })
                 })
                 .collect();
@@ -744,8 +792,9 @@ fn pct(v: &Json) -> String {
 pub fn summary_markdown(s: &Json) -> String {
     let set = &s["settings"];
     let mut out = format!(
-        "# Bench {} — {}\n\n{} tasks, {} samples ({} infrastructure errors excluded); up to {} rounds, verify feedback {}, smoke feedback {}, primer {}.\n\n",
+        "# Bench {} — {}, {}\n\n{} tasks, {} samples ({} infrastructure errors excluded); up to {} rounds, checker feedback {}, smoke feedback {}, primer {}.\n\n",
         set["bench_version"].as_str().unwrap_or("?"),
+        set["lang"].as_str().unwrap_or("twe"),
         set["provider"].as_str().unwrap_or("?"),
         s["tasks"],
         s["samples"],
@@ -867,11 +916,13 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_the_primer_the_stdlib_and_the_harness() {
-        let with = system_prompt(true);
+        let with = system_prompt(Lang::Twe, true);
         assert!(with.contains("Golden rules"));
         assert!(with.contains("math.sqrt("));
         assert!(with.contains("60 ticks per second"));
-        let without = system_prompt(false);
+        let without = system_prompt(Lang::Twe, false);
         assert!(!without.contains("Golden rules") && without.contains("60 ticks per second"));
+        let python = system_prompt(Lang::Python, true);
+        assert!(python.contains("class `Game`") && !python.contains("Golden rules"));
     }
 }

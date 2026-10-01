@@ -9,27 +9,33 @@ press = ["r"]
 name = "starts at 10, not finished"
 at = 0
 expr = 'remaining == 10 and finished == false'
+py = 'game.remaining == 10 and game.finished == False'
 
 [[check]]
 name = "one second in, 9 left"
 at = 60
 expr = 'math.abs(remaining - 9.0) < 0.05'
+py = 'abs(game.remaining - 9.0) < 0.05'
 
 [[check]]
 name = "just before the end, not finished"
 at = 590
 expr = 'math.abs(remaining - 0.1667) < 0.05 and finished == false'
+py = 'abs(game.remaining - 0.1667) < 0.05 and game.finished == False'
 
 [[check]]
 name = "finishes at 0"
 at = 620
 expr = 'remaining == 0 and finished == true'
+py = 'game.remaining == 0 and game.finished == True'
 
 [[check]]
 name = "stays at 0"
 at = 690
 expr = 'remaining == 0 and finished == true'
+py = 'game.remaining == 0 and game.finished == True'
 
 [[check]]
 name = "R restarts it"
 expr = 'math.abs(remaining - 9.0) < 0.05 and finished == false'
+py = 'abs(game.remaining - 9.0) < 0.05 and game.finished == False'

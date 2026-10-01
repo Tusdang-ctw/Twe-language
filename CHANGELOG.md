@@ -12,6 +12,12 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Added (benchmark)
+- **The Python + pygame-ce baseline** (web3d-M5): `--lang python` on `twec bench grade`, `check` and `run`.
+  - The same 20 tasks, the same input replayed through pygame's APIs, and a Python twin of every check.
+  - `compile()` and pyflakes play `twec verify`'s part.
+  - Setup: `bench/python/requirements.txt`.
+
 ### Fixed
 - **`examples/tetris.twe` crashed on every hard drop**, and **`grid_duel`, `pong_net` and `pong_net_internet` crashed while waiting for a peer**: each used `return` in an event handler.
 - **`twec verify` now reports `return` outside a function or method body**, and a member a list doesn't have (`.len()`). Both used to fail only when the line ran.

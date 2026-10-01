@@ -799,9 +799,9 @@ fn handle_bench(args: &[String]) -> i32 {
         Some("run") => bench_run(&args[1..]),
         Some("regrade") => bench_regrade(&args[1..]),
         _ => {
-            eprintln!("usage: twec bench grade <task-dir> <file|-> [--json]");
-            eprintln!("       twec bench check [--all | <task-dir>...] [--jobs N] [--timeout SECONDS]");
-            eprintln!("       twec bench run <provider flags> [--samples N] [--rounds N] [--no-verify] [--no-smoke] [--no-primer]");
+            eprintln!("usage: twec bench grade <task-dir> <file|-> [--json] [--lang twe|python] [--python PATH]");
+            eprintln!("       twec bench check [--all | <task-dir>...] [--jobs N] [--timeout SECONDS] [--lang twe|python]");
+            eprintln!("       twec bench run <provider flags> [--lang twe|python] [--samples N] [--rounds N] [--no-verify] [--no-smoke] [--no-primer]");
             eprintln!("                      [--tasks a,b] [--jobs N] [--max-tokens N] [--timeout S] [--out DIR] [--cache DIR | --no-cache]");
             eprintln!("       twec bench regrade <run-dir>");
             2
@@ -809,7 +809,75 @@ fn handle_bench(args: &[String]) -> i32 {
     }
 }
 
+/// web3d-M5 session 5: `--lang twe|python` and `--python PATH`, taken
+/// out of a `bench` command's arguments.
+struct LangFlags {
+    rest: Vec<String>,
+    lang: crate::bench::Lang,
+    python: Option<std::path::PathBuf>,
+}
+
+fn take_lang_flags(args: &[String]) -> Result<LangFlags, i32> {
+    let mut out = LangFlags { rest: Vec::new(), lang: crate::bench::Lang::Twe, python: None };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--lang" => {
+                out.lang = match args.get(i + 1).map(String::as_str) {
+                    Some("twe") => crate::bench::Lang::Twe,
+                    Some("python") => crate::bench::Lang::Python,
+                    _ => {
+                        eprintln!("error: --lang takes `twe` or `python`");
+                        return Err(2);
+                    }
+                };
+                i += 2;
+            }
+            "--python" => {
+                let Some(p) = args.get(i + 1) else {
+                    eprintln!("error: --python takes the interpreter's path");
+                    return Err(2);
+                };
+                out.python = Some(p.into());
+                i += 2;
+            }
+            _ => {
+                out.rest.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The grader for `lang`: this binary for Twe; for Python, the
+/// interpreter (`--python`, else `bench/python/.venv`, else the path's)
+/// and `bench/python/harness.py`.
+fn make_grader(lang: crate::bench::Lang, python: Option<std::path::PathBuf>) -> Result<crate::bench::Grader, i32> {
+    let exe = std::env::current_exe().map_err(|e| {
+        eprintln!("error: cannot find twec itself: {e}");
+        2
+    })?;
+    Ok(match lang {
+        crate::bench::Lang::Twe => crate::bench::Grader::twe(&exe),
+        crate::bench::Lang::Python => {
+            let harness = std::path::Path::new(crate::bench::PYTHON_HARNESS);
+            if !harness.exists() {
+                eprintln!("error: {} not found (run from the repository root)", harness.display());
+                return Err(2);
+            }
+            let python = python.unwrap_or_else(crate::bench::default_python);
+            crate::bench::Grader::python(&exe, &python, harness)
+        }
+    })
+}
+
 fn bench_grade(args: &[String]) -> i32 {
+    let LangFlags { rest: args, lang, python } = match take_lang_flags(args) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let args = &args[..];
     let json = args.iter().any(|a| a == "--json");
     let rest: Vec<&String> = args.iter().filter(|a| *a != "--json").collect();
     let [task_dir, file] = rest.as_slice() else {
@@ -840,7 +908,13 @@ fn bench_grade(args: &[String]) -> i32 {
             }
         }
     };
-    let grade = crate::bench::grade(&task, &source);
+    let grade = match lang {
+        crate::bench::Lang::Twe => crate::bench::grade(&task, &source),
+        crate::bench::Lang::Python => match make_grader(lang, python) {
+            Ok(g) => g.grade(&task, &source, std::time::Duration::from_secs(60)),
+            Err(code) => return code,
+        },
+    };
     if json {
         println!("{}", grade.to_json());
     } else {
@@ -869,8 +943,18 @@ fn bench_grade(args: &[String]) -> i32 {
 /// web3d-M5 session 4: `twec bench run` — models write programs for
 /// the tasks, which are graded on behaviour (`src/bench_run.rs`).
 fn bench_run(args: &[String]) -> i32 {
+    let LangFlags { rest: args, lang, python } = match take_lang_flags(args) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let args = &args[..];
+    let grader = match make_grader(lang, python) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
     let mut flags = ProviderFlags::default();
     let mut options = crate::bench_run::RunOptions {
+        grader,
         jobs: 4,
         ..Default::default()
     };
@@ -963,24 +1047,22 @@ fn bench_run(args: &[String]) -> i32 {
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
             .collect();
-        std::path::PathBuf::from(format!("bench/runs/{}-{label}", crate::bench_run::today()))
+        let lang = match options.grader.lang {
+            crate::bench::Lang::Twe => String::new(),
+            other => format!("{}-", other.as_str()),
+        };
+        std::path::PathBuf::from(format!("bench/runs/{}-{lang}{label}", crate::bench_run::today()))
     });
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: cannot find twec itself: {e}");
-            return 2;
-        }
-    };
     eprintln!(
-        "[bench] {} tasks × {} samples with {} → {}",
+        "[bench] {} tasks × {} samples, {} with {} → {}",
         tasks.len(),
         options.samples,
+        options.grader.lang.as_str(),
         provider_id,
         options.out_dir.display()
     );
     let make = || flags.build();
-    match crate::bench_run::run(&exe, &tasks, &make, &provider_id, &options) {
+    match crate::bench_run::run(&tasks, &make, &provider_id, &options) {
         Ok(_) => {
             match fs::read_to_string(options.out_dir.join("summary.md")) {
                 Ok(md) => print!("{md}"),
@@ -998,20 +1080,31 @@ fn bench_run(args: &[String]) -> i32 {
 /// `twec bench regrade <run-dir>`: grade a run's programs again with
 /// the current grader and tasks (no model calls).
 fn bench_regrade(args: &[String]) -> i32 {
-    let [dir] = args else {
-        eprintln!("usage: twec bench regrade <run-dir>");
+    let LangFlags { rest, python, .. } = match take_lang_flags(args) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let [dir] = rest.as_slice() else {
+        eprintln!("usage: twec bench regrade <run-dir> [--python PATH]");
         return 2;
     };
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: cannot find twec itself: {e}");
-            return 2;
-        }
+    // The run's language is in its run.json.
+    let lang = match fs::read_to_string(std::path::Path::new(dir).join("run.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["lang"].as_str().map(str::to_string))
+        .as_deref()
+    {
+        Some("python") => crate::bench::Lang::Python,
+        _ => crate::bench::Lang::Twe,
+    };
+    let grader = match make_grader(lang, python) {
+        Ok(g) => g,
+        Err(code) => return code,
     };
     let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     match crate::bench_run::regrade(
-        &exe,
+        &grader,
         std::path::Path::new(dir),
         std::path::Path::new("bench/tasks"),
         std::time::Duration::from_secs(30),
@@ -1031,6 +1124,11 @@ fn bench_regrade(args: &[String]) -> i32 {
 }
 
 fn bench_check(args: &[String]) -> i32 {
+    let LangFlags { rest: args, lang, python } = match take_lang_flags(args) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let args = &args[..];
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     let mut jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let mut timeout = 20.0_f64;
@@ -1075,12 +1173,9 @@ fn bench_check(args: &[String]) -> i32 {
         eprintln!("usage: twec bench check [--all | <task-dir>...] [--jobs N] [--timeout SECONDS]");
         return 2;
     }
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: cannot find twec itself: {e}");
-            return 2;
-        }
+    let grader = match make_grader(lang, python) {
+        Ok(g) => g,
+        Err(code) => return code,
     };
     let limit = std::time::Duration::from_secs_f64(timeout);
     let mut bad = 0;
@@ -1093,7 +1188,7 @@ fn bench_check(args: &[String]) -> i32 {
                 continue;
             }
         };
-        match crate::bench::validate(&exe, &task, limit, jobs) {
+        match crate::bench::validate(&grader, &task, limit, jobs) {
             Ok(v) => {
                 let strengths: Vec<String> = v.strengths.iter().map(|s| format!("{} ({})", s.name, s.killed)).collect();
                 println!(

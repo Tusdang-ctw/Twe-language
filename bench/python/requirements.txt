@@ -1,0 +1,5 @@
+# web3d-M5: the Python baseline (bench/python/harness.py). Pinned so
+# baseline results are reproducible; `twec bench` finds the interpreter in
+# bench/python/.venv when it exists.
+pygame-ce==2.5.8
+pyflakes==3.2.0

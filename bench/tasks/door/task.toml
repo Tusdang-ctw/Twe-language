@@ -18,30 +18,38 @@ press = ["e"]
 name = "starts closed"
 at = 5
 expr = 'door_state == "closed" and door_progress == 0'
+py = 'game.door_state == "closed" and game.door_progress == 0'
 [[check]]
 name = "half open after half a second"
 at = 40
 expr = 'door_state == "opening" and math.abs(door_progress - 0.5) < 0.04'
+py = 'game.door_state == "opening" and abs(game.door_progress - 0.5) < 0.04'
 [[check]]
 name = "open after 1 s"
 at = 75
 expr = 'door_state == "open" and door_progress == 1'
+py = 'game.door_state == "open" and game.door_progress == 1'
 [[check]]
 name = "closing"
 at = 110
 expr = 'door_state == "closing" and math.abs(door_progress - 0.83) < 0.04'
+py = 'game.door_state == "closing" and abs(game.door_progress - 0.83) < 0.04'
 [[check]]
 name = "E mid-close reverses it"
 at = 120
 expr = 'door_state == "opening" and math.abs(door_progress - 0.8) < 0.05'
+py = 'game.door_state == "opening" and abs(game.door_progress - 0.8) < 0.05'
 [[check]]
 name = "open again, from where it was"
 at = 135
 expr = 'door_state == "open" and door_progress == 1'
+py = 'game.door_state == "open" and game.door_progress == 1'
 [[check]]
 name = "closing again"
 at = 230
 expr = 'door_state == "closing" and math.abs(door_progress - 0.5) < 0.04'
+py = 'game.door_state == "closing" and abs(game.door_progress - 0.5) < 0.04'
 [[check]]
 name = "closed"
 expr = 'door_state == "closed" and door_progress == 0'
+py = 'game.door_state == "closed" and game.door_progress == 0'

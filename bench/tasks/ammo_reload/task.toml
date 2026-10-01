@@ -96,34 +96,43 @@ press = ["r"]
 name = "six shots empty the magazine"
 at = 81
 expr = 'shots == 6 and ammo == 0 and reserve == 18'
+py = 'game.shots == 6 and game.ammo == 0 and game.reserve == 18'
 [[check]]
 name = "no firing while reloading"
 at = 121
 expr = 'reloading == true and shots == 6'
+py = 'game.reloading == True and game.shots == 6'
 [[check]]
 name = "reload takes 1.5 s"
 at = 185
 expr = 'ammo == 0 and reloading == true'
+py = 'game.ammo == 0 and game.reloading == True'
 [[check]]
 name = "reload fills from the reserve"
 at = 195
 expr = 'ammo == 6 and reserve == 12 and reloading == false'
+py = 'game.ammo == 6 and game.reserve == 12 and game.reloading == False'
 [[check]]
 name = "fires again"
 at = 211
 expr = 'shots == 8 and ammo == 4'
+py = 'game.shots == 8 and game.ammo == 4'
 [[check]]
 name = "a partial reload tops up"
 at = 315
 expr = 'ammo == 6 and reserve == 10'
+py = 'game.ammo == 6 and game.reserve == 10'
 [[check]]
 name = "R on a full magazine does nothing"
 at = 335
 expr = 'reloading == false and ammo == 6 and reserve == 10'
+py = 'game.reloading == False and game.ammo == 6 and game.reserve == 10'
 [[check]]
 name = "the last of the reserve"
 at = 655
 expr = 'ammo == 4 and reserve == 0 and shots == 20'
+py = 'game.ammo == 4 and game.reserve == 0 and game.shots == 20'
 [[check]]
 name = "no reload with an empty reserve"
 expr = 'reloading == false and ammo == 4'
+py = 'game.reloading == False and game.ammo == 4'

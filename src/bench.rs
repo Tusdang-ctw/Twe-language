@@ -91,7 +91,10 @@ pub struct Check {
     pub name: String,
     /// Evaluated after this many ticks.
     pub at: u32,
+    /// A Twe expression that must be `true`.
     pub expr: String,
+    /// The same check in Python, for the baseline (`game` in scope).
+    pub py: Option<String>,
 }
 
 pub fn load_task(dir: &Path) -> Result<Task, String> {
@@ -123,7 +126,7 @@ pub fn smoke_task(ticks: u32) -> Task {
         tier: 1,
         ticks,
         inputs: Vec::new(),
-        checks: vec![Check { name: "runs".into(), at: ticks, expr: "true".into() }],
+        checks: vec![Check { name: "runs".into(), at: ticks, expr: "true".into(), py: Some("True".into()) }],
     }
 }
 
@@ -202,7 +205,8 @@ pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
             return Err(ctx(format!("`at` is past the last tick ({ticks})")));
         }
         let name = t.get("name").and_then(|v| v.as_str()).unwrap_or(expr).to_string();
-        checks.push(Check { name, at, expr: expr.to_string() });
+        let py = t.get("py").and_then(|v| v.as_str()).map(str::to_string);
+        checks.push(Check { name, at, expr: expr.to_string(), py });
     }
     if checks.is_empty() {
         return Err("a task needs at least one [[check]]".into());
@@ -461,35 +465,215 @@ fn probe(env: &mut Env, expr: &str, id: usize) -> Result<(bool, String), String>
 // Grading in a child process
 // ---------------------------------------------------------------------------
 
-/// Grade `source` by running `exe bench grade <task> - --json` with the
-/// source on stdin, killing it after `limit`. A timeout or a crash is a
-/// failed grade, not an error.
-pub fn grade_in_child(exe: &Path, task: &Task, source: &str, limit: Duration) -> Grade {
-    let spawned = Command::new(exe)
-        .args(["bench", "grade"])
-        .arg(&task.dir)
-        .args(["-", "--json"])
+/// The language a program is written in (web3d-M5 session 5: Twe, or
+/// the Python + pygame-ce baseline).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lang {
+    Twe,
+    Python,
+}
+
+impl Lang {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Lang::Twe => "twe",
+            Lang::Python => "python",
+        }
+    }
+    /// The file extension of solutions, starters and mutants.
+    pub fn ext(self) -> &'static str {
+        match self {
+            Lang::Twe => "twe",
+            Lang::Python => "py",
+        }
+    }
+    /// Code-fence tags a reply may use for a whole file.
+    pub fn fences(self) -> &'static [&'static str] {
+        match self {
+            Lang::Twe => &["twe"],
+            Lang::Python => &["python", "py"],
+        }
+    }
+    /// The interface file a task gives programs in this language.
+    pub fn interface_file(self) -> &'static str {
+        match self {
+            Lang::Twe => "twe.md",
+            Lang::Python => "python.md",
+        }
+    }
+}
+
+/// How programs are graded: Twe programs by `twec bench grade` (this
+/// binary), Python programs by `bench/python/harness.py`. Both run in a
+/// child process with a wall-clock limit, so a program that loops
+/// forever or crashes its interpreter fails its task instead of
+/// stopping the benchmark, and no state carries between programs.
+#[derive(Clone, Debug)]
+pub struct Grader {
+    pub lang: Lang,
+    /// The `twec` binary.
+    pub twec: PathBuf,
+    /// The Python interpreter (with pygame-ce and pyflakes) and the
+    /// harness, for [`Lang::Python`].
+    pub python: PathBuf,
+    pub harness: PathBuf,
+}
+
+impl Grader {
+    pub fn twe(twec: &Path) -> Grader {
+        Grader {
+            lang: Lang::Twe,
+            twec: twec.to_path_buf(),
+            python: PathBuf::new(),
+            harness: PathBuf::new(),
+        }
+    }
+
+    pub fn python(twec: &Path, python: &Path, harness: &Path) -> Grader {
+        Grader {
+            lang: Lang::Python,
+            twec: twec.to_path_buf(),
+            python: python.to_path_buf(),
+            harness: harness.to_path_buf(),
+        }
+    }
+
+    /// Grade `source` on `task`.
+    pub fn grade(&self, task: &Task, source: &str, limit: Duration) -> Grade {
+        match self.lang {
+            Lang::Twe => grade_in_child(&self.twec, task, source, limit),
+            Lang::Python => {
+                let job = python_job(task, source);
+                let mut cmd = Command::new(&self.python);
+                cmd.arg(&self.harness).arg("grade");
+                match run_child(cmd, job.to_string().as_bytes(), limit) {
+                    Ok(out) => match serde_json::from_str::<Json>(&out.stdout).ok().as_ref().and_then(Grade::from_json) {
+                        Some(g) => g,
+                        None => Grade::failed(
+                            Stage::Crash,
+                            format!("the Python harness exited with {}: {}", out.status, out.stderr_head()),
+                            task,
+                        ),
+                    },
+                    Err(ChildFail::Timeout) => {
+                        Grade::failed(Stage::Timeout, format!("killed after {:.0} s", limit.as_secs_f64()), task)
+                    }
+                    Err(ChildFail::Spawn(e)) => Grade::failed(Stage::Crash, e, task),
+                }
+            }
+        }
+    }
+
+    /// The language's static check, the counterpart of `twec verify`:
+    /// `(error count, report)`. For Python, `compile()` and pyflakes.
+    pub fn static_check(&self, source: &str, limit: Duration) -> (usize, String) {
+        match self.lang {
+            Lang::Twe => {
+                let report = crate::verify::verify_program(source);
+                (report.errors(), report.to_json())
+            }
+            Lang::Python => {
+                let mut cmd = Command::new(&self.python);
+                cmd.arg(&self.harness).arg("check");
+                let job = serde_json::json!({ "program": source }).to_string();
+                match run_child(cmd, job.as_bytes(), limit) {
+                    Ok(out) => match serde_json::from_str::<Json>(&out.stdout) {
+                        Ok(v) => (
+                            v["errors"].as_u64().unwrap_or(0) as usize,
+                            v["report"].as_str().unwrap_or_default().to_string(),
+                        ),
+                        Err(_) => (0, format!("the checker failed: {}", out.stderr_head())),
+                    },
+                    Err(_) => (0, "the checker did not finish".into()),
+                }
+            }
+        }
+    }
+}
+
+/// The Python interpreter for the baseline: the project venv
+/// (`bench/python/.venv`, made from `bench/python/requirements.txt`)
+/// when there is one, else `python3` / `python` on the path.
+pub fn default_python() -> PathBuf {
+    for venv in ["bench/python/.venv/Scripts/python.exe", "bench/python/.venv/bin/python"] {
+        if Path::new(venv).exists() {
+            return PathBuf::from(venv);
+        }
+    }
+    PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
+}
+
+/// Where the baseline's harness lives, relative to the repository root.
+pub const PYTHON_HARNESS: &str = "bench/python/harness.py";
+
+/// The Python harness's input: the program, every tick's input command
+/// (compiled here, so both languages get exactly the same input), and
+/// the checks' Python expressions.
+fn python_job(task: &Task, source: &str) -> Json {
+    let commands: Vec<Json> = (0..task.ticks)
+        .map(|t| {
+            let c = command_at(task, t);
+            json!({
+                "held": c.keys_held, "pressed": c.keys_pressed,
+                "mouse": [c.mouse_x, c.mouse_y],
+                "mb_held": c.mb_held, "mb_press": c.mb_press,
+            })
+        })
+        .collect();
+    let checks: Vec<Json> = task
+        .checks
+        .iter()
+        .map(|c| json!({ "name": c.name, "at": c.at, "expr": c.py.clone().unwrap_or_else(|| "False".into()) }))
+        .collect();
+    json!({ "program": source, "ticks": task.ticks, "commands": commands, "checks": checks })
+}
+
+/// What a finished child process left.
+struct ChildOutput {
+    status: std::process::ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+impl ChildOutput {
+    fn stderr_head(&self) -> String {
+        self.stderr.trim().chars().take(400).collect()
+    }
+}
+
+enum ChildFail {
+    Spawn(String),
+    Timeout,
+}
+
+/// Run `cmd` with `input` on stdin, killing it after `limit`. Stdout
+/// and stderr are drained on threads, so a chatty program can't fill a
+/// pipe and stall.
+fn run_child(mut cmd: Command, input: &[u8], limit: Duration) -> Result<ChildOutput, ChildFail> {
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match spawned {
-        Ok(c) => c,
-        Err(e) => return Grade::failed(Stage::Crash, format!("starting the grader failed: {e}"), task),
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(source.as_bytes());
-    }
-    // Drain stdout on a thread so a chatty program can't fill the pipe
-    // and stall while we wait.
-    let mut stdout = child.stdout.take();
-    let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        if let Some(out) = stdout.as_mut() {
-            let _ = std::io::Read::read_to_string(out, &mut s);
+        .spawn()
+        .map_err(|e| ChildFail::Spawn(format!("starting the grader failed: {e}")))?;
+    let mut stdin = child.stdin.take();
+    let input = input.to_vec();
+    let writer = std::thread::spawn(move || {
+        if let Some(s) = stdin.as_mut() {
+            let _ = s.write_all(&input);
         }
-        s
     });
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut bytes);
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
     let start = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -500,23 +684,35 @@ pub fn grade_in_child(exe: &Path, task: &Task, source: &str, limit: Duration) ->
                 break None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => return Grade::failed(Stage::Crash, format!("waiting on the grader failed: {e}"), task),
+            Err(e) => return Err(ChildFail::Spawn(format!("waiting on the grader failed: {e}"))),
         }
     };
-    let out = reader.join().unwrap_or_default();
-    let Some(status) = status else {
-        return Grade::failed(Stage::Timeout, format!("killed after {:.0} s", limit.as_secs_f64()), task);
-    };
-    match serde_json::from_str::<Json>(&out).ok().as_ref().and_then(Grade::from_json) {
-        Some(g) => g,
-        None => {
-            let mut err = String::new();
-            if let Some(mut e) = child.stderr.take() {
-                let _ = std::io::Read::read_to_string(&mut e, &mut err);
-            }
-            let err: String = err.trim().chars().take(400).collect();
-            Grade::failed(Stage::Crash, format!("grader exited with {status}: {err}"), task)
-        }
+    let _ = writer.join();
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    match status {
+        Some(status) => Ok(ChildOutput { status, stdout, stderr }),
+        None => Err(ChildFail::Timeout),
+    }
+}
+
+/// Grade a Twe program by running `exe bench grade <task> - --json`
+/// with the source on stdin, killing it after `limit`. A timeout or a
+/// crash is a failed grade, not an error.
+pub fn grade_in_child(exe: &Path, task: &Task, source: &str, limit: Duration) -> Grade {
+    let mut cmd = Command::new(exe);
+    cmd.args(["bench", "grade"]).arg(&task.dir).args(["-", "--json"]);
+    match run_child(cmd, source.as_bytes(), limit) {
+        Ok(out) => match serde_json::from_str::<Json>(&out.stdout).ok().as_ref().and_then(Grade::from_json) {
+            Some(g) => g,
+            None => Grade::failed(
+                Stage::Crash,
+                format!("grader exited with {}: {}", out.status, out.stderr_head()),
+                task,
+            ),
+        },
+        Err(ChildFail::Timeout) => Grade::failed(Stage::Timeout, format!("killed after {:.0} s", limit.as_secs_f64()), task),
+        Err(ChildFail::Spawn(e)) => Grade::failed(Stage::Crash, e, task),
     }
 }
 
@@ -531,12 +727,19 @@ pub struct Mutant {
     pub source: String,
 }
 
-/// Mechanical mutants of `source`: each deletes one statement line,
-/// flips one operator, or changes one number. Only mutants that still
-/// parse are returned; a few may behave identically (an "equivalent
-/// mutant"), which is fine — validation asks only that each check be
-/// caught by *some* mutant.
+/// Mechanical mutants of a Twe `source` (see [`mutants_for`]).
 pub fn mutants(source: &str) -> Vec<Mutant> {
+    mutants_for(source, Lang::Twe)
+}
+
+/// Mechanical mutants of `source`: each deletes one statement line,
+/// flips one operator, or changes one number. Twe mutants that don't
+/// parse are dropped; Python ones are left to fail at `parse` (they
+/// don't count as runnable). A few may behave identically (an
+/// "equivalent mutant"), which is fine — validation asks only that each
+/// check be caught by *some* mutant.
+pub fn mutants_for(source: &str, lang: Lang) -> Vec<Mutant> {
+    const PY_FLIPS: &[(&str, &str)] = &[("True", "False"), ("False", "True")];
     const FLIPS: &[(&str, &str)] = &[
         ("<=", ">"),
         (">=", "<"),
@@ -578,9 +781,11 @@ pub fn mutants(source: &str) -> Vec<Mutant> {
         if !t.ends_with(':') {
             out.push(Mutant { what: format!("line {n}: deleted"), source: with_line(i, None) });
         }
-        let code = code_ranges(line);
+        let code = code_ranges(line, lang);
         let mut taken: Vec<(usize, usize)> = Vec::new();
-        for (from, to) in FLIPS {
+        let flips = FLIPS.iter().filter(|(f, _)| lang == Lang::Twe || (*f != "true" && *f != "false"));
+        let py = PY_FLIPS.iter().filter(|_| lang == Lang::Python);
+        for (from, to) in flips.chain(py) {
             let mut start = 0;
             while let Some(off) = line[start..].find(from) {
                 let at = start + off;
@@ -620,40 +825,43 @@ pub fn mutants(source: &str) -> Vec<Mutant> {
             out.push(Mutant { what: format!("line {n}: {lit} → {new}"), source: with_line(i, Some(&mutated)) });
         }
     }
-    out.retain(|m| {
-        crate::lexer::lex(&m.source)
-            .ok()
-            .is_some_and(|t| crate::parser::parse(&t).is_ok())
-    });
+    if lang == Lang::Twe {
+        out.retain(|m| {
+            crate::lexer::lex(&m.source)
+                .ok()
+                .is_some_and(|t| crate::parser::parse(&t).is_ok())
+        });
+    }
     out
 }
 
-/// Byte ranges of `line` that are code: outside string literals and
-/// before a `#` comment.
-fn code_ranges(line: &str) -> Vec<(usize, usize)> {
+/// Byte ranges of `line` that are code: outside string literals (`"`,
+/// and `'` in Python) and before a `#` comment.
+fn code_ranges(line: &str, lang: Lang) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut start = 0;
-    let mut in_str = false;
+    let mut quote: Option<char> = None;
     let mut escaped = false;
+    let opens = |c: char| c == '"' || (lang == Lang::Python && c == '\'');
     for (i, c) in line.char_indices() {
-        if in_str {
+        if let Some(q) = quote {
             if escaped {
                 escaped = false;
             } else if c == '\\' {
                 escaped = true;
-            } else if c == '"' {
-                in_str = false;
+            } else if c == q {
+                quote = None;
                 start = i + 1;
             }
-        } else if c == '"' {
+        } else if opens(c) {
             ranges.push((start, i));
-            in_str = true;
+            quote = Some(c);
         } else if c == '#' {
             ranges.push((start, i));
             return ranges;
         }
     }
-    if !in_str {
+    if quote.is_none() {
         ranges.push((start, line.len()));
     }
     ranges
@@ -714,11 +922,18 @@ impl Validation {
 /// any) fails, and every check is failed by at least one mutant of the
 /// solution that runs to completion — so no check passes vacuously.
 /// Mutants are graded in child processes `jobs` at a time.
-pub fn validate(exe: &Path, task: &Task, limit: Duration, jobs: usize) -> Result<Validation, String> {
+pub fn validate(grader: &Grader, task: &Task, limit: Duration, jobs: usize) -> Result<Validation, String> {
+    let ext = grader.lang.ext();
+    if grader.lang == Lang::Python {
+        if let Some(c) = task.checks.iter().find(|c| c.py.is_none()) {
+            return Err(format!("{}: check `{}` has no `py` expression", task.id, c.name));
+        }
+    }
     let read = |name: &str| std::fs::read_to_string(task.dir.join(name));
-    let solution_src = read("solution.twe").map_err(|e| format!("{}: solution.twe: {e}", task.id))?;
+    let solution_src =
+        read(&format!("solution.{ext}")).map_err(|e| format!("{}: solution.{ext}: {e}", task.id))?;
     let mut problems = Vec::new();
-    let solution = grade_in_child(exe, task, &solution_src, limit);
+    let solution = grader.grade(task, &solution_src, limit);
     if !solution.passed {
         problems.push(format!(
             "the solution fails ({}{}): {}",
@@ -727,9 +942,9 @@ pub fn validate(exe: &Path, task: &Task, limit: Duration, jobs: usize) -> Result
             solution.failed_checks().join("; ")
         ));
     }
-    let starter = match read("starter.twe") {
+    let starter = match read(&format!("starter.{ext}")) {
         Ok(src) => {
-            let g = grade_in_child(exe, task, &src, limit);
+            let g = grader.grade(task, &src, limit);
             if g.passed {
                 problems.push("the starter already passes".into());
             }
@@ -737,16 +952,16 @@ pub fn validate(exe: &Path, task: &Task, limit: Duration, jobs: usize) -> Result
         }
         Err(_) => None,
     };
-    let mut all = mutants(&solution_src);
+    let mut all = mutants_for(&solution_src, grader.lang);
     if let Ok(dir) = std::fs::read_dir(task.dir.join("mutants")) {
-        let mut hand: Vec<PathBuf> = dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "twe")).collect();
+        let mut hand: Vec<PathBuf> = dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == ext)).collect();
         hand.sort();
         for p in hand {
             let source = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
             all.push(Mutant { what: format!("mutants/{}", p.file_name().unwrap_or_default().to_string_lossy()), source });
         }
     }
-    let grades = grade_many(exe, task, &all, limit, jobs);
+    let grades = grade_many(grader, task, &all, limit, jobs);
     let runnable: Vec<&Grade> = grades.iter().filter(|g| g.stage == Stage::Checks).collect();
     let strengths: Vec<CheckStrength> = task
         .checks
@@ -777,14 +992,14 @@ pub fn validate(exe: &Path, task: &Task, limit: Duration, jobs: usize) -> Result
 }
 
 /// Grade many programs in child processes, `jobs` at a time, in order.
-pub fn grade_many(exe: &Path, task: &Task, programs: &[Mutant], limit: Duration, jobs: usize) -> Vec<Grade> {
+pub fn grade_many(grader: &Grader, task: &Task, programs: &[Mutant], limit: Duration, jobs: usize) -> Vec<Grade> {
     let jobs = jobs.max(1);
     let mut grades: Vec<Option<Grade>> = vec![None; programs.len()];
     for (chunk_i, chunk) in programs.chunks(jobs).enumerate() {
         let done: Vec<Grade> = std::thread::scope(|s| {
             let handles: Vec<_> = chunk
                 .iter()
-                .map(|m| s.spawn(|| grade_in_child(exe, task, &m.source, limit)))
+                .map(|m| s.spawn(|| grader.grade(task, &m.source, limit)))
                 .collect();
             handles
                 .into_iter()

@@ -5,30 +5,38 @@ ticks = 1600
 name = "starts at 6:00, daytime"
 at = 0
 expr = 'hour == 6 and is_night == false and nights == 0'
+py = 'game.hour == 6 and game.is_night == False and game.nights == 0'
 [[check]]
 name = "an hour per second"
 at = 60
 expr = 'math.abs(hour - 7.0) < 0.05'
+py = 'abs(game.hour - 7.0) < 0.05'
 [[check]]
 name = "still day at 19:50"
 at = 830
 expr = 'is_night == false'
+py = 'game.is_night == False'
 [[check]]
 name = "night begins at 20:00"
 at = 850
 expr = 'is_night == true and nights == 1'
+py = 'game.is_night == True and game.nights == 1'
 [[check]]
 name = "the hour wraps past midnight"
 at = 1100
 expr = 'math.abs(hour - 0.333) < 0.05 and is_night == true'
+py = 'abs(game.hour - 0.333) < 0.05 and game.is_night == True'
 [[check]]
 name = "still night before 6:00"
 at = 1430
 expr = 'is_night == true'
+py = 'game.is_night == True'
 [[check]]
 name = "day again after 6:00"
 at = 1450
 expr = 'is_night == false and math.abs(hour - 6.167) < 0.05 and nights == 1'
+py = 'game.is_night == False and abs(game.hour - 6.167) < 0.05 and game.nights == 1'
 [[check]]
 name = "one night counted"
 expr = 'nights == 1 and math.abs(hour - 8.667) < 0.05'
+py = 'game.nights == 1 and abs(game.hour - 8.667) < 0.05'

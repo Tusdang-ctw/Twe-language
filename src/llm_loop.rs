@@ -55,6 +55,11 @@ pub struct LoopOptions {
     /// default). Off, verify still runs and is recorded, but only the
     /// extra check of [`run_loop_checked`] can send a round back.
     pub verify_feedback: bool,
+    /// The language's fence tag (`"twe"`; the benchmark's baseline uses
+    /// `"python"`), used to read whole-file replies and to quote files.
+    pub lang: String,
+    /// Other fence tags accepted for whole files (`"py"`).
+    pub lang_aliases: Vec<String>,
 }
 
 impl Default for LoopOptions {
@@ -68,6 +73,8 @@ impl Default for LoopOptions {
             starter: String::new(),
             max_tokens: 16_000,
             verify_feedback: true,
+            lang: "twe".into(),
+            lang_aliases: Vec::new(),
         }
     }
 }
@@ -131,6 +138,43 @@ pub fn run_loop_checked(
     options: &LoopOptions,
     check: &dyn Fn(&str) -> Option<String>,
 ) -> Result<LoopOutcome, String> {
+    let path = options.source_path.clone();
+    let verify = move |source: &str| {
+        let report = verify_program_with_path(source, path.as_deref());
+        let json = report.to_json();
+        StaticVerdict {
+            errors: report.errors(),
+            message: format!(
+                "`twec verify` rejected the program. Its diagnostics (JSON v2) follow; each carries `fix.edits`, \
+                 anchored replacements you can apply.\n\n{json}"
+            ),
+            report: json,
+        }
+    };
+    run_loop_with(provider, task, options, &verify, check)
+}
+
+/// What a language's static check found (`twec verify` for Twe; the
+/// benchmark's Python baseline uses `compile()` and pyflakes).
+pub struct StaticVerdict {
+    pub errors: usize,
+    /// The full report, kept in the round's record and trace.
+    pub report: String,
+    /// What goes back to the model when there are errors.
+    pub message: String,
+}
+
+/// The loop for any language: `static_check` plays verify's part
+/// (sent back when it finds errors, if `verify_feedback` is on), then
+/// `check` runs. Replies are read and written in `options.lang`'s
+/// fenced blocks.
+pub fn run_loop_with(
+    provider: &mut dyn Provider,
+    task: &str,
+    options: &LoopOptions,
+    static_check: &dyn Fn(&str) -> StaticVerdict,
+    check: &dyn Fn(&str) -> Option<String>,
+) -> Result<LoopOutcome, String> {
     let trace_path = options
         .trace_dir
         .as_ref()
@@ -139,7 +183,9 @@ pub fn run_loop_checked(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let protocol = edit::protocol_instructions("twe");
+    let lang = options.lang.as_str();
+    let fences: Vec<&str> = std::iter::once(lang).chain(options.lang_aliases.iter().map(String::as_str)).collect();
+    let protocol = edit::protocol_instructions(lang);
     let system = if options.system.is_empty() {
         protocol
     } else {
@@ -148,7 +194,7 @@ pub fn run_loop_checked(
     let first = if options.starter.is_empty() {
         task.to_string()
     } else {
-        format!("{task}\n\nThe current file:\n```twe\n{}\n```", options.starter)
+        format!("{task}\n\nThe current file:\n```{lang}\n{}\n```", options.starter)
     };
     let mut request = Request {
         system,
@@ -157,38 +203,41 @@ pub fn run_loop_checked(
     };
     let mut source = options.starter.clone();
     let mut rounds: Vec<LoopRound> = Vec::new();
+    let reply_how = format!(
+        "Reply with SEARCH/REPLACE blocks against the current file, or the whole corrected file in one ```{lang} block."
+    );
 
     for round in 1..=options.max_rounds {
         let reply = provider.complete(&request).map_err(|e| e.to_string())?;
-        let applied = match edit::parse_reply(&reply.text, &["twe"]) {
+        let applied = match edit::parse_reply(&reply.text, &fences) {
             Edit::Nothing => Ok(reply.text.trim().to_string()),
             e => edit::apply(&source, &e).map_err(|e| e.to_string()),
+        };
+        let truncated = if reply.stop == StopReason::MaxTokens {
+            "Your reply was cut off at the token limit; keep the next one shorter (SEARCH/REPLACE blocks rather than the whole file).\n\n"
+        } else {
+            ""
         };
         let mut verify_errors = 0;
         let mut check_error = None;
         let (verify_json, passed, edit_error, feedback) = match applied {
             Ok(candidate) => {
                 source = candidate;
-                let report = verify_program_with_path(&source, options.source_path.as_deref());
-                let json = report.to_json();
-                verify_errors = report.errors();
-                if options.verify_feedback && !report.ok() {
-                    let feedback = verify_feedback(&json, &reply);
-                    (json, false, None, feedback)
+                let verdict = static_check(&source);
+                verify_errors = verdict.errors;
+                if options.verify_feedback && verdict.errors > 0 {
+                    let feedback = format!("{truncated}{}\n\n{reply_how}", verdict.message);
+                    (verdict.report, false, None, feedback)
                 } else if let Some(problem) = check(&source) {
                     check_error = Some(problem.clone());
-                    let feedback = format!(
-                        "{problem}\n\nReply with SEARCH/REPLACE blocks against the current file, or the whole corrected file in one ```twe block."
-                    );
-                    (json, false, None, feedback)
+                    (verdict.report, false, None, format!("{truncated}{problem}\n\n{reply_how}"))
                 } else {
-                    (json, true, None, String::new())
+                    (verdict.report, true, None, String::new())
                 }
             }
             Err(e) => {
                 let feedback = format!(
-                    "Your edit could not be applied: {e}. The file is unchanged:\n```twe\n{source}\n```\n\
-                     Reply with SEARCH/REPLACE blocks against this file, or the whole corrected file in one ```twe block."
+                    "{truncated}Your edit could not be applied: {e}. The file is unchanged:\n```{lang}\n{source}\n```\n{reply_how}"
                 );
                 (String::new(), false, Some(e), feedback)
             }
@@ -237,20 +286,6 @@ pub fn run_loop_checked(
         usage,
         cost_usd: (!costs.is_empty()).then(|| costs.iter().sum()),
     })
-}
-
-/// The next round's message after verify rejected the file.
-fn verify_feedback(verify_json: &str, reply: &Reply) -> String {
-    let truncated = if reply.stop == StopReason::MaxTokens {
-        "Your reply was cut off at the token limit; keep the next one shorter (SEARCH/REPLACE blocks rather than the whole file).\n\n"
-    } else {
-        ""
-    };
-    format!(
-        "{truncated}`twec verify` rejected the program. Its diagnostics (JSON v2) follow; \
-         each carries `fix.edits`, anchored replacements you can apply. Reply with SEARCH/REPLACE blocks \
-         against the current file, or the whole corrected file in one ```twe block.\n\n{verify_json}"
-    )
 }
 
 /// Pull a `.twe` source out of an LLM reply: the first ```` ```twe ````

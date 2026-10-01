@@ -151,6 +151,38 @@ The final program is graded in a child process. The model never sees the checks 
 
 **Five provider failures in a row stop a run,** as does a configuration error (no key, an unknown model).
 
+## The Python baseline
+
+The same tasks, written in Python 3 with pygame-ce and graded the same way: `--lang python` on `grade`, `check` and `run`.
+
+```sh
+python -m venv bench/python/.venv
+bench/python/.venv/Scripts/pip install -r bench/python/requirements.txt   # bin/pip elsewhere
+twec bench check --lang python --all
+twec bench run --lang python --provider anthropic --model claude-sonnet-5-5 --samples 5
+```
+
+**What's the same:**
+- **The task text** (`task.md`). The interface is `python.md`, which names the same things as `twe.md`:
+  - a top-level `var x` becomes `self.x` on the `Game` object;
+  - an entity class `Coin` becomes a list `self.coins` of objects with a `pos`;
+  - `vec3` becomes `pygame.Vector3`.
+- **The input.** twec compiles each task's input script into per-tick commands, and `bench/python/harness.py` replays them through pygame's own APIs:
+  - `pygame.key.get_pressed()` and `get_just_pressed()`;
+  - KEYDOWN, KEYUP, MOUSEBUTTONDOWN and MOUSEBUTTONUP events, which are also passed to `update`;
+  - `pygame.mouse.get_pos()` and `get_pressed()`.
+
+  The key semantics can't drift between the two languages.
+- **The checks.** Every check has a `py` twin in `task.toml`, at the same tick, reading the same quantity (`len(game.coins) == 0` for `entities.count(Coin) == 0`).
+- **Validation.** The Python twins are validated like the Twe checks: the reference `solution.py` passes, and each twin is failed by a running mutant.
+- **The loop.** Up to 4 rounds, with the language's own checker as feedback (`compile()` and pyflakes, in place of `twec verify`), then the same 2-second smoke run.
+
+**What differs, deliberately:**
+- **No primer.** The Python system prompt is only how the program is run: a `Game` class with `update(dt, events)` and `draw(screen)`, 60 ticks per second, no main loop of its own. Models know Python and pygame; Twe needs its primer.
+- **Python uses Python's tools,** and Twe gets `twec verify` with structured fixes. That is the claim being tested.
+
+**Security.** A Twe program can only do what Twe's stdlib allows. A Python program can do anything your user account can, since the harness `exec`s it. Run Python benchmark sessions on models you trust, or inside a container or VM.
+
 ## Validating a task
 
 `twec bench check` accepts a task only if:
