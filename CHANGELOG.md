@@ -13,6 +13,7 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added (benchmark)
+- **`twec mutate` makes 549 error-fix triples** from `tests/programs` and `examples`, with seven new error kinds taken from real LLM mistakes. `--root` can be repeated; files carrying the benchmark canary are refused.
 - **Bench v1** (web3d-M5): 60 behaviour-graded tasks, 10 of them edits to an existing program, in Twe and Python.
   - A canary marks the tasks so they can be dropped from training data.
   - Runs record prompt and task hashes and flag answers that copy a reference solution.

@@ -19,7 +19,7 @@ const USAGE: &str = "usage: twec [run [--frames N] <file> | \
      mcp | \
      corpus [--json] [-o PATH] | \
      eval [SUITE] [--source FILE] [--source-dir DIR] [--root DIR] [--json] [-o PATH] | \
-     mutate [--root DIR] [--out DIR] [--rules RULESET] | \
+     mutate [--root DIR]... [--out DIR] [--rules RULESET] | \
      perf-snapshot [--target DIR] [-o PATH] | \
      perf-diff [--threshold PCT] <baseline.json> <current.json> | \
      doctor [--json] [-o PATH] | \
@@ -1584,7 +1584,7 @@ fn discover_suites(
 /// fix_json) triples, and write them as JSONL into `--out` (default
 /// `corpus/error_fix/`). The output is the fine-tune training set.
 fn handle_mutate(args: &[String]) -> i32 {
-    let mut root: String = "tests/programs".to_string();
+    let mut roots: Vec<String> = Vec::new();
     let mut out: String = "corpus/error_fix".to_string();
     let mut rules: String = "all".to_string();
     let mut i = 0;
@@ -1595,7 +1595,7 @@ fn handle_mutate(args: &[String]) -> i32 {
                     eprintln!("error: --root takes a directory");
                     return 2;
                 }
-                root = args[i + 1].clone();
+                roots.push(args[i + 1].clone());
                 i += 2;
             }
             "--out" => {
@@ -1621,13 +1621,17 @@ fn handle_mutate(args: &[String]) -> i32 {
             }
         }
     }
-    let root_p = std::path::PathBuf::from(&root);
+    // web3d-M5: several roots; by default the test programs and the examples.
+    if roots.is_empty() {
+        roots = vec!["tests/programs".into(), "examples".into()];
+    }
+    let root_ps: Vec<std::path::PathBuf> = roots.iter().map(std::path::PathBuf::from).collect();
     let out_p = std::path::PathBuf::from(&out);
     if let Err(e) = fs::create_dir_all(&out_p) {
         eprintln!("error: cannot create `{}`: {e}", out_p.display());
         return 1;
     }
-    let report = crate::mutator::run(&root_p, &out_p, crate::mutator::RuleSet::parse(&rules));
+    let report = crate::mutator::run_roots(&root_ps, &out_p, crate::mutator::RuleSet::parse(&rules));
     println!("{}", report.summary());
     if report.triples_emitted == 0 {
         1

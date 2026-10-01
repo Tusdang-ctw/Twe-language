@@ -43,3 +43,7 @@ bench/cache/
 
 # web3d-M5: the Python baseline's virtualenv (bench/python/requirements.txt).
 bench/python/.venv/
+
+# web3d-M5: `twec mutate` output (about 8.6 MB of training triples); regenerated
+# deterministically, so not committed.
+corpus/

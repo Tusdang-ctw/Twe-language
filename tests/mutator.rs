@@ -168,3 +168,27 @@ fn unique_tempdir(prefix: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&p).unwrap();
     p
 }
+
+/// web3d-M5: the corpus target. The default roots (tests/programs and
+/// examples) give at least 500 triples across the rule set; every
+/// original verifies clean, every mutated program fails verify, and no
+/// benchmark file (they carry the canary) is ever used.
+#[test]
+fn the_default_corpus_has_500_triples_and_no_benchmark_data() {
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let out = std::env::temp_dir().join(format!("twec_corpus_{ts}"));
+    let roots = [std::path::PathBuf::from("tests/programs"), std::path::PathBuf::from("examples"), std::path::PathBuf::from("bench/tasks")];
+    let report = twec::mutator::run_roots(&roots, &out, twec::mutator::RuleSet::All);
+    assert!(report.triples_emitted >= 500, "only {} triples", report.triples_emitted);
+    let text = std::fs::read_to_string(out.join("error_fix.jsonl")).unwrap();
+    assert!(!text.contains("canary GUID"), "benchmark data leaked into the corpus");
+    let mut rules = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        rules.insert(v["rule"].as_str().unwrap().to_string());
+        assert!(twec::verify::verify_program(v["original"].as_str().unwrap()).ok(), "an original that doesn't verify");
+        assert!(v["verify"]["summary"]["errors"].as_u64().unwrap() > 0);
+    }
+    assert!(rules.len() >= 8, "{rules:?}");
+    let _ = std::fs::remove_dir_all(&out);
+}

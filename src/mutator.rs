@@ -89,7 +89,17 @@ impl RuleSet {
     }
     fn rules(self) -> Vec<Box<dyn MutationRule>> {
         match self {
-            RuleSet::All => vec![Box::new(IdentifierTypoRule), Box::new(LiteralTypeRule)],
+            RuleSet::All => vec![
+                Box::new(IdentifierTypoRule),
+                Box::new(LiteralTypeRule),
+                Box::new(EntityOnUpdateRule),
+                Box::new(ListLenRule),
+                Box::new(PythonLiteralRule),
+                Box::new(PythonModuloRule),
+                Box::new(MissingVarRule),
+                Box::new(ReturnInHandlerRule),
+                Box::new(DuplicateHandlerRule),
+            ],
             RuleSet::IdentifierTypoOnly => vec![Box::new(IdentifierTypoRule)],
             RuleSet::LiteralOnly => vec![Box::new(LiteralTypeRule)],
         }
@@ -122,6 +132,11 @@ impl MutationRule for IdentifierTypoRule {
         let needs_strict_prefix =
             !crate::infer::detect_strict(source) && !crate::verify::detect_verified(source);
         for name in names {
+            // web3d-M5: a few sites per file, so files with many `let`s
+            // don't swamp the other error kinds.
+            if out.len() >= 5 {
+                break;
+            }
             // Need at least 4 chars so did_you_mean's short-name
             // distance limit (1) accepts our 1-char typo as a
             // candidate suggestion.
@@ -385,6 +400,220 @@ impl MutationRule for LiteralTypeRule {
 }
 
 // ---------------------------------------------------------------------------
+// web3d-M5 rules: the errors the benchmark's pilots and fixes met
+// ---------------------------------------------------------------------------
+
+/// At most this many candidates per rule per file, from different
+/// sites, so one long file can't dominate the corpus.
+const SITES_PER_FILE: usize = 3;
+
+/// Rewrite single lines: `f(line)` returns the new line and a note, or
+/// `None` where the rule doesn't apply. Up to [`SITES_PER_FILE`]
+/// candidates, one per rewritten line.
+fn line_rewrites(
+    source: &str,
+    kind: &'static str,
+    f: &dyn Fn(&str) -> Option<(String, String)>,
+) -> Vec<MutationCandidate> {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if out.len() >= SITES_PER_FILE {
+            break;
+        }
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((new_line, note)) = f(line) {
+            let mut v = lines.clone();
+            v[i] = &new_line;
+            out.push(MutationCandidate {
+                kind,
+                mutated: v.join("\n"),
+                note: format!("line {}: {note}", i + 1),
+            });
+        }
+    }
+    out
+}
+
+/// `line` with the first whole-word `from` outside strings replaced
+/// by `to`.
+fn replace_word(line: &str, from: &str, to: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'"' {
+            in_str = !in_str;
+        } else if c == b'#' && !in_str {
+            return None;
+        } else if !in_str && line[i..].starts_with(from) {
+            let before = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'.');
+            let end = i + from.len();
+            let after = end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+            if before && after {
+                return Some(format!("{}{}{}", &line[..i], to, &line[end..]));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `function update(dt):` in an entity written as `on update(dt):`,
+/// which an entity doesn't accept. The primer itself showed this
+/// until web3d-M5.
+struct EntityOnUpdateRule;
+
+impl MutationRule for EntityOnUpdateRule {
+    fn name(&self) -> &'static str {
+        "entity_on_update"
+    }
+    fn apply(&self, source: &str) -> Vec<MutationCandidate> {
+        line_rewrites(source, self.name(), &|line| {
+            let indent = line.len() - line.trim_start().len();
+            (indent > 0 && line.trim() == "function update(dt):").then(|| {
+                (format!("{}on update(dt):", &line[..indent]), "an entity's `function update(dt):` written as `on update(dt):`".into())
+            })
+        })
+    }
+}
+
+/// `.length` written as a call, `.len()`, as in Python and Rust.
+struct ListLenRule;
+
+impl MutationRule for ListLenRule {
+    fn name(&self) -> &'static str {
+        "list_len_call"
+    }
+    fn apply(&self, source: &str) -> Vec<MutationCandidate> {
+        line_rewrites(source, self.name(), &|line| {
+            let i = line.find(".length")?;
+            let end = i + ".length".len();
+            if line[end..].starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                return None;
+            }
+            Some((format!("{}.len(){}", &line[..i], &line[end..]), "`.length` written as `.len()`".into()))
+        })
+    }
+}
+
+/// Python's `True` / `False` / `None` for Twe's `true` / `false` / `nil`.
+struct PythonLiteralRule;
+
+impl MutationRule for PythonLiteralRule {
+    fn name(&self) -> &'static str {
+        "python_literal"
+    }
+    fn apply(&self, source: &str) -> Vec<MutationCandidate> {
+        line_rewrites(source, self.name(), &|line| {
+            for (twe, py) in [("true", "True"), ("false", "False"), ("nil", "None")] {
+                if let Some(new) = replace_word(line, twe, py) {
+                    return Some((new, format!("`{twe}` written as Python's `{py}`")));
+                }
+            }
+            None
+        })
+    }
+}
+
+/// `math.mod(a, b)` written as `a % b`; `%` is Twe's percent suffix.
+struct PythonModuloRule;
+
+impl MutationRule for PythonModuloRule {
+    fn name(&self) -> &'static str {
+        "python_modulo"
+    }
+    fn apply(&self, source: &str) -> Vec<MutationCandidate> {
+        line_rewrites(source, self.name(), &|line| {
+            let start = line.find("math.mod(")?;
+            let open = start + "math.mod".len();
+            let mut depth = 0;
+            let mut comma = None;
+            let mut close = None;
+            for (j, c) in line[open..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(open + j);
+                            break;
+                        }
+                    }
+                    ',' if depth == 1 && comma.is_none() => comma = Some(open + j),
+                    _ => {}
+                }
+            }
+            let (comma, close) = (comma?, close?);
+            let a = line[open + 1..comma].trim();
+            let b = line[comma + 1..close].trim();
+            Some((
+                format!("{}({a} % {b}){}", &line[..start], &line[close + 1..]),
+                "`math.mod(a, b)` written as `a % b`".into(),
+            ))
+        })
+    }
+}
+
+/// A top-level `var x = ...` without its `var`: an assignment to a
+/// name never declared.
+struct MissingVarRule;
+
+impl MutationRule for MissingVarRule {
+    fn name(&self) -> &'static str {
+        "missing_var"
+    }
+    fn apply(&self, source: &str) -> Vec<MutationCandidate> {
+        line_rewrites(source, self.name(), &|line| {
+            let rest = line.strip_prefix("var ")?;
+            rest.contains('=').then(|| (rest.to_string(), "top-level `var` declaration written without `var`".into()))
+        })
+    }
+}
+
+/// An early `return` in the top-level `on update`, which only a
+/// function or method may contain.
+struct ReturnInHandlerRule;
+
+impl MutationRule for ReturnInHandlerRule {
+    fn name(&self) -> &'static str {
+        "return_in_handler"
+    }
+    fn apply(&self, source: &str) -> Vec<MutationCandidate> {
+        line_rewrites(source, self.name(), &|line| {
+            (line == "on update(dt):").then(|| {
+                (
+                    "on update(dt):\n    if key.escape:\n        return".to_string(),
+                    "an early `return` at the top of the `on update` handler".into(),
+                )
+            })
+        })
+    }
+}
+
+/// A second top-level `on update`, which replaces the first.
+struct DuplicateHandlerRule;
+
+impl MutationRule for DuplicateHandlerRule {
+    fn name(&self) -> &'static str {
+        "duplicate_handler"
+    }
+    fn apply(&self, source: &str) -> Vec<MutationCandidate> {
+        if !source.lines().any(|l| l == "on update(dt):") {
+            return Vec::new();
+        }
+        vec![MutationCandidate {
+            kind: self.name(),
+            mutated: format!("{}\non update(dt):\n    print(\"tick\")\n", source.trim_end()),
+            note: "a second top-level `on update` handler appended".into(),
+        }]
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
 
@@ -412,6 +641,14 @@ impl MutationReport {
 /// Walk `root` (recursively), apply each enabled rule, write all
 /// resulting triples as JSONL to `out_dir/error_fix.jsonl`.
 pub fn run(root: &Path, out_dir: &Path, rule_set: RuleSet) -> MutationReport {
+    run_roots(&[root.to_path_buf()], out_dir, rule_set)
+}
+
+/// [`run`] over several roots. web3d-M5: only originals that verify
+/// clean are used (a triple's fix must be a good program), and any file
+/// carrying the benchmark's canary is refused, so benchmark solutions
+/// can't leak into a training corpus.
+pub fn run_roots(roots: &[PathBuf], out_dir: &Path, rule_set: RuleSet) -> MutationReport {
     let _ = std::fs::create_dir_all(out_dir);
     let out_path = out_dir.join("error_fix.jsonl");
     let mut writer = match std::fs::File::create(&out_path) {
@@ -429,13 +666,19 @@ pub fn run(root: &Path, out_dir: &Path, rule_set: RuleSet) -> MutationReport {
     let rules = rule_set.rules();
     let rule_names: Vec<&'static str> = rules.iter().map(|r| r.name()).collect();
     let mut files = Vec::new();
-    visit_files(root, &mut files);
+    for root in roots {
+        visit_files(root, &mut files);
+    }
+    files.sort();
     let mut triples = 0usize;
     for path in &files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(_) => continue,
         };
+        if source.contains("canary GUID") || !crate::verify::verify_program(&source).ok() {
+            continue;
+        }
         for rule in &rules {
             for cand in rule.apply(&source) {
                 let report =
