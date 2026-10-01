@@ -336,6 +336,30 @@ pub fn verify_program_with_options(
     // web3d-M5: `return` outside a function or method body fails when
     // it runs; report it before (the benchmark's pilot hit it).
     diagnostics.append(&mut collect_misplaced_returns(&program));
+    // web3d-M5: a second top-level `on update` / `on render` silently
+    // replaces the first (the env keeps one of each), so the first
+    // never runs. The benchmark's second pilot lost a debugging run to it.
+    let mut seen_update = false;
+    let mut seen_render = false;
+    for stmt in &program.stmts {
+        let (seen, name, line, col) = match stmt {
+            Stmt::OnUpdate { line, col, .. } => (&mut seen_update, "update(dt)", *line, *col),
+            Stmt::OnRender { line, col, .. } => (&mut seen_render, "render()", *line, *col),
+            _ => continue,
+        };
+        if *seen {
+            diagnostics.push(VerifyDiagnostic {
+                kind: "duplicate-handler".to_string(),
+                severity: Severity::Error,
+                line,
+                col,
+                message: format!("a second top-level `on {name}` replaces the first, which then never runs"),
+                help: Some(format!("put both bodies in one `on {name}:` handler")),
+                fix: None,
+            });
+        }
+        *seen = true;
+    }
     // web3d-M7: `visual` blocks are checked (GPU-safe subset, method
     // set, `material(...)` outputs, types through the WGSL codegen)
     // when a look first uses them; report the same problems statically.
@@ -1300,5 +1324,25 @@ mod tests {
         assert!(report.diagnostics[0].message.contains("list has no field 'len'"));
         let fine = "var l = [1, 2]\nl.append(3)\nl.set(0, 5)\nprint(l.length)\nprint(l.contains(2))\nprint(2 in l)\n";
         assert!(verify_program(fine).ok(), "{}", verify_program(fine).to_json());
+    }
+
+    /// web3d-M5: a second top-level `on update` would silently replace
+    /// the first.
+    #[test]
+    fn a_second_top_level_handler_is_reported() {
+        let report = verify_program("var a = 0
+on update(dt):
+    a += 1
+on update(dt):
+    a += 2
+");
+        assert_eq!(report.errors(), 1);
+        assert_eq!(report.diagnostics[0].kind, "duplicate-handler");
+        assert_eq!(report.diagnostics[0].line, 4);
+        assert!(verify_program("on update(dt):
+    print(1)
+on render():
+    print(2)
+").ok());
     }
 }

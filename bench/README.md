@@ -4,38 +4,24 @@ Does an LLM write working games in Twe more reliably than in Python? This benchm
 
 **Programs are graded by behaviour, not by their text or output.** Each program runs headless for a fixed number of 60 Hz ticks while a scripted player presses keys. Then the checks are evaluated on the running world, e.g. "after holding D for one second, the player is 5 units to the right".
 
-## The tasks (bench v0)
+## The tasks (bench v1)
 
-Twenty tasks, every one written from scratch (no starter). Each has a reference solution and passes validation (below).
+There are 60 tasks with 362 checks. Each has Twe and Python reference solutions and passes validation (below) in both languages.
 
-| Tier | Task | Checks | What it asks for |
-|---|---|---:|---|
-| 1 | `move_player` | 5 | WASD movement on the ground plane |
-| 1 | `countdown` | 6 | a 10 s countdown, clamped at 0, R restarts |
-| 1 | `score_combo` | 6 | presses within 1 s build a combo (max 5) that multiplies points |
-| 1 | `health_regen` | 8 | damage, death at 0, regeneration after 2 s without a hit |
-| 1 | `traffic_light` | 10 | a timed green → yellow → red cycle, a button that cuts green short |
-| 1 | `ammo_reload` | 9 | magazine, reserve, a 1.5 s reload that can't be interrupted |
-| 1 | `day_night` | 8 | a 24 h clock at 1 h/s, wrapping, counting nights |
-| 2 | `coin_collect` | 5 | coins as entities, collected within 0.5 units |
-| 2 | `enemy_chase` | 6 | an entity that follows a moving player and stops on contact |
-| 2 | `spawner_waves` | 8 | waves of n enemies every 2 s, each living 5 s |
-| 2 | `projectile_fire` | 7 | bullets with a range, a target with health |
-| 2 | `bomb_radius` | 6 | removing every entity within a radius |
-| 2 | `door` | 8 | an open/close state machine with reversible transitions |
-| 2 | `pause_menu` | 8 | play / pause / confirm-quit / title modes with a stoppable timer |
-| 3 | `dash_cooldown` | 7 | movement plus a dash along the last direction, with a cooldown |
-| 3 | `jump_gravity` | 7 | a jump under gravity, no double jumps |
-| 3 | `click_move` | 5 | click-to-move with the mouse |
-| 3 | `xp_magnet` | 4 | gems pulled to the player, xp and growing level thresholds |
-| 3 | `survivor_mini` | 6 | spawning enemies, auto-aimed bolts, health and game over |
-| 3 | `snake_grid` | 8 | Snake, with fixed food positions, turning rules and walls |
+**50 tasks start from nothing.** The other 10 are **edit tasks**: the model is given a working program (a v0 task's solution) and asked for one change. Edit tasks measure reading and changing existing code, through the SEARCH/REPLACE protocol.
 
-**Tiers:** 1 is logic and timing, 2 is entities and state, 3 is input-driven play combining both.
+| Tier | Kind | Tasks |
+|---|---|---|
+| 1: logic and timing | new (9) | `ammo_reload`, `countdown`, `crafting`, `day_night`, `health_regen`, `leaderboard`, `move_player`, `score_combo`, `traffic_light` |
+| 1 | edit (3) | `ammo_autoreload`, `countdown_pause`, `move_sprint` |
+| 2: entities and state | new (23) | `bomb_radius`, `boss_phases`, `bounce_box`, `bullet_pattern`, `coin_collect`, `damage_numbers`, `dialogue_branch`, `door`, `enemy_chase`, `ice_slide`, `inventory_stacks`, `knockback`, `night_spawns`, `ore_nodes`, `pause_menu`, `projectile_fire`, `quest_chain`, `rabbit_flee`, `rhythm_hits`, `spawner_waves`, `spring_weight`, `stamina_sprint`, `timed_switches` |
+| 2 | edit (5) | `coin_respawn`, `door_autoclose`, `shield`, `traffic_night`, `waves_cap` |
+| 3: systems that interact | new (18) | `chain_lightning`, `click_move`, `combo_moves`, `dash_cooldown`, `guard_patrol`, `homing_missile`, `jump_gravity`, `lap_timer`, `level_up_choice`, `maze_path`, `orbit_blades`, `platform_ride`, `rewind`, `snake_grid`, `survivor_mini`, `tower_path`, `turret_aim`, `xp_magnet` |
+| 3 | edit (2) | `jump_double`, `snake_speedup` |
 
-**Where the checks come from.** They test behaviour described in `task.md`, at times chosen at least a few ticks away from the events they test. A reasonable implementation that updates a tick earlier or later still passes.
+**Where the checks come from.** They test behaviour stated in `task.md`, at times chosen away from the events they test, so an implementation a tick earlier or later still passes. The expected values are derived from the task text, then confirmed by probing both reference solutions, which are independent implementations in two languages. Where hand derivation was impractical (`enemy_chase`, `xp_magnet`, `survivor_mini`), a separate Python simulation of the text gave the values.
 
-For `enemy_chase`, `xp_magnet` and `survivor_mini`, the check values were derived from a separate Python simulation of the task text, and they agree with the Twe solutions.
+**Contamination.** Every `task.toml` and reference solution carries a canary (`bench::CANARY`), so the benchmark can be found and dropped from training corpora. The canary is never sent to a model. A hidden task set can be run with `--tasks-root`.
 
 ## A task
 
@@ -133,6 +119,7 @@ The final program is graded in a child process. The model never sees the checks 
 | `--no-verify` | the smoke run only |
 | `--no-smoke` | verify only |
 | `--no-primer` | no primer or stdlib listing: only "Twe is a game scripting language" and the run rules |
+| `--provider openai --base-url <llama-server> --gbnf on` | decoding constrained to Twe's grammar (`twec grammar --format gbnf`), for llama.cpp servers; the model can then only write bare Twe, which the loop accepts as a whole file |
 
 **A run directory** (`bench/runs/<date>-<provider>/`, or `--out`) holds:
 - `run.json`: the settings;
@@ -145,7 +132,11 @@ The final program is graded in a child process. The model never sees the checks 
 - pass@1 by tier;
 - 95% bootstrap confidence intervals over tasks;
 - round-1 syntax and verify-clean rates, rounds to pass, replies cut off at the token limit, where failing programs stopped;
-- tokens and cost.
+- tokens and cost;
+- pass@1 for new and edit tasks separately;
+- the share of final programs that nearly copy the reference solution (a sign the model has seen the benchmark; flagged, not excluded).
+
+**Comparability.** `run.json` records hashes of the system prompt and the task set. A run directory refuses to resume when either has changed, and two runs with different hashes shouldn't be compared.
 
 **Replies are cached** in `bench/cache/` (git-ignored) by a hash of the provider, the sample number and the whole request. An interrupted run resumes where it stopped (re-running the same command skips finished samples and retries failed calls), and a repeated run costs nothing. A run directory refuses to mix settings.
 

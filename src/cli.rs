@@ -1251,6 +1251,9 @@ struct ProviderFlags {
     base_url: Option<String>,
     command: Option<String>,
     args: Vec<String>,
+    /// `--gbnf`: constrain an OpenAI-compatible (llama.cpp) server's
+    /// decoding to Twe's grammar.
+    gbnf: bool,
 }
 
 impl ProviderFlags {
@@ -1263,6 +1266,7 @@ impl ProviderFlags {
             "--base-url" => self.base_url = Some(value),
             "--command" | "--cmd" => self.command = Some(value),
             "--arg" => self.args.push(value),
+            "--gbnf" => self.gbnf = value == "on",
             _ => return false,
         }
         true
@@ -1294,7 +1298,11 @@ impl ProviderFlags {
                     .base_url
                     .clone()
                     .unwrap_or_else(|| "http://localhost:11434/v1".into());
-                Ok(Box::new(twe_llm::openai::OpenAiCompatible::new(base, model()?)))
+                let mut p = twe_llm::openai::OpenAiCompatible::new(base, model()?);
+                if self.gbnf {
+                    p.grammar = Some(crate::grammar::export(crate::grammar::Format::Gbnf));
+                }
+                Ok(Box::new(p))
             }
             "command" => match &self.command {
                 Some(c) => Ok(Box::new(twe_llm::CommandProvider::new(c.clone(), self.args.clone()))),

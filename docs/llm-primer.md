@@ -34,6 +34,8 @@ is **not Python** — the rules below differ in ways that matter.
 - Prefer editing inside the block the user is focused on; keep changes minimal.
 - **`return` is only valid inside a `function` or an entity method.** In `on update`, `on render`, a state handler or top-level code it is an error: wrap the rest in an `if`, or move the body into a function.
 - **Lists:** `.length` (a field, not a call), `.append(x)`, `.prepend(x)`, `.pop_back()`, `.pop_front()`, `.contains(x)`, `.set(i, x)`, and `x in list`. Nothing else.
+- **Integer division truncates:** `7 / 2` is `3`; write `7.0 / 2` (or keep a float) for `3.5`.
+- **One top-level `on update(dt):` and one `on render():`.** A second would replace the first (`verify` reports it). Each tick runs the top-level `on update` first, then every entity's `update(dt)` method; an entity spawned during the tick updates in that same tick.
 - **`spawn` is a statement and returns nothing.** To give a new instance more than its position, use field defaults, or set shared state the instance reads in its first `update`.
 
 ## The six core block keywords

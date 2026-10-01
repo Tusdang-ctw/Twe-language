@@ -11,11 +11,16 @@ use crate::{pricing, Error, Provider, Reply, Request, StopReason, Usage};
 pub struct OpenAiCompatible {
     pub base_url: String,
     pub model: String,
+    /// A GBNF grammar the server constrains decoding to (llama.cpp's
+    /// `grammar` extension; the benchmark's constrained-decoding arm
+    /// passes Twe's, from `twec grammar --format gbnf`). The model can
+    /// then only produce a program, so it answers with bare source.
+    pub grammar: Option<String>,
 }
 
 impl OpenAiCompatible {
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
-        OpenAiCompatible { base_url: base_url.into(), model: model.into() }
+        OpenAiCompatible { base_url: base_url.into(), model: model.into(), grammar: None }
     }
 
     pub fn ollama(model: impl Into<String>) -> Self {
@@ -23,7 +28,7 @@ impl OpenAiCompatible {
     }
 }
 
-pub fn request_body(model: &str, request: &Request) -> Value {
+pub fn request_body(model: &str, grammar: Option<&str>, request: &Request) -> Value {
     let mut messages = Vec::new();
     if !request.system.is_empty() {
         messages.push(json!({ "role": "system", "content": request.system }));
@@ -31,7 +36,11 @@ pub fn request_body(model: &str, request: &Request) -> Value {
     for m in &request.messages {
         messages.push(json!({ "role": m.role.as_str(), "content": m.text }));
     }
-    json!({ "model": model, "messages": messages, "max_tokens": request.max_tokens })
+    let mut body = json!({ "model": model, "messages": messages, "max_tokens": request.max_tokens });
+    if let Some(g) = grammar {
+        body["grammar"] = json!(g);
+    }
+    body
 }
 
 pub fn parse_response(body: &str) -> Result<Reply, Error> {
@@ -67,7 +76,7 @@ impl Provider for OpenAiCompatible {
             headers.push(("authorization", format!("Bearer {key}")));
         }
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let body = request_body(&self.model, request).to_string();
+        let body = request_body(&self.model, self.grammar.as_deref(), request).to_string();
         parse_response(&crate::http::post_json(&url, &headers, &body)?)
     }
 
@@ -77,7 +86,11 @@ impl Provider for OpenAiCompatible {
     }
 
     fn id(&self) -> String {
-        format!("openai:{}", self.model)
+        if self.grammar.is_some() {
+            format!("openai:{}+gbnf", self.model)
+        } else {
+            format!("openai:{}", self.model)
+        }
     }
 }
 
@@ -87,9 +100,12 @@ mod tests {
 
     #[test]
     fn system_prompt_becomes_the_first_message() {
-        let body = request_body("llama3.1", &Request::new("primer", "task"));
+        let body = request_body("llama3.1", None, &Request::new("primer", "task"));
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["content"], "task");
+        assert!(body.get("grammar").is_none());
+        let constrained = request_body("llama3.1", Some("root ::= \"x\""), &Request::new("", "task"));
+        assert_eq!(constrained["grammar"], "root ::= \"x\"");
     }
 
     #[test]

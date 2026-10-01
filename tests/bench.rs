@@ -22,10 +22,7 @@ fn temp_task(name: &str, toml: &str, solution: &str) -> PathBuf {
     dir
 }
 
-/// Every task in the repository is valid: its solution passes, its
-/// starter (if any) fails, and each check is caught by a mutant.
-#[test]
-fn every_committed_task_is_valid() {
+fn task_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir("bench/tasks")
         .unwrap()
         .flatten()
@@ -34,9 +31,18 @@ fn every_committed_task_is_valid() {
         .collect();
     dirs.sort();
     assert!(!dirs.is_empty());
-    for dir in dirs {
-        let task = load_task(&dir).unwrap();
-        for file in ["task.md", "twe.md"] {
+    dirs
+}
+
+/// Every task in the repository is well-formed, and its Twe reference
+/// solution passes while its starter (if any) fails. Graded in
+/// parallel; the full mutant validation is `every_check_is_caught_by_a_mutant`.
+#[test]
+fn every_committed_task_is_sound() {
+    let dirs = task_dirs();
+    let tasks: Vec<_> = dirs.iter().map(|d| load_task(d).unwrap()).collect();
+    for (dir, task) in dirs.iter().zip(&tasks) {
+        for file in ["task.md", "twe.md", "python.md", "solution.py"] {
             assert!(dir.join(file).exists(), "{}: missing {file}", task.id);
         }
         // The canary marks the benchmark in any corpus it leaks into; it
@@ -50,6 +56,30 @@ fn every_committed_task_is_valid() {
             let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
             assert!(!text.contains("canary GUID"), "{}: the canary would reach a model through {file}", task.id);
         }
+    }
+    std::thread::scope(|s| {
+        for task in &tasks {
+            s.spawn(move || {
+                let read = |f: &str| std::fs::read_to_string(task.dir.join(f));
+                let solution = grade_in_child(exe(), task, &read("solution.twe").unwrap(), Duration::from_secs(60));
+                assert!(solution.passed, "{}: the solution fails: {solution:?}", task.id);
+                if let Ok(starter) = read("starter.twe") {
+                    assert!(!grade_in_child(exe(), task, &starter, Duration::from_secs(60)).passed, "{}: the starter passes", task.id);
+                }
+            });
+        }
+    });
+}
+
+/// The full validation of every task: each check is failed by some
+/// running mutant of its solution. About 4 minutes for 60 tasks, so it
+/// runs on request: `cargo test --release --test bench -- --ignored`
+/// (and `twec bench check --lang python --all` for the Python twins).
+#[test]
+#[ignore]
+fn every_check_is_caught_by_a_mutant() {
+    for dir in task_dirs() {
+        let task = load_task(&dir).unwrap();
         let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 8).unwrap();
         assert!(v.ok(), "{}: {:?}", task.id, v.problems);
     }

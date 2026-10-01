@@ -13,6 +13,13 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added (benchmark)
+- **Bench v1** (web3d-M5): 60 behaviour-graded tasks, 10 of them edits to an existing program, in Twe and Python.
+  - A canary marks the tasks so they can be dropped from training data.
+  - Runs record prompt and task hashes and flag answers that copy a reference solution.
+  - `--tasks-root` runs a hidden task set.
+- **`--gbnf on`** for `--provider openai`: constrain a llama.cpp server's decoding to Twe's grammar.
+- **`twec verify` reports a second top-level `on update` or `on render`,** which used to silently replace the first.
+- **`nil` works as the literal the design document specifies;** writing it used to fail with "name 'nil' is not defined".
 - **The Python + pygame-ce baseline** (web3d-M5): `--lang python` on `twec bench grade`, `check` and `run`.
   - The same 20 tasks, the same input replayed through pygame's APIs, and a Python twin of every check.
   - `compile()` and pyflakes play `twec verify`'s part.
