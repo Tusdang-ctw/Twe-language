@@ -35,3 +35,8 @@ practice.twe
 
 # Browser-automation session logs (Playwright MCP).
 .playwright-mcp/
+
+# web3d-M5: the benchmark's response cache (replies by request hash; may hold
+# paid-for model output). Runs worth publishing are committed from
+# bench/runs/.
+bench/cache/

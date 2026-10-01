@@ -13,6 +13,12 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added
+- **`twec bench run` / `twec bench regrade`** (web3d-M5): run a model on the benchmark tasks.
+  - Each sample gets up to 4 rounds, with `twec verify` and a 2-second smoke run as feedback.
+  - Each final program is graded on behaviour.
+  - Output: pass@k with bootstrap confidence intervals, error rates, tokens and cost, every program and transcript.
+  - Replies are cached, so runs resume and re-grade without new calls.
+  - Flags `--rounds 1`, `--no-verify`, `--no-smoke` and `--no-primer` give the ablation arms.
 - **`twec bench grade` / `twec bench check`** (web3d-M5): grade a program on a benchmark task by what it does, not by what it prints.
   - The program runs headless for a fixed number of ticks while an input script presses keys; Twe expressions then check the world.
   - Each program is graded in a child process with a time limit.
@@ -690,6 +696,10 @@ v0.7.x and v0.8 (a 12-month carry-over per
 - **`@deprecated("since vX.Y")` annotations.** Attach to top-level
   function and type declarations. `twec verify --warn-deprecated`
   surfaces a `deprecation` warning per use site.
+
+### Deprecated (web3d-M5)
+
+- **`twec eval`**, in favour of `twec bench`. It graded by stdout after N frames with no input; `twec bench` grades by behaviour under scripted input. It still works and prints a note.
 
 ### Deprecated (since v0.7)
 

@@ -54,6 +54,8 @@ pub mod corpus;
 pub mod llm_eval;
 // web3d-M5: behavioural grading for the LLM benchmark (`twec bench`).
 pub mod bench;
+// web3d-M5: running the benchmark against models (`twec bench run`).
+pub mod bench_run;
 // Phase 33 session 8: error → fix corpus generator. Auto-mutates
 // `tests/programs/*.twe` and captures the resulting (broken,
 // verify_json, fix) triples for fine-tune training data.

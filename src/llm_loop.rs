@@ -51,6 +51,10 @@ pub struct LoopOptions {
     pub starter: String,
     /// Per-reply token ceiling.
     pub max_tokens: u32,
+    /// Send verify's diagnostics back when it finds errors (on by
+    /// default). Off, verify still runs and is recorded, but only the
+    /// extra check of [`run_loop_checked`] can send a round back.
+    pub verify_feedback: bool,
 }
 
 impl Default for LoopOptions {
@@ -63,6 +67,7 @@ impl Default for LoopOptions {
             system: String::new(),
             starter: String::new(),
             max_tokens: 16_000,
+            verify_feedback: true,
         }
     }
 }
@@ -78,6 +83,10 @@ pub struct LoopRound {
     pub source: String,
     /// Verify's JSON report; empty when the edit didn't apply.
     pub verify_json: String,
+    /// Verify's error count (0 when the edit didn't apply).
+    pub verify_errors: usize,
+    /// What the extra check of [`run_loop_checked`] reported.
+    pub check_error: Option<String>,
     /// Why the reply's edit couldn't be applied, if it couldn't.
     pub edit_error: Option<String>,
     pub passed: bool,
@@ -101,13 +110,26 @@ pub struct LoopOutcome {
 }
 
 /// Run the loop on `task` until verify accepts the file or
-/// `max_rounds` run out. A provider error stops the loop and is
+/// `max_rounds` run out (see [`run_loop_checked`] for more checks). A provider error stops the loop and is
 /// returned (an infrastructure failure, not the model's); a trace write
 /// failure is reported on stderr and doesn't.
 pub fn run_loop(
     provider: &mut dyn Provider,
     task: &str,
     options: &LoopOptions,
+) -> Result<LoopOutcome, String> {
+    run_loop_checked(provider, task, options, &|_| None)
+}
+
+/// [`run_loop`] with one more check after verify: `check(source)`
+/// returns why the program isn't acceptable yet (the benchmark runs it
+/// for two seconds and reports a crash), or `None`. Its message goes
+/// back to the model like verify's diagnostics.
+pub fn run_loop_checked(
+    provider: &mut dyn Provider,
+    task: &str,
+    options: &LoopOptions,
+    check: &dyn Fn(&str) -> Option<String>,
 ) -> Result<LoopOutcome, String> {
     let trace_path = options
         .trace_dir
@@ -142,13 +164,26 @@ pub fn run_loop(
             Edit::Nothing => Ok(reply.text.trim().to_string()),
             e => edit::apply(&source, &e).map_err(|e| e.to_string()),
         };
+        let mut verify_errors = 0;
+        let mut check_error = None;
         let (verify_json, passed, edit_error, feedback) = match applied {
             Ok(candidate) => {
                 source = candidate;
                 let report = verify_program_with_path(&source, options.source_path.as_deref());
                 let json = report.to_json();
-                let feedback = verify_feedback(&json, &reply);
-                (json, report.ok(), None, feedback)
+                verify_errors = report.errors();
+                if options.verify_feedback && !report.ok() {
+                    let feedback = verify_feedback(&json, &reply);
+                    (json, false, None, feedback)
+                } else if let Some(problem) = check(&source) {
+                    check_error = Some(problem.clone());
+                    let feedback = format!(
+                        "{problem}\n\nReply with SEARCH/REPLACE blocks against the current file, or the whole corrected file in one ```twe block."
+                    );
+                    (json, false, None, feedback)
+                } else {
+                    (json, true, None, String::new())
+                }
             }
             Err(e) => {
                 let feedback = format!(
@@ -168,6 +203,8 @@ pub fn run_loop(
             response: reply.text.clone(),
             source: source.clone(),
             verify_json,
+            verify_errors,
+            check_error,
             edit_error,
             passed,
             stop: reply.stop,
@@ -265,6 +302,8 @@ fn append_trace(path: &Path, rec: &LoopRound, reply: &Reply) -> std::io::Result<
         },
         "cost_usd": rec.cost_usd,
         "edit_error": rec.edit_error,
+        "verify_errors": rec.verify_errors,
+        "check_error": rec.check_error,
         "prompt": rec.prompt,
         "response": rec.response,
         "verify": verify,

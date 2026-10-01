@@ -102,6 +102,55 @@ twec bench check --all                                      # validate every tas
 
 Each check reports its value or why it has none.
 
+## Running models
+
+```sh
+# a model API (build twec with --features llm-http; ANTHROPIC_API_KEY set)
+twec bench run --provider anthropic --model claude-sonnet-5-5 --effort high --samples 5
+# a local model through Ollama, or any OpenAI-compatible server (--base-url)
+twec bench run --provider openai --model qwen2.5-coder:14b --samples 5
+# any program that reads a prompt on stdin and prints a reply
+twec bench run --command my_model.sh --samples 5
+
+twec bench regrade bench/runs/<run>        # grade a run's programs again, no model calls
+```
+
+**Per sample, the model gets:**
+- **The system prompt:** the Twe primer (`docs/llm-primer.md`), every stdlib builtin with its parameters, and how the program is run and tested. It is about 6,000 tokens, cached across rounds and samples.
+- **The task:** `task.md` and `twe.md`.
+
+**It answers with a whole program, then has up to `--rounds` rounds (default 4) to fix it.** After each round the program is:
+1. checked by `twec verify`, whose diagnostics go back if it finds errors;
+2. smoke-run for 2 s of game time with no input, and a crash, hang or load error goes back.
+
+The final program is graded in a child process. The model never sees the checks or the input script.
+
+**The arms:**
+
+| Flag | Effect |
+|---|---|
+| `--rounds 1` | a single attempt with no feedback |
+| `--no-verify` | the smoke run only |
+| `--no-smoke` | verify only |
+| `--no-primer` | no primer or stdlib listing: only "Twe is a game scripting language" and the run rules |
+
+**A run directory** (`bench/runs/<date>-<provider>/`, or `--out`) holds:
+- `run.json`: the settings;
+- `samples.jsonl`: per sample, the grade with its stage and failed checks, rounds, round 1's syntax and verify errors, tokens, cost, wall time;
+- every final program, and every round's transcript;
+- `summary.json` and `summary.md`.
+
+**The summary reports:**
+- pass@k for every k up to the number of samples, using the unbiased estimator;
+- pass@1 by tier;
+- 95% bootstrap confidence intervals over tasks;
+- round-1 syntax and verify-clean rates, rounds to pass, replies cut off at the token limit, where failing programs stopped;
+- tokens and cost.
+
+**Replies are cached** in `bench/cache/` (git-ignored) by a hash of the provider, the sample number and the whole request. An interrupted run resumes where it stopped (re-running the same command skips finished samples and retries failed calls), and a repeated run costs nothing. A run directory refuses to mix settings.
+
+**Five provider failures in a row stop a run,** as does a configuration error (no key, an unknown model).
+
 ## Validating a task
 
 `twec bench check` accepts a task only if:

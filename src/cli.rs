@@ -15,7 +15,7 @@ const USAGE: &str = "usage: twec [run [--frames N] <file> | \
      grammar [--format gbnf|json-schema|ebnf] [-o PATH] | \
      stdlib [--json] [--category NAME] [-o PATH] | \
      llm-loop (--provider anthropic|openai --model M [--effort E] [--base-url URL] | --command CMD [--arg ARG]*) [--prompt PATH] [--starter PATH] [--no-primer] [--max-rounds N] [--out PATH] [--trace-dir DIR] | \
-     bench grade <task-dir> <file|-> [--json] | bench check [--all | <task-dir>...] [--jobs N] [--timeout S] | \
+     bench grade <task-dir> <file|-> [--json] | bench check [--all | <task-dir>...] [--jobs N] [--timeout S] | bench run <provider flags> [--samples N] [--rounds N] [--no-verify] [--no-smoke] [--no-primer] [--tasks a,b] [--out DIR] | bench regrade <run-dir> | \
      mcp | \
      corpus [--json] [-o PATH] | \
      eval [SUITE] [--source FILE] [--source-dir DIR] [--root DIR] [--json] [-o PATH] | \
@@ -796,9 +796,14 @@ fn handle_bench(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("grade") => bench_grade(&args[1..]),
         Some("check") => bench_check(&args[1..]),
+        Some("run") => bench_run(&args[1..]),
+        Some("regrade") => bench_regrade(&args[1..]),
         _ => {
             eprintln!("usage: twec bench grade <task-dir> <file|-> [--json]");
             eprintln!("       twec bench check [--all | <task-dir>...] [--jobs N] [--timeout SECONDS]");
+            eprintln!("       twec bench run <provider flags> [--samples N] [--rounds N] [--no-verify] [--no-smoke] [--no-primer]");
+            eprintln!("                      [--tasks a,b] [--jobs N] [--max-tokens N] [--timeout S] [--out DIR] [--cache DIR | --no-cache]");
+            eprintln!("       twec bench regrade <run-dir>");
             2
         }
     }
@@ -858,6 +863,170 @@ fn bench_grade(args: &[String]) -> i32 {
         0
     } else {
         1
+    }
+}
+
+/// web3d-M5 session 4: `twec bench run` — models write programs for
+/// the tasks, which are graded on behaviour (`src/bench_run.rs`).
+fn bench_run(args: &[String]) -> i32 {
+    let mut flags = ProviderFlags::default();
+    let mut options = crate::bench_run::RunOptions {
+        jobs: 4,
+        ..Default::default()
+    };
+    let mut only: Option<Vec<String>> = None;
+    let mut out: Option<std::path::PathBuf> = None;
+    let mut max_tokens: Option<u32> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        match flag {
+            "--no-verify" => options.verify_feedback = false,
+            "--no-smoke" => options.smoke_feedback = false,
+            "--no-primer" => options.primer = false,
+            "--no-cache" => options.cache_dir = None,
+            _ => {
+                let Some(value) = args.get(i + 1).cloned() else {
+                    eprintln!("error: {flag} takes a value (or is unknown to `bench run`)");
+                    return 2;
+                };
+                let number = |v: &str| v.parse::<u32>().ok().filter(|n| *n >= 1);
+                match flag {
+                    "--samples" | "--rounds" | "--jobs" | "--max-tokens" | "--timeout" => {
+                        let Some(n) = number(&value) else {
+                            eprintln!("error: {flag} takes a positive whole number");
+                            return 2;
+                        };
+                        match flag {
+                            "--samples" => options.samples = n,
+                            "--rounds" => options.max_rounds = n,
+                            "--jobs" => options.jobs = n as usize,
+                            "--max-tokens" => max_tokens = Some(n),
+                            _ => options.grade_limit = std::time::Duration::from_secs(u64::from(n)),
+                        }
+                    }
+                    "--tasks" => only = Some(value.split(',').map(|s| s.trim().to_string()).collect()),
+                    "--out" => out = Some(value.into()),
+                    "--cache" => options.cache_dir = Some(value.into()),
+                    _ => {
+                        if !flags.take(flag, value) {
+                            eprintln!("error: unknown argument for `bench run`: {flag}");
+                            return 2;
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    if let Some(n) = max_tokens {
+        options.max_tokens = n;
+    }
+    let provider_id = match flags.build() {
+        Ok(p) => p.id(),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let root = std::path::Path::new("bench/tasks");
+    let mut dirs: Vec<std::path::PathBuf> = match fs::read_dir(root) {
+        Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.join("task.toml").exists()).collect(),
+        Err(e) => {
+            eprintln!("error: {}: {e} (run from the repository root)", root.display());
+            return 2;
+        }
+    };
+    dirs.sort();
+    if let Some(only) = &only {
+        for name in only {
+            if !dirs.iter().any(|d| d.file_name().is_some_and(|f| f == name.as_str())) {
+                eprintln!("error: no task `{name}` in {}", root.display());
+                return 2;
+            }
+        }
+        dirs.retain(|d| only.iter().any(|n| d.file_name().is_some_and(|f| f == n.as_str())));
+    }
+    let mut tasks = Vec::new();
+    for d in &dirs {
+        match crate::bench::load_task(d) {
+            Ok(t) => tasks.push(t),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
+            }
+        }
+    }
+    options.out_dir = out.unwrap_or_else(|| {
+        let label: String = provider_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+            .collect();
+        std::path::PathBuf::from(format!("bench/runs/{}-{label}", crate::bench_run::today()))
+    });
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot find twec itself: {e}");
+            return 2;
+        }
+    };
+    eprintln!(
+        "[bench] {} tasks × {} samples with {} → {}",
+        tasks.len(),
+        options.samples,
+        provider_id,
+        options.out_dir.display()
+    );
+    let make = || flags.build();
+    match crate::bench_run::run(&exe, &tasks, &make, &provider_id, &options) {
+        Ok(_) => {
+            match fs::read_to_string(options.out_dir.join("summary.md")) {
+                Ok(md) => print!("{md}"),
+                Err(e) => eprintln!("error: reading the summary: {e}"),
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+/// `twec bench regrade <run-dir>`: grade a run's programs again with
+/// the current grader and tasks (no model calls).
+fn bench_regrade(args: &[String]) -> i32 {
+    let [dir] = args else {
+        eprintln!("usage: twec bench regrade <run-dir>");
+        return 2;
+    };
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot find twec itself: {e}");
+            return 2;
+        }
+    };
+    let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    match crate::bench_run::regrade(
+        &exe,
+        std::path::Path::new(dir),
+        std::path::Path::new("bench/tasks"),
+        std::time::Duration::from_secs(30),
+        jobs,
+    ) {
+        Ok(_) => {
+            if let Ok(md) = fs::read_to_string(std::path::Path::new(dir).join("summary.md")) {
+                print!("{md}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
     }
 }
 
@@ -963,7 +1132,7 @@ fn bench_check(args: &[String]) -> i32 {
 /// - `--provider anthropic --model M [--effort E]`
 /// - `--provider openai --model M [--base-url URL]` (default: Ollama's)
 /// - `--command CMD [--arg A]*` (or `--provider command`)
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ProviderFlags {
     provider: Option<String>,
     model: Option<String>,
@@ -988,7 +1157,7 @@ impl ProviderFlags {
         true
     }
 
-    fn build(self) -> Result<Box<dyn twe_llm::Provider>, String> {
+    fn build(&self) -> Result<Box<dyn twe_llm::Provider>, String> {
         let kind = match (&self.provider, &self.command) {
             (Some(p), _) => p.clone(),
             (None, Some(_)) => "command".to_string(),
@@ -1016,8 +1185,8 @@ impl ProviderFlags {
                     .unwrap_or_else(|| "http://localhost:11434/v1".into());
                 Ok(Box::new(twe_llm::openai::OpenAiCompatible::new(base, model()?)))
             }
-            "command" => match self.command {
-                Some(c) => Ok(Box::new(twe_llm::CommandProvider::new(c, self.args))),
+            "command" => match &self.command {
+                Some(c) => Ok(Box::new(twe_llm::CommandProvider::new(c.clone(), self.args.clone()))),
                 None => Err("--provider command needs --command CMD".into()),
             },
             other => Err(format!("unknown provider `{other}` (anthropic, openai, command)")),
@@ -1108,6 +1277,8 @@ fn handle_corpus(args: &[String]) -> i32 {
 /// a generated `.twe` source. Without `--source`/`--source-dir` lists
 /// available suites and exits 0 (the no-LLM dry-run mode).
 fn handle_eval(args: &[String]) -> i32 {
+    // web3d-M5: superseded by `twec bench` (behavioural grading).
+    eprintln!("note: `twec eval` is deprecated; use `twec bench` (bench/README.md), which grades programs by behaviour");
     let mut suite_name: Option<String> = None;
     let mut source_file: Option<String> = None;
     let mut source_dir: Option<String> = None;
