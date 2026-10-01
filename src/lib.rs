@@ -52,6 +52,8 @@ pub mod corpus;
 // `eval::run_with_frames` for deterministic execution; one suite =
 // (prompt.md, expected.txt, config.toml) on disk.
 pub mod llm_eval;
+// web3d-M5: behavioural grading for the LLM benchmark (`twec bench`).
+pub mod bench;
 // Phase 33 session 8: error → fix corpus generator. Auto-mutates
 // `tests/programs/*.twe` and captures the resulting (broken,
 // verify_json, fix) triples for fine-tune training data.

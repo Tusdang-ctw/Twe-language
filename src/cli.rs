@@ -15,6 +15,7 @@ const USAGE: &str = "usage: twec [run [--frames N] <file> | \
      grammar [--format gbnf|json-schema|ebnf] [-o PATH] | \
      stdlib [--json] [--category NAME] [-o PATH] | \
      llm-loop (--provider anthropic|openai --model M [--effort E] [--base-url URL] | --command CMD [--arg ARG]*) [--prompt PATH] [--starter PATH] [--no-primer] [--max-rounds N] [--out PATH] [--trace-dir DIR] | \
+     bench grade <task-dir> <file|-> [--json] | bench check [--all | <task-dir>...] [--jobs N] [--timeout S] | \
      mcp | \
      corpus [--json] [-o PATH] | \
      eval [SUITE] [--source FILE] [--source-dir DIR] [--root DIR] [--json] [-o PATH] | \
@@ -84,6 +85,8 @@ pub fn run() {
         // user-configured command provider through verify-feedback
         // rounds and logs JSONL traces (training-corpus seed).
         "llm-loop" | "llm_loop" => process::exit(handle_llm_loop(&args[2..])),
+        // web3d-M5: the LLM benchmark (grade programs, validate tasks).
+        "bench" => process::exit(handle_bench(&args[2..])),
         // Phase 33 session 5: stdio JSON-RPC MCP server. Every Twe
         // tool becomes available to any MCP client (Claude Desktop,
         // Cursor, the future Twe Studio) with no bespoke wiring.
@@ -776,6 +779,178 @@ fn handle_llm_loop(args: &[String]) -> i32 {
         }
     );
     if outcome.passed {
+        0
+    } else {
+        1
+    }
+}
+
+/// web3d-M5: `twec bench` — the LLM benchmark (`src/bench.rs`).
+///
+/// - `bench grade <task-dir> <file|-> [--json]` grades one program
+///   (the benchmark runs this in a child process per program);
+/// - `bench check [--all | <task-dir>...] [--jobs N] [--timeout S]`
+///   validates tasks: the solution passes, the starter fails, every
+///   check is caught by some running mutant of the solution.
+fn handle_bench(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("grade") => bench_grade(&args[1..]),
+        Some("check") => bench_check(&args[1..]),
+        _ => {
+            eprintln!("usage: twec bench grade <task-dir> <file|-> [--json]");
+            eprintln!("       twec bench check [--all | <task-dir>...] [--jobs N] [--timeout SECONDS]");
+            2
+        }
+    }
+}
+
+fn bench_grade(args: &[String]) -> i32 {
+    let json = args.iter().any(|a| a == "--json");
+    let rest: Vec<&String> = args.iter().filter(|a| *a != "--json").collect();
+    let [task_dir, file] = rest.as_slice() else {
+        eprintln!("usage: twec bench grade <task-dir> <file|-> [--json]");
+        return 2;
+    };
+    let task = match crate::bench::load_task(std::path::Path::new(task_dir.as_str())) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let source = if file.as_str() == "-" {
+        use std::io::Read;
+        let mut s = String::new();
+        if let Err(e) = std::io::stdin().read_to_string(&mut s) {
+            eprintln!("error: reading the program from stdin failed: {e}");
+            return 2;
+        }
+        s
+    } else {
+        match fs::read_to_string(file.as_str()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read `{file}`: {e}");
+                return 2;
+            }
+        }
+    };
+    let grade = crate::bench::grade(&task, &source);
+    if json {
+        println!("{}", grade.to_json());
+    } else {
+        println!(
+            "{}: {} ({}, {} of {} ticks)",
+            task.id,
+            if grade.passed { "PASS" } else { "FAIL" },
+            grade.stage.as_str(),
+            grade.ticks_run,
+            task.ticks
+        );
+        if let Some(e) = &grade.error {
+            println!("  error: {e}");
+        }
+        for c in &grade.checks {
+            println!("  [{}] {} = {}", if c.passed { "x" } else { " " }, c.name, c.detail);
+        }
+    }
+    if grade.passed {
+        0
+    } else {
+        1
+    }
+}
+
+fn bench_check(args: &[String]) -> i32 {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let mut timeout = 20.0_f64;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--all" => {
+                let root = std::path::Path::new("bench/tasks");
+                match fs::read_dir(root) {
+                    Ok(rd) => {
+                        let mut found: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.join("task.toml").exists()).collect();
+                        found.sort();
+                        dirs.extend(found);
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}: {e}", root.display());
+                        return 2;
+                    }
+                }
+            }
+            "--jobs" | "--timeout" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("error: {} takes a number", args[i]);
+                    return 2;
+                };
+                let ok = if args[i] == "--jobs" {
+                    v.parse().map(|n: usize| jobs = n.max(1)).is_ok()
+                } else {
+                    v.parse().map(|s: f64| timeout = s).is_ok()
+                };
+                if !ok {
+                    eprintln!("error: {} takes a number", args[i]);
+                    return 2;
+                }
+                i += 1;
+            }
+            dir => dirs.push(dir.into()),
+        }
+        i += 1;
+    }
+    if dirs.is_empty() {
+        eprintln!("usage: twec bench check [--all | <task-dir>...] [--jobs N] [--timeout SECONDS]");
+        return 2;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot find twec itself: {e}");
+            return 2;
+        }
+    };
+    let limit = std::time::Duration::from_secs_f64(timeout);
+    let mut bad = 0;
+    for dir in &dirs {
+        let task = match crate::bench::load_task(dir) {
+            Ok(t) => t,
+            Err(e) => {
+                println!("{}: INVALID\n  {e}", dir.display());
+                bad += 1;
+                continue;
+            }
+        };
+        match crate::bench::validate(&exe, &task, limit, jobs) {
+            Ok(v) => {
+                let strengths: Vec<String> = v.strengths.iter().map(|s| format!("{} ({})", s.name, s.killed)).collect();
+                println!(
+                    "{}: {} — {} checks, {} of {} mutants run; caught by: {}",
+                    v.task,
+                    if v.ok() { "ok" } else { "INVALID" },
+                    task.checks.len(),
+                    v.runnable,
+                    v.mutants,
+                    strengths.join(", ")
+                );
+                for p in &v.problems {
+                    println!("  {p}");
+                }
+                if !v.ok() {
+                    bad += 1;
+                }
+            }
+            Err(e) => {
+                println!("{}: INVALID\n  {e}", task.id);
+                bad += 1;
+            }
+        }
+    }
+    println!("{} of {} tasks valid", dirs.len() - bad, dirs.len());
+    if bad == 0 {
         0
     } else {
         1

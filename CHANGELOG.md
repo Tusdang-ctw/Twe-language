@@ -12,6 +12,13 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Added
+- **`twec bench grade` / `twec bench check`** (web3d-M5): grade a program on a benchmark task by what it does, not by what it prints.
+  - The program runs headless for a fixed number of ticks while an input script presses keys; Twe expressions then check the world.
+  - Each program is graded in a child process with a time limit.
+  - `check` rejects tasks whose checks no broken variant of the solution can fail.
+  - Format: `bench/README.md`.
+
 ### Changed
 - **`twec llm-loop` talks to model APIs** (web3d-M5), in a build with `--features llm-http`:
   - `--provider anthropic --model M [--effort E]`, or `--provider openai --model M [--base-url URL]` for Ollama and llama.cpp; `--command` still works for any program.
