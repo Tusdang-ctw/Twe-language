@@ -154,18 +154,18 @@ pub fn fx_tick(dt: f64) {
 /// Render every active effect using macroquad primitives. Called from
 /// the play loop after the script's `on render():` has drawn its
 /// world, so fx layers on top.
-pub fn fx_draw_overlay() {
+pub fn fx_draw_overlay(out: &mut Vec<crate::draw2d::Draw2d>) {
     FX.with(|s| {
         let st = s.borrow();
         for fx in &st.active {
-            draw_one(fx);
+            draw_one(out, fx);
         }
     });
 }
 
-fn draw_one(fx: &ActiveFx) {
-    use macroquad::shapes::{draw_circle, draw_circle_lines, draw_rectangle};
-    use macroquad::text::draw_text;
+fn draw_one(out: &mut Vec<crate::draw2d::Draw2d>, fx: &ActiveFx) {
+    use crate::draw2d::{circle as draw_circle, circle_lines as draw_circle_lines, rect as draw_rectangle};
+    use crate::draw2d::text as draw_text;
 
     let t = (fx.age / fx.lifetime).clamp(0.0, 1.0);
     let inv_t = 1.0 - t;
@@ -177,7 +177,7 @@ fn draw_one(fx: &ActiveFx) {
             height,
         } => {
             let c = with_alpha(*color, inv_t);
-            draw_rectangle(
+            draw_rectangle(out, 
                 fx.pos.0 - width * 0.5,
                 fx.pos.1 - height * 0.5,
                 *width,
@@ -189,13 +189,13 @@ fn draw_one(fx: &ActiveFx) {
             let c = with_alpha(*color, inv_t);
             let lift = -40.0 * t;
             let s = format!("{}", *value as i64);
-            draw_text(&s, fx.pos.0, fx.pos.1 + lift, 22.0, c);
+            draw_text(out, &s, fx.pos.0, fx.pos.1 + lift, 22.0, c);
         }
         FxKind::CritText { value } => {
             let c = with_alpha(macroquad::color::YELLOW, inv_t);
             let lift = -60.0 * t;
             let s = format!("{}!", *value as i64);
-            draw_text(&s, fx.pos.0, fx.pos.1 + lift, 32.0, c);
+            draw_text(out, &s, fx.pos.0, fx.pos.1 + lift, 32.0, c);
         }
         FxKind::Burst { color, particles } => {
             let c = with_alpha(*color, inv_t);
@@ -203,13 +203,13 @@ fn draw_one(fx: &ActiveFx) {
             for (ox, oy, vx, vy) in particles {
                 let x = fx.pos.0 + ox + vx * fx.age;
                 let y = fx.pos.1 + oy + vy * fx.age + 0.5 * g * fx.age * fx.age;
-                draw_circle(x, y, 2.5 * inv_t.max(0.0), c);
+                draw_circle(out, x, y, 2.5 * inv_t.max(0.0), c);
             }
         }
         FxKind::Pop { color } => {
             let c = with_alpha(*color, inv_t);
             let r = 6.0 + 18.0 * t;
-            draw_circle_lines(fx.pos.0, fx.pos.1, r, 2.0, c);
+            draw_circle_lines(out, fx.pos.0, fx.pos.1, r, 2.0, c);
         }
         FxKind::Ring {
             color,
@@ -218,7 +218,7 @@ fn draw_one(fx: &ActiveFx) {
         } => {
             let c = with_alpha(*color, inv_t);
             let r = radius_from + (radius_to - radius_from) * t;
-            draw_circle_lines(fx.pos.0, fx.pos.1, r, 3.0, c);
+            draw_circle_lines(out, fx.pos.0, fx.pos.1, r, 3.0, c);
         }
         FxKind::Splat { dir, color } => {
             let c = with_alpha(*color, inv_t);
@@ -229,24 +229,24 @@ fn draw_one(fx: &ActiveFx) {
                 let dx = nx * cs - ny * sn;
                 let dy = nx * sn + ny * cs;
                 let r = 60.0 * fx.age;
-                draw_circle(fx.pos.0 + dx * r, fx.pos.1 + dy * r, 3.0 * inv_t, c);
+                draw_circle(out, fx.pos.0 + dx * r, fx.pos.1 + dy * r, 3.0 * inv_t, c);
             }
         }
         FxKind::MuzzleFlash { dir } => {
             let (nx, ny) = normalize_or_zero(*dir);
             let c = with_alpha(Color::new(1.0, 0.9, 0.5, 1.0), inv_t);
             let r = 14.0 * inv_t;
-            draw_circle(fx.pos.0 + nx * 12.0, fx.pos.1 + ny * 12.0, r, c);
+            draw_circle(out, fx.pos.0 + nx * 12.0, fx.pos.1 + ny * 12.0, r, c);
         }
         FxKind::Shockwave { radius } => {
             let c = with_alpha(Color::new(1.0, 1.0, 1.0, 0.6), inv_t);
             let r = radius * t;
             let thickness = 4.0 * inv_t;
-            draw_circle_lines(fx.pos.0, fx.pos.1, r, thickness.max(0.5), c);
+            draw_circle_lines(out, fx.pos.0, fx.pos.1, r, thickness.max(0.5), c);
         }
         FxKind::Trail { color } => {
             let c = with_alpha(*color, inv_t * 0.6);
-            draw_circle(fx.pos.0, fx.pos.1, 4.0 * inv_t, c);
+            draw_circle(out, fx.pos.0, fx.pos.1, 4.0 * inv_t, c);
         }
     }
 }

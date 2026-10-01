@@ -1,0 +1,82 @@
+ok   atlas_demo f60
+ok   atlas_demo f300
+ok   audio_demo f60
+ok   audio_demo f300
+ok   button_demo f60
+ok   button_demo f300
+ok   cards f60
+ok   cards f300
+ok   crystal_hunter_web f60
+ok   crystal_hunter_web f300
+none dialogue_demo f60 (console example: prints, draws nothing)
+none dialogue_demo f300 (console example: prints, draws nothing)
+ok   dungeon_demo f60
+ok   dungeon_demo f300
+ok   flappy f60
+ok   flappy f300
+ok   font_demo f60
+ok   font_demo f300
+ok   fx_demo f60
+ok   fx_demo f300
+ok   gamepad_demo f60
+ok   gamepad_demo f300
+ok   grid_duel f60
+ok   grid_duel f300
+ok   hero f60
+ok   hero f300
+ok   keybind_demo f60
+ok   keybind_demo f300
+ok   layout_demo f60
+ok   layout_demo f300
+ok   mouse_demo f60
+ok   mouse_demo f300
+ok   particles_demo f60
+ok   particles_demo f300
+ok   pause_demo f60
+ok   pause_demo f300
+ok   pause_menu_demo f60
+ok   pause_menu_demo f300
+ok   pixel_pop f60
+ok   pixel_pop f300
+ok   platformer f60
+ok   platformer f300
+ok   platformer_physics2d f60
+ok   platformer_physics2d f300
+ok   pong f60
+ok   pong f300
+ok   pong_net f60
+ok   pong_net f300
+ok   pong_net_internet f60
+ok   pong_net_internet f300
+ok   rhythm_demo f60
+ok   rhythm_demo f300
+none save_demo f60 (console example: prints, draws nothing)
+none save_demo f300 (console example: prints, draws nothing)
+ok   snake f60
+ok   snake f300
+ok   sprite_demo f60
+ok   sprite_demo f300
+ok   survive f60
+ok   survive f300
+ok   tetris f60
+ok   tetris f300
+ok   tilemap_demo f60
+ok   tilemap_demo f300
+ok   walk_demo f60
+ok   walk_demo f300
+ok   widgets_demo f60
+ok   widgets_demo f300
+ok   glyph_runner f60
+ok   glyph_runner f300
+none modular_audio_demo f60 (console example: prints, draws nothing)
+none modular_audio_demo f300 (console example: prints, draws nothing)
+none modular_math_demo f60 (console example: prints, draws nothing)
+none modular_math_demo f300 (console example: prints, draws nothing)
+ok   rpg_demo f60
+ok   rpg_demo f300
+ok   survive_beta f60
+ok   survive_beta f300
+ok   survive_beta_mobile f60
+ok   survive_beta_mobile f300
+ok   survive_demo f60
+ok   survive_demo f300

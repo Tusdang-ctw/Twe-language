@@ -57,8 +57,8 @@ scene Rhythm:
 
         on render():
             rect(at: (0, 0), size: (view_w, view_h), color: (0.05, 0.05, 0.10))
-            text("RHYTHM", at: (260, 180), color: color.white)
-            text("press SPACE to start", at: (220, 230), color: color.gray)
+            text("RHYTHM", at: (260, 180), size: 32, color: color.white)
+            text("press SPACE to start", at: (220, 230), size: 20, color: color.gray)
 
     state playing:
         on enter:
@@ -108,9 +108,9 @@ scene Rhythm:
                 color: (bg_brightness, bg_brightness, bg_brightness * 1.4),
             )
 
-            text("BEATS  {beat_index}/{total_beats}", at: (20, 30), color: color.white)
-            text("HITS   {beats_hit}", at: (20, 60), color: color.green)
-            text("MISSES {beats_missed}", at: (20, 90), color: color.red)
+            text("BEATS  {beat_index}/{total_beats}", at: (20, 30), size: 20, color: color.white)
+            text("HITS   {beats_hit}", at: (20, 60), size: 20, color: color.green)
+            text("MISSES {beats_missed}", at: (20, 90), size: 20, color: color.red)
 
             # Sweep bar: fills left-to-right between beats, snapping
             # at each boundary. SPACE while the bar is near the
@@ -124,4 +124,4 @@ scene Rhythm:
                 rect(at: (bar_x - 2, 270), size: (4, 28), color: color.white)
                 rect(at: (560 - 4, 270), size: (8, 28), color: color.yellow)
 
-            text(last_message, at: (240, 360), color: color.white)
+            text(last_message, at: (240, 360), size: 24, color: color.white)

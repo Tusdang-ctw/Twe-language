@@ -214,7 +214,7 @@ pub struct RenderSnapshot<'a> {
     /// `visual_wgsl::compile_material`); index 0 is unused.
     pub materials: &'a [String],
     /// web3d-M3: HUD text and rectangles, drawn over the scene.
-    pub hud: &'a [crate::render3d_types::HudItem],
+    pub hud: &'a [crate::draw2d::Draw2d],
     /// Animation state for a skinned mesh id.
     pub anim: &'a dyn Fn(u32) -> AnimSnapshot,
 }

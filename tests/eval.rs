@@ -3380,6 +3380,7 @@ fn look_block_is_refused_by_the_2d_player() {
     let src = fs::read_to_string("tests/programs/look_block.twe").unwrap();
     let mut env = env_for(&src).expect("program runs");
     assert_eq!(eval::first_look_class(&env).as_deref(), Some("Arrow"));
+    env.in_render = true; // as the play loop sets it
     let e = eval::render_frame(&mut env).expect_err("2D render refuses looks");
     assert!(
         e.message.contains("only the 3D runtime draws"),
@@ -3406,7 +3407,7 @@ fn text_and_rect_queue_a_hud_in_3d() {
     twec::stdlib::install(&mut env);
     eval::run_top_level(&mut env, &program).expect("top-level");
     eval::render_frame3d(&mut env).expect("render");
-    let hud = &env.hud_queue;
+    let hud = &env.draw2d;
     assert_eq!(hud.len(), 3, "{hud:?}");
     assert!(
         matches!(&hud[0], HudItem::Rect { x, w, color, .. } if *x == 10.0 && *w == 200.0 && color[0] == 1.0)
@@ -3418,7 +3419,42 @@ fn text_and_rect_queue_a_hud_in_3d() {
     );
     // The queue is per frame, not cumulative.
     eval::render_frame3d(&mut env).expect("render");
-    assert_eq!(env.hud_queue.len(), 3);
+    assert_eq!(env.draw2d.len(), 3);
+}
+
+/// web3d-M6: every 2D draw builtin pushes a `Draw2d` command, and the
+/// 2D `render_frame` runs the top-level `on render():` (it used to run
+/// only state and entity renders, so `button_demo` and eleven other
+/// examples drew nothing under `twec play`).
+#[test]
+fn render_frame_2d_runs_top_level_render_into_draw_commands() {
+    use twec::draw2d::Draw2d;
+    let src = concat!(
+        "on render():\n",
+        "    rect((0, 0), (640, 480), (0.1, 0.1, 0.2))\n",
+        "    text(\"hi\", (10, 20), 16, color.white)\n",
+    );
+    let tokens = lexer::lex(src).expect("lex");
+    let program = parser::parse(&tokens).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    eval::run_top_level(&mut env, &program).expect("top-level");
+    env.in_render = true;
+    eval::render_frame(&mut env).expect("render");
+    env.in_render = false;
+    let cmds = &env.draw2d;
+    assert_eq!(cmds.len(), 2, "{cmds:?}");
+    assert!(matches!(&cmds[0], Draw2d::Rect { w, h, .. } if *w == 640.0 && *h == 480.0));
+    assert!(matches!(&cmds[1], Draw2d::Text { text, font: None, .. } if text == "hi"));
+    // Without macroquad the other primitives still refuse, rather than
+    // queue commands the kernel can't draw yet (M6 session 2).
+    let src = "on render():\n    circle((320, 240), 30, color.yellow)\n";
+    let program = parser::parse(&lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    eval::run_top_level(&mut env, &program).expect("top-level");
+    env.in_render = true;
+    assert!(eval::render_frame(&mut env).is_err());
 }
 
 /// web3d-M7 session 16: `light.environment(path, intensity)` sets the

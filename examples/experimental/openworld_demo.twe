@@ -138,7 +138,7 @@ scene OpenWorldDemo:
             rect(at: (0, 0), size: (640, 480), color: color.black)
 
             # Draw the visibility ring as a hint to the player.
-            circle_outline(at: (320, 240), radius: 200, color: color.gray)
+            circle_outline(at: (320, 240), radius: 200, thickness: 2, color: color.gray)
 
             # Static props in the visible set (queried this frame).
             let visible = world.spatial_query_radius(camera_x, 0.0, camera_z, view_radius)

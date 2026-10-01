@@ -10,7 +10,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::render3d_types::HudItem;
+use crate::draw2d::Draw2d as HudItem;
 
 const FONT: &[u8] = include_bytes!("ProggyClean.ttf");
 /// Pixel size glyphs are rasterised at; drawn sizes scale from it.
@@ -353,6 +353,7 @@ impl Hud {
                     y,
                     size,
                     color,
+                    ..
                 } => {
                     // `(x, y)` is the baseline start, as in the 2D `text()`.
                     let k = size * sy / BASE_PX;
@@ -375,6 +376,9 @@ impl Hud {
                         pen += g.advance * k;
                     }
                 }
+                // web3d-M6 session 2 draws the other 2D commands over 3D;
+                // until then their builtins refuse to run in 3D.
+                _ => {}
             }
         }
         out

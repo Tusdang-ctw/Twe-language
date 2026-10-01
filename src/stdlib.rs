@@ -8850,24 +8850,17 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
             c.insert(path.clone(), tex);
         }
-        let tex = &c[&path];
-        match size {
-            None => {
-                macroquad::texture::draw_texture(tex, x as f32, y as f32, macroquad::color::WHITE)
-            }
-            Some((w, h)) => macroquad::texture::draw_texture_ex(
-                tex,
-                x as f32,
-                y as f32,
-                macroquad::color::WHITE,
-                macroquad::texture::DrawTextureParams {
-                    dest_size: Some(macroquad::math::vec2(w as f32, h as f32)),
-                    ..Default::default()
-                },
-            ),
-        }
         Ok(())
     })?;
+    // web3d-M6: a command; the renderer draws it from the cache above.
+    crate::draw2d::texture(
+        &mut env.draw2d,
+        &path,
+        x as f32,
+        y as f32,
+        size.map(|(w, h)| [w as f32, h as f32]),
+        None,
+    );
     Ok(Value::NIL)
 }
 
@@ -8960,6 +8953,25 @@ fn atlas_source_rect(
 /// Decode + cache a texture by path, then call `draw` with the live
 /// `Texture2D`. Mirrors the pattern in `draw_sprite` so atlases share
 /// the same cache and hot-reload behavior.
+/// web3d-M6: run `f` with the cached texture for `path`, if loaded
+/// (the 2D replay; the builtin that pushed the command loaded it).
+pub(crate) fn with_cached_texture(path: &str, f: impl FnOnce(&macroquad::texture::Texture2D)) {
+    SPRITE_CACHE.with(|cache| {
+        if let Some(tex) = cache.borrow().get(path) {
+            f(tex);
+        }
+    });
+}
+
+/// web3d-M6: run `f` with the decoded font for `path`, if decoded.
+pub(crate) fn with_decoded_font(path: &str, f: impl FnOnce(&macroquad::text::Font)) {
+    FONT_CACHE.with(|cache| {
+        if let Some(font) = cache.borrow().get(path) {
+            f(font);
+        }
+    });
+}
+
 fn with_texture<F>(path: &str, callee: &str, draw: F) -> Result<(), RuntimeError>
 where
     F: FnOnce(&macroquad::texture::Texture2D) -> Result<(), RuntimeError>,
@@ -8990,20 +9002,14 @@ fn draw_sprite_frame(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame")?;
     let (x, y) = xy_of(&args[1], "sprite_frame.at")?;
     let frame = as_i64(&args[2], "sprite_frame.frame")?;
+    let mut src = None;
     with_texture(&path, "sprite_frame", |tex| {
-        let src = atlas_source_rect(tex, cols, rows, frame, "sprite_frame")?;
-        macroquad::texture::draw_texture_ex(
-            tex,
-            x as f32,
-            y as f32,
-            macroquad::color::WHITE,
-            macroquad::texture::DrawTextureParams {
-                source: Some(src),
-                ..Default::default()
-            },
-        );
+        src = Some(atlas_source_rect(tex, cols, rows, frame, "sprite_frame")?);
         Ok(())
     })?;
+    if let Some(r) = src {
+        crate::draw2d::texture(&mut env.draw2d, &path, x as f32, y as f32, None, Some([r.x, r.y, r.w, r.h]));
+    }
     Ok(Value::NIL)
 }
 
@@ -9016,21 +9022,21 @@ fn draw_sprite_frame_at(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
     let (x, y) = xy_of(&args[1], "sprite_frame_at.at")?;
     let (w, h) = xy_of(&args[2], "sprite_frame_at.size")?;
     let frame = as_i64(&args[3], "sprite_frame_at.frame")?;
+    let mut src = None;
     with_texture(&path, "sprite_frame_at", |tex| {
-        let src = atlas_source_rect(tex, cols, rows, frame, "sprite_frame_at")?;
-        macroquad::texture::draw_texture_ex(
-            tex,
-            x as f32,
-            y as f32,
-            macroquad::color::WHITE,
-            macroquad::texture::DrawTextureParams {
-                dest_size: Some(macroquad::math::vec2(w as f32, h as f32)),
-                source: Some(src),
-                ..Default::default()
-            },
-        );
+        src = Some(atlas_source_rect(tex, cols, rows, frame, "sprite_frame_at")?);
         Ok(())
     })?;
+    if let Some(r) = src {
+        crate::draw2d::texture(
+            &mut env.draw2d,
+            &path,
+            x as f32,
+            y as f32,
+            Some([w as f32, h as f32]),
+            Some([r.x, r.y, r.w, r.h]),
+        );
+    }
     Ok(Value::NIL)
 }
 
@@ -9205,26 +9211,16 @@ pub(crate) fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
 
 fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "rect")?;
-    if !macroquad_live() {
+    if macroquad_live() {
+        require_render_2d(env, "rect")?;
+    } else {
         // web3d-M3: in 3D, a HUD rectangle over the scene.
         require_render(env, "rect")?;
-        let (x, y) = xy_of(&args[0], "rect.at")?;
-        let (w, h) = xy_of(&args[1], "rect.size")?;
-        let c = color_of(&args[2], "rect.color")?;
-        env.hud_queue.push(crate::render3d_types::HudItem::Rect {
-            x: x as f32,
-            y: y as f32,
-            w: w as f32,
-            h: h as f32,
-            color: [c.r, c.g, c.b, c.a],
-        });
-        return Ok(Value::NIL);
     }
-    require_render_2d(env, "rect")?;
     let (x, y) = xy_of(&args[0], "rect.at")?;
     let (w, h) = xy_of(&args[1], "rect.size")?;
     let color = color_of(&args[2], "rect.color")?;
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, color);
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, color);
     Ok(Value::NIL)
 }
 
@@ -9234,7 +9230,7 @@ fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (x, y) = xy_of(&args[0], "circle.at")?;
     let radius = number(&args[1], "circle.radius")? as f32;
     let color = color_of(&args[2], "circle.color")?;
-    macroquad::shapes::draw_circle(x as f32, y as f32, radius, color);
+    crate::draw2d::circle(&mut env.draw2d, x as f32, y as f32, radius, color);
     Ok(Value::NIL)
 }
 
@@ -9245,7 +9241,7 @@ fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     let radius = number(&args[1], "circle_outline.radius")? as f32;
     let thickness = number(&args[2], "circle_outline.thickness")? as f32;
     let color = color_of(&args[3], "circle_outline.color")?;
-    macroquad::shapes::draw_circle_lines(x as f32, y as f32, radius, thickness, color);
+    crate::draw2d::circle_lines(&mut env.draw2d, x as f32, y as f32, radius, thickness, color);
     Ok(Value::NIL)
 }
 
@@ -9256,7 +9252,7 @@ fn draw_rect_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let (w, h) = xy_of(&args[1], "rect_outline.size")?;
     let thickness = number(&args[2], "rect_outline.thickness")? as f32;
     let color = color_of(&args[3], "rect_outline.color")?;
-    macroquad::shapes::draw_rectangle_lines(
+    crate::draw2d::rect_lines(&mut env.draw2d, 
         x as f32, y as f32, w as f32, h as f32, thickness, color,
     );
     Ok(Value::NIL)
@@ -9269,7 +9265,7 @@ fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (x2, y2) = xy_of(&args[1], "line.to")?;
     let thickness = number(&args[2], "line.width")? as f32;
     let color = color_of(&args[3], "line.color")?;
-    macroquad::shapes::draw_line(x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color);
+    crate::draw2d::line(&mut env.draw2d, x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color);
     Ok(Value::NIL)
 }
 
@@ -9361,25 +9357,12 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 
 fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "text")?;
-    if !macroquad_live() {
+    if macroquad_live() {
+        require_render_2d(env, "text")?;
+    } else {
         // web3d-M3: in 3D, HUD text over the scene.
         require_render(env, "text")?;
-        let (x, y) = xy_of(&args[1], "text.at")?;
-        let c = color_of(&args[3], "text.color")?;
-        env.hud_queue.push(crate::render3d_types::HudItem::Text {
-            text: if args[0].is_str() {
-                args[0].as_string()
-            } else {
-                args[0].display()
-            },
-            x: x as f32,
-            y: y as f32,
-            size: number(&args[2], "text.size")? as f32,
-            color: [c.r, c.g, c.b, c.a],
-        });
-        return Ok(Value::NIL);
     }
-    require_render_2d(env, "text")?;
     let content = {
         let __t = &args[0];
         if __t.is_str() {
@@ -9393,7 +9376,7 @@ fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (x, y) = xy_of(&args[1], "text.at")?;
     let size = number(&args[2], "text.size")? as f32;
     let color = color_of(&args[3], "text.color")?;
-    macroquad::text::draw_text(&content, x as f32, y as f32, size, color);
+    crate::draw2d::text(&mut env.draw2d, &content, x as f32, y as f32, size, color);
     Ok(Value::NIL)
 }
 
@@ -9420,29 +9403,7 @@ fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     // parse needs THREAD_ID, which only exists once we're inside the
     // render frame — here.
     ensure_font_decoded(&path)?;
-    FONT_CACHE.with(|cache| -> Result<(), RuntimeError> {
-        let c = cache.borrow();
-        let font = c.get(&path).ok_or_else(|| RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!(
-                "text_with_font: internal — font '{path}' lazy-decode failed silently"
-            ),
-            help: None,
-        })?;
-        macroquad::text::draw_text_ex(
-            &content,
-            x as f32,
-            y as f32,
-            macroquad::text::TextParams {
-                font: Some(font),
-                font_size: size as u16,
-                color,
-                ..Default::default()
-            },
-        );
-        Ok(())
-    })?;
+    crate::draw2d::text_font(&mut env.draw2d, &content, x as f32, y as f32, size, color, &path);
     Ok(Value::NIL)
 }
 
@@ -9480,9 +9441,9 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     } else {
         macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
     };
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     if hovered {
-        macroquad::shapes::draw_rectangle_lines(
+        crate::draw2d::rect_lines(&mut env.draw2d, 
             x as f32,
             y as f32,
             w as f32,
@@ -9499,7 +9460,7 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     // baseline; macroquad's draw_text takes the baseline y, so center
     // by adding half the glyph height to the rect midline.
     let ty = y as f32 + (h as f32 + dim.height) / 2.0;
-    macroquad::text::draw_text(
+    crate::draw2d::text(&mut env.draw2d, 
         &label,
         tx,
         ty,
@@ -9542,7 +9503,7 @@ fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let dim = macroquad::text::measure_text(&text, None, font_size as u16, 1.0);
     let tx = x as f32 + (w as f32 - dim.width) / 2.0;
     let ty = y as f32 + (h as f32 + dim.height) / 2.0;
-    macroquad::text::draw_text(
+    crate::draw2d::text(&mut env.draw2d, 
         &text,
         tx,
         ty,
@@ -9568,12 +9529,12 @@ fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let fill_color = macroquad::color::Color::new(0.30, 0.65, 0.85, 1.0);
     let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
 
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, frame_color);
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, frame_color);
     let fill_w = (w * value) as f32;
     if fill_w > 0.0 {
-        macroquad::shapes::draw_rectangle(x as f32, y as f32, fill_w, h as f32, fill_color);
+        crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, fill_w, h as f32, fill_color);
     }
-    macroquad::shapes::draw_rectangle_lines(
+    crate::draw2d::rect_lines(&mut env.draw2d, 
         x as f32,
         y as f32,
         w as f32,
@@ -9634,7 +9595,7 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
     let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
 
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, track_color);
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, track_color);
     let t = if (max - min).abs() > f64::EPSILON {
         ((value - min) / (max - min)).clamp(0.0, 1.0)
     } else {
@@ -9642,8 +9603,8 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
     let knob_w = 12.0_f32;
     let knob_x = x as f32 + (t as f32) * (w as f32 - knob_w);
-    macroquad::shapes::draw_rectangle(knob_x, y as f32, knob_w, h as f32, knob_color);
-    macroquad::shapes::draw_rectangle_lines(
+    crate::draw2d::rect(&mut env.draw2d, knob_x, y as f32, knob_w, h as f32, knob_color);
+    crate::draw2d::rect_lines(&mut env.draw2d, 
         x as f32,
         y as f32,
         w as f32,
@@ -9699,8 +9660,8 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let border = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
     let check = macroquad::color::Color::new(0.40, 0.85, 0.45, 1.0);
 
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
-    macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
+    crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, 2.0, border);
     if value {
         // Two-segment check mark inside the box, padded by 25% of
         // the smaller dimension so it visually fits any aspect.
@@ -9711,8 +9672,8 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         let y1 = y as f32 + (h as f32) - pad;
         let x2 = x as f32 + (w as f32) - pad;
         let y2 = y as f32 + pad;
-        macroquad::shapes::draw_line(x0, y0, x1, y1, 3.0, check);
-        macroquad::shapes::draw_line(x1, y1, x2, y2, 3.0, check);
+        crate::draw2d::line(&mut env.draw2d, x0, y0, x1, y1, 3.0, check);
+        crate::draw2d::line(&mut env.draw2d, x1, y1, x2, y2, 3.0, check);
     }
 
     Ok(Value::from_bool(value))
@@ -9820,12 +9781,12 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
     let border = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
     let txt = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
-    macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
+    crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, 2.0, border);
     let label = &options[new_selected.min(n - 1)];
     let font_size: f32 = 18.0;
     let dim = macroquad::text::measure_text(label, None, font_size as u16, 1.0);
-    macroquad::text::draw_text(
+    crate::draw2d::text(&mut env.draw2d, 
         label,
         x as f32 + 8.0,
         y as f32 + (h as f32 + dim.height) / 2.0,
@@ -9835,8 +9796,8 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     // Down-chevron at right edge.
     let cx = x as f32 + w as f32 - 14.0;
     let cy = y as f32 + h as f32 / 2.0 - 2.0;
-    macroquad::shapes::draw_line(cx, cy, cx + 4.0, cy + 5.0, 2.0, border);
-    macroquad::shapes::draw_line(cx + 4.0, cy + 5.0, cx + 8.0, cy, 2.0, border);
+    crate::draw2d::line(&mut env.draw2d, cx, cy, cx + 4.0, cy + 5.0, 2.0, border);
+    crate::draw2d::line(&mut env.draw2d, cx + 4.0, cy + 5.0, cx + 8.0, cy, 2.0, border);
 
     // Draw open list, if open.
     if open_after {
@@ -9848,9 +9809,9 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             } else {
                 macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
             };
-            macroquad::shapes::draw_rectangle(x as f32, oy as f32, w as f32, h as f32, row_bg);
+            crate::draw2d::rect(&mut env.draw2d, x as f32, oy as f32, w as f32, h as f32, row_bg);
             let dim = macroquad::text::measure_text(opt, None, font_size as u16, 1.0);
-            macroquad::text::draw_text(
+            crate::draw2d::text(&mut env.draw2d, 
                 opt,
                 x as f32 + 8.0,
                 oy as f32 + (h as f32 + dim.height) / 2.0,
@@ -9860,7 +9821,7 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         }
         // Outline the whole panel to keep visual unity.
         let panel_h = h as f32 + (n as f32) * h as f32;
-        macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, panel_h, 2.0, border);
+        crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, panel_h, 2.0, border);
     }
 
     Ok(Value::from_int(new_selected as i64))
@@ -9958,8 +9919,8 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     };
     let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
 
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
-    macroquad::shapes::draw_rectangle_lines(
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
+    crate::draw2d::rect_lines(&mut env.draw2d, 
         x as f32,
         y as f32,
         w as f32,
@@ -9971,7 +9932,7 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     let font_size: f32 = 18.0;
     let dim = macroquad::text::measure_text(&value, None, font_size as u16, 1.0);
     let baseline_y = y as f32 + (h as f32 + dim.height) / 2.0;
-    macroquad::text::draw_text(&value, x as f32 + 8.0, baseline_y, font_size, txt_color);
+    crate::draw2d::text(&mut env.draw2d, &value, x as f32 + 8.0, baseline_y, font_size, txt_color);
 
     if focused {
         // 1Hz blink — `time::Instant` is overkill for a UI cursor.
@@ -9979,7 +9940,7 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         let t = macroquad::time::get_time();
         if t.fract() < 0.5 {
             let cursor_x = x as f32 + 8.0 + dim.width + 1.0;
-            macroquad::shapes::draw_line(
+            crate::draw2d::line(&mut env.draw2d, 
                 cursor_x,
                 y as f32 + 4.0,
                 cursor_x,
@@ -10088,8 +10049,8 @@ fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     };
     let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
 
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
-    macroquad::shapes::draw_rectangle_lines(
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
+    crate::draw2d::rect_lines(&mut env.draw2d, 
         x as f32,
         y as f32,
         w as f32,
@@ -10107,7 +10068,7 @@ fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     let dim = macroquad::text::measure_text(&display, None, font_size as u16, 1.0);
     let tx = x as f32 + (w as f32 - dim.width) / 2.0;
     let ty = y as f32 + (h as f32 + dim.height) / 2.0;
-    macroquad::text::draw_text(&display, tx, ty, font_size, txt_color);
+    crate::draw2d::text(&mut env.draw2d, &display, tx, ty, font_size, txt_color);
 
     Ok(Value::from_string(value))
 }
@@ -10123,8 +10084,8 @@ fn draw_panel(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (w, h) = xy_of(&args[1], "panel.size")?;
     let bg = macroquad::color::Color::new(0.14, 0.14, 0.18, 1.0);
     let border = macroquad::color::Color::new(0.65, 0.65, 0.72, 1.0);
-    macroquad::shapes::draw_rectangle(x as f32, y as f32, w as f32, h as f32, bg);
-    macroquad::shapes::draw_rectangle_lines(x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
+    crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, 2.0, border);
     Ok(Value::NIL)
 }
 
@@ -10233,6 +10194,8 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         // panic / clip; the panel is too small to draw a 9-slice.
         return Ok(Value::NIL);
     }
+    // web3d-M6: the nine pieces, as (dest x, y, w, h, source x, y, w, h).
+    let mut pieces: Vec<[f32; 8]> = Vec::new();
     SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
         let mut c = cache.borrow_mut();
         if !c.contains_key(&path) {
@@ -10283,25 +10246,13 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
             (wf - b, hf - b, b, b, tw - b, th - b, b, b),
         ];
         for (dx, dy, dw, dh, sx, sy, sw, sh) in cells {
-            macroquad::texture::draw_texture_ex(
-                tex,
-                xf + dx,
-                yf + dy,
-                macroquad::color::WHITE,
-                macroquad::texture::DrawTextureParams {
-                    source: Some(macroquad::math::Rect {
-                        x: sx,
-                        y: sy,
-                        w: sw,
-                        h: sh,
-                    }),
-                    dest_size: Some(macroquad::math::vec2(dw, dh)),
-                    ..Default::default()
-                },
-            );
+            pieces.push([xf + dx, yf + dy, dw, dh, sx, sy, sw, sh]);
         }
         Ok(())
     })?;
+    for [x, y, w, h, sx, sy, sw, sh] in pieces {
+        crate::draw2d::texture(&mut env.draw2d, &path, x, y, Some([w, h]), Some([sx, sy, sw, sh]));
+    }
     Ok(Value::NIL)
 }
 

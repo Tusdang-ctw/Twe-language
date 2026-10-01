@@ -581,7 +581,8 @@ pub struct Env {
     /// is the plain surface. See [`Env::intern_material`].
     pub material_sources: Vec<String>,
     /// web3d-M3: this frame's HUD (`text()` / `rect()` in a 3D render).
-    pub hud_queue: Vec<crate::render3d_types::HudItem>,
+    /// web3d-M6: this frame's 2D draw commands (`crate::draw2d`).
+    pub draw2d: Vec<crate::draw2d::Draw2d>,
     material_names: Vec<String>,
     /// web3d-M7: whether `particles` blocks that compile to WGSL run on
     /// the GPU (`kernel::particles`). The 3D hosts set it; elsewhere
@@ -701,7 +702,7 @@ impl Env {
             sim_time: 0.0,
             visual_materials: HashMap::new(),
             material_sources: vec![String::new()],
-            hud_queue: Vec::new(),
+            draw2d: Vec::new(),
             material_names: vec![String::new()],
             gpu_particles: false,
             particle_classes: HashMap::new(),

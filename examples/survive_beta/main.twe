@@ -91,8 +91,8 @@ var best_time = 0.0
 # Boss spawn cadence. Counts up every wave roll; on hitting 5,
 # spawns one boss and resets. Wave 5 is the first boss wave.
 var boss_wave_counter = 0
-# v1.0.1 polish: hit feedback flows through `fx.*`; camera tracking
-# flows through `camera2d.*`; sound pooling pre-declares the voice
+# v1.0.1 polish: hit feedback flows through `fx.*`; camera tracking is
+# the script's own (see the play loop); sound pooling pre-declares the voice
 # budget. v1.0.2 polish: save schema versioning moves from the
 # `save.set_schema_version(N)` builtin to the `save SaveSlot:` block
 # (Path B, anchor-only — `migration from N:` clauses land here when
@@ -100,7 +100,6 @@ var boss_wave_counter = 0
 sound.pool("examples/assets/silence.wav", 4)
 save SaveSlot:
     version: 1
-camera2d.bounds(view_w * 0.5, view_h * 0.5, arena_w - view_w, arena_h - view_h)
 var camera_x = player_x - view_w * 0.5
 var camera_y = player_y - view_h * 0.5
 
@@ -945,11 +944,20 @@ scene SurviveBeta:
             if player_y > arena_h - 16.0:
                 player_y = arena_h - 16.0
 
-            # Camera follow via camera2d.* — deadzone-follow with a
-            # Survivors-class lerp. Bounds set at top level.
-            camera2d.follow(target: (player_x, player_y), lerp: 0.15, deadzone: (60.0, 40.0))
-            camera_x = camera.pos.x - view_w * 0.5
-            camera_y = camera.pos.y - view_h * 0.5
+            # Camera: centred on the player, clamped to the arena. The
+            # script draws in screen space (`pos - camera_x`), so it keeps
+            # its own offset rather than moving the view with camera2d.*
+            # (which would shift everything a second time; web3d-M6).
+            camera_x = player_x - view_w * 0.5
+            camera_y = player_y - view_h * 0.5
+            if camera_x < 0.0:
+                camera_x = 0.0
+            if camera_x > arena_w - view_w:
+                camera_x = arena_w - view_w
+            if camera_y < 0.0:
+                camera_y = 0.0
+            if camera_y > arena_h - view_h:
+                camera_y = arena_h - view_h
 
             # Game-over transition. HP is replenished + slimes
             # cleared in the `game_over` -> `playing` restart hook

@@ -903,6 +903,14 @@ Principle 2 "one obvious way" and avoid an open-ended shape zoo):
   examples. An ellipse is a scaled sprite; an arc is a short line strip.
 - `pixel` — degenerate `rect` of size `(1, 1)`.
 
+**Where drawing happens** *(web3d-M6)*. Drawing calls don't draw immediately. Each one adds a command to the frame's draw list, and the runtime draws the list in call order once the frame's render code has run. The frame order is:
+1. the top-level `on render():`;
+2. the active scene state's `on render():`;
+3. each entity's `render()`;
+4. the `light2d` overlay, then the `fx` overlay.
+
+Later commands draw over earlier ones. A script sees no difference from drawing immediately. The list is what lets 2D games, and the HUD over a 3D game, share one renderer.
+
 All drawing primitives must be called from inside an `on render():`
 handler; calling one elsewhere is a runtime error that points you at
 `render` (do state mutation in `every` / `on update(dt)`).

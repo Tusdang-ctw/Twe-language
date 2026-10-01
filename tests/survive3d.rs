@@ -102,11 +102,11 @@ impl Game {
 
     fn hud_text(&self) -> String {
         self.env
-            .hud_queue
+            .draw2d
             .iter()
             .filter_map(|h| match h {
                 HudItem::Text { text, .. } => Some(text.as_str()),
-                HudItem::Rect { .. } => None,
+                _ => None,
             })
             .collect::<Vec<_>>()
             .join(" | ")

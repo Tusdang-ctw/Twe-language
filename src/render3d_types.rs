@@ -118,24 +118,6 @@ pub enum Primitive {
     Mesh(u32),
 }
 
-/// web3d-M3: a HUD element drawn over the 3D scene by `text()` /
-/// `rect()` in a 3D `on render():`. Coordinates are the 2D runtime's
-/// 640×480 canvas (scaled to the target); `(x, y)` of text is its
-/// baseline start. Colours are sRGB `[r, g, b, a]`.
-#[derive(Debug, Clone)]
-pub enum HudItem {
-    Text {
-        text: String,
-        x: f32,
-        y: f32,
-        size: f32,
-        color: [f32; 4],
-    },
-    Rect {
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        color: [f32; 4],
-    },
-}
+/// web3d-M3: a HUD element drawn over the 3D scene. web3d-M6: the same
+/// command every 2D draw pushes (`crate::draw2d`).
+pub use crate::draw2d::Draw2d as HudItem;

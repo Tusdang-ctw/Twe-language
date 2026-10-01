@@ -666,14 +666,14 @@ fn render_particle_emitter(
                         } else {
                             1.0
                         };
-                        macroquad::color::Color::new(r, g, b, a)
+                        [r, g, b, a]
                     } else {
-                        macroquad::color::WHITE
+                        [1.0; 4]
                     }
                 }
-                _ => macroquad::color::WHITE,
+                _ => [1.0; 4],
             };
-            macroquad::shapes::draw_circle(px as f32, py as f32, radius, color);
+            crate::draw2d::circle(&mut env.draw2d, px as f32, py as f32, radius, color);
         }
     }
     Ok(())
@@ -770,7 +770,7 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
 /// session (d).
 pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
     env.render_queue3d.clear();
-    env.hud_queue.clear();
+    env.draw2d.clear();
     let prev_render = env.in_render;
     env.in_render = true;
     let mut result = Ok(());
@@ -1142,6 +1142,14 @@ fn look_tint(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 4], Runtim
 /// call).
 pub fn render_frame(env: &mut Env) -> Result<(), RuntimeError> {
     let _profile = crate::profile::scope("render");
+    // web3d-M6: the top-level `on render():` too, first, as in 3D
+    // (`render_frame3d`). The 2D path never ran it once the bytecode
+    // VM stopped being the default, so twelve examples drew nothing.
+    if let Some(body) = env.top_on_render.clone() {
+        let result = run_frame_body(env, Vec::new(), &body);
+        env.returning.take();
+        result?;
+    }
     render_scene_state(env)?;
     render_entities_2d(env)
 }

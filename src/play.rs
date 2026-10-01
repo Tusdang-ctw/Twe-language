@@ -431,16 +431,19 @@ async fn run_loop_wasm() {
             let cam = build_camera2d(px + sx, py + sy, zoom);
             set_camera(&cam);
         }
+        // web3d-M6: the frame's 2D draw commands, replayed below.
+        env.draw2d.clear();
         let render_result = crate::eval::render_frame(&mut env);
         // v1.0.1 session 3: light overlay sits between world and fx —
         // ambient darkness dims the world, glow circles brighten lit
         // spots, fx layer (damage numbers / bursts) draws on top.
-        draw_light2d_overlay(cam_active, px + sx, py + sy, zoom);
+        draw_light2d_overlay(&mut env.draw2d, cam_active, px + sx, py + sy, zoom);
         // v1.0.1 session 1: fx overlay draws under the same camera
         // transform as the world render — bursts, damage numbers, and
         // shockwaves sit on top of the script's draws but still scroll
         // with the camera in world-space.
-        crate::fx::fx_draw_overlay();
+        crate::fx::fx_draw_overlay(&mut env.draw2d);
+        crate::draw2d::replay_macroquad(&env.draw2d);
         crate::light2d::clear_frame_lights();
         if cam_active {
             set_default_camera();
@@ -503,6 +506,8 @@ async fn run_loop(path: String) {
     // and spiral cap.
     let mut accumulator: f64 = 0.0;
     flush_output(&mut env);
+    let capture = capture_request();
+    let mut frame_no: u32 = 0;
 
     loop {
         // web3d-M0: Escape quits unless the script took it over with
@@ -546,7 +551,13 @@ async fn run_loop(path: String) {
         // `run_loop_*` variant; populates the sliding-window counter
         // `touch.tap_count()` reads.
         crate::stdlib::tick_touch_taps(macroquad::time::get_time());
-        let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
+        // web3d-M6: a capture advances exactly one tick per frame, so
+        // frame N is the same picture on every machine.
+        let frame_dt = if capture.is_some() {
+            crate::eval::PHYSICS_DT
+        } else {
+            (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT)
+        };
         hud_record(frame_dt);
         idle.tick(frame_dt);
         idle.apply();
@@ -630,9 +641,12 @@ async fn run_loop(path: String) {
             let cam = build_camera2d(px + sx, py + sy, zoom);
             set_camera(&cam);
         }
+        // web3d-M6: the frame's 2D draw commands, replayed below.
+        env.draw2d.clear();
         let render_result = crate::eval::render_frame(&mut env);
-        draw_light2d_overlay(cam_active, px + sx, py + sy, zoom);
-        crate::fx::fx_draw_overlay();
+        draw_light2d_overlay(&mut env.draw2d, cam_active, px + sx, py + sy, zoom);
+        crate::fx::fx_draw_overlay(&mut env.draw2d);
+        crate::draw2d::replay_macroquad(&env.draw2d);
         crate::light2d::clear_frame_lights();
         if cam_active {
             set_default_camera();
@@ -647,8 +661,39 @@ async fn run_loop(path: String) {
 
         hud_draw();
         write_pending_screenshot();
+        frame_no += 1;
+        if let Some((at, out)) = &capture {
+            if frame_no == *at {
+                let img = get_screen_data();
+                img.export_png(out);
+                eprintln!("[twec] captured frame {at}: {out} ({} draw commands)", env.draw2d.len());
+                // `TWE_CAPTURE_DUMP=1` lists the frame's commands too.
+                if std::env::var_os("TWE_CAPTURE_DUMP").is_some() {
+                    for cmd in &env.draw2d {
+                        eprintln!("  {cmd:?}");
+                    }
+                }
+                break;
+            }
+        }
 
         next_frame().await;
+    }
+}
+
+/// web3d-M6: `TWE_CAPTURE=N:path` makes `twec play` write frame `N`
+/// (1-based) to the PNG `path` and exit, with no input and one fixed
+/// tick per frame. It records the reference images M6 compares the
+/// kernel's 2D renderer against (`tests/references/m6/`).
+fn capture_request() -> Option<(u32, String)> {
+    let spec = std::env::var("TWE_CAPTURE").ok()?;
+    let (n, path) = spec.split_once(':')?;
+    match n.trim().parse::<u32>() {
+        Ok(n) if n > 0 && !path.is_empty() => Some((n, path.to_string())),
+        _ => {
+            eprintln!("[twec] TWE_CAPTURE should be FRAME:PATH, e.g. 60:out.png; ignoring '{spec}'");
+            None
+        }
     }
 }
 
@@ -1009,7 +1054,7 @@ fn hud_draw() {
 // safely covers any reasonable on-screen world. When the camera is
 // default the view rect is in screen pixels — same as direct
 // `rect(...)` calls from a `play_bytecode` script.
-fn draw_light2d_overlay(cam_active: bool, px: f64, py: f64, zoom: f64) {
+fn draw_light2d_overlay(out: &mut Vec<crate::draw2d::Draw2d>, cam_active: bool, px: f64, py: f64, zoom: f64) {
     let sw = screen_width();
     let sh = screen_height();
     if cam_active {
@@ -1019,13 +1064,14 @@ fn draw_light2d_overlay(cam_active: bool, px: f64, py: f64, zoom: f64) {
         let half_w = (sw / 2.0 / z) * 4.0;
         let half_h = (sh / 2.0 / z) * 4.0;
         crate::light2d::draw_overlay(
+            out,
             px as f32 - half_w,
             py as f32 - half_h,
             half_w * 2.0,
             half_h * 2.0,
         );
     } else {
-        crate::light2d::draw_overlay(0.0, 0.0, sw, sh);
+        crate::light2d::draw_overlay(out, 0.0, 0.0, sw, sh);
     }
 }
 
@@ -1147,9 +1193,12 @@ async fn run_loop_embedded(source: String) {
             let cam = build_camera2d(px + sx, py + sy, zoom);
             set_camera(&cam);
         }
+        // web3d-M6: the frame's 2D draw commands, replayed below.
+        env.draw2d.clear();
         let render_result = crate::eval::render_frame(&mut env);
-        draw_light2d_overlay(cam_active, px + sx, py + sy, zoom);
-        crate::fx::fx_draw_overlay();
+        draw_light2d_overlay(&mut env.draw2d, cam_active, px + sx, py + sy, zoom);
+        crate::fx::fx_draw_overlay(&mut env.draw2d);
+        crate::draw2d::replay_macroquad(&env.draw2d);
         crate::light2d::clear_frame_lights();
         if cam_active {
             set_default_camera();

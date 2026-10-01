@@ -161,15 +161,16 @@ fn pseudo_noise(time: f32, salt: f32) -> f32 {
 /// `(view_x, view_y, view_w, view_h)` is the world-space rectangle
 /// the ambient darkness should cover — typically the on-screen
 /// portion of the world under the current camera transform.
-pub fn draw_overlay(view_x: f32, view_y: f32, view_w: f32, view_h: f32) {
-    use macroquad::shapes::{draw_circle, draw_rectangle};
+pub fn draw_overlay(out: &mut Vec<crate::draw2d::Draw2d>, view_x: f32, view_y: f32, view_w: f32, view_h: f32) {
+    // web3d-M6: commands, drawn by whichever renderer runs the game.
+    use crate::draw2d::{circle as draw_circle, rect as draw_rectangle};
 
     LIGHT_STATE.with(|s| {
         let st = s.borrow();
         if st.ambient.a > 0.0 {
             // Darken the scene with the ambient color. Alpha controls
             // how dim the unlit areas look.
-            draw_rectangle(view_x, view_y, view_w, view_h, st.ambient);
+            draw_rectangle(out, view_x, view_y, view_w, view_h, st.ambient);
         }
         for (i, light) in st.lights.iter().enumerate() {
             let mut intensity = 1.0_f32;
@@ -188,7 +189,7 @@ pub fn draw_overlay(view_x: f32, view_y: f32, view_w: f32, view_h: f32) {
                 let radius = light.radius * intensity * (1.0 - t_norm * 0.7);
                 let alpha = light.color.a * (1.0 - t_norm) * 0.35;
                 let c = Color::new(light.color.r, light.color.g, light.color.b, alpha);
-                draw_circle(light.pos.0, light.pos.1, radius, c);
+                draw_circle(out, light.pos.0, light.pos.1, radius, c);
             }
         }
     });

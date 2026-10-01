@@ -98,7 +98,7 @@ scene SurviveBetaMobile:
             while i < ptr_count:
                 # `i < ptr_count`, so `touch.pointer(i)` is always a touch.
                 let p = touch.pointer(i)
-                circle_outline(at: (p.x, p.y), radius: 24, color: color.yellow)
+                circle_outline(at: (p.x, p.y), radius: 24, thickness: 2, color: color.yellow)
                 i += 1
 
             # Safe-area-aware HUD. On desktop every inset is 0; on
@@ -128,7 +128,7 @@ scene SurviveBetaMobile:
             let pad = 16.0
             let stick_cx = sa.left + pad + 64.0
             let stick_cy = view_h - sa.bottom - pad - 64.0
-            circle_outline(at: (stick_cx, stick_cy), radius: 64, color: color.gray)
+            circle_outline(at: (stick_cx, stick_cy), radius: 64, thickness: 2, color: color.gray)
             let stick = joystick(at: (stick_cx, stick_cy), size: 64.0, deadzone: 12.0)
             if stick.active:
                 let thumb_x = stick_cx + stick.x * stick.magnitude * 48.0

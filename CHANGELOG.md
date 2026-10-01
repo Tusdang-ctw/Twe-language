@@ -12,6 +12,10 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Changed (runtime)
+- **2D drawing goes through one command list** (web3d-M6). Drawing calls add commands that the runtime draws after the frame's render code, in call order. Scripts see no difference. 2D games and the 3D HUD now share it.
+- **`TWE_CAPTURE=N:path`** makes `twec play` save frame `N` as a PNG and exit, with fixed timing and no input.
+
 ### Added (benchmark)
 - **`twec mutate` makes 549 error-fix triples** from `tests/programs` and `examples`, with seven new error kinds taken from real LLM mistakes. `--root` can be repeated; files carrying the benchmark canary are refused.
 - **Bench v1** (web3d-M5): 60 behaviour-graded tasks, 10 of them edits to an existing program, in Twe and Python.
@@ -27,6 +31,9 @@ removal would be load-bearing.
   - Setup: `bench/python/requirements.txt`.
 
 ### Fixed
+- **Twelve 2D examples drew nothing under `twec play`** (web3d-M6), among them `button_demo`, `widgets_demo`, `tilemap_demo` and `pause_menu_demo`. The 2D runtime never ran the top-level `on render():`; it now runs it first, as 3D does.
+- **`examples/survive_beta` drew everything off screen.** It moved the view with `camera2d.*` while also drawing in screen space. It keeps its own camera again.
+- **`rhythm_demo` and `survive_beta_mobile` stopped on their first frame** with missing `size:` and `thickness:` arguments.
 - **`examples/tetris.twe` crashed on every hard drop**, and **`grid_duel`, `pong_net` and `pong_net_internet` crashed while waiting for a peer**: each used `return` in an event handler.
 - **`twec verify` now reports `return` outside a function or method body**, and a member a list doesn't have (`.len()`). Both used to fail only when the line ran.
 - **The LLM primer's examples are real Twe.** The entity example didn't parse, and the events example showed handlers that are only legal inside a state. Every example now verifies, and a test keeps it so.
