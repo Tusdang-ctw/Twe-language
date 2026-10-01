@@ -1,0 +1,24 @@
+var player = vec3(0, 0, 0)
+var score = 0
+
+entity Enemy:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "cube"
+        tint: color.red
+        scale: 0.5
+
+for p in [vec3(2, 0, 0), vec3(4, 0, 0), vec3(4, 0, 3), vec3(9, 0, 0), vec3(12, 0, 1)]:
+    spawn Enemy at p
+
+on update(dt):
+    if key.d:
+        player = player + vec3(5.0 * dt, 0, 0)
+    if key_press.b:
+        for e in entities.of(Enemy):
+            if math.length(e.pos - player) <= 3.0:
+                despawn e
+                score = score + 10
+
+on render():
+    sphere(at: player, color: color.white, size: 0.6)

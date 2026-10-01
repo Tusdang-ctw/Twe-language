@@ -1,0 +1,35 @@
+tier = 1
+ticks = 760
+
+[[input]]
+at = 700
+press = ["r"]
+
+[[check]]
+name = "starts at 10, not finished"
+at = 0
+expr = 'remaining == 10 and finished == false'
+
+[[check]]
+name = "one second in, 9 left"
+at = 60
+expr = 'math.abs(remaining - 9.0) < 0.05'
+
+[[check]]
+name = "just before the end, not finished"
+at = 590
+expr = 'math.abs(remaining - 0.1667) < 0.05 and finished == false'
+
+[[check]]
+name = "finishes at 0"
+at = 620
+expr = 'remaining == 0 and finished == true'
+
+[[check]]
+name = "stays at 0"
+at = 690
+expr = 'remaining == 0 and finished == true'
+
+[[check]]
+name = "R restarts it"
+expr = 'math.abs(remaining - 9.0) < 0.05 and finished == false'

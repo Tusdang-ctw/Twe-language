@@ -1,0 +1,51 @@
+tier = 2
+ticks = 200
+
+[[input]]
+at = 5
+press = ["b"]
+[[input]]
+from = 10
+to = 70
+hold = ["d"]
+[[input]]
+at = 80
+press = ["b"]
+[[input]]
+from = 90
+to = 120
+hold = ["d"]
+[[input]]
+at = 130
+press = ["b"]
+[[input]]
+from = 140
+to = 170
+hold = ["d"]
+[[input]]
+at = 180
+press = ["b"]
+
+[[check]]
+name = "five enemies to start"
+at = 0
+expr = 'entities.count(Enemy) == 5 and score == 0'
+[[check]]
+name = "the first bomb reaches only the nearest"
+at = 6
+expr = 'entities.count(Enemy) == 4 and score == 10'
+[[check]]
+name = "the second bomb"
+at = 81
+expr = 'entities.count(Enemy) == 3 and score == 20 and math.abs(player.x - 5.0) < 0.05'
+[[check]]
+name = "the third bomb"
+at = 131
+expr = 'entities.count(Enemy) == 2 and score == 30'
+[[check]]
+name = "the fourth bomb"
+at = 181
+expr = 'entities.count(Enemy) == 1 and score == 40'
+[[check]]
+name = "the far one survives"
+expr = 'entities.count(Enemy) == 1 and entities.of(Enemy)[0].pos.z == 3'

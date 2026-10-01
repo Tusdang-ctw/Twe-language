@@ -1,0 +1,39 @@
+tier = 2
+ticks = 560
+
+[[input]]
+from = 0
+to = 60
+hold = ["a"]
+[[input]]
+from = 60
+to = 120
+hold = ["w"]
+[[input]]
+from = 500
+to = 560
+hold = ["s"]
+
+[[check]]
+name = "one enemy, nothing caught"
+at = 0
+expr = 'entities.count(Enemy) == 1 and caught == false'
+[[check]]
+name = "walks toward the player at 2 per second"
+at = 60
+expr = 'math.abs(entities.of(Enemy)[0].pos.x - 8.0) < 0.05 and math.abs(entities.of(Enemy)[0].pos.z) < 0.01 and math.abs(player.x + 3.0) < 0.05'
+[[check]]
+name = "turns to follow the player"
+at = 120
+expr = 'entities.of(Enemy)[0].pos.z < -0.1 and math.abs(player.z + 3.0) < 0.05'
+[[check]]
+name = "closing in, not caught yet"
+at = 300
+expr = 'caught == false and math.length(entities.of(Enemy)[0].pos - player) > 2.5 and math.length(entities.of(Enemy)[0].pos - player) < 4.5'
+[[check]]
+name = "caught within 1 unit"
+at = 400
+expr = 'caught == true and math.length(entities.of(Enemy)[0].pos - player) > 0.9 and math.length(entities.of(Enemy)[0].pos - player) <= 1.05'
+[[check]]
+name = "stops for good"
+expr = 'caught == true and math.length(entities.of(Enemy)[0].pos - player) > 2.5'

@@ -1,0 +1,17 @@
+var player = vec3(0, 0, 0)
+var target = vec3(0, 0, 0)
+
+on update(dt):
+    if mouse_press.left:
+        target = vec3(mouse.x / 40.0, 0, mouse.y / 40.0)
+    let to = target - player
+    let d = math.length(to)
+    if d > 0.0:
+        let step = 5.0 * dt
+        if d <= step:
+            player = target
+        else:
+            player = player + to * (step / d)
+
+on render():
+    sphere(at: player, color: color.white, size: 0.6)

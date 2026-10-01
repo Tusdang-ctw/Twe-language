@@ -1,0 +1,23 @@
+var mode = "playing"
+var elapsed = 0.0
+
+on update(dt):
+    if mode == "playing":
+        if key_press.escape:
+            mode = "paused"
+        else:
+            elapsed = elapsed + dt
+    elif mode == "paused":
+        if key_press.escape:
+            mode = "playing"
+        elif key_press.q:
+            mode = "confirm_quit"
+    elif mode == "confirm_quit":
+        if key_press.y:
+            mode = "title"
+        elif key_press.n:
+            mode = "paused"
+    elif mode == "title":
+        if key_press.enter:
+            elapsed = 0.0
+            mode = "playing"

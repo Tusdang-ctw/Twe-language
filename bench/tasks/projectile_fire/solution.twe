@@ -1,0 +1,33 @@
+entity Target:
+    var pos = vec3(0, 0, 0)
+    var hp = 3
+    look:
+        mesh: "cube"
+        tint: color.red
+
+entity Bullet:
+    var pos = vec3(0, 0, 0)
+    var travelled = 0.0
+    look:
+        mesh: "sphere"
+        tint: color.yellow
+        scale: 0.2
+
+    function update(dt):
+        pos = pos + vec3(10.0 * dt, 0, 0)
+        travelled = travelled + 10.0 * dt
+        var hit = false
+        for t in entities.of(Target):
+            if not hit and math.length(t.pos - pos) < 0.5:
+                hit = true
+                t.hp = t.hp - 1
+                if t.hp <= 0:
+                    despawn t
+        if hit or travelled >= 8.0:
+            despawn self
+
+spawn Target at vec3(6, 0, 0)
+
+on update(dt):
+    if key_press.space:
+        spawn Bullet at vec3(0, 0, 0)

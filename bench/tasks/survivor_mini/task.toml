@@ -1,0 +1,26 @@
+tier = 3
+ticks = 1100
+
+[[check]]
+name = "the first kills"
+at = 300
+expr = 'kills == 3 and hp == 3 and over == false'
+[[check]]
+name = "the bolts keep up for a while"
+at = 560
+expr = 'kills == 6 and hp == 3'
+[[check]]
+name = "then an enemy gets through"
+at = 620
+expr = 'hp == 2 and kills == 6'
+[[check]]
+name = "down to 1 health"
+at = 880
+expr = 'hp == 1 and kills == 9 and over == false'
+[[check]]
+name = "game over at 0"
+at = 1000
+expr = 'hp == 0 and over == true and kills == 10 and entities.count(Enemy) == 3'
+[[check]]
+name = "nothing moves or spawns after the end"
+expr = 'over == true and kills == 10 and entities.count(Enemy) == 3 and entities.count(Bolt) == 0'

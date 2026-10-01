@@ -1,0 +1,129 @@
+tier = 1
+ticks = 680
+
+[[input]]
+at = 10
+press = ["space"]
+[[input]]
+at = 20
+press = ["space"]
+[[input]]
+at = 30
+press = ["space"]
+[[input]]
+at = 40
+press = ["space"]
+[[input]]
+at = 50
+press = ["space"]
+[[input]]
+at = 60
+press = ["space"]
+[[input]]
+at = 70
+press = ["space"]
+[[input]]
+at = 80
+press = ["space"]
+[[input]]
+at = 100
+press = ["r"]
+[[input]]
+at = 120
+press = ["space"]
+[[input]]
+at = 150
+press = ["r"]
+[[input]]
+at = 200
+press = ["space"]
+[[input]]
+at = 210
+press = ["space"]
+[[input]]
+at = 220
+press = ["r"]
+[[input]]
+at = 330
+press = ["r"]
+[[input]]
+at = 340
+press = ["space"]
+[[input]]
+at = 350
+press = ["space"]
+[[input]]
+at = 360
+press = ["space"]
+[[input]]
+at = 370
+press = ["space"]
+[[input]]
+at = 380
+press = ["space"]
+[[input]]
+at = 390
+press = ["space"]
+[[input]]
+at = 400
+press = ["r"]
+[[input]]
+at = 500
+press = ["space"]
+[[input]]
+at = 510
+press = ["space"]
+[[input]]
+at = 520
+press = ["space"]
+[[input]]
+at = 530
+press = ["space"]
+[[input]]
+at = 540
+press = ["space"]
+[[input]]
+at = 550
+press = ["space"]
+[[input]]
+at = 560
+press = ["r"]
+[[input]]
+at = 660
+press = ["r"]
+
+[[check]]
+name = "six shots empty the magazine"
+at = 81
+expr = 'shots == 6 and ammo == 0 and reserve == 18'
+[[check]]
+name = "no firing while reloading"
+at = 121
+expr = 'reloading == true and shots == 6'
+[[check]]
+name = "reload takes 1.5 s"
+at = 185
+expr = 'ammo == 0 and reloading == true'
+[[check]]
+name = "reload fills from the reserve"
+at = 195
+expr = 'ammo == 6 and reserve == 12 and reloading == false'
+[[check]]
+name = "fires again"
+at = 211
+expr = 'shots == 8 and ammo == 4'
+[[check]]
+name = "a partial reload tops up"
+at = 315
+expr = 'ammo == 6 and reserve == 10'
+[[check]]
+name = "R on a full magazine does nothing"
+at = 335
+expr = 'reloading == false and ammo == 6 and reserve == 10'
+[[check]]
+name = "the last of the reserve"
+at = 655
+expr = 'ammo == 4 and reserve == 0 and shots == 20'
+[[check]]
+name = "no reload with an empty reserve"
+expr = 'reloading == false and ammo == 4'

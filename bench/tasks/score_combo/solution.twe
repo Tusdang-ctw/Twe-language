@@ -1,0 +1,15 @@
+var score = 0
+var combo = 0
+var since_press = 0.0
+
+on update(dt):
+    since_press = since_press + dt
+    if combo > 0 and since_press > 1.0:
+        combo = 0
+    if key_press.space:
+        if combo == 0:
+            combo = 1
+        elif combo < 5:
+            combo = combo + 1
+        score = score + 10 * combo
+        since_press = 0.0

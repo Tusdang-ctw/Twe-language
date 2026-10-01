@@ -1,0 +1,72 @@
+var hp = 3
+var kills = 0
+var over = false
+var spawn_clock = 0.0
+var fire_clock = 0.0
+# `spawn` gives no handle, so a new bolt takes its direction from here.
+var aim = vec3(1, 0, 0)
+
+entity Enemy:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "cube"
+        tint: color.red
+        scale: 0.5
+
+    function update(dt):
+        if not over:
+            let d = math.length(pos)
+            pos = pos - pos * (math.min(3.0 * dt, d) / d)
+            if math.length(pos) < 0.6:
+                despawn self
+                hp = hp - 1
+                if hp <= 0:
+                    over = true
+
+entity Bolt:
+    var pos = vec3(0, 0, 0)
+    var dir = vec3(1, 0, 0)
+    var aimed = false
+    var age = 0.0
+    look:
+        mesh: "sphere"
+        tint: color.yellow
+        scale: 0.2
+
+    function update(dt):
+        if not aimed:
+            dir = aim
+            aimed = true
+        if not over:
+            pos = pos + dir * (12.0 * dt)
+            age = age + dt
+            var hit = false
+            for e in entities.of(Enemy):
+                if not hit and math.length(e.pos - pos) < 0.5:
+                    hit = true
+                    despawn e
+                    kills = kills + 1
+            if hit or age >= 1.5:
+                despawn self
+
+on update(dt):
+    if not over:
+        spawn_clock = spawn_clock + dt
+        fire_clock = fire_clock + dt
+        if spawn_clock >= 1.0:
+            spawn_clock = spawn_clock - 1.0
+            spawn Enemy at vec3(10, 0, 0)
+        if fire_clock >= 1.5:
+            fire_clock = fire_clock - 1.5
+            var nearest = 0
+            var best = 1000000.0
+            for e in entities.of(Enemy):
+                if math.length(e.pos) < best:
+                    best = math.length(e.pos)
+                    nearest = e
+            if best < 1000000.0:
+                aim = math.normalize(nearest.pos)
+                spawn Bolt at vec3(0, 0, 0)
+
+on render():
+    sphere(at: vec3(0, 0, 0), color: color.white, size: 0.8)

@@ -1,0 +1,35 @@
+var player = vec3(0, 0, 0)
+var xp = 0
+var level = 1
+var needed = 2
+
+entity Gem:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "sphere"
+        tint: color.green
+        scale: 0.3
+
+    function update(dt):
+        var to = player - pos
+        var d = math.length(to)
+        if d < 4.0:
+            pos = pos + to * (math.min(8.0 * dt, d) / d)
+            d = math.length(player - pos)
+        if d < 0.5:
+            despawn self
+            xp = xp + 1
+            if xp >= needed:
+                level = level + 1
+                xp = 0
+                needed = needed + 2
+
+for x in [3, 6, 9, 12, 15]:
+    spawn Gem at vec3(x, 0, 2)
+
+on update(dt):
+    if key.d:
+        player = player + vec3(3.0 * dt, 0, 0)
+
+on render():
+    sphere(at: player, color: color.white, size: 0.6)

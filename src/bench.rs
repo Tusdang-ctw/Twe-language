@@ -66,6 +66,9 @@ const STDOUT_CAP: usize = 16 * 1024;
 pub struct Task {
     pub id: String,
     pub dir: PathBuf,
+    /// Difficulty, 1 to 3: logic and timing; entities and state;
+    /// input-driven play.
+    pub tier: u8,
     pub ticks: u32,
     pub inputs: Vec<InputSpan>,
     pub checks: Vec<Check>,
@@ -92,6 +95,10 @@ pub struct Check {
 }
 
 pub fn load_task(dir: &Path) -> Result<Task, String> {
+    if let Some(ticks) = dir.to_str().and_then(|s| s.strip_prefix(SMOKE_PREFIX)) {
+        let ticks = ticks.parse().map_err(|_| format!("bad smoke task `{}`", dir.display()))?;
+        return Ok(smoke_task(ticks));
+    }
     let id = dir
         .file_name()
         .and_then(|s| s.to_str())
@@ -100,6 +107,24 @@ pub fn load_task(dir: &Path) -> Result<Task, String> {
     let path = dir.join("task.toml");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     parse_task(&id, dir, &text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The task path `smoke:<ticks>` names [`smoke_task`], so a child
+/// grader can run it without a directory.
+const SMOKE_PREFIX: &str = "smoke:";
+
+/// The smoke task: run `ticks` ticks with no input; the only check is
+/// that the program got there. The benchmark's loop uses it to tell a
+/// model its program crashes.
+pub fn smoke_task(ticks: u32) -> Task {
+    Task {
+        id: "smoke".into(),
+        dir: PathBuf::from(format!("{SMOKE_PREFIX}{ticks}")),
+        tier: 1,
+        ticks,
+        inputs: Vec::new(),
+        checks: vec![Check { name: "runs".into(), at: ticks, expr: "true".into() }],
+    }
 }
 
 pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
@@ -124,6 +149,11 @@ pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
         }
     };
     let ticks = int(&table, "ticks")?.ok_or("missing `ticks`")?;
+    let tier = match int(&table, "tier")? {
+        None => 1,
+        Some(t @ 1..=3) => t as u8,
+        Some(_) => return Err("`tier` must be 1, 2 or 3".into()),
+    };
     let mut inputs = Vec::new();
     for (i, v) in table.get("input").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
         let t = v.as_table().ok_or(format!("input {i}: not a table"))?;
@@ -177,10 +207,11 @@ pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
     if checks.is_empty() {
         return Err("a task needs at least one [[check]]".into());
     }
-    Ok(Task { id: id.to_string(), dir: dir.to_path_buf(), ticks, inputs, checks })
+    Ok(Task { id: id.to_string(), dir: dir.to_path_buf(), tier, ticks, inputs, checks })
 }
 
-/// The input command for `tick`.
+/// The input command for `tick`. The mouse stays where the latest
+/// span that started by `tick` put it, as a real mouse does.
 pub fn command_at(task: &Task, tick: u32) -> InputCommand {
     let mut cmd = InputCommand::default();
     let add = |list: &mut Vec<String>, names: &[String]| {
@@ -197,10 +228,17 @@ pub fn command_at(task: &Task, tick: u32) -> InputCommand {
         add(&mut cmd.mb_held, &s.hold_mouse);
         add(&mut cmd.mb_held, &s.click);
         add(&mut cmd.mb_press, &s.click);
-        if let Some((x, y)) = s.mouse {
-            cmd.mouse_x = x;
-            cmd.mouse_y = y;
-        }
+    }
+    if let Some((x, y)) = task
+        .inputs
+        .iter()
+        .filter(|s| s.from <= tick)
+        .filter_map(|s| s.mouse.map(|m| (s.from, m)))
+        .max_by_key(|(from, _)| *from)
+        .map(|(_, m)| m)
+    {
+        cmd.mouse_x = x;
+        cmd.mouse_y = y;
     }
     cmd
 }
@@ -785,6 +823,11 @@ mod tests {
         let c5 = command_at(&t, 5);
         assert_eq!((c5.mouse_x, c5.mouse_y), (10.0, 20.5));
         assert_eq!(c5.mb_held, vec!["left"]);
+        // The mouse stays where it was put; the button doesn't.
+        let c8 = command_at(&t, 8);
+        assert_eq!((c8.mouse_x, c8.mouse_y), (10.0, 20.5));
+        assert!(c8.mb_held.is_empty());
+        assert_eq!(command_at(&t, 4).mouse_x, 0.0);
         assert_eq!(t.checks[0].at, 10);
     }
 

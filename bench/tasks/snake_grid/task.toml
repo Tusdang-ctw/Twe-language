@@ -1,0 +1,47 @@
+tier = 3
+ticks = 300
+
+[[input]]
+at = 50
+press = ["up"]
+[[input]]
+at = 95
+press = ["left"]
+[[input]]
+at = 170
+press = ["down"]
+[[input]]
+at = 262
+press = ["up"]
+
+[[check]]
+name = "starts 3 long"
+at = 5
+expr = 'snake == [(4, 5), (3, 5), (2, 5)] and over == false'
+[[check]]
+name = "one move"
+at = 22
+expr = 'snake == [(5, 5), (4, 5), (3, 5)]'
+[[check]]
+name = "eats the first food and grows"
+at = 52
+expr = 'snake[0] == (7, 5) and snake.length == 4'
+[[check]]
+name = "turns up"
+at = 97
+expr = 'snake[0] == (7, 2) and snake.length == 5'
+[[check]]
+name = "turns left"
+at = 172
+expr = 'snake[0] == (2, 2) and snake.length == 6 and snake[1] == (3, 2)'
+[[check]]
+name = "turns down to the last food"
+at = 262
+expr = 'snake[0] == (2, 8) and snake.length == 7'
+[[check]]
+name = "can't reverse"
+at = 280
+expr = 'snake[0] == (2, 9) and over == false'
+[[check]]
+name = "the wall ends it"
+expr = 'over == true and snake[0] == (2, 9) and snake.length == 7'

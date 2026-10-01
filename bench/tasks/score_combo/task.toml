@@ -1,0 +1,59 @@
+tier = 1
+ticks = 360
+
+[[input]]
+at = 10
+press = ["space"]
+[[input]]
+at = 30
+press = ["space"]
+[[input]]
+at = 50
+press = ["space"]
+[[input]]
+at = 70
+press = ["space"]
+[[input]]
+at = 90
+press = ["space"]
+[[input]]
+at = 110
+press = ["space"]
+[[input]]
+at = 130
+press = ["space"]
+[[input]]
+at = 300
+press = ["space"]
+[[input]]
+at = 350
+press = ["space"]
+
+[[check]]
+name = "nothing before the first press"
+at = 5
+expr = 'score == 0 and combo == 0'
+
+[[check]]
+name = "first press scores 10"
+at = 11
+expr = 'score == 10 and combo == 1'
+
+[[check]]
+name = "combo climbs to 5 and stops there"
+at = 131
+expr = 'score == 250 and combo == 5'
+
+[[check]]
+name = "combo drops after a second without presses"
+at = 250
+expr = 'score == 250 and combo == 0'
+
+[[check]]
+name = "a late press starts again at 1"
+at = 301
+expr = 'score == 260 and combo == 1'
+
+[[check]]
+name = "and builds again"
+expr = 'score == 280 and combo == 2'

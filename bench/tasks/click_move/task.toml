@@ -1,0 +1,35 @@
+tier = 3
+ticks = 360
+
+[[input]]
+at = 10
+mouse = [400, 0]
+click = ["left"]
+[[input]]
+at = 80
+mouse = [400, 200]
+click = ["left"]
+[[input]]
+at = 210
+mouse = [0, 0]
+click = ["left"]
+
+[[check]]
+name = "standing still before a click"
+at = 5
+expr = 'player == vec3(0, 0, 0)'
+[[check]]
+name = "walks at 5 per second"
+at = 70
+expr = 'math.abs(player.x - 5.0) < 0.1 and math.abs(player.z) < 0.01'
+[[check]]
+name = "a new click changes course, and it stops exactly there"
+at = 200
+expr = 'math.length(player - vec3(10, 0, 5)) < 0.001'
+[[check]]
+name = "heading back"
+at = 260
+expr = 'math.abs(math.length(player) - 7.01) < 0.1'
+[[check]]
+name = "home"
+expr = 'math.length(player) < 0.001'

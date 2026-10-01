@@ -1,0 +1,35 @@
+tier = 2
+ticks = 330
+
+[[input]]
+from = 0
+to = 90
+hold = ["d"]
+[[input]]
+from = 150
+to = 200
+hold = ["a"]
+[[input]]
+from = 200
+to = 330
+hold = ["d"]
+
+[[check]]
+name = "five coins to start"
+at = 0
+expr = 'entities.count(Coin) == 5 and score == 0'
+[[check]]
+name = "the first coin is collected"
+at = 40
+expr = 'entities.count(Coin) == 4 and score == 1'
+[[check]]
+name = "three collected after 1.5 s"
+at = 90
+expr = 'entities.count(Coin) == 2 and score == 3 and math.abs(player.x - 6.0) < 0.05'
+[[check]]
+name = "walking back collects nothing"
+at = 200
+expr = 'entities.count(Coin) == 2 and score == 3 and math.abs(player.x - 2.667) < 0.05'
+[[check]]
+name = "all collected"
+expr = 'entities.count(Coin) == 0 and score == 5 and math.abs(player.x - 11.333) < 0.05'

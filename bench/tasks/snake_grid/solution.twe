@@ -1,0 +1,37 @@
+var snake = [(4, 5), (3, 5), (2, 5)]
+var dir = (1, 0)
+var next_dir = (1, 0)
+var foods = [(7, 5), (7, 2), (2, 2), (2, 8)]
+var food_index = 0
+var over = false
+var clock = 0.0
+
+on update(dt):
+    if key_press.up and dir != (0, 1):
+        next_dir = (0, -1)
+    if key_press.down and dir != (0, -1):
+        next_dir = (0, 1)
+    if key_press.left and dir != (1, 0):
+        next_dir = (-1, 0)
+    if key_press.right and dir != (-1, 0):
+        next_dir = (1, 0)
+    if not over:
+        clock = clock + dt
+        if clock >= 0.25:
+            clock = clock - 0.25
+            dir = next_dir
+            let head = snake[0] + dir
+            if head.x < 0 or head.x > 9 or head.y < 0 or head.y > 9 or head in snake:
+                over = true
+            else:
+                snake.prepend(head)
+                if food_index < foods.length and head == foods[food_index]:
+                    food_index = food_index + 1
+                else:
+                    snake.pop_back()
+
+on render():
+    for cell in snake:
+        rect((cell.x * 24, cell.y * 24), (22, 22), color.green)
+    if food_index < foods.length:
+        rect((foods[food_index].x * 24, foods[food_index].y * 24), (22, 22), color.red)

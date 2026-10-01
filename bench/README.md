@@ -4,6 +4,39 @@ Does an LLM write working games in Twe more reliably than in Python? This benchm
 
 **Programs are graded by behaviour, not by their text or output.** Each program runs headless for a fixed number of 60 Hz ticks while a scripted player presses keys. Then the checks are evaluated on the running world, e.g. "after holding D for one second, the player is 5 units to the right".
 
+## The tasks (bench v0)
+
+Twenty tasks, every one written from scratch (no starter). Each has a reference solution and passes validation (below).
+
+| Tier | Task | Checks | What it asks for |
+|---|---|---:|---|
+| 1 | `move_player` | 5 | WASD movement on the ground plane |
+| 1 | `countdown` | 6 | a 10 s countdown, clamped at 0, R restarts |
+| 1 | `score_combo` | 6 | presses within 1 s build a combo (max 5) that multiplies points |
+| 1 | `health_regen` | 8 | damage, death at 0, regeneration after 2 s without a hit |
+| 1 | `traffic_light` | 10 | a timed green → yellow → red cycle, a button that cuts green short |
+| 1 | `ammo_reload` | 9 | magazine, reserve, a 1.5 s reload that can't be interrupted |
+| 1 | `day_night` | 8 | a 24 h clock at 1 h/s, wrapping, counting nights |
+| 2 | `coin_collect` | 5 | coins as entities, collected within 0.5 units |
+| 2 | `enemy_chase` | 6 | an entity that follows a moving player and stops on contact |
+| 2 | `spawner_waves` | 8 | waves of n enemies every 2 s, each living 5 s |
+| 2 | `projectile_fire` | 7 | bullets with a range, a target with health |
+| 2 | `bomb_radius` | 6 | removing every entity within a radius |
+| 2 | `door` | 8 | an open/close state machine with reversible transitions |
+| 2 | `pause_menu` | 8 | play / pause / confirm-quit / title modes with a stoppable timer |
+| 3 | `dash_cooldown` | 7 | movement plus a dash along the last direction, with a cooldown |
+| 3 | `jump_gravity` | 7 | a jump under gravity, no double jumps |
+| 3 | `click_move` | 5 | click-to-move with the mouse |
+| 3 | `xp_magnet` | 4 | gems pulled to the player, xp and growing level thresholds |
+| 3 | `survivor_mini` | 6 | spawning enemies, auto-aimed bolts, health and game over |
+| 3 | `snake_grid` | 8 | Snake, with fixed food positions, turning rules and walls |
+
+**Tiers:** 1 is logic and timing, 2 is entities and state, 3 is input-driven play combining both.
+
+**Where the checks come from.** They test behaviour described in `task.md`, at times chosen at least a few ticks away from the events they test. A reasonable implementation that updates a tick earlier or later still passes.
+
+For `enemy_chase`, `xp_magnet` and `survivor_mini`, the check values were derived from a separate Python simulation of the task text, and they agree with the Twe solutions.
+
 ## A task
 
 ```text

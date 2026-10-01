@@ -1,0 +1,25 @@
+var player = vec3(0, 0, 0)
+var facing = vec3(1, 0, 0)
+var cooldown = 0.0
+
+on update(dt):
+    cooldown = math.max(cooldown - dt, 0.0)
+    var mx = 0.0
+    var mz = 0.0
+    if key.d:
+        mx = mx + 1.0
+    if key.a:
+        mx = mx - 1.0
+    if key.s:
+        mz = mz + 1.0
+    if key.w:
+        mz = mz - 1.0
+    if mx != 0.0 or mz != 0.0:
+        facing = math.normalize(vec3(mx, 0, mz))
+        player = player + vec3(mx, 0, mz) * (4.0 * dt)
+    if key_press.space and cooldown <= 0.0:
+        player = player + facing * 3.0
+        cooldown = 2.0
+
+on render():
+    sphere(at: player, color: color.white, size: 0.6)

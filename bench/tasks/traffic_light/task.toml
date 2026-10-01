@@ -1,0 +1,49 @@
+tier = 1
+ticks = 650
+
+[[input]]
+at = 400
+press = ["p"]
+[[input]]
+at = 530
+press = ["p"]
+
+[[check]]
+name = "starts green"
+at = 1
+expr = 'light == "green"'
+[[check]]
+name = "green for 3 s"
+at = 170
+expr = 'light == "green"'
+[[check]]
+name = "then yellow"
+at = 190
+expr = 'light == "yellow"'
+[[check]]
+name = "then red"
+at = 250
+expr = 'light == "red"'
+[[check]]
+name = "red for 2 s"
+at = 350
+expr = 'light == "red"'
+[[check]]
+name = "then green again"
+at = 370
+expr = 'light == "green"'
+[[check]]
+name = "P leaves at most 1 s of green"
+at = 450
+expr = 'light == "green"'
+[[check]]
+name = "cut green turns yellow early"
+at = 470
+expr = 'light == "yellow"'
+[[check]]
+name = "P on red does nothing"
+at = 600
+expr = 'light == "red"'
+[[check]]
+name = "cycle continues"
+expr = 'light == "green"'

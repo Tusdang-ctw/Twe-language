@@ -1,0 +1,12 @@
+var hour = 6.0
+var is_night = false
+var nights = 0
+
+on update(dt):
+    hour = hour + dt
+    if hour >= 24.0:
+        hour = hour - 24.0
+    let night = hour >= 20.0 or hour < 6.0
+    if night and not is_night:
+        nights = nights + 1
+    is_night = night

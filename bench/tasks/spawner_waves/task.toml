@@ -1,0 +1,34 @@
+tier = 2
+ticks = 610
+
+[[check]]
+name = "nothing in the first 2 s"
+at = 110
+expr = 'entities.count(Enemy) == 0 and wave == 0'
+[[check]]
+name = "wave 1 has one enemy"
+at = 130
+expr = 'entities.count(Enemy) == 1 and wave == 1'
+[[check]]
+name = "wave 2 adds two"
+at = 250
+expr = 'entities.count(Enemy) == 3 and wave == 2'
+[[check]]
+name = "wave 3 adds three"
+at = 370
+expr = 'entities.count(Enemy) == 6 and wave == 3'
+[[check]]
+name = "wave 1 expires after 5 s"
+at = 430
+expr = 'entities.count(Enemy) == 5'
+[[check]]
+name = "waves 2-4 alive"
+at = 490
+expr = 'entities.count(Enemy) == 9 and wave == 4'
+[[check]]
+name = "wave 2 expires"
+at = 550
+expr = 'entities.count(Enemy) == 7'
+[[check]]
+name = "waves 3-5 alive"
+expr = 'entities.count(Enemy) == 12 and wave == 5'

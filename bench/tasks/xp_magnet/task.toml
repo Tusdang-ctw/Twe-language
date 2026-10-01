@@ -1,0 +1,23 @@
+tier = 3
+ticks = 300
+
+[[input]]
+from = 0
+to = 300
+hold = ["d"]
+
+[[check]]
+name = "the nearest gem is pulled in; the others wait"
+at = 10
+expr = 'entities.count(Gem) == 5 and [g for g in entities.of(Gem) if g.pos.x < 2.9].length == 1 and [g for g in entities.of(Gem) if g.pos.z == 2].length == 4'
+[[check]]
+name = "the first gem collected"
+at = 40
+expr = 'entities.count(Gem) == 4 and xp == 1 and level == 1'
+[[check]]
+name = "two gems reach level 2"
+at = 100
+expr = 'entities.count(Gem) == 3 and xp == 0 and level == 2'
+[[check]]
+name = "level 3 needs 4 more"
+expr = 'entities.count(Gem) == 0 and xp == 3 and level == 2'

@@ -1,0 +1,39 @@
+var player = vec3(0, 0, 0)
+var caught = false
+
+entity Enemy:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "cube"
+        tint: color.red
+        scale: 0.6
+
+    function update(dt):
+        if not caught:
+            let to = player - pos
+            let d = math.length(to)
+            if d <= 1.0:
+                caught = true
+            else:
+                let step = math.min(2.0 * dt, d - 1.0)
+                pos = pos + to * (step / d)
+                if math.length(player - pos) <= 1.0001:
+                    caught = true
+
+spawn Enemy at vec3(10, 0, 0)
+
+on update(dt):
+    var mx = 0.0
+    var mz = 0.0
+    if key.d:
+        mx = mx + 1.0
+    if key.a:
+        mx = mx - 1.0
+    if key.s:
+        mz = mz + 1.0
+    if key.w:
+        mz = mz - 1.0
+    player = vec3(player.x + mx * 3.0 * dt, 0, player.z + mz * 3.0 * dt)
+
+on render():
+    sphere(at: player, color: color.white, size: 0.6)
