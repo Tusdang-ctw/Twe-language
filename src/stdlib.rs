@@ -15,6 +15,11 @@ mod experimental;
 thread_local! {
     static SPRITE_CACHE: RefCell<HashMap<String, macroquad::texture::Texture2D>>
         = RefCell::new(HashMap::new());
+    // web3d-M6: image sizes by path, for the sprite / atlas / nine-slice
+    // builtins. They need only the size; the renderer (macroquad's
+    // replay, or the kernel canvas) loads the pixels itself.
+    static IMAGE_SIZES: RefCell<HashMap<String, (f32, f32)>>
+        = RefCell::new(HashMap::new());
     static SOUND_CACHE: RefCell<HashMap<String, macroquad::audio::Sound>>
         = RefCell::new(HashMap::new());
     // Phase 9 session 2: 2D camera shake state. The Twe-facing API is
@@ -111,6 +116,7 @@ pub const GAMEPAD_AXIS_NAMES: &[&str] = &["lx", "ly", "rx", "ry", "lt", "rt"];
 /// previous session.
 pub fn clear_asset_caches() {
     SPRITE_CACHE.with(|c| c.borrow_mut().clear());
+    IMAGE_SIZES.with(|c| c.borrow_mut().clear());
     SOUND_CACHE.with(|c| c.borrow_mut().clear());
     FONT_BYTES_CACHE.with(|c| c.borrow_mut().clear());
     FONT_CACHE.with(|c| c.borrow_mut().clear());
@@ -8125,7 +8131,7 @@ fn tilemap_build(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 /// (with per-tile texture handles) rides Phase 9's atlas
 /// + `sprite(handle, frame:)` work.
 fn tilemap_render(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "tilemap_render")?;
+    require_render(env, "tilemap_render")?;
     arity(args, 2, "tilemap_render")?;
     let map = expect_tilemap(&args[0], "tilemap_render.map")?;
     let (origin_x, origin_y) = {
@@ -8758,7 +8764,7 @@ fn install_draw(env: &mut Env) {
 }
 
 fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "sprite")?;
+    require_render(env, "sprite")?;
     if args.len() != 2 && args.len() != 3 {
         return Err(RuntimeError {
             line: 0,
@@ -8837,22 +8843,9 @@ fn draw_sprite(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         None
     };
 
-    SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
-        let mut c = cache.borrow_mut();
-        if !c.contains_key(&path) {
-            // Phase 12 session 3: bundle-first lookup, filesystem fallback.
-            let bytes = crate::bundle::read_asset_bytes(&path).map_err(|e| RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!("sprite: cannot read '{path}': {e}"),
-                help: None,
-            })?;
-            let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
-            c.insert(path.clone(), tex);
-        }
-        Ok(())
-    })?;
-    // web3d-M6: a command; the renderer draws it from the cache above.
+    // Reads the image once, so a missing file is an error here.
+    image_size(&path, "sprite")?;
+    // web3d-M6: a command; the renderer loads and draws the image.
     crate::draw2d::texture(
         &mut env.draw2d,
         &path,
@@ -8921,12 +8914,12 @@ fn atlas_handle(v: &Value, callee: &str) -> Result<(String, i64, i64), RuntimeEr
 /// index. Frame 0 is the top-left cell; frames advance left-to-right,
 /// then top-to-bottom (row-major).
 fn atlas_source_rect(
-    tex: &macroquad::texture::Texture2D,
+    (tex_w, tex_h): (f32, f32),
     cols: i64,
     rows: i64,
     frame: i64,
     callee: &str,
-) -> Result<macroquad::math::Rect, RuntimeError> {
+) -> Result<[f32; 4], RuntimeError> {
     let total = cols * rows;
     if frame < 0 || frame >= total {
         return Err(RuntimeError {
@@ -8940,31 +8933,35 @@ fn atlas_source_rect(
     }
     let col = (frame % cols) as f32;
     let row = (frame / cols) as f32;
-    let cell_w = tex.width() / cols as f32;
-    let cell_h = tex.height() / rows as f32;
-    Ok(macroquad::math::Rect {
-        x: col * cell_w,
-        y: row * cell_h,
-        w: cell_w,
-        h: cell_h,
-    })
+    let cell_w = tex_w / cols as f32;
+    let cell_h = tex_h / rows as f32;
+    Ok([col * cell_w, row * cell_h, cell_w, cell_h])
 }
 
-/// Decode + cache a texture by path, then call `draw` with the live
-/// `Texture2D`. Mirrors the pattern in `draw_sprite` so atlases share
-/// the same cache and hot-reload behavior.
-/// web3d-M6: run `f` with the cached texture for `path`, if loaded
-/// (the 2D replay; the builtin that pushed the command loaded it).
+/// web3d-M6: run `f` with macroquad's texture for `path` (the 2D
+/// replay), decoding it on first use.
 pub(crate) fn with_cached_texture(path: &str, f: impl FnOnce(&macroquad::texture::Texture2D)) {
     SPRITE_CACHE.with(|cache| {
-        if let Some(tex) = cache.borrow().get(path) {
-            f(tex);
+        let mut c = cache.borrow_mut();
+        if !c.contains_key(path) {
+            match crate::bundle::read_asset_bytes(path) {
+                Ok(bytes) => {
+                    let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
+                    c.insert(path.to_string(), tex);
+                }
+                Err(_) => return,
+            }
         }
+        f(&c[path]);
     });
 }
 
-/// web3d-M6: run `f` with the decoded font for `path`, if decoded.
+/// web3d-M6: run `f` with macroquad's font for `path` (the 2D replay),
+/// decoding it on first use.
 pub(crate) fn with_decoded_font(path: &str, f: impl FnOnce(&macroquad::text::Font)) {
+    if ensure_font_decoded(path).is_err() {
+        return;
+    }
     FONT_CACHE.with(|cache| {
         if let Some(font) = cache.borrow().get(path) {
             f(font);
@@ -8972,43 +8969,40 @@ pub(crate) fn with_decoded_font(path: &str, f: impl FnOnce(&macroquad::text::Fon
     });
 }
 
-fn with_texture<F>(path: &str, callee: &str, draw: F) -> Result<(), RuntimeError>
-where
-    F: FnOnce(&macroquad::texture::Texture2D) -> Result<(), RuntimeError>,
-{
-    SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
-        let mut c = cache.borrow_mut();
-        if !c.contains_key(path) {
-            // Phase 12 session 3: bundle-first lookup, filesystem fallback.
-            let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!("{callee}: cannot read '{path}': {e}"),
-                help: None,
-            })?;
-            let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
-            c.insert(path.to_string(), tex);
-        }
-        let tex = &c[path];
-        draw(tex)
-    })
+/// web3d-M6: an image's `(width, height)` in pixels, read once per path
+/// (bundle first, then the filesystem). Errors name the calling builtin.
+fn image_size(path: &str, callee: &str) -> Result<(f32, f32), RuntimeError> {
+    if let Some(size) = IMAGE_SIZES.with(|c| c.borrow().get(path).copied()) {
+        return Ok(size);
+    }
+    let fail = |e: String| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{callee}: cannot read '{path}': {e}"),
+        help: None,
+    };
+    let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| fail(e.to_string()))?;
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| fail(e.to_string()))?
+        .into_dimensions()
+        .map_err(|e| fail(e.to_string()))?;
+    let size = (w as f32, h as f32);
+    IMAGE_SIZES.with(|c| c.borrow_mut().insert(path.to_string(), size));
+    Ok(size)
 }
 
 /// `sprite_frame(atlas, at, frame)` — draw cell `frame` of `atlas`
 /// at world position `at` at the cell's native pixel size.
 fn draw_sprite_frame(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "sprite_frame")?;
+    require_render(env, "sprite_frame")?;
     arity(args, 3, "sprite_frame")?;
     let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame")?;
     let (x, y) = xy_of(&args[1], "sprite_frame.at")?;
     let frame = as_i64(&args[2], "sprite_frame.frame")?;
-    let mut src = None;
-    with_texture(&path, "sprite_frame", |tex| {
-        src = Some(atlas_source_rect(tex, cols, rows, frame, "sprite_frame")?);
-        Ok(())
-    })?;
-    if let Some(r) = src {
-        crate::draw2d::texture(&mut env.draw2d, &path, x as f32, y as f32, None, Some([r.x, r.y, r.w, r.h]));
+    let r = atlas_source_rect(image_size(&path, "sprite_frame")?, cols, rows, frame, "sprite_frame")?;
+    {
+        crate::draw2d::texture(&mut env.draw2d, &path, x as f32, y as f32, None, Some(r));
     }
     Ok(Value::NIL)
 }
@@ -9016,25 +9010,21 @@ fn draw_sprite_frame(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 /// `sprite_frame_at(atlas, at, size, frame)` — draw cell `frame` of
 /// `atlas` at world position `at`, scaled to `size`.
 fn draw_sprite_frame_at(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "sprite_frame_at")?;
+    require_render(env, "sprite_frame_at")?;
     arity(args, 4, "sprite_frame_at")?;
     let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame_at")?;
     let (x, y) = xy_of(&args[1], "sprite_frame_at.at")?;
     let (w, h) = xy_of(&args[2], "sprite_frame_at.size")?;
     let frame = as_i64(&args[3], "sprite_frame_at.frame")?;
-    let mut src = None;
-    with_texture(&path, "sprite_frame_at", |tex| {
-        src = Some(atlas_source_rect(tex, cols, rows, frame, "sprite_frame_at")?);
-        Ok(())
-    })?;
-    if let Some(r) = src {
+    let r = atlas_source_rect(image_size(&path, "sprite_frame_at")?, cols, rows, frame, "sprite_frame_at")?;
+    {
         crate::draw2d::texture(
             &mut env.draw2d,
             &path,
             x as f32,
             y as f32,
             Some([w as f32, h as f32]),
-            Some([r.x, r.y, r.w, r.h]),
+            Some(r),
         );
     }
     Ok(Value::NIL)
@@ -9110,9 +9100,9 @@ fn require_render_2d(env: &Env, name: &str) -> Result<(), RuntimeError> {
                 "{name}() is a 2D drawing call and needs the 2D runtime (`twec play`)"
             ),
             help: Some(
-                "in 3D (`twec play3d`, the web build) only `text()` and `rect()` draw, \
-                 as a HUD; the other 2D calls and UI widgets come with the 2D-on-kernel \
-                 port (web3d-M6)"
+                "in 3D (`twec play3d`, the web build) the 2D drawing calls draw a HUD \
+                 over the scene, but the UI widgets and panels don't yet; they come \
+                 with the 2D-on-kernel port (web3d-M6)"
                     .to_string(),
             ),
         });
@@ -9211,12 +9201,7 @@ pub(crate) fn number(v: &Value, what: &str) -> Result<f64, RuntimeError> {
 
 fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "rect")?;
-    if macroquad_live() {
-        require_render_2d(env, "rect")?;
-    } else {
-        // web3d-M3: in 3D, a HUD rectangle over the scene.
-        require_render(env, "rect")?;
-    }
+    require_render(env, "rect")?;
     let (x, y) = xy_of(&args[0], "rect.at")?;
     let (w, h) = xy_of(&args[1], "rect.size")?;
     let color = color_of(&args[2], "rect.color")?;
@@ -9225,7 +9210,7 @@ fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "circle")?;
+    require_render(env, "circle")?;
     arity(args, 3, "circle")?;
     let (x, y) = xy_of(&args[0], "circle.at")?;
     let radius = number(&args[1], "circle.radius")? as f32;
@@ -9235,7 +9220,7 @@ fn draw_circle(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 }
 
 fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "circle_outline")?;
+    require_render(env, "circle_outline")?;
     arity(args, 4, "circle_outline")?;
     let (x, y) = xy_of(&args[0], "circle_outline.at")?;
     let radius = number(&args[1], "circle_outline.radius")? as f32;
@@ -9246,7 +9231,7 @@ fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
 }
 
 fn draw_rect_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "rect_outline")?;
+    require_render(env, "rect_outline")?;
     arity(args, 4, "rect_outline")?;
     let (x, y) = xy_of(&args[0], "rect_outline.at")?;
     let (w, h) = xy_of(&args[1], "rect_outline.size")?;
@@ -9259,7 +9244,7 @@ fn draw_rect_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 }
 
 fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "line")?;
+    require_render(env, "line")?;
     arity(args, 4, "line")?;
     let (x1, y1) = xy_of(&args[0], "line.from")?;
     let (x2, y2) = xy_of(&args[1], "line.to")?;
@@ -9357,12 +9342,7 @@ fn entities_count(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 
 fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "text")?;
-    if macroquad_live() {
-        require_render_2d(env, "text")?;
-    } else {
-        // web3d-M3: in 3D, HUD text over the scene.
-        require_render(env, "text")?;
-    }
+    require_render(env, "text")?;
     let content = {
         let __t = &args[0];
         if __t.is_str() {
@@ -9384,7 +9364,7 @@ fn draw_text(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// but renders with a custom TTF/OTF loaded via `load_font`. Phase 9
 /// session 4.
 fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "text_with_font")?;
+    require_render(env, "text_with_font")?;
     arity(args, 5, "text_with_font")?;
     let content = {
         let t = &args[0];
@@ -9402,7 +9382,19 @@ fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     // cached by `load_font` (headless-safe); the actual macroquad
     // parse needs THREAD_ID, which only exists once we're inside the
     // render frame — here.
-    ensure_font_decoded(&path)?;
+    // The renderer decodes the font; here only check it was loaded.
+    if !FONT_BYTES_CACHE.with(|c| c.borrow().contains_key(&path)) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "text_with_font: font '{path}' was not loaded (call `load_font(...)` first)"
+            ),
+            help: Some(
+                "store the handle from `load_font(...)` and reuse it across draw calls".to_string(),
+            ),
+        });
+    }
     crate::draw2d::text_font(&mut env.draw2d, &content, x as f32, y as f32, size, color, &path);
     Ok(Value::NIL)
 }
@@ -10196,21 +10188,8 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     }
     // web3d-M6: the nine pieces, as (dest x, y, w, h, source x, y, w, h).
     let mut pieces: Vec<[f32; 8]> = Vec::new();
-    SPRITE_CACHE.with(|cache| -> Result<(), RuntimeError> {
-        let mut c = cache.borrow_mut();
-        if !c.contains_key(&path) {
-            let bytes = crate::bundle::read_asset_bytes(&path).map_err(|e| RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!("panel_skinned: cannot read '{path}': {e}"),
-                help: None,
-            })?;
-            let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
-            c.insert(path.clone(), tex);
-        }
-        let tex = &c[&path];
-        let tw = tex.width();
-        let th = tex.height();
+    let (tw, th) = image_size(&path, "panel_skinned")?;
+    {
         let xf = x as f32;
         let yf = y as f32;
         // Stretch the texture's center band over the inner rect.
@@ -10248,8 +10227,7 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         for (dx, dy, dw, dh, sx, sy, sw, sh) in cells {
             pieces.push([xf + dx, yf + dy, dw, dh, sx, sy, sw, sh]);
         }
-        Ok(())
-    })?;
+    }
     for [x, y, w, h, sx, sy, sw, sh] in pieces {
         crate::draw2d::texture(&mut env.draw2d, &path, x, y, Some([w, h]), Some([sx, sy, sw, sh]));
     }

@@ -229,6 +229,8 @@ pub enum AssetKind {
     Environment,
     /// web3d-M7: a `.cube` colour-grading LUT (raw bytes).
     Lut,
+    /// web3d-M6: raw bytes for the 2D canvas (an image or a font).
+    Raw,
 }
 
 /// A finished asset load.
@@ -241,6 +243,8 @@ pub enum AssetReady {
     Environment(u32, Result<Vec<u8>, String>),
     /// web3d-M7: `.cube` LUT text.
     Lut(u32, Result<Vec<u8>, String>),
+    /// web3d-M6: raw bytes for the 2D canvas.
+    Raw(u32, Result<Vec<u8>, String>),
 }
 
 /// How the renderer gets asset data. Requests are fire-and-forget;
@@ -2675,7 +2679,7 @@ pub struct Renderer {
     /// own format, or an sRGB view of it (browsers often give a
     /// WebGPU canvas a non-sRGB format).
     target_format: wgpu::TextureFormat,
-    hud: super::hud::Hud,
+    canvas: super::canvas::Canvas,
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
@@ -2985,6 +2989,7 @@ impl Renderer {
         self.texture_cache.clear();
         self.texture_load_failures.clear();
         self.texture_pending.clear();
+        self.canvas.clear_asset_caches();
     }
 }
 
@@ -3636,7 +3641,7 @@ async fn init_renderer(
         cache: None,
     });
 
-    let hud = super::hud::Hud::new(&device, &queue, target_format);
+    let canvas = super::canvas::Canvas::new(&device, &queue, target_format);
     Ok(Renderer {
         surface,
         offscreen,
@@ -3654,7 +3659,7 @@ async fn init_renderer(
         displaced_depth: HashMap::new(),
         retained: None,
         target_format,
-        hud,
+        canvas,
         cube_vertex_buffer,
         cube_index_buffer,
         cube_index_count: CUBE_INDICES.len() as u32,
@@ -5040,6 +5045,10 @@ impl Renderer {
             }
         }
         for ready in assets.poll() {
+            // web3d-M6: images and fonts for the HUD canvas.
+            let Some(ready) = state.canvas.accept(&state.device, &state.queue, ready) else {
+                continue;
+            };
             match ready {
                 AssetReady::Mesh(id, result) => {
                     state.mesh_pending.remove(&id);
@@ -5060,6 +5069,8 @@ impl Renderer {
                         }
                     }
                 }
+                // A raw load the canvas didn't ask for (a stale request).
+                AssetReady::Raw(..) => {}
                 AssetReady::Lut(_, result) => {
                     let parsed = result.and_then(|bytes| {
                         let text = String::from_utf8(bytes).map_err(|_| "a .cube file is text".to_string())?;
@@ -5630,12 +5641,14 @@ impl Renderer {
             (None, Some(t)) => t.create_view(&wgpu::TextureViewDescriptor::default()),
             (None, None) => return Err("renderer has no target".to_string()),
         };
-        state.hud.prepare(
+        state.canvas.prepare(
             &state.device,
             &state.queue,
             snap.hud,
+            None,
             state.config.width,
             state.config.height,
+            assets,
         );
         let mut encoder = state
             .device
@@ -6476,7 +6489,7 @@ impl Renderer {
                         tmpass.set_bind_group(0, bg, &[]);
                         tmpass.draw(0..3, 0..1);
                         // web3d-M3: the HUD, over the finished scene.
-                        state.hud.draw(&mut tmpass);
+                        state.canvas.draw(&mut tmpass);
                     }
                 }
             }
@@ -7561,7 +7574,7 @@ pub(crate) const GPU_CULL_MIN_INSTANCES: u32 = 4096;
 /// power-saving one (benchmarking the weakest target, or a laptop on
 /// battery). The browser picks the adapter itself (Chrome ignores the
 /// hint on Windows and warns about it), so the web build doesn't ask.
-fn power_preference() -> wgpu::PowerPreference {
+pub(crate) fn power_preference() -> wgpu::PowerPreference {
     // In the browser the browser chooses. (web3d-M7 session 16 tried
     // "high-performance": Chrome on Windows ignores it and logs a
     // warning, crbug.com/369219127; the player picks the GPU in the
@@ -8113,7 +8126,7 @@ mod tests {
 
     #[test]
     fn hud_shader_parses_and_validates() {
-        validate_wgsl("HUD_SHADER", crate::kernel::hud::HUD_SHADER);
+        validate_wgsl("CANVAS_SHADER", crate::kernel::canvas::CANVAS_SHADER);
     }
 
     #[test]

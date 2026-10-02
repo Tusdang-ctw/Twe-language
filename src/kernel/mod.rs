@@ -10,7 +10,7 @@ pub(crate) mod environment;
 pub(crate) mod gpu_cull;
 pub(crate) mod gpu_profile;
 pub mod graph;
-pub mod hud;
+pub mod canvas;
 pub(crate) mod material;
 pub(crate) mod post;
 pub mod particles;

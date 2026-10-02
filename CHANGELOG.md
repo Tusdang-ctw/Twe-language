@@ -15,6 +15,8 @@ removal would be load-bearing.
 ### Changed (runtime)
 - **2D drawing goes through one command list** (web3d-M6). Drawing calls add commands that the runtime draws after the frame's render code, in call order. Scripts see no difference. 2D games and the 3D HUD now share it.
 - **`TWE_CAPTURE=N:path`** makes `twec play` save frame `N` as a PNG and exit, with fixed timing and no input.
+- **The 3D HUD draws every 2D drawing call** (web3d-M6): `circle`, `circle_outline`, `rect_outline`, `line`, sprites and atlas frames, `text_with_font` and `tilemap_render`, as well as `rect` and `text`. They used to raise an error in 3D. UI widgets and panels still do.
+- **The kernel has a 2D renderer** that draws the same pixels as the 2D runtime. Across 31 examples, the mean difference is at most 0.36 of 255.
 
 ### Added (benchmark)
 - **`twec mutate` makes 549 error-fix triples** from `tests/programs` and `examples`, with seven new error kinds taken from real LLM mistakes. `--root` can be repeated; files carrying the benchmark canary are refused.

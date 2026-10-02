@@ -373,39 +373,9 @@ async fn run_loop_wasm() {
         crate::stdlib::tick_touch_taps(macroquad::time::get_time());
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);
-        let mut tick_err: Option<crate::value::RuntimeError> = None;
-        // v1.0.1 session 6: persistent states (registered via
-        // `persistent_state(name)`) keep ticking through pause —
-        // pause menus / debug HUDs / toasts opt out this way. The
-        // per-state filter that actually skips non-persistent work
-        // lives in `eval::tick_frame` (top-level `on update` is
-        // always skipped under pause; entity / scene updates check
-        // the current state name).
-        if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
-            accumulator += frame_dt;
-            let mut substeps: u32 = 0;
-            while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
-                // v1.0.1 session 1: `fx.hit_stop` skips simulation
-                // substeps without draining wall-clock time. Decrement
-                // the accumulator and counter, but don't advance the
-                // game state — render still runs every frame so the
-                // freeze is visible.
-                if crate::fx::consume_hit_stop_tick() {
-                    accumulator -= crate::eval::PHYSICS_DT;
-                    substeps += 1;
-                    continue;
-                }
-                if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
-                    tick_err = Some(e);
-                    break;
-                }
-                accumulator -= crate::eval::PHYSICS_DT;
-                substeps += 1;
-            }
-            if substeps >= crate::eval::MAX_SUBSTEPS {
-                accumulator = 0.0;
-            }
-        }
+        // web3d-M6: the frame's simulation and render code run in
+        // `frame2d`, shared with the kernel's 2D renderer.
+        let tick_err = crate::frame2d::tick(&mut env, &mut accumulator, frame_dt).err();
         if let Some(e) = tick_err {
             eprintln!("{LABEL}: runtime error: {e}");
             break;
@@ -413,39 +383,19 @@ async fn run_loop_wasm() {
         flush_output(&mut env);
 
         clear_background(BLACK);
-        env.in_render = true;
-        crate::stdlib::camera_tick(frame_dt);
-        // v1.0.1 session 8: advance any active camera2d zoom_to /
-        // cinematic_pan animations and apply the bounds clamp. Sits
-        // between camera shake decay (which is also visual / wall-
-        // clock) and the camera transform read.
-        crate::stdlib::camera2d_tick(&mut env, frame_dt);
-        crate::fx::fx_tick(frame_dt);
-        crate::light2d::tick(frame_dt);
         crate::audio_polish::tick(frame_dt);
         crate::stdlib::sync_audio_polish();
-        let ((px, py), zoom) = crate::stdlib::camera_view(&env);
-        let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
-        let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
-        if cam_active {
-            let cam = build_camera2d(px + sx, py + sy, zoom);
-            set_camera(&cam);
+        let (camera, render_result) =
+            crate::frame2d::render(&mut env, frame_dt, screen_width(), screen_height());
+        if let Some(cam) = camera {
+            set_camera(&build_camera2d(
+                f64::from(cam.center[0]),
+                f64::from(cam.center[1]),
+                f64::from(cam.zoom),
+            ));
         }
-        // web3d-M6: the frame's 2D draw commands, replayed below.
-        env.draw2d.clear();
-        let render_result = crate::eval::render_frame(&mut env);
-        // v1.0.1 session 3: light overlay sits between world and fx —
-        // ambient darkness dims the world, glow circles brighten lit
-        // spots, fx layer (damage numbers / bursts) draws on top.
-        draw_light2d_overlay(&mut env.draw2d, cam_active, px + sx, py + sy, zoom);
-        // v1.0.1 session 1: fx overlay draws under the same camera
-        // transform as the world render — bursts, damage numbers, and
-        // shockwaves sit on top of the script's draws but still scroll
-        // with the camera in world-space.
-        crate::fx::fx_draw_overlay(&mut env.draw2d);
         crate::draw2d::replay_macroquad(&env.draw2d);
-        crate::light2d::clear_frame_lights();
-        if cam_active {
+        if camera.is_some() {
             set_default_camera();
         }
         if let Err(e) = render_result {
@@ -575,34 +525,9 @@ async fn run_loop(path: String) {
         // tick; on 30 Hz displays most renders run two. Either way,
         // the simulation sees a constant dt — required for replay
         // determinism + sample-accurate audio + stable physics.
-        let mut tick_err: Option<crate::value::RuntimeError> = None;
-        // v1.0.1 session 6: persistent states (registered via
-        // `persistent_state(name)`) keep ticking through pause —
-        // pause menus / debug HUDs / toasts opt out this way. The
-        // per-state filter that actually skips non-persistent work
-        // lives in `eval::tick_frame` (top-level `on update` is
-        // always skipped under pause; entity / scene updates check
-        // the current state name).
-        if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
-            accumulator += frame_dt;
-            let mut substeps: u32 = 0;
-            while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
-                if crate::fx::consume_hit_stop_tick() {
-                    accumulator -= crate::eval::PHYSICS_DT;
-                    substeps += 1;
-                    continue;
-                }
-                if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
-                    tick_err = Some(e);
-                    break;
-                }
-                accumulator -= crate::eval::PHYSICS_DT;
-                substeps += 1;
-            }
-            if substeps >= crate::eval::MAX_SUBSTEPS {
-                accumulator = 0.0;
-            }
-        }
+        // web3d-M6: the frame's simulation and render code run in
+        // `frame2d`, shared with the kernel's 2D renderer.
+        let tick_err = crate::frame2d::tick(&mut env, &mut accumulator, frame_dt).err();
         if let Some(e) = tick_err {
             eprintln!("{path_ref}: runtime error: {e}");
             break;
@@ -610,45 +535,19 @@ async fn run_loop(path: String) {
         flush_output(&mut env);
 
         clear_background(BLACK);
-        env.in_render = true;
-        // Phase 9 session 2: drive a macroquad Camera2D from the Twe
-        // `camera` ambient (pos / zoom) plus the runtime shake offset.
-        // Backward-compat carve-out: when pos == (0, 0), zoom == 1.0,
-        // and shake is silent we leave macroquad's default camera in
-        // place — every existing example that draws at pixel coords
-        // (origin top-left, +y down) keeps working unchanged.
-        // Convention when opted in: camera.pos is the world-space
-        // coordinate that ends up at the screen center.
-        //
-        // Phase 29 session 1: camera-shake decay runs once per render
-        // on wall-clock `frame_dt` rather than per substep — shake is
-        // a visual effect, not deterministic gameplay state, so smooth
-        // decay at display rate is the right behaviour.
-        crate::stdlib::camera_tick(frame_dt);
-        // v1.0.1 session 8: advance any active camera2d zoom_to /
-        // cinematic_pan animations and apply the bounds clamp. Sits
-        // between camera shake decay (which is also visual / wall-
-        // clock) and the camera transform read.
-        crate::stdlib::camera2d_tick(&mut env, frame_dt);
-        crate::fx::fx_tick(frame_dt);
-        crate::light2d::tick(frame_dt);
         crate::audio_polish::tick(frame_dt);
         crate::stdlib::sync_audio_polish();
-        let ((px, py), zoom) = crate::stdlib::camera_view(&env);
-        let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
-        let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
-        if cam_active {
-            let cam = build_camera2d(px + sx, py + sy, zoom);
-            set_camera(&cam);
+        let (camera, render_result) =
+            crate::frame2d::render(&mut env, frame_dt, screen_width(), screen_height());
+        if let Some(cam) = camera {
+            set_camera(&build_camera2d(
+                f64::from(cam.center[0]),
+                f64::from(cam.center[1]),
+                f64::from(cam.zoom),
+            ));
         }
-        // web3d-M6: the frame's 2D draw commands, replayed below.
-        env.draw2d.clear();
-        let render_result = crate::eval::render_frame(&mut env);
-        draw_light2d_overlay(&mut env.draw2d, cam_active, px + sx, py + sy, zoom);
-        crate::fx::fx_draw_overlay(&mut env.draw2d);
         crate::draw2d::replay_macroquad(&env.draw2d);
-        crate::light2d::clear_frame_lights();
-        if cam_active {
+        if camera.is_some() {
             set_default_camera();
         }
         if let Err(e) = render_result {
@@ -1038,42 +937,6 @@ fn hud_draw() {
     );
 }
 
-/// Build a macroquad `Camera2D` that puts world-coord `(cx, cy)` at
-/// the screen center, with `zoom > 1.0` zooming in and `< 1.0` zooming
-/// out. Y axis stays inverted (+y down) so call-site coordinates keep
-/// matching the screen's pixel orientation.
-// v1.0.1 session 3: helper that draws the light2d ambient overlay
-// + per-light glow circles in the same coord space the world was
-// rendered in. The play loop calls this between `eval::render_frame`
-// and `fx::fx_draw_overlay` so ambient darkness sits *over* the
-// world but *under* the fx layer (damage numbers / bursts stay
-// crisp even in a dim dungeon).
-//
-// When the 2D camera is active the view rect is in world coordinates
-// and we expand by 4x in every direction so the ambient overlay
-// safely covers any reasonable on-screen world. When the camera is
-// default the view rect is in screen pixels — same as direct
-// `rect(...)` calls from a `play_bytecode` script.
-fn draw_light2d_overlay(out: &mut Vec<crate::draw2d::Draw2d>, cam_active: bool, px: f64, py: f64, zoom: f64) {
-    let sw = screen_width();
-    let sh = screen_height();
-    if cam_active {
-        let z = zoom.max(0.0001) as f32;
-        // Half the world-space view in each axis, plus a slack
-        // factor so the ambient rect doesn't crop on zoom out.
-        let half_w = (sw / 2.0 / z) * 4.0;
-        let half_h = (sh / 2.0 / z) * 4.0;
-        crate::light2d::draw_overlay(
-            out,
-            px as f32 - half_w,
-            py as f32 - half_h,
-            half_w * 2.0,
-            half_h * 2.0,
-        );
-    } else {
-        crate::light2d::draw_overlay(out, 0.0, 0.0, sw, sh);
-    }
-}
 
 fn build_camera2d(cx: f64, cy: f64, zoom: f64) -> Camera2D {
     let w = screen_width();
@@ -1140,34 +1003,9 @@ async fn run_loop_embedded(source: String) {
         idle.tick(frame_dt);
         idle.apply();
         blur.tick(crate::window_focus::is_focused());
-        let mut tick_err: Option<crate::value::RuntimeError> = None;
-        // v1.0.1 session 6: persistent states (registered via
-        // `persistent_state(name)`) keep ticking through pause —
-        // pause menus / debug HUDs / toasts opt out this way. The
-        // per-state filter that actually skips non-persistent work
-        // lives in `eval::tick_frame` (top-level `on update` is
-        // always skipped under pause; entity / scene updates check
-        // the current state name).
-        if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
-            accumulator += frame_dt;
-            let mut substeps: u32 = 0;
-            while accumulator >= crate::eval::PHYSICS_DT && substeps < crate::eval::MAX_SUBSTEPS {
-                if crate::fx::consume_hit_stop_tick() {
-                    accumulator -= crate::eval::PHYSICS_DT;
-                    substeps += 1;
-                    continue;
-                }
-                if let Err(e) = crate::eval::tick_frame(&mut env, crate::eval::PHYSICS_DT) {
-                    tick_err = Some(e);
-                    break;
-                }
-                accumulator -= crate::eval::PHYSICS_DT;
-                substeps += 1;
-            }
-            if substeps >= crate::eval::MAX_SUBSTEPS {
-                accumulator = 0.0;
-            }
-        }
+        // web3d-M6: the frame's simulation and render code run in
+        // `frame2d`, shared with the kernel's 2D renderer.
+        let tick_err = crate::frame2d::tick(&mut env, &mut accumulator, frame_dt).err();
         if let Some(e) = tick_err {
             eprintln!("{LABEL}: runtime error: {e}");
             break;
@@ -1175,32 +1013,19 @@ async fn run_loop_embedded(source: String) {
         flush_output(&mut env);
 
         clear_background(BLACK);
-        env.in_render = true;
-        crate::stdlib::camera_tick(frame_dt);
-        // v1.0.1 session 8: advance any active camera2d zoom_to /
-        // cinematic_pan animations and apply the bounds clamp. Sits
-        // between camera shake decay (which is also visual / wall-
-        // clock) and the camera transform read.
-        crate::stdlib::camera2d_tick(&mut env, frame_dt);
-        crate::fx::fx_tick(frame_dt);
-        crate::light2d::tick(frame_dt);
         crate::audio_polish::tick(frame_dt);
         crate::stdlib::sync_audio_polish();
-        let ((px, py), zoom) = crate::stdlib::camera_view(&env);
-        let (sx, sy) = crate::stdlib::camera_shake_offset(&mut env);
-        let cam_active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
-        if cam_active {
-            let cam = build_camera2d(px + sx, py + sy, zoom);
-            set_camera(&cam);
+        let (camera, render_result) =
+            crate::frame2d::render(&mut env, frame_dt, screen_width(), screen_height());
+        if let Some(cam) = camera {
+            set_camera(&build_camera2d(
+                f64::from(cam.center[0]),
+                f64::from(cam.center[1]),
+                f64::from(cam.zoom),
+            ));
         }
-        // web3d-M6: the frame's 2D draw commands, replayed below.
-        env.draw2d.clear();
-        let render_result = crate::eval::render_frame(&mut env);
-        draw_light2d_overlay(&mut env.draw2d, cam_active, px + sx, py + sy, zoom);
-        crate::fx::fx_draw_overlay(&mut env.draw2d);
         crate::draw2d::replay_macroquad(&env.draw2d);
-        crate::light2d::clear_frame_lights();
-        if cam_active {
+        if camera.is_some() {
             set_default_camera();
         }
         if let Err(e) = render_result {
@@ -1271,70 +1096,13 @@ fn current_mtime(path: &str) -> Option<SystemTime> {
 }
 
 fn initialize(path: &str) -> Result<Env, ()> {
-    let src = match std::fs::read_to_string(Path::new(path)) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not read '{path}': {e}");
-            return Err(());
-        }
-    };
-    // web3d-M1: a script that imports modules goes through the module
-    // loader (it used to leave every import unbound in `twec play`).
-    let imports = crate::lexer::lex(&src)
-        .ok()
-        .and_then(|t| crate::parser::parse(&t).ok())
-        .is_some_and(|p| crate::module::has_imports(&p));
-    if imports {
-        let env = crate::module::prepare_entry(Path::new(path), &src).map_err(|msg| {
-            eprintln!("{msg}");
-        })?;
-        return refuse_looks(env, path);
-    }
-    initialize_from_source(&src, path)
+    crate::frame2d::load(path).map_err(|msg| eprintln!("{msg}"))
 }
 
-/// web3d-M3: the 2D player can't draw `look:`; say so up front instead
-/// of silently drawing nothing (see `eval::look_needs_3d`).
-fn refuse_looks(env: Env, label: &str) -> Result<Env, ()> {
-    match crate::eval::first_look_class(&env) {
-        Some(class) => {
-            let e = crate::eval::look_needs_3d(&class);
-            eprintln!("{label}: {}", e.message);
-            if let Some(help) = e.help {
-                eprintln!("  help: {help}");
-            }
-            Err(())
-        }
-        None => Ok(env),
-    }
-}
-
-/// Phase 12 session 4: shared init path for both file-backed and
-/// embedded-bundle launches. Lexes / parses / runs top-level on the
-/// given source string; `label` is the diagnostic prefix
-/// (filesystem path or `<embedded>main.twe`).
+/// Phase 12 session 4: the embedded-bundle launch's init (the source
+/// lives in the running `.exe`).
 fn initialize_from_source(src: &str, label: &str) -> Result<Env, ()> {
-    let tokens = match crate::lexer::lex(src) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{label}:{e}");
-            return Err(());
-        }
-    };
-    let program = match crate::parser::parse(&tokens) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{label}:{e}");
-            return Err(());
-        }
-    };
-    let mut env = Env::new();
-    crate::stdlib::install(&mut env);
-    if let Err(e) = crate::eval::run_top_level(&mut env, &program) {
-        eprintln!("{label}: runtime error: {e}");
-        return Err(());
-    }
-    refuse_looks(env, label)
+    crate::frame2d::load_source(src, label).map_err(|msg| eprintln!("{msg}"))
 }
 
 fn flush_output(env: &mut Env) {

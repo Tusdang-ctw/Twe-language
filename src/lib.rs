@@ -56,6 +56,7 @@ pub mod llm_eval;
 pub mod bench;
 // web3d-M6: the 2D draw-command list every 2D draw builtin pushes to.
 pub mod draw2d;
+pub mod frame2d;
 // web3d-M5: running the benchmark against models (`twec bench run`).
 pub mod bench_run;
 // Phase 33 session 8: error → fix corpus generator. Auto-mutates

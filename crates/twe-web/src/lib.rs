@@ -460,8 +460,8 @@ fn listen_pointer(
             let w = f64::from(canvas.client_width().max(1));
             let h = f64::from(canvas.client_height().max(1));
             (
-                f64::from(e.offset_x()) * f64::from(twec::kernel::hud::CANVAS_W) / w,
-                f64::from(e.offset_y()) * f64::from(twec::kernel::hud::CANVAS_H) / h,
+                f64::from(e.offset_x()) * f64::from(twec::kernel::canvas::CANVAS_W) / w,
+                f64::from(e.offset_y()) * f64::from(twec::kernel::canvas::CANVAS_H) / h,
             )
         }
     };
@@ -612,6 +612,7 @@ impl AssetSource for WebAssets {
                 AssetKind::Texture => AssetReady::Texture(id, bytes),
                 AssetKind::Environment => AssetReady::Environment(id, bytes),
                 AssetKind::Lut => AssetReady::Lut(id, bytes),
+                AssetKind::Raw => AssetReady::Raw(id, bytes),
             });
             return;
         }
@@ -624,6 +625,7 @@ impl AssetSource for WebAssets {
                 AssetKind::Texture => AssetReady::Texture(id, bytes),
                 AssetKind::Environment => AssetReady::Environment(id, bytes),
                 AssetKind::Lut => AssetReady::Lut(id, bytes),
+                AssetKind::Raw => AssetReady::Raw(id, bytes),
             };
             ready.borrow_mut().push(done);
         });

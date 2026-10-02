@@ -915,10 +915,11 @@ All drawing primitives must be called from inside an `on render():`
 handler; calling one elsewhere is a runtime error that points you at
 `render` (do state mutation in `every` / `on update(dt)`).
 
-**In 3D** (`twec play3d`, `twec build --target web`), `text()` and `rect()` draw a **HUD** over the scene (web3d-M3).
+**In 3D** (`twec play3d`, `twec build --target web`), the drawing calls draw a **HUD** over the scene: `text` and `rect` since web3d-M3, and every other call in this section since web3d-M6.
 - **Coordinates** are the same 640×480 canvas as the 2D runtime, scaled to the window.
-- **`text`** positions `at` as the baseline, uses the bundled ProggyClean font, and accepts any value (non-strings display).
-- **Other drawing and UI calls** raise an error in 3D until the 2D runtime moves onto the kernel (web3d-M6).
+- **`text`** positions `at` as the baseline, uses the bundled ProggyClean font unless given one (`text_with_font`), and accepts any value (non-strings display).
+- **Pictures match 2D.** The kernel draws a shape, glyph or sprite exactly as the 2D runtime does; `tests/canvas_2d.rs` compares them against reference frames.
+- **UI widgets and panels** (`button`, `label`, `slider`, `panel`, …) still raise an error in 3D. They move onto the kernel later in web3d-M6.
 
 ### 7.6 Input
 

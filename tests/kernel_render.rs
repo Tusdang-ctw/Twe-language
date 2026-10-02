@@ -346,6 +346,36 @@ fn hud_draws_text_and_rects_over_the_scene() {
     assert!(green > 100, "only {green} green text pixels");
 }
 
+/// web3d-M6: the 3D HUD draws every 2D primitive through the kernel
+/// canvas (it drew only `rect` and `text` before): circles, lines and
+/// sprites, in canvas coordinates scaled to the target.
+#[test]
+fn hud_draws_every_2d_primitive() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    std::fs::create_dir_all("target/kernel-render").expect("dir");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 255, 255]))
+        .save("target/kernel-render/magenta.png")
+        .expect("write test image");
+    let src = concat!(
+        "let pic = load(\"target/kernel-render/magenta.png\")\n",
+        "on render():\n",
+        "    circle((160, 120), 60, color.blue)\n",
+        "    line((400, 0), (400, 480), 20, color.yellow)\n",
+        "    sprite(pic, (480, 300), (128, 128))\n",
+    );
+    let rgba = render_source(&mut renderer, "hud_primitives", src);
+    save_png("hud_primitives", &rgba);
+    // The 320×240 target is half the canvas.
+    let [r, g, b] = pixel(&rgba, 80, 60);
+    assert!(b > 240 && r < 20 && g < 20, "circle: {:?}", [r, g, b]);
+    let [r, g, b] = pixel(&rgba, 200, 10);
+    assert!(r > 240 && g > 240 && b < 20, "line: {:?}", [r, g, b]);
+    let [r, g, b] = pixel(&rgba, 270, 180);
+    assert!(r > 240 && b > 240 && g < 20, "sprite: {:?}", [r, g, b]);
+}
+
 /// web3d-M4: a frame of the v1.0 slice, 20 s into a run, through the
 /// real renderer: the arena, the swarm and the HUD all draw.
 #[test]

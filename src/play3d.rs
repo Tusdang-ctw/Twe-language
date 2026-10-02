@@ -453,8 +453,8 @@ impl ApplicationHandler for App {
                 // web3d-M4: in the HUD's 640×480 canvas units, as in 2D.
                 let size = state.window.inner_size();
                 self.input.mouse_move(
-                    position.x * f64::from(crate::kernel::hud::CANVAS_W) / f64::from(size.width.max(1)),
-                    position.y * f64::from(crate::kernel::hud::CANVAS_H) / f64::from(size.height.max(1)),
+                    position.x * f64::from(crate::kernel::canvas::CANVAS_W) / f64::from(size.width.max(1)),
+                    position.y * f64::from(crate::kernel::canvas::CANVAS_H) / f64::from(size.height.max(1)),
                 );
             }
             WindowEvent::MouseInput {
@@ -701,12 +701,13 @@ impl AssetSource for NativeAssets {
                         .push(AssetReady::Mesh(id, Err(format!("spawn loader: {e}")))),
                 }
             }
-            AssetKind::Texture | AssetKind::Environment | AssetKind::Lut => {
+            AssetKind::Texture | AssetKind::Environment | AssetKind::Lut | AssetKind::Raw => {
                 let bytes =
                     crate::bundle::read_asset_bytes(path).map_err(|e| format!("`{path}`: {e}"));
                 self.ready.push(match kind {
                     AssetKind::Texture => AssetReady::Texture(id, bytes),
                     AssetKind::Environment => AssetReady::Environment(id, bytes),
+                    AssetKind::Raw => AssetReady::Raw(id, bytes),
                     _ => AssetReady::Lut(id, bytes),
                 });
             }
