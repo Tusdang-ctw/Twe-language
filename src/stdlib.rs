@@ -3183,6 +3183,36 @@ fn music_crossfade(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
 /// - Crossfades: `set_sound_volume` on both endpoints; on finish,
 ///   stop the `from` track.
 pub fn sync_audio_polish() {
+    // web3d-M6: without a macroquad window the shell's player applies
+    // the volume changes and stops (`audio_host`), as for `sound.*`.
+    let set_volume = |path: &str, volume: f32| {
+        let volume = volume.clamp(0.0, 1.0);
+        if !macroquad_live() {
+            crate::audio_host::push(crate::audio_host::AudioCmd::SetVolume {
+                path: path.to_string(),
+                volume,
+            });
+            return;
+        }
+        SOUND_CACHE.with(|cache| {
+            if let Some(snd) = cache.borrow().get(path) {
+                macroquad::audio::set_sound_volume(snd, volume);
+            }
+        });
+    };
+    let stop = |path: &str| {
+        if !macroquad_live() {
+            crate::audio_host::push(crate::audio_host::AudioCmd::Stop {
+                path: path.to_string(),
+            });
+            return;
+        }
+        SOUND_CACHE.with(|cache| {
+            if let Some(snd) = cache.borrow().get(path) {
+                macroquad::audio::stop_sound(snd);
+            }
+        });
+    };
     // Layers.
     for (path, weight, playing) in crate::audio_polish::dirty_layers() {
         if !playing && weight > 0.0 {
@@ -3192,27 +3222,16 @@ pub fn sync_audio_polish() {
                 crate::audio_polish::mark_playing(&path);
             }
         } else if playing {
-            SOUND_CACHE.with(|cache| {
-                if let Some(snd) = cache.borrow().get(&path) {
-                    macroquad::audio::set_sound_volume(snd, weight.clamp(0.0, 1.0));
-                }
-            });
+            set_volume(&path, weight);
         }
     }
     // Crossfades.
     for (from, to, from_vol, to_vol, finished) in crate::audio_polish::crossfade_snapshot() {
-        SOUND_CACHE.with(|cache| {
-            let cache = cache.borrow();
-            if let Some(snd) = cache.get(&from) {
-                macroquad::audio::set_sound_volume(snd, from_vol.clamp(0.0, 1.0));
-                if finished {
-                    macroquad::audio::stop_sound(snd);
-                }
-            }
-            if let Some(snd) = cache.get(&to) {
-                macroquad::audio::set_sound_volume(snd, to_vol.clamp(0.0, 1.0));
-            }
-        });
+        set_volume(&from, from_vol);
+        if finished {
+            stop(&from);
+        }
+        set_volume(&to, to_vol);
     }
 }
 
@@ -9087,27 +9106,29 @@ fn touches() -> Vec<macroquad::input::Touch> {
     }
 }
 
-/// `require_render` plus a backend check for the 2D drawing builtins,
-/// which draw through macroquad. In `twec play3d` (or headless) they
-/// now raise a clear error instead of panicking inside macroquad.
-fn require_render_2d(env: &Env, name: &str) -> Result<(), RuntimeError> {
-    require_render(env, name)?;
-    if !macroquad_live() {
-        return Err(RuntimeError {
-            line: 0,
-            col: 0,
-            message: format!(
-                "{name}() is a 2D drawing call and needs the 2D runtime (`twec play`)"
-            ),
-            help: Some(
-                "in 3D (`twec play3d`, the web build) the 2D drawing calls draw a HUD \
-                 over the scene, but the UI widgets and panels don't yet; they come \
-                 with the 2D-on-kernel port (web3d-M6)"
-                    .to_string(),
-            ),
-        });
-    }
-    Ok(())
+thread_local! {
+    // web3d-M6: text typed this frame, set by the shell before the
+    // frame's render (winit's `KeyEvent::text`; macroquad's char queue).
+    static TYPED_TEXT: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// web3d-M6: the text typed since the last frame (shells call this
+/// once per frame). `text_input` takes it while focused.
+pub fn set_typed_text(text: String) {
+    TYPED_TEXT.with(|t| *t.borrow_mut() = text);
+}
+
+fn take_typed_text() -> String {
+    TYPED_TEXT.with(|t| std::mem::take(&mut *t.borrow_mut()))
+}
+
+/// Whether the boolean field `name` of the ambient object `ambient`
+/// (`key`, `key_press`, …) is true.
+fn ambient_flag(env: &Env, ambient: &str, name: &str) -> bool {
+    env.get(ambient)
+        .filter(|v| v.is_object())
+        .and_then(|v| v.as_object().borrow().get_field(name))
+        .is_some_and(|v| v.is_bool() && v.as_bool())
 }
 
 fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
@@ -9408,7 +9429,7 @@ fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
 /// border are baked in for v1; theming knobs (custom colors, fonts,
 /// padding) are deferred until the session-1 surface meets a real game.
 fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "button")?;
+    require_render(env, "button")?;
     arity(args, 3, "button")?;
     let (x, y) = xy_of(&args[0], "button.at")?;
     let (w, h) = xy_of(&args[1], "button.size")?;
@@ -9446,7 +9467,7 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     }
 
     let font_size: f32 = 18.0;
-    let dim = macroquad::text::measure_text(&label, None, font_size as u16, 1.0);
+    let dim = crate::draw2d::measure_text(&label, font_size as u16);
     let tx = x as f32 + (w as f32 - dim.width) / 2.0;
     // measure_text reports `height` as the glyph height above the
     // baseline; macroquad's draw_text takes the baseline y, so center
@@ -9479,7 +9500,7 @@ pub(crate) fn point_in_rect(px: f64, py: f64, rx: f64, ry: f64, rw: f64, rh: f64
 /// shape as `button` so the two compose visually under any future
 /// layout primitive.
 fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "label")?;
+    require_render(env, "label")?;
     arity(args, 3, "label")?;
     let (x, y) = xy_of(&args[0], "label.at")?;
     let (w, h) = xy_of(&args[1], "label.size")?;
@@ -9492,7 +9513,7 @@ fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         }
     };
     let font_size: f32 = 18.0;
-    let dim = macroquad::text::measure_text(&text, None, font_size as u16, 1.0);
+    let dim = crate::draw2d::measure_text(&text, font_size as u16);
     let tx = x as f32 + (w as f32 - dim.width) / 2.0;
     let ty = y as f32 + (h as f32 + dim.height) / 2.0;
     crate::draw2d::text(&mut env.draw2d, 
@@ -9510,7 +9531,7 @@ fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// [0, 1] silently rather than erroring, since `progress_bar(value: hp / max_hp)`
 /// drifting slightly out of range due to float rounding shouldn't crash.
 fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "progress_bar")?;
+    require_render(env, "progress_bar")?;
     arity(args, 3, "progress_bar")?;
     let (x, y) = xy_of(&args[0], "progress_bar.at")?;
     let (w, h) = xy_of(&args[1], "progress_bar.size")?;
@@ -9544,7 +9565,7 @@ fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 /// passes through unchanged (so the widget is *driven* by the script's
 /// `var` and stays in sync after, say, a "reset" button).
 fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "slider")?;
+    require_render(env, "slider")?;
     arity(args, 5, "slider")?;
     let (x, y) = xy_of(&args[0], "slider.at")?;
     let (w, h) = xy_of(&args[1], "slider.size")?;
@@ -9614,7 +9635,7 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// when value is true — keeps the visual recognizable without bringing
 /// in glyph rendering.
 fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "checkbox")?;
+    require_render(env, "checkbox")?;
     arity(args, 3, "checkbox")?;
     let (x, y) = xy_of(&args[0], "checkbox.at")?;
     let (w, h) = xy_of(&args[1], "checkbox.size")?;
@@ -9678,7 +9699,7 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// outside or pick the same option to close. Returns the new selected
 /// index. Stateful via `UI_STATE.open_dropdown` keyed by the rect.
 fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "dropdown")?;
+    require_render(env, "dropdown")?;
     arity(args, 4, "dropdown")?;
     let (x, y) = xy_of(&args[0], "dropdown.at")?;
     let (w, h) = xy_of(&args[1], "dropdown.size")?;
@@ -9777,7 +9798,7 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, 2.0, border);
     let label = &options[new_selected.min(n - 1)];
     let font_size: f32 = 18.0;
-    let dim = macroquad::text::measure_text(label, None, font_size as u16, 1.0);
+    let dim = crate::draw2d::measure_text(label, font_size as u16);
     crate::draw2d::text(&mut env.draw2d, 
         label,
         x as f32 + 8.0,
@@ -9802,7 +9823,7 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
                 macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
             };
             crate::draw2d::rect(&mut env.draw2d, x as f32, oy as f32, w as f32, h as f32, row_bg);
-            let dim = macroquad::text::measure_text(opt, None, font_size as u16, 1.0);
+            let dim = crate::draw2d::measure_text(opt, font_size as u16);
             crate::draw2d::text(&mut env.draw2d, 
                 opt,
                 x as f32 + 8.0,
@@ -9826,7 +9847,7 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// and `Backspace` removes the last character. Returns the updated
 /// string each frame.
 fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "text_input")?;
+    require_render(env, "text_input")?;
     arity(args, 3, "text_input")?;
     let (x, y) = xy_of(&args[0], "text_input.at")?;
     let (w, h) = xy_of(&args[1], "text_input.size")?;
@@ -9870,9 +9891,10 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         // char on Ctrl+V which the loop's is_control filter would
         // drop, but we explicitly read the OS clipboard here for the
         // human-readable text). Phase 10 session 5b.
-        let ctrl_held = macroquad::input::is_key_down(macroquad::input::KeyCode::LeftControl)
-            || macroquad::input::is_key_down(macroquad::input::KeyCode::RightControl);
-        if ctrl_held && macroquad::input::is_key_pressed(macroquad::input::KeyCode::V) {
+        // web3d-M6: keys from the input ambients, typed characters from
+        // the shell (`set_typed_text`), so any shell drives the widget.
+        let ctrl_held = ambient_flag(env, "key", "ctrl");
+        if ctrl_held && ambient_flag(env, "key_press", "v") {
             #[cfg(not(target_arch = "wasm32"))]
             if let Ok(mut c) = arboard::Clipboard::new() {
                 if let Ok(s) = c.get_text() {
@@ -9884,14 +9906,10 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
                 }
             }
         }
-        loop {
-            match macroquad::input::get_char_pressed() {
-                Some(ch) if !ch.is_control() => value.push(ch),
-                Some(_) => {}
-                None => break,
-            }
+        if !ctrl_held {
+            value.extend(take_typed_text().chars().filter(|c| !c.is_control()));
         }
-        if macroquad::input::is_key_pressed(macroquad::input::KeyCode::Backspace) {
+        if ambient_flag(env, "key_press", "backspace") {
             value.pop();
         }
     }
@@ -9922,14 +9940,13 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     );
 
     let font_size: f32 = 18.0;
-    let dim = macroquad::text::measure_text(&value, None, font_size as u16, 1.0);
+    let dim = crate::draw2d::measure_text(&value, font_size as u16);
     let baseline_y = y as f32 + (h as f32 + dim.height) / 2.0;
     crate::draw2d::text(&mut env.draw2d, &value, x as f32 + 8.0, baseline_y, font_size, txt_color);
 
     if focused {
-        // 1Hz blink — `time::Instant` is overkill for a UI cursor.
-        // Use `macroquad::time::get_time()` (seconds since start).
-        let t = macroquad::time::get_time();
+        // 1 Hz blink on the wall clock.
+        let t = crate::clock::now_secs().unwrap_or(0.0);
         if t.fract() < 0.5 {
             let cursor_x = x as f32 + 8.0 + dim.width + 1.0;
             crate::draw2d::line(&mut env.draw2d, 
@@ -9954,7 +9971,7 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
 /// with `key_held(name)` / `key_pressed(name)` so games can persist
 /// bindings via `settings` and read them back at runtime.
 fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "key_input")?;
+    require_render(env, "key_input")?;
     arity(args, 3, "key_input")?;
     let (x, y) = xy_of(&args[0], "key_input.at")?;
     let (w, h) = xy_of(&args[1], "key_input.size")?;
@@ -10057,7 +10074,7 @@ fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
         value.clone()
     };
     let font_size: f32 = 18.0;
-    let dim = macroquad::text::measure_text(&display, None, font_size as u16, 1.0);
+    let dim = crate::draw2d::measure_text(&display, font_size as u16);
     let tx = x as f32 + (w as f32 - dim.width) / 2.0;
     let ty = y as f32 + (h as f32 + dim.height) / 2.0;
     crate::draw2d::text(&mut env.draw2d, &display, tx, ty, font_size, txt_color);
@@ -10070,7 +10087,7 @@ fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
 /// panels, dialog boxes, info cards). Slightly darker than the
 /// page background, with a thin neutral border. No state.
 fn draw_panel(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "panel")?;
+    require_render(env, "panel")?;
     arity(args, 2, "panel")?;
     let (x, y) = xy_of(&args[0], "panel.at")?;
     let (w, h) = xy_of(&args[1], "panel.size")?;
@@ -10133,7 +10150,7 @@ fn nine_slice_handle(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
 /// both axes. Falls back to a transparent fill if `w` or `h` are
 /// smaller than `2 * border` (the corners would overlap).
 fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
-    require_render_2d(env, "panel_skinned")?;
+    require_render(env, "panel_skinned")?;
     arity(args, 3, "panel_skinned")?;
     let (x, y) = xy_of(&args[0], "panel_skinned.at")?;
     let (w, h) = xy_of(&args[1], "panel_skinned.size")?;

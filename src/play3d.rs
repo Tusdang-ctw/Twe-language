@@ -33,7 +33,7 @@
 //! VM 3D path, mouse input, proper lighting (point / area / shadows),
 //! `mat4` / `quat` stdlib types.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -127,10 +127,17 @@ const KEYS: &[(&str, KeyCode)] = &[
     ("f12", KeyCode::F12),
 ];
 
+/// A winit physical key's Twe name (`"right"`, `"space"`, …), for the
+/// keys scripts can read; shared with the 2D shell (`play2d`).
+pub(crate) fn winit_key_name(code: KeyCode) -> Option<&'static str> {
+    KEYS.iter()
+        .find_map(|(name, c)| if *c == code { Some(*name) } else { None })
+}
+
 /// Map a winit `MouseButton` to its Twe-side name. Buttons beyond
 /// left / middle / right (Back / Forward / Other) aren't surfaced
 /// in v0.2 — match what macroquad exposes for cross-backend parity.
-fn mouse_button_name(b: MouseButton) -> Option<&'static str> {
+pub(crate) fn mouse_button_name(b: MouseButton) -> Option<&'static str> {
     match b {
         MouseButton::Left => Some("left"),
         MouseButton::Middle => Some("middle"),
@@ -260,78 +267,13 @@ struct App {
     sim_accumulator: f64,
     exit_code: i32,
     /// web3d-M4: plays the script's queued `sound.*` commands.
-    audio: NativeAudio,
+    audio: crate::native_audio::NativeAudio,
     /// web3d-M4: the gamepad, polled each frame into `input`. `None`
     /// once gilrs failed to start (no input subsystem).
     gilrs: Option<gilrs::Gilrs>,
     /// web3d-M4: `auto_pause_on_blur(true)` pauses when the window
     /// loses focus.
     blur: crate::host3d::BlurAutoPause,
-}
-
-/// web3d-M4: the native 3D shell's sound player. `sound.*` queues
-/// commands (`audio_host`) since there is no macroquad window here;
-/// this plays them through `quad-snd`, macroquad's own audio backend.
-/// The device opens on the first sound, so silent games never touch it.
-#[derive(Default)]
-struct NativeAudio {
-    ctx: Option<quad_snd::AudioContext>,
-    sounds: HashMap<String, quad_snd::Sound>,
-    /// Paths that failed to load: reported once, not every play.
-    failed: HashSet<String>,
-}
-
-impl NativeAudio {
-    fn play_queued(&mut self) {
-        for cmd in crate::audio_host::drain() {
-            match cmd {
-                crate::audio_host::AudioCmd::Play {
-                    path,
-                    volume,
-                    looped,
-                } => {
-                    if self.load(&path) {
-                        if let (Some(ctx), Some(sound)) = (&self.ctx, self.sounds.get(&path)) {
-                            sound.play(ctx, quad_snd::PlaySoundParams { looped, volume });
-                        }
-                    }
-                }
-                crate::audio_host::AudioCmd::Stop { path } => {
-                    if let (Some(ctx), Some(sound)) = (&self.ctx, self.sounds.get(&path)) {
-                        sound.stop(ctx);
-                    }
-                }
-                crate::audio_host::AudioCmd::SetVolume { path, volume } => {
-                    if let (Some(ctx), Some(sound)) = (&self.ctx, self.sounds.get(&path)) {
-                        sound.set_volume(ctx, volume);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Decode `path` on first use (opening the device if needed);
-    /// false if it can't be loaded.
-    fn load(&mut self, path: &str) -> bool {
-        if self.failed.contains(path) {
-            return false;
-        }
-        if !self.sounds.contains_key(path) {
-            let ctx = self.ctx.get_or_insert_with(quad_snd::AudioContext::new);
-            match crate::bundle::read_asset_bytes(path) {
-                Ok(bytes) => {
-                    let sound = quad_snd::Sound::load(ctx, &bytes);
-                    self.sounds.insert(path.to_string(), sound);
-                }
-                Err(e) => {
-                    eprintln!("sound: cannot read '{path}': {e}");
-                    self.failed.insert(path.to_string());
-                    return false;
-                }
-            }
-        }
-        true
-    }
 }
 
 impl App {
@@ -347,7 +289,7 @@ impl App {
             input: crate::host3d::InputState::default(),
             sim_accumulator: 0.0,
             exit_code: 0,
-            audio: NativeAudio::default(),
+            audio: crate::native_audio::NativeAudio::default(),
             blur: crate::host3d::BlurAutoPause::new(),
             gilrs: gilrs::Gilrs::new()
                 .map_err(|e| eprintln!("[twec] gamepad disabled: {e}"))
@@ -360,8 +302,7 @@ impl App {
     /// don't surface — the input set matches the macroquad path's
     /// `KEYS` table so scripts behave the same on both backends.
     fn key_name(code: KeyCode) -> Option<&'static str> {
-        KEYS.iter()
-            .find_map(|(name, c)| if *c == code { Some(*name) } else { None })
+        winit_key_name(code)
     }
 }
 
@@ -600,7 +541,7 @@ impl ApplicationHandler for App {
 /// mode; if the platform doesn't support Locked, we fall back to
 /// Confined (which keeps the cursor inside the window). Visibility
 /// is also toggled — locked games hide the cursor by convention.
-fn apply_cursor_mode(window: &Window, locked: bool) {
+pub(crate) fn apply_cursor_mode(window: &Window, locked: bool) {
     use winit::window::CursorGrabMode;
     if locked {
         // Try Locked first (raw input, no cursor movement). Some

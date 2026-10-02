@@ -15,7 +15,9 @@
 
 use std::path::Path;
 
+use crate::host3d::InputState;
 use crate::kernel::canvas::Camera2d;
+use crate::replay::InputCommand;
 use crate::value::{Env, RuntimeError};
 
 /// Load a 2D game: read `path`, run its top level (through the module
@@ -68,28 +70,91 @@ fn refuse_looks(env: Env, label: &str) -> Result<Env, String> {
 /// Run as many fixed `PHYSICS_DT` ticks as `frame_dt` of wall-clock
 /// time allows (at most `MAX_SUBSTEPS`). `accumulator` carries the
 /// remainder between frames.
-pub fn tick(env: &mut Env, accumulator: &mut f64, frame_dt: f64) -> Result<(), RuntimeError> {
+///
+/// With `input` (a shell's [`InputState`]), each tick takes one input
+/// command (recorded or replayed by `replay::step`), and afterwards the
+/// input ambients hold the whole frame's input for the render code:
+/// the latest held keys and cursor, every press of every tick, the
+/// summed motion and wheel. A frame that runs no tick (paused, or
+/// between ticks at a high refresh rate) takes a fresh command for the
+/// render code alone, so a pause menu's buttons still see clicks.
+/// Without `input` the shell has written the ambients itself.
+pub fn tick(
+    env: &mut Env,
+    mut input: Option<&mut InputState>,
+    accumulator: &mut f64,
+    frame_dt: f64,
+) -> Result<(), RuntimeError> {
     use crate::eval::{MAX_SUBSTEPS, PHYSICS_DT};
+    let mut frame: Option<InputCommand> = None;
     // v1.0.1 session 6: persistent states keep ticking through pause;
     // `eval::tick_frame` skips the rest.
-    if crate::stdlib::is_paused() && !crate::stdlib::has_persistent_states() {
-        return Ok(());
-    }
-    *accumulator += frame_dt;
-    let mut substeps: u32 = 0;
-    while *accumulator >= PHYSICS_DT && substeps < MAX_SUBSTEPS {
-        // v1.0.1 session 1: `fx.hit_stop` spends wall-clock time
-        // without advancing the game.
-        if !crate::fx::consume_hit_stop_tick() {
-            crate::eval::tick_frame(env, PHYSICS_DT)?;
+    let running = !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states();
+    let mut result = Ok(());
+    if running {
+        *accumulator += frame_dt;
+        let mut substeps: u32 = 0;
+        while *accumulator >= PHYSICS_DT && substeps < MAX_SUBSTEPS {
+            // v1.0.1 session 1: `fx.hit_stop` spends wall-clock time
+            // without advancing the game.
+            if !crate::fx::consume_hit_stop_tick() {
+                if let Some(input) = input.as_deref_mut() {
+                    let cmd = crate::replay::step(input.take_command());
+                    crate::host3d::apply_command(env, &cmd);
+                    frame = Some(match frame.take() {
+                        Some(earlier) => merge(earlier, cmd),
+                        None => cmd,
+                    });
+                }
+                result = crate::eval::tick_frame(env, PHYSICS_DT);
+                if result.is_err() {
+                    break;
+                }
+            }
+            *accumulator -= PHYSICS_DT;
+            substeps += 1;
         }
-        *accumulator -= PHYSICS_DT;
-        substeps += 1;
+        if substeps >= MAX_SUBSTEPS {
+            *accumulator = 0.0;
+        }
     }
-    if substeps >= MAX_SUBSTEPS {
-        *accumulator = 0.0;
+    if let Some(input) = input {
+        let frame = frame.unwrap_or_else(|| {
+            let cmd = input.take_command();
+            // A paused frame's input is recorded and replayed too, one
+            // line per frame, or a pause menu's "Resume" click would be
+            // missing from a replay. (Running frames that fall between
+            // ticks aren't: how many there are depends on the display.)
+            if running {
+                cmd
+            } else {
+                crate::replay::step(cmd)
+            }
+        });
+        crate::host3d::apply_command(env, &frame);
     }
-    Ok(())
+    result
+}
+
+/// Two ticks' commands as one frame's: the later state, every press.
+fn merge(a: InputCommand, b: InputCommand) -> InputCommand {
+    let union = |mut x: Vec<String>, y: Vec<String>| {
+        for n in y {
+            if !x.contains(&n) {
+                x.push(n);
+            }
+        }
+        x
+    };
+    InputCommand {
+        keys_pressed: union(a.keys_pressed, b.keys_pressed),
+        mb_press: union(a.mb_press, b.mb_press),
+        pad_pressed: union(a.pad_pressed, b.pad_pressed),
+        mouse_dx: a.mouse_dx + b.mouse_dx,
+        mouse_dy: a.mouse_dy + b.mouse_dy,
+        wheel: a.wheel + b.wheel,
+        ..b
+    }
 }
 
 /// Render the frame into `env.draw2d`, for a view `view_w × view_h`

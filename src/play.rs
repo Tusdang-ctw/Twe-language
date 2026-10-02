@@ -289,7 +289,19 @@ fn startup_failed() {
     STARTUP_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// web3d-M6: `twec play` runs on the kernel (`play2d`). The macroquad
+/// loops below stay reachable with `TWE_PLAYER=macroquad`, for
+/// comparison, until macroquad is deleted (M6 session 6).
+#[cfg(not(target_arch = "wasm32"))]
+fn use_macroquad() -> bool {
+    std::env::var("TWE_PLAYER").is_ok_and(|v| v.eq_ignore_ascii_case("macroquad"))
+}
+
 pub fn launch(path: String) -> i32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !use_macroquad() {
+        return crate::play2d::launch(path);
+    }
     let conf = window_conf();
     macroquad::Window::from_config(conf, run_loop(path));
     startup_exit_code()
@@ -301,6 +313,10 @@ pub fn launch(path: String) -> i32 {
 /// `cli::run` detects an embedded bundle, extracts main.twe, sets
 /// the bundle as the active asset source, then calls this.
 pub fn launch_embedded(source: String) -> i32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !use_macroquad() {
+        return crate::play2d::launch_embedded(source);
+    }
     let conf = window_conf();
     macroquad::Window::from_config(conf, run_loop_embedded(source));
     startup_exit_code()
@@ -364,6 +380,12 @@ async fn run_loop_wasm() {
 
     loop {
         update_key_state(&mut env);
+        // web3d-M6: typed characters for `text_input`.
+        let mut typed = String::new();
+        while let Some(ch) = get_char_pressed() {
+            typed.push(ch);
+        }
+        crate::stdlib::set_typed_text(typed);
         crate::replay::tick(&mut env);
         // v1.0.2 Session 7: tap-event diff. The detector reads the
         // current `macroquad::input::touches()` set and updates the
@@ -375,7 +397,7 @@ async fn run_loop_wasm() {
         hud_record(frame_dt);
         // web3d-M6: the frame's simulation and render code run in
         // `frame2d`, shared with the kernel's 2D renderer.
-        let tick_err = crate::frame2d::tick(&mut env, &mut accumulator, frame_dt).err();
+        let tick_err = crate::frame2d::tick(&mut env, None, &mut accumulator, frame_dt).err();
         if let Some(e) = tick_err {
             eprintln!("{LABEL}: runtime error: {e}");
             break;
@@ -491,6 +513,12 @@ async fn run_loop(path: String) {
         }
 
         update_key_state(&mut env);
+        // web3d-M6: typed characters for `text_input`.
+        let mut typed = String::new();
+        while let Some(ch) = get_char_pressed() {
+            typed.push(ch);
+        }
+        crate::stdlib::set_typed_text(typed);
         // Phase 29 session 4: replay hook. When recording, snapshot
         // the just-refreshed input ambients to the log. When
         // playing, overwrite them from the log so `tick_frame` sees
@@ -527,7 +555,7 @@ async fn run_loop(path: String) {
         // determinism + sample-accurate audio + stable physics.
         // web3d-M6: the frame's simulation and render code run in
         // `frame2d`, shared with the kernel's 2D renderer.
-        let tick_err = crate::frame2d::tick(&mut env, &mut accumulator, frame_dt).err();
+        let tick_err = crate::frame2d::tick(&mut env, None, &mut accumulator, frame_dt).err();
         if let Some(e) = tick_err {
             eprintln!("{path_ref}: runtime error: {e}");
             break;
@@ -994,6 +1022,12 @@ async fn run_loop_embedded(source: String) {
         }
 
         update_key_state(&mut env);
+        // web3d-M6: typed characters for `text_input`.
+        let mut typed = String::new();
+        while let Some(ch) = get_char_pressed() {
+            typed.push(ch);
+        }
+        crate::stdlib::set_typed_text(typed);
         // Phase 29 session 4: replay hook (see run_loop for context).
         crate::replay::tick(&mut env);
         // v1.0.2 Session 7: tap-event diff (see run_loop for context).
@@ -1005,7 +1039,7 @@ async fn run_loop_embedded(source: String) {
         blur.tick(crate::window_focus::is_focused());
         // web3d-M6: the frame's simulation and render code run in
         // `frame2d`, shared with the kernel's 2D renderer.
-        let tick_err = crate::frame2d::tick(&mut env, &mut accumulator, frame_dt).err();
+        let tick_err = crate::frame2d::tick(&mut env, None, &mut accumulator, frame_dt).err();
         if let Some(e) = tick_err {
             eprintln!("{LABEL}: runtime error: {e}");
             break;

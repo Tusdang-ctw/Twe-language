@@ -3116,23 +3116,25 @@ sound.schedule(snd, 0.2, 1.0)
 // ---------- web3d-M0: macroquad backend guard ----------
 
 #[test]
-fn two_d_draw_in_3d_render_errors_instead_of_panicking() {
-    // A UI widget is still a macroquad (2D) call. In `twec play3d` the
-    // render hook runs with `in_render` set but no macroquad window,
-    // which used to abort the process on macroquad's THREAD_ID
-    // assertion. (`text()` and `rect()` draw the 3D HUD since web3d-M3;
-    // the other drawing calls since web3d-M6 session 2.)
-    let src = "on render():\n    button((10, 10), (100, 30), \"Go\")\n";
+fn ui_widgets_draw_in_3d_without_macroquad() {
+    // A UI widget in a 3D render used to abort the process on
+    // macroquad's THREAD_ID assertion (no macroquad window in
+    // `twec play3d`), then raised an error (web3d-M0). Since web3d-M6
+    // every 2D call, widgets included, queues canvas commands, which the
+    // 3D HUD draws.
+    let src = "on render():
+    button((10, 10), (100, 30), \"Go\")
+";
     let tokens = lexer::lex(src).expect("lex");
     let program = parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
     eval::run_top_level(&mut env, &program).expect("top-level");
-    let err = eval::render_frame3d(&mut env).expect_err("2D draw in 3D should error");
+    eval::render_frame3d(&mut env).expect("a widget draws in 3D");
     assert!(
-        err.message.contains("2D drawing call"),
-        "got: {}",
-        err.message
+        env.draw2d.iter().any(|c| matches!(c, twec::draw2d::Draw2d::Text { text, .. } if text == "Go")),
+        "{:?}",
+        env.draw2d
     );
 }
 
@@ -3448,7 +3450,8 @@ fn render_frame_2d_runs_top_level_render_into_draw_commands() {
     assert!(matches!(&cmds[0], Draw2d::Rect { w, h, .. } if *w == 640.0 && *h == 480.0));
     assert!(matches!(&cmds[1], Draw2d::Text { text, font: None, .. } if text == "hi"));
     // Without macroquad every 2D primitive queues a command (the kernel
-    // canvas draws them, M6 session 2); UI widgets still refuse.
+    // canvas draws them, M6 session 2), and so do the UI widgets
+    // (session 3).
     let src = "on render():\n    circle((320, 240), 30, color.yellow)\n";
     let program = parser::parse(&lexer::lex(src).expect("lex")).expect("parse");
     let mut env = twec::value::Env::new();
@@ -3463,7 +3466,8 @@ fn render_frame_2d_runs_top_level_render_into_draw_commands() {
     twec::stdlib::install(&mut env);
     eval::run_top_level(&mut env, &program).expect("top-level");
     env.in_render = true;
-    assert!(eval::render_frame(&mut env).is_err(), "widgets wait for M6 session 5");
+    eval::render_frame(&mut env).expect("a widget draws without macroquad");
+    assert!(matches!(&env.draw2d[0], Draw2d::Rect { w, .. } if *w == 100.0));
 }
 
 /// web3d-M7 session 16: `light.environment(path, intensity)` sets the

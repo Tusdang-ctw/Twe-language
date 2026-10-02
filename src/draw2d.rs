@@ -317,3 +317,47 @@ pub fn replay_macroquad(cmds: &[Draw2d]) {
         }
     }
 }
+
+/// The built-in font (ProggyClean, MIT; macroquad's default too), parsed
+/// once. Text drawn without a font and [`measure_text`] use it.
+pub fn default_font() -> &'static fontdue::Font {
+    static FONT: std::sync::OnceLock<fontdue::Font> = std::sync::OnceLock::new();
+    FONT.get_or_init(|| {
+        fontdue::Font::from_bytes(
+            &include_bytes!("kernel/ProggyClean.ttf")[..],
+            fontdue::FontSettings::default(),
+        )
+        .expect("the bundled font parses")
+    })
+}
+
+/// A run of text's extent in the built-in font at `size` pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextSize {
+    /// Sum of the glyph advances.
+    pub width: f32,
+    /// From the lowest glyph bottom to the highest glyph top.
+    pub height: f32,
+    /// The highest glyph top above the baseline.
+    pub offset_y: f32,
+}
+
+/// Measure `text` as macroquad's `measure_text` did, so the UI widgets
+/// centre their labels on the same pixels. An empty string measures
+/// zero wide (and a meaningless height, as in macroquad).
+pub fn measure_text(text: &str, size: u16) -> TextSize {
+    let font = default_font();
+    let px = f32::from(size);
+    let (mut width, mut min_y, mut max_y) = (0.0, f32::MAX, f32::MIN);
+    for ch in text.chars() {
+        let m = font.metrics(ch, px);
+        width += m.advance_width;
+        min_y = f32::min(min_y, m.ymin as f32);
+        max_y = f32::max(max_y, m.height as f32 + m.ymin as f32);
+    }
+    TextSize {
+        width,
+        height: max_y - min_y,
+        offset_y: max_y,
+    }
+}

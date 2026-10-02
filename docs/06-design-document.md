@@ -919,7 +919,7 @@ handler; calling one elsewhere is a runtime error that points you at
 - **Coordinates** are the same 640×480 canvas as the 2D runtime, scaled to the window.
 - **`text`** positions `at` as the baseline, uses the bundled ProggyClean font unless given one (`text_with_font`), and accepts any value (non-strings display).
 - **Pictures match 2D.** The kernel draws a shape, glyph or sprite exactly as the 2D runtime does; `tests/canvas_2d.rs` compares them against reference frames.
-- **UI widgets and panels** (`button`, `label`, `slider`, `panel`, …) still raise an error in 3D. They move onto the kernel later in web3d-M6.
+- **UI widgets and panels** (`button`, `label`, `slider`, `panel`, …) work in 3D too since web3d-M6. They hit-test against `mouse.*`, which is in canvas units in both runtimes.
 
 ### 7.6 Input
 
@@ -1539,6 +1539,8 @@ settings.save(dir + "/settings.json")
 ```twe
 screenshot("screenshot.png")   # saves current frame; also bound to F12 in twec play
 ```
+
+*web3d-M6:* `twec play` saves the frame at the canvas's own 640×480, whatever the window size. Its window is resizable, and the canvas scales to fit with black bars (letterboxed). `TWE_CAPTURE=N:path` saves frame `N` with fixed timing and no input, then exits; the M6 reference frames are made this way.
 
 ### 7.18 Steam  *(optional — requires `--features steam` build)*
 

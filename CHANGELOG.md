@@ -16,6 +16,8 @@ removal would be load-bearing.
 - **2D drawing goes through one command list** (web3d-M6). Drawing calls add commands that the runtime draws after the frame's render code, in call order. Scripts see no difference. 2D games and the 3D HUD now share it.
 - **`TWE_CAPTURE=N:path`** makes `twec play` save frame `N` as a PNG and exit, with fixed timing and no input.
 - **The 3D HUD draws every 2D drawing call** (web3d-M6): `circle`, `circle_outline`, `rect_outline`, `line`, sprites and atlas frames, `text_with_font` and `tilemap_render`, as well as `rect` and `text`. They used to raise an error in 3D. UI widgets and panels still do.
+- **`twec play` runs on the kernel** (web3d-M6), and so do shipped builds. The window is resizable, with the 640×480 canvas letterboxed, and text is sharp on high-DPI screens. Input goes through the same per-tick command stream as 3D, so 2D replays record paused frames too. `TWE_PLAYER=macroquad` runs the old player until it is removed.
+- **UI widgets and panels work in 3D** and without macroquad: `button`, `slider`, `text_input` and the rest draw over a 3D scene.
 - **The kernel has a 2D renderer** that draws the same pixels as the 2D runtime. Across 31 examples, the mean difference is at most 0.36 of 255.
 
 ### Added (benchmark)

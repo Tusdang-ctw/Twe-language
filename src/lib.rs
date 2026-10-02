@@ -161,5 +161,10 @@ pub mod host3d;
 pub mod soak;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play3d;
+// web3d-M6: the native 2D shell (winit + the kernel canvas).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod play2d;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod native_audio;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_visual;

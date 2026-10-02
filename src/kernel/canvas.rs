@@ -36,9 +36,6 @@ use crate::kernel::render::{AssetKind, AssetReady, AssetSource};
 pub const CANVAS_W: f32 = 640.0;
 pub const CANVAS_H: f32 = 480.0;
 
-/// The built-in font (macroquad's default too). MIT, see
-/// `ProggyClean.LICENSE.txt`.
-const DEFAULT_FONT: &[u8] = include_bytes!("ProggyClean.ttf");
 const ATLAS_SIZE: u32 = 1024;
 /// The solid white block, top-left of the atlas.
 const SOLID: u32 = 4;
@@ -79,6 +76,9 @@ fn fs_canvas(in: VOut) -> @location(0) vec4<f32> {
     return c;
 }
 "#;
+
+/// One draw list and the camera it is drawn under.
+pub type Layer<'a> = (&'a [Draw2d], Option<Camera2d>);
 
 /// A `camera2d` view: the world point at the canvas centre, and zoom.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -274,8 +274,7 @@ impl Canvas {
         };
         let vertex_capacity = 6 * 1024;
         let vertex_buffer = vertex_buffer(device, vertex_capacity);
-        let font = fontdue::Font::from_bytes(DEFAULT_FONT, fontdue::FontSettings::default())
-            .expect("the bundled font parses");
+        let font = crate::draw2d::default_font().clone();
         Canvas {
             pipeline,
             layout,
@@ -373,14 +372,28 @@ impl Canvas {
         height: u32,
         assets: &mut dyn AssetSource,
     ) {
-        self.layout_frame(queue, items, camera, width as f32, height as f32, assets);
+        self.prepare_layers(device, queue, &[(items, camera)], width, height, assets);
+    }
+
+    /// [`Canvas::prepare`] for several lists, drawn in order, each under
+    /// its own camera (a 2D game's frame, then the shell's overlay).
+    pub fn prepare_layers(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layers: &[Layer<'_>],
+        width: u32,
+        height: u32,
+        assets: &mut dyn AssetSource,
+    ) {
+        self.layout_frame(queue, layers, width as f32, height as f32, assets);
         if self.atlas.full {
             // A glyph didn't fit: start the atlas over and lay out again.
             self.atlas.glyphs.clear();
             self.atlas.x = SOLID + 1;
             self.atlas.y = 0;
             self.atlas.row = SOLID;
-            self.layout_frame(queue, items, camera, width as f32, height as f32, assets);
+            self.layout_frame(queue, layers, width as f32, height as f32, assets);
             if self.atlas.full {
                 log_error("2D canvas: this frame's text doesn't fit the glyph atlas");
             }
@@ -409,8 +422,21 @@ impl Canvas {
         height: u32,
         assets: &mut dyn AssetSource,
     ) {
+        self.prepare_layers_loaded(device, queue, &[(items, camera)], width, height, assets);
+    }
+
+    /// [`Canvas::prepare_layers`], loading what the frame needs first.
+    pub fn prepare_layers_loaded(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layers: &[Layer<'_>],
+        width: u32,
+        height: u32,
+        assets: &mut dyn AssetSource,
+    ) {
         for _ in 0..4 {
-            self.prepare(device, queue, items, camera, width, height, assets);
+            self.prepare_layers(device, queue, layers, width, height, assets);
             if !self.pending() {
                 return;
             }
@@ -552,8 +578,7 @@ impl Canvas {
     fn layout_frame(
         &mut self,
         queue: &wgpu::Queue,
-        items: &[Draw2d],
-        camera: Option<Camera2d>,
+        layers: &[Layer<'_>],
         width: f32,
         height: f32,
         assets: &mut dyn AssetSource,
@@ -564,7 +589,7 @@ impl Canvas {
             batches: std::mem::take(&mut self.batches),
             bind: Bind::Atlas,
             batch_start: 0,
-            map: Map::new(camera, width, height),
+            map: Map::new(None, width, height),
         };
         out.vertices.clear();
         out.batches.clear();
@@ -578,159 +603,162 @@ impl Canvas {
             ]
         };
         let white = [solid_uv[0], solid_uv[1]];
-        for item in items {
-            match item {
-                Draw2d::Rect { x, y, w, h, color } => {
-                    out.set_bind(Bind::Atlas);
-                    out.quad([*x, *y], [x + w, y + h], solid_uv, *color);
-                }
-                Draw2d::RectLines {
-                    x,
-                    y,
-                    w,
-                    h,
-                    thickness,
-                    color,
-                } => {
-                    // macroquad's outline: an inner rectangle inset by
-                    // half the thickness, joined to the outer one.
-                    out.set_bind(Bind::Atlas);
-                    let t = thickness / 2.0;
-                    let v = [
-                        [*x, *y],
-                        [x + w, *y],
-                        [x + w, y + h],
-                        [*x, y + h],
-                        [x + t, y + t],
-                        [x + w - t, y + t],
-                        [x + w - t, y + h - t],
-                        [x + t, y + h - t],
-                    ];
-                    const IDX: [usize; 24] = [
-                        0, 1, 4, 1, 4, 5, 1, 5, 6, 1, 2, 6, 3, 7, 2, 2, 7, 6, 0, 4, 3, 3, 4, 7,
-                    ];
-                    for tri in IDX.chunks(3) {
-                        out.tri([v[tri[0]], v[tri[1]], v[tri[2]]], white, *color);
+        for (items, camera) in layers {
+            out.map.camera = *camera;
+            for item in items.iter() {
+                match item {
+                    Draw2d::Rect { x, y, w, h, color } => {
+                        out.set_bind(Bind::Atlas);
+                        out.quad([*x, *y], [x + w, y + h], solid_uv, *color);
                     }
-                }
-                Draw2d::Circle { x, y, r, color } => {
-                    out.set_bind(Bind::Atlas);
-                    const SIDES: usize = 20;
-                    let at = |i: usize| {
-                        let a = i as f32 / SIDES as f32 * std::f32::consts::TAU;
-                        [x + r * a.cos(), y + r * a.sin()]
-                    };
-                    for i in 0..SIDES {
-                        out.tri([[*x, *y], at(i), at(i + 1)], white, *color);
+                    Draw2d::RectLines {
+                        x,
+                        y,
+                        w,
+                        h,
+                        thickness,
+                        color,
+                    } => {
+                        // macroquad's outline: an inner rectangle inset by
+                        // half the thickness, joined to the outer one.
+                        out.set_bind(Bind::Atlas);
+                        let t = thickness / 2.0;
+                        let v = [
+                            [*x, *y],
+                            [x + w, *y],
+                            [x + w, y + h],
+                            [*x, y + h],
+                            [x + t, y + t],
+                            [x + w - t, y + t],
+                            [x + w - t, y + h - t],
+                            [x + t, y + h - t],
+                        ];
+                        const IDX: [usize; 24] = [
+                            0, 1, 4, 1, 4, 5, 1, 5, 6, 1, 2, 6, 3, 7, 2, 2, 7, 6, 0, 4, 3, 3, 4, 7,
+                        ];
+                        for tri in IDX.chunks(3) {
+                            out.tri([v[tri[0]], v[tri[1]], v[tri[2]]], white, *color);
+                        }
                     }
-                }
-                Draw2d::CircleLines {
-                    x,
-                    y,
-                    r,
-                    thickness,
-                    color,
-                } => {
-                    out.set_bind(Bind::Atlas);
-                    const SIDES: usize = 30;
-                    let span = std::f32::consts::TAU / SIDES as f32;
-                    let at = |angle: f32, radius: f32| {
-                        [x + radius * angle.cos(), y + radius * angle.sin()]
-                    };
-                    for i in 0..SIDES {
-                        let (a0, a1) = (i as f32 * span, i as f32 * span + span);
+                    Draw2d::Circle { x, y, r, color } => {
+                        out.set_bind(Bind::Atlas);
+                        const SIDES: usize = 20;
+                        let at = |i: usize| {
+                            let a = i as f32 / SIDES as f32 * std::f32::consts::TAU;
+                            [x + r * a.cos(), y + r * a.sin()]
+                        };
+                        for i in 0..SIDES {
+                            out.tri([[*x, *y], at(i), at(i + 1)], white, *color);
+                        }
+                    }
+                    Draw2d::CircleLines {
+                        x,
+                        y,
+                        r,
+                        thickness,
+                        color,
+                    } => {
+                        out.set_bind(Bind::Atlas);
+                        const SIDES: usize = 30;
+                        let span = std::f32::consts::TAU / SIDES as f32;
+                        let at = |angle: f32, radius: f32| {
+                            [x + radius * angle.cos(), y + radius * angle.sin()]
+                        };
+                        for i in 0..SIDES {
+                            let (a0, a1) = (i as f32 * span, i as f32 * span + span);
+                            let p = [
+                                at(a0, *r),
+                                at(a0, r + thickness),
+                                at(a1, *r),
+                                at(a1, r + thickness),
+                            ];
+                            out.tri([p[0], p[1], p[2]], white, *color);
+                            out.tri([p[2], p[1], p[3]], white, *color);
+                        }
+                    }
+                    Draw2d::Line {
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        thickness,
+                        color,
+                    } => {
+                        let (nx, ny) = (-(y2 - y1), x2 - x1);
+                        let tlen = (nx * nx + ny * ny).sqrt() / (thickness * 0.5);
+                        if tlen < f32::EPSILON {
+                            continue;
+                        }
+                        out.set_bind(Bind::Atlas);
+                        let (tx, ty) = (nx / tlen, ny / tlen);
                         let p = [
-                            at(a0, *r),
-                            at(a0, r + thickness),
-                            at(a1, *r),
-                            at(a1, r + thickness),
+                            [x1 + tx, y1 + ty],
+                            [x1 - tx, y1 - ty],
+                            [x2 + tx, y2 + ty],
+                            [x2 - tx, y2 - ty],
                         ];
                         out.tri([p[0], p[1], p[2]], white, *color);
                         out.tri([p[2], p[1], p[3]], white, *color);
                     }
-                }
-                Draw2d::Line {
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    thickness,
-                    color,
-                } => {
-                    let (nx, ny) = (-(y2 - y1), x2 - x1);
-                    let tlen = (nx * nx + ny * ny).sqrt() / (thickness * 0.5);
-                    if tlen < f32::EPSILON {
-                        continue;
-                    }
-                    out.set_bind(Bind::Atlas);
-                    let (tx, ty) = (nx / tlen, ny / tlen);
-                    let p = [
-                        [x1 + tx, y1 + ty],
-                        [x1 - tx, y1 - ty],
-                        [x2 + tx, y2 + ty],
-                        [x2 - tx, y2 - ty],
-                    ];
-                    out.tri([p[0], p[1], p[2]], white, *color);
-                    out.tri([p[2], p[1], p[3]], white, *color);
-                }
-                Draw2d::Text {
-                    text,
-                    x,
-                    y,
-                    size,
-                    color,
-                    font,
-                } => {
-                    let Some(font) = self.font(font.as_deref(), assets) else {
-                        continue;
-                    };
-                    // macroquad truncates the size to whole pixels; the
-                    // glyphs are rasterised at the target's scale so
-                    // they stay sharp when the canvas is scaled up.
-                    let px = (*size as u16).max(1);
-                    let raster = ((f32::from(px) * out.map.scale[1]).round() as u16).max(1);
-                    let k = f32::from(px) / f32::from(raster);
-                    out.set_bind(Bind::Atlas);
-                    let mut pen = *x;
-                    for ch in text.chars() {
-                        let Some(g) = self.glyph(queue, font, raster, ch) else {
-                            break;
+                    Draw2d::Text {
+                        text,
+                        x,
+                        y,
+                        size,
+                        color,
+                        font,
+                    } => {
+                        let Some(font) = self.font(font.as_deref(), assets) else {
+                            continue;
                         };
-                        if g.width > 0.0 && g.height > 0.0 {
-                            let x0 = pen + g.xmin * k;
-                            let y0 = y - (g.height + g.ymin) * k;
-                            out.quad(
-                                [x0, y0],
-                                [x0 + g.width * k, y0 + g.height * k],
-                                g.uv,
-                                *color,
-                            );
+                        // macroquad truncates the size to whole pixels; the
+                        // glyphs are rasterised at the target's scale so
+                        // they stay sharp when the canvas is scaled up.
+                        let px = (*size as u16).max(1);
+                        let raster = ((f32::from(px) * out.map.scale[1]).round() as u16).max(1);
+                        let k = f32::from(px) / f32::from(raster);
+                        out.set_bind(Bind::Atlas);
+                        let mut pen = *x;
+                        for ch in text.chars() {
+                            let Some(g) = self.glyph(queue, font, raster, ch) else {
+                                break;
+                            };
+                            if g.width > 0.0 && g.height > 0.0 {
+                                let x0 = pen + g.xmin * k;
+                                let y0 = y - (g.height + g.ymin) * k;
+                                out.quad(
+                                    [x0, y0],
+                                    [x0 + g.width * k, y0 + g.height * k],
+                                    g.uv,
+                                    *color,
+                                );
+                            }
+                            pen += g.advance * k;
                         }
-                        pen += g.advance * k;
                     }
-                }
-                Draw2d::Texture {
-                    path,
-                    x,
-                    y,
-                    dest,
-                    source,
-                    tint,
-                } => {
-                    let Some(index) = self.image(path, assets) else {
-                        continue;
-                    };
-                    let (iw, ih) = (self.images[index].width, self.images[index].height);
-                    let src = source.unwrap_or([0.0, 0.0, iw, ih]);
-                    let [dw, dh] = dest.unwrap_or([src[2], src[3]]);
-                    let uv = [
-                        src[0] / iw,
-                        src[1] / ih,
-                        (src[0] + src[2]) / iw,
-                        (src[1] + src[3]) / ih,
-                    ];
-                    out.set_bind(Bind::Image(index));
-                    out.quad([*x, *y], [x + dw, y + dh], uv, *tint);
+                    Draw2d::Texture {
+                        path,
+                        x,
+                        y,
+                        dest,
+                        source,
+                        tint,
+                    } => {
+                        let Some(index) = self.image(path, assets) else {
+                            continue;
+                        };
+                        let (iw, ih) = (self.images[index].width, self.images[index].height);
+                        let src = source.unwrap_or([0.0, 0.0, iw, ih]);
+                        let [dw, dh] = dest.unwrap_or([src[2], src[3]]);
+                        let uv = [
+                            src[0] / iw,
+                            src[1] / ih,
+                            (src[0] + src[2]) / iw,
+                            (src[1] + src[3]) / ih,
+                        ];
+                        out.set_bind(Bind::Image(index));
+                        out.quad([*x, *y], [x + dw, y + dh], uv, *tint);
+                    }
                 }
             }
         }
@@ -1038,7 +1066,7 @@ impl Offscreen {
 }
 
 /// Copy an RGBA8 texture back to the CPU, rows unpadded.
-fn read_texture(
+pub(crate) fn read_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
