@@ -11,6 +11,8 @@ const USAGE: &str = "usage: twec [run [--frames N] <file> | \
      build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] <project_dir> | \
      bundle [-o PATH] <project_dir> | \
      info <bundle-or-exe> | \
+     asset info [--json] <file.glb|.gltf|.png|.jpg|.hdr|.ktx2> | \
+     asset transcode [-o out.glb] <file.glb|.gltf>  (needs --features asset-tools) | \
      verify [--warn-deprecated] <file> | \
      grammar [--format gbnf|json-schema|ebnf] [-o PATH] | \
      stdlib [--json] [--category NAME] [-o PATH] | \
@@ -72,6 +74,11 @@ pub fn run() {
         "build" => process::exit(handle_build(&args[2..])),
         "bundle" => process::exit(handle_bundle(&args[2..])),
         "info" => process::exit(handle_info(&args[2..])),
+        // web3d-M9 session 1: inspect a glTF/glb or image asset —
+        // structure, materials + extensions, textures, skins, morph
+        // targets, compression schemes, and a VRAM estimate vs the
+        // 512 MiB budget. `--json` for Studio / LLM consumers.
+        "asset" => process::exit(handle_asset(&args[2..])),
         "verify" => process::exit(handle_verify(&args[2..])),
         // Phase 33 session 1: portable grammar export — the LLM
         // contract surface. `twec grammar --format gbnf` produces a
@@ -451,6 +458,135 @@ fn handle_info(args: &[String]) -> i32 {
     }
     let path = path.expect("non-empty args + no flags ⇒ at least one positional");
     crate::build::run_info(std::path::Path::new(path))
+}
+
+/// web3d-M9 session 1: `twec asset info [--json] <file>`. Inspects a
+/// glTF/glb or a standalone image and reports structure + a VRAM
+/// estimate against the 512 MiB budget, flagging the compression and
+/// material features the runtime does not yet load. Exit code is 1
+/// when the asset is over the VRAM budget (a CI-useful signal), 2 on
+/// a usage / read error.
+fn handle_asset(args: &[String]) -> i32 {
+    let sub = args.first().map(|s| s.as_str());
+    match sub {
+        Some("info") => {}
+        Some("transcode") => return handle_asset_transcode(&args[1..]),
+        Some(other) => {
+            eprintln!("error: unknown `asset` subcommand '{other}' (expected: info | transcode)");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+        None => {
+            eprintln!("error: `twec asset` requires a subcommand (info | transcode)");
+            eprintln!("{USAGE}");
+            return 2;
+        }
+    }
+    let mut json = false;
+    let mut path: Option<&str> = None;
+    for a in &args[1..] {
+        match a.as_str() {
+            "--json" => json = true,
+            s if s.starts_with('-') => {
+                eprintln!("error: unknown flag for `asset info`: {a}");
+                eprintln!("{USAGE}");
+                return 2;
+            }
+            _ => {
+                if path.is_some() {
+                    eprintln!("error: `twec asset info` takes one path");
+                    return 2;
+                }
+                path = Some(a.as_str());
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("error: `twec asset info` requires a file path");
+        eprintln!("{USAGE}");
+        return 2;
+    };
+    match crate::asset_info::inspect(std::path::Path::new(path)) {
+        Ok(report) => {
+            if json {
+                println!("{}", report.to_json());
+            } else {
+                print!("{}", report.to_text());
+            }
+            if report.vram.over_budget() {
+                1
+            } else {
+                0
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
+/// web3d-M9 sessions 5-7: `twec asset transcode <in> [-o out]`. Decodes
+/// the glTF compression extensions into a plain `.glb`. Needs the
+/// `asset-tools` feature (the decoder crates are off the default build).
+#[cfg(feature = "asset-tools")]
+fn handle_asset_transcode(args: &[String]) -> i32 {
+    let mut input: Option<&str> = None;
+    let mut out: Option<String> = None;
+    let mut i = 0; // the caller already sliced off "transcode"
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--out" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: -o takes a path");
+                    return 2;
+                }
+                out = Some(args[i + 1].clone());
+                i += 2;
+            }
+            s if s.starts_with('-') => {
+                eprintln!("error: unknown flag for `asset transcode`: {s}");
+                return 2;
+            }
+            s => {
+                if input.is_some() {
+                    eprintln!("error: `asset transcode` takes one input path");
+                    return 2;
+                }
+                input = Some(s);
+                i += 1;
+            }
+        }
+    }
+    let Some(input) = input else {
+        eprintln!("error: `twec asset transcode` requires an input file");
+        return 2;
+    };
+    let in_path = std::path::Path::new(input);
+    let out_path = out.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        in_path.with_extension("").with_extension("transcoded.glb")
+    });
+    match crate::asset_transcode::transcode(in_path, &out_path) {
+        Ok(report) => {
+            println!("{} -> {}", input, out_path.display());
+            println!("  {}", report.summary());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+#[cfg(not(feature = "asset-tools"))]
+fn handle_asset_transcode(_args: &[String]) -> i32 {
+    eprintln!(
+        "error: `twec asset transcode` needs the `asset-tools` feature \
+         (build with `cargo build --features asset-tools`). The compression \
+         decoders are kept off the default build so the runtime stays pure-Rust."
+    );
+    2
 }
 
 /// `twec verify <file>` — Phase 13 session 8. Tier 3 LLM-facing

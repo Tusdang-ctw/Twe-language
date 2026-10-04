@@ -601,6 +601,64 @@ pub fn validate_project(project: &DiscoveredProject) -> Result<crate::ast::Progr
 
 /// `twec build` CLI entry. Returns the process exit code (0 on
 /// success, 2 on argument errors, 1 on build errors).
+/// web3d-M9 session 8: inspect each bundled glTF / image asset and
+/// return human-readable warnings — the total estimated VRAM against
+/// the 512 MiB budget, and any compression extensions the runtime does
+/// not load (pointing at `twec asset transcode`). Warnings only; the
+/// build proceeds regardless.
+pub fn audit_assets(project: &DiscoveredProject) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut total_vram: u64 = 0;
+    let mut needs_transcode = false;
+    for asset in &project.assets {
+        let ext = asset
+            .abs
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "glb" | "gltf" | "png" | "jpg" | "jpeg" | "hdr" | "ktx2") {
+            continue;
+        }
+        // Catch compression even when the strict loader rejects the file
+        // (a Draco document doesn't parse at all).
+        for ext in crate::asset_info::compression_extensions(&asset.abs) {
+            needs_transcode = true;
+            warnings.push(format!("{}: uses {ext} — not loadable by the runtime", asset.bundle_key));
+        }
+        let Ok(report) = crate::asset_info::inspect(&asset.abs) else {
+            continue;
+        };
+        total_vram += report.vram.total_bytes;
+        for gap in &report.gaps {
+            needs_transcode = true;
+            warnings.push(format!("{}: {gap}", asset.bundle_key));
+        }
+    }
+    if needs_transcode {
+        warnings.push(
+            "some assets use compression the runtime can't load — run `twec asset transcode <file>` \
+             (needs --features asset-tools) to emit a plain .glb"
+                .to_string(),
+        );
+    }
+    let budget = crate::asset_info::VRAM_BUDGET_BYTES;
+    if total_vram > budget {
+        warnings.push(format!(
+            "estimated texture+geometry VRAM {:.0} MiB exceeds the {} MiB budget",
+            total_vram as f64 / (1024.0 * 1024.0),
+            budget / (1024 * 1024)
+        ));
+    } else if total_vram > 0 {
+        warnings.push(format!(
+            "asset VRAM estimate: {:.0} MiB / {} MiB budget",
+            total_vram as f64 / (1024.0 * 1024.0),
+            budget / (1024 * 1024)
+        ));
+    }
+    warnings
+}
+
 pub fn run(mut args: BuildArgs) -> i32 {
     let project = match discover_project(&args.project_dir) {
         Ok(p) => p,
@@ -612,6 +670,12 @@ pub fn run(mut args: BuildArgs) -> i32 {
     if let Err(e) = validate_project(&project) {
         eprintln!("error: {e}");
         return 1;
+    }
+    // web3d-M9 session 8: audit bundled assets for VRAM budget + the
+    // compression extensions the runtime can't load. Warnings only —
+    // never fails the build.
+    for line in audit_assets(&project) {
+        eprintln!("[twec build] {line}");
     }
     // Phase 12 session 5: parse `twe.toml` if it exists; manifest
     // defaults for `target` / `config` apply only when the CLI

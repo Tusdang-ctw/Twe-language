@@ -35,6 +35,30 @@ fn temp_project(name: &str) -> PathBuf {
 }
 
 #[test]
+fn audit_warns_about_draco_and_vram() {
+    // web3d-M9 session 8: the build audit flags a compressed asset the
+    // runtime can't load, and reports a VRAM estimate.
+    let dir = temp_project("audit_draco");
+    fs::write(dir.join("main.twe"), "print(\"hi\")\n").unwrap();
+    fs::create_dir_all(dir.join("assets")).unwrap();
+    fs::copy(
+        "examples/assets/compressed/Box_draco.gltf",
+        dir.join("assets/model.gltf"),
+    )
+    .unwrap();
+    let project = discover_project(&dir).expect("discover");
+    let warnings = twec::build::audit_assets(&project);
+    assert!(
+        warnings.iter().any(|w| w.contains("KHR_draco_mesh_compression")),
+        "flags the Draco asset: {warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("transcode")),
+        "points at the transcode tool: {warnings:?}"
+    );
+}
+
+#[test]
 fn discover_finds_main_and_walks_assets() {
     let dir = temp_project("discover_basic");
     fs::write(dir.join("main.twe"), "print(\"hi\")\n").unwrap();

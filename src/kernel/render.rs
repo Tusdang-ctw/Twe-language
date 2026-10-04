@@ -560,7 +560,7 @@ struct Material {
     xf: array<vec4<f32>, 18>,
     // web3d-M7: glTF extension parameters and the extension slot of each
     // texture role (kernel/material.rs `MaterialUniform`).
-    ext: array<vec4<f32>, 6>,
+    ext: array<vec4<f32>, 7>,
     roles: array<vec4<f32>, 3>,
 };
 @group(1) @binding(0) var<uniform> material: Material;
@@ -968,12 +968,17 @@ struct Surface {
     thickness: f32,
     attenuation_color: vec3<f32>,
     attenuation_distance: f32,
+    // web3d-M9 s4: KHR_materials_anisotropy. Signed strength in [-1,1]
+    // and the anisotropy tangent direction in world space (the minor-
+    // roughness axis). 0 strength ⇒ the isotropic path.
+    anisotropy: f32,
+    aniso_t: vec3<f32>,
 };
 
 // A surface without extension layers (the plain surface and `visual`
 // materials).
 fn surface_plain(albedo: vec3<f32>, metallic: f32, roughness: f32, n: vec3<f32>, occlusion: f32, emissive: vec3<f32>) -> Surface {
-    return Surface(albedo, metallic, roughness, n, occlusion, emissive, vec3<f32>(0.04), 1.0, 0.0, 0.0, n, vec3<f32>(0.0), 0.0, 0.0, 1.3, 0.0, 0.0, 1.5, 0.0, vec3<f32>(1.0), 0.0);
+    return Surface(albedo, metallic, roughness, n, occlusion, emissive, vec3<f32>(0.04), 1.0, 0.0, 0.0, n, vec3<f32>(0.0), 0.0, 0.0, 1.3, 0.0, 0.0, 1.5, 0.0, vec3<f32>(1.0), 0.0, 0.0, vec3<f32>(1.0, 0.0, 0.0));
 }
 
 fn d_ggx(noh: f32, a: f32) -> f32 {
@@ -987,6 +992,26 @@ fn v_smith_ggx_correlated(nov: f32, nol: f32, a: f32) -> f32 {
     let gv = nol * sqrt(nov * nov * (1.0 - a2) + a2);
     let gl = nov * sqrt(nol * nol * (1.0 - a2) + a2);
     return 0.5 / max(gv + gl, 1e-5);
+}
+
+// web3d-M9 s4: anisotropic GGX (Filament / Khronos glTF Sample Viewer).
+// `at` / `ab` are the GGX alpha along the tangent and bitangent.
+fn d_ggx_aniso(noh: f32, toh: f32, boh: f32, at: f32, ab: f32) -> f32 {
+    let a2 = at * ab;
+    let d = vec3<f32>(ab * toh, at * boh, a2 * noh);
+    let d2 = dot(d, d);
+    let w2 = a2 / max(d2, 1e-10);
+    return a2 * w2 * w2 / PI;
+}
+
+fn v_smith_ggx_aniso(
+    nov: f32, nol: f32,
+    tov: f32, bov: f32, tol: f32, bol: f32,
+    at: f32, ab: f32,
+) -> f32 {
+    let lv = nol * length(vec3<f32>(at * tov, ab * bov, nov));
+    let ll = nov * length(vec3<f32>(at * tol, ab * bol, nol));
+    return 0.5 / max(lv + ll, 1e-5);
 }
 
 fn f_schlick(f0: vec3<f32>, voh: f32) -> vec3<f32> {
@@ -1118,6 +1143,13 @@ struct Lobes {
     cc_nov: f32,
     cc_a: f32,
     cc_atten: f32,
+    // web3d-M9 s4: anisotropy — signed strength, the GGX alpha along the
+    // tangent / bitangent, and the world-space anisotropy frame.
+    aniso: f32,
+    at: f32,
+    ab: f32,
+    aniso_t: vec3<f32>,
+    aniso_b: vec3<f32>,
 };
 
 // One light's reflected radiance: the base layer (Lambert + GGX, with
@@ -1133,7 +1165,22 @@ fn surface_light(p: Lobes, l: vec3<f32>, radiance: vec3<f32>) -> vec3<f32> {
         if (p.irid_w > 0.0) {
             f = mix(f, p.irid, p.irid_w);
         }
-        let spec = d_ggx(noh, p.a) * v_smith_ggx_correlated(p.nov, nol, p.a) * f * p.energy;
+        // web3d-M9 s4: the anisotropic specular lobe when the material
+        // has anisotropy; the isotropic GGX otherwise.
+        var spec_scalar: f32;
+        if (p.aniso > 0.0) {
+            let toh = dot(p.aniso_t, h);
+            let boh = dot(p.aniso_b, h);
+            let tov = dot(p.aniso_t, p.v);
+            let bov = dot(p.aniso_b, p.v);
+            let tol = dot(p.aniso_t, l);
+            let bol = dot(p.aniso_b, l);
+            spec_scalar = d_ggx_aniso(noh, toh, boh, p.at, p.ab)
+                * v_smith_ggx_aniso(p.nov, nol, tov, bov, tol, bol, p.at, p.ab);
+        } else {
+            spec_scalar = d_ggx(noh, p.a) * v_smith_ggx_correlated(p.nov, nol, p.a);
+        }
+        let spec = spec_scalar * f * p.energy;
         // Light the specular lobe reflects doesn't reach the diffuse
         // layer (glTF's fresnel_mix; web3d-M7 follow-up).
         out = (p.diffuse_color * (vec3<f32>(1.0) - f) / PI + spec) * (nol * PI);
@@ -1215,6 +1262,13 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     p.v = v;
     p.nov = nov;
     p.a = roughness * roughness;
+    // web3d-M9 s4: anisotropy stretches the GGX alpha along the tangent
+    // (grain) direction. 0 strength keeps at == ab == a (isotropic).
+    p.aniso = s.anisotropy;
+    p.at = clamp(p.a * (1.0 + s.anisotropy), 1e-4, 1.0);
+    p.ab = clamp(p.a * (1.0 - s.anisotropy), 1e-4, 1.0);
+    p.aniso_t = s.aniso_t;
+    p.aniso_b = cross(n, s.aniso_t);
     p.f0 = mix(s.specular_f0, s.albedo, s.metallic);
     p.f90 = mix(s.specular_f90, 1.0, s.metallic);
     p.diffuse_color = s.albedo * (1.0 - s.metallic);
@@ -1281,7 +1335,16 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
     var irradiance: vec3<f32>;
     var cc_light = vec3<f32>(0.0);
     if (env.params.z > 0.5) {
-        let r = reflect(-v, n);
+        // web3d-M9 s4: anisotropy bends the reflected direction toward
+        // the anisotropy frame (the harness scenes are environment-lit,
+        // so this is where the anisotropic highlight shows).
+        var rn = n;
+        if (p.aniso > 0.0) {
+            let at_v = cross(p.aniso_b, v);
+            let an = cross(at_v, p.aniso_b);
+            rn = normalize(mix(n, an, p.aniso));
+        }
+        let r = reflect(-v, rn);
         let prefiltered = textureSampleLevel(t_env_specular, s_env, r, env_lod(roughness)).rgb;
         let spec_ao = clamp(pow(nov + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
         irradiance = textureSampleLevel(t_env_specular, s_env, n, env.params.y).rgb * env.params.x;
@@ -1514,6 +1577,20 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> SurfaceOut {
     if (material.roles[2].z >= 0.0) {
         s.iridescence_thickness = mix(film.x, film.y, ext_texel(ext, 10u).g);
     }
+    // web3d-M9 s4: KHR_materials_anisotropy. ext[6] = (strength, cos,
+    // sin). The optional texture (rg) rotates the direction and (b)
+    // scales the strength. The frame uses the base-layer tangent/
+    // bitangent built above.
+    let aniso = material.ext[6];
+    s.anisotropy = aniso.x;
+    var adir = vec2<f32>(aniso.y, aniso.z);
+    if (material.roles[2].w >= 0.0) {
+        let atex = ext_texel(ext, 11u);
+        let td = normalize(atex.rg * 2.0 - 1.0);
+        adir = vec2<f32>(adir.x * td.x - adir.y * td.y, adir.y * td.x + adir.x * td.y);
+        s.anisotropy = s.anisotropy * atex.b;
+    }
+    s.aniso_t = normalize(t * adir.x + b * adir.y);
     // web3d-M7: coverage for the transparent pass (the opaque passes
     // don't blend, so it's ignored there): a glTF BLEND material's
     // alpha, else the draw's tint alpha.
@@ -2880,6 +2957,10 @@ struct GpuMesh {
     /// frame from the active animation clip. When `None`, the
     /// shared `identity_joints_bind_group` is used at slot 3.
     skin: Option<MeshSkin>,
+    /// web3d-M9 session 2: CPU morph data. When `Some`, the mesh's
+    /// vertex buffer is `COPY_DST` and the per-frame update re-blends
+    /// `base + Σ wᵢ·deltaᵢ` and writes it whenever the weights change.
+    morph: Option<MorphData>,
 }
 
 /// web3d-M7: a glTF primitive's index range and material.
@@ -2980,6 +3061,133 @@ enum AnimProperty {
 enum AnimValues {
     Vec3(Vec<[f32; 3]>),
     Vec4(Vec<[f32; 4]>),
+}
+
+/// web3d-M9 session 2: one morph target's per-vertex deltas, aligned
+/// to the flattened vertex buffer (upload order). For unskinned meshes
+/// the deltas are pre-transformed by the node's world matrix (as a
+/// direction, since a delta is a displacement), matching the baked
+/// base positions; skinned meshes keep mesh-local deltas.
+#[derive(Clone, Debug, Default)]
+struct MorphTargetDeltas {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    tangents: Vec<[f32; 3]>,
+}
+
+/// web3d-M9 session 2: a morph-weight animation track (one weight per
+/// target per keyframe). Sampled like a TRS channel — linear between
+/// bracketing keyframes.
+#[derive(Clone, Debug)]
+struct MorphTrack {
+    times: Vec<f32>,
+    /// One `Vec<f32>` of length `num_targets` per keyframe.
+    weights: Vec<Vec<f32>>,
+}
+
+/// web3d-M9 session 2: CPU morph data retained for a morphing mesh.
+/// The blended vertices are recomputed on the CPU each frame whenever
+/// the weights change and written into the mesh's vertex buffer, so
+/// every pipeline variant (lit / depth / shadow / AO) picks up the
+/// morphed geometry with no shader change. Morph deltas apply in
+/// mesh-local space *before* skinning, which is the glTF order.
+///
+/// Scope (M9 s2): per-mesh weights (one weight set per mesh asset, not
+/// per instance), and the weight track of the first morphing node in
+/// the document. Per-instance morph weights and per-node morph routing
+/// are a documented follow-on.
+struct MorphData {
+    base: Vec<Vertex>,
+    targets: Vec<MorphTargetDeltas>,
+    default_weights: Vec<f32>,
+    tracks: HashMap<String, MorphTrack>,
+    /// The weights the vertex buffer currently reflects; an empty vec
+    /// forces a re-blend on first use.
+    last_weights: Vec<f32>,
+}
+
+/// One morph target's raw (position, normal, tangent) delta vectors as
+/// read from the glTF accessors, before alignment into `MorphCpu`.
+type MorphRawTarget = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 3]>);
+
+/// CPU-only morph data produced by the loader, before GPU upload.
+#[derive(Default)]
+struct MorphCpu {
+    targets: Vec<MorphTargetDeltas>,
+    default_weights: Vec<f32>,
+    tracks: HashMap<String, MorphTrack>,
+}
+
+/// Sample a morph-weight track at `t` (linear between keyframes,
+/// clamped at the ends), returning one weight per target. Falls back
+/// to `default` when the clip has no morph track.
+fn sample_morph_weights(
+    tracks: &HashMap<String, MorphTrack>,
+    clip: &str,
+    t: f32,
+    default: &[f32],
+) -> Vec<f32> {
+    let Some(track) = tracks.get(clip) else {
+        return default.to_vec();
+    };
+    if track.times.is_empty() || track.weights.is_empty() {
+        return default.to_vec();
+    }
+    // Loop within the track's own span so morph animation matches the
+    // skinned-clip looping behaviour.
+    let span = *track.times.last().unwrap();
+    let tt = if span > 0.0 { t.rem_euclid(span) } else { 0.0 };
+    // Find the bracketing keyframes.
+    let mut hi = track.times.len() - 1;
+    for (i, &time) in track.times.iter().enumerate() {
+        if time >= tt {
+            hi = i;
+            break;
+        }
+    }
+    if hi == 0 {
+        return track.weights[0].clone();
+    }
+    let lo = hi - 1;
+    let (t0, t1) = (track.times[lo], track.times[hi]);
+    let f = if t1 > t0 { (tt - t0) / (t1 - t0) } else { 0.0 };
+    let (w0, w1) = (&track.weights[lo], &track.weights[hi]);
+    let n = w0.len().min(w1.len());
+    (0..n).map(|i| w0[i] + (w1[i] - w0[i]) * f).collect()
+}
+
+/// Blend morph targets into the base vertices: `out = base + Σ wᵢ·deltaᵢ`
+/// for position, normal and tangent. Pure — unit-tested without a GPU.
+fn blend_morph(base: &[Vertex], targets: &[MorphTargetDeltas], weights: &[f32]) -> Vec<Vertex> {
+    let mut out = base.to_vec();
+    for (t, target) in targets.iter().enumerate() {
+        let w = weights.get(t).copied().unwrap_or(0.0);
+        if w == 0.0 {
+            continue;
+        }
+        for (vi, v) in out.iter_mut().enumerate() {
+            if let Some(d) = target.positions.get(vi) {
+                v.position = [
+                    v.position[0] + w * d[0],
+                    v.position[1] + w * d[1],
+                    v.position[2] + w * d[2],
+                ];
+            }
+            if let Some(d) = target.normals.get(vi) {
+                v.normal = [
+                    v.normal[0] + w * d[0],
+                    v.normal[1] + w * d[1],
+                    v.normal[2] + w * d[2],
+                ];
+            }
+            if let Some(d) = target.tangents.get(vi) {
+                v.tangent[0] += w * d[0];
+                v.tangent[1] += w * d[1];
+                v.tangent[2] += w * d[2];
+            }
+        }
+    }
+    out
 }
 
 impl Renderer {
@@ -3911,6 +4119,12 @@ impl LoadedGlb {
     /// web3d-M7: a sphere around every vertex (bounding-box centre, then
     /// the farthest vertex), in the model's own units. The graphics
     /// harness places cameras and clip planes with it.
+    /// web3d-M9: the flattened vertex count (used by the transcode
+    /// tests to confirm decoded geometry matches its uncompressed twin).
+    pub fn vertex_count(&self) -> usize {
+        self.0.vertices.len()
+    }
+
     pub fn bounding_sphere(&self) -> ([f32; 3], f32) {
         let verts = &self.0.vertices;
         if verts.is_empty() {
@@ -3951,6 +4165,9 @@ struct GlbData {
     materials: Vec<MaterialData>,
     images: Vec<ImageData>,
     skin: Option<LoadedSkinData>,
+    /// web3d-M9 session 2: morph-target deltas + weight tracks, when
+    /// the model has any. `None` for the common no-morph case.
+    morph: Option<MorphCpu>,
 }
 
 /// web3d-M7: one glTF primitive's range of `GlbData::indices`.
@@ -3994,6 +4211,7 @@ pub fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
         materials,
         images: images.iter().map(ImageData::from_gltf).collect(),
         skin: None,
+        morph: None,
     };
 
     // Use the default scene if present, otherwise scene 0.
@@ -4002,8 +4220,14 @@ pub fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
         .or_else(|| doc.scenes().next())
         .ok_or_else(|| "glb has no scenes".to_string())?;
 
+    // web3d-M9 session 3: build the combined multi-skin joint layout
+    // before flattening, so each skinned primitive can offset its
+    // JOINTS_0 into the right skin's slice.
+    let (joint_node_indices, inverse_bind_matrices, skin_bases) =
+        build_combined_skins(&doc, &buffers);
+
     for node in scene.nodes() {
-        flatten_node(&node, mat4_identity(), &buffers, &mut out);
+        flatten_node(&node, mat4_identity(), &skin_bases, &buffers, &mut out);
     }
 
     // Phase 5 fallback: if the document has meshes but no scene
@@ -4016,44 +4240,158 @@ pub fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
             .primitives()
             .next()
             .ok_or_else(|| "first mesh has no primitives".to_string())?;
-        flatten_primitive(&primitive, mat4_identity(), false, &buffers, &mut out);
+        flatten_primitive(&primitive, mat4_identity(), false, 0, &buffers, &mut out);
     }
 
     if out.vertices.is_empty() {
         return Err("glb has zero vertices across all primitives".to_string());
     }
 
-    // Phase 24: extract skin + animation data, if any. We pick the
-    // first skin referenced anywhere in the document; multi-skin
-    // documents are rare in practice and outside MVP scope.
-    out.skin = extract_skin_data(&doc, &buffers, &scene);
+    // Phase 24 / web3d-M9 s3: extract skin + animation data from the
+    // combined multi-skin joint layout.
+    out.skin = extract_skin_data(
+        &doc,
+        &buffers,
+        &scene,
+        joint_node_indices,
+        inverse_bind_matrices,
+    );
+
+    // web3d-M9 session 2: if the model has morph targets, fill in the
+    // default weights (glTF `mesh.weights`) and any morph-weight
+    // animation tracks (the channels `extract_skin_data` skips).
+    if let Some(m) = out.morph.as_mut() {
+        let num_targets = m.targets.len();
+        m.default_weights = doc
+            .meshes()
+            .find_map(|mesh| mesh.weights().map(|w| w.to_vec()))
+            .map(|mut w| {
+                w.resize(num_targets, 0.0);
+                w
+            })
+            .unwrap_or_else(|| vec![0.0; num_targets]);
+        m.tracks = extract_morph_tracks(&doc, &buffers, num_targets);
+    }
+
     Ok(LoadedGlb(Box::new(out)))
+}
+
+/// web3d-M9 session 2: build morph-weight animation tracks (the
+/// `MorphTargetWeights` channels `extract_skin_data` skips). Keyed by
+/// clip name like the skin clips, so the active `mesh_anim` clip drives
+/// morph weights too. Scope: the first morph-weight channel per
+/// animation (one morphing node per document — the common case).
+fn extract_morph_tracks(
+    doc: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+    num_targets: usize,
+) -> HashMap<String, MorphTrack> {
+    let mut tracks = HashMap::new();
+    if num_targets == 0 {
+        return tracks;
+    }
+    for (i, anim) in doc.animations().enumerate() {
+        let name = anim
+            .name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("anim_{i}"));
+        for chan in anim.channels() {
+            if !matches!(
+                chan.target().property(),
+                gltf::animation::Property::MorphTargetWeights
+            ) {
+                continue;
+            }
+            let reader = chan.reader(|b| Some(&buffers[b.index()]));
+            let Some(times) = reader.read_inputs().map(|it| it.collect::<Vec<f32>>()) else {
+                continue;
+            };
+            let flat: Vec<f32> = match reader.read_outputs() {
+                Some(gltf::animation::util::ReadOutputs::MorphTargetWeights(w)) => {
+                    w.into_f32().collect()
+                }
+                _ => continue,
+            };
+            // The output is `keyframes × num_targets` flattened.
+            let weights: Vec<Vec<f32>> = flat
+                .chunks(num_targets)
+                .map(|c| {
+                    let mut v = c.to_vec();
+                    v.resize(num_targets, 0.0);
+                    v
+                })
+                .collect();
+            if !times.is_empty() && times.len() == weights.len() {
+                tracks.insert(name.clone(), MorphTrack { times, weights });
+            }
+            break; // first morph channel per animation
+        }
+    }
+    tracks
 }
 
 /// Phase 24: extract skin + animation channels from the document.
 /// Returns `None` for unskinned glb files (the common case for
 /// static props / level geometry). When `Some`, the caller pairs
 /// this with a per-mesh joint UBO in `MeshSkin`.
+/// web3d-M9 session 3: multi-skin. All of the document's skins are
+/// concatenated into one joint array; skin `s` occupies
+/// `[base[s], base[s] + joints_s)`. Returns the combined joint-node
+/// indices, the combined inverse-bind matrices, and `base[s]` per glTF
+/// skin index (used by `flatten_primitive` to offset each skinned
+/// primitive's `JOINTS_0` into the combined array). The total is capped
+/// at `MAX_JOINTS`; a skin that would overflow the cap is dropped (its
+/// primitives then render unskinned) and a warning is logged — multi-
+/// character scenes within 128 joints are the supported case.
+fn build_combined_skins(
+    doc: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> (Vec<usize>, Vec<[[f32; 4]; 4]>, Vec<u16>) {
+    let mut joint_node_indices: Vec<usize> = Vec::new();
+    let mut inverse_bind_matrices: Vec<[[f32; 4]; 4]> = Vec::new();
+    let mut bases: Vec<u16> = Vec::with_capacity(doc.skins().count());
+    for skin in doc.skins() {
+        let nodes: Vec<usize> = skin.joints().map(|n| n.index()).collect();
+        let base = joint_node_indices.len();
+        if nodes.is_empty() || base + nodes.len() > MAX_JOINTS {
+            if base + nodes.len() > MAX_JOINTS {
+                eprintln!(
+                    "[twe-kernel] skin {} dropped: {} + {} joints exceeds MAX_JOINTS ({MAX_JOINTS})",
+                    skin.index(),
+                    base,
+                    nodes.len()
+                );
+            }
+            // Record a base anyway so skin indices stay aligned; its
+            // primitives fall back to the previous base (0 offset).
+            bases.push(0);
+            continue;
+        }
+        let reader = skin.reader(|b| Some(&buffers[b.index()]));
+        let mut ibm: Vec<[[f32; 4]; 4]> = match reader.read_inverse_bind_matrices() {
+            Some(it) => it.collect(),
+            None => vec![mat4_identity(); nodes.len()],
+        };
+        if ibm.len() != nodes.len() {
+            ibm = vec![mat4_identity(); nodes.len()];
+        }
+        bases.push(base as u16);
+        joint_node_indices.extend(nodes);
+        inverse_bind_matrices.extend(ibm);
+    }
+    (joint_node_indices, inverse_bind_matrices, bases)
+}
+
 fn extract_skin_data(
     doc: &gltf::Document,
     buffers: &[gltf::buffer::Data],
     scene: &gltf::Scene<'_>,
+    joint_node_indices: Vec<usize>,
+    inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
 ) -> Option<LoadedSkinData> {
-    let skin = doc.skins().next()?;
-    let joint_node_indices: Vec<usize> = skin.joints().map(|n| n.index()).collect();
     if joint_node_indices.is_empty() {
         return None;
     }
-    let reader = skin.reader(|b| Some(&buffers[b.index()]));
-    let inverse_bind_matrices: Vec<[[f32; 4]; 4]> = match reader.read_inverse_bind_matrices() {
-        Some(it) => it.collect(),
-        None => vec![mat4_identity(); joint_node_indices.len()],
-    };
-    let inverse_bind_matrices = if inverse_bind_matrices.len() == joint_node_indices.len() {
-        inverse_bind_matrices
-    } else {
-        vec![mat4_identity(); joint_node_indices.len()]
-    };
 
     // Capture all nodes' rest-pose TRS + child indices. We index
     // by node index, so any animation channel can target any node
@@ -4695,19 +5033,26 @@ fn apply_clip(trs: &mut [([f32; 3], [f32; 4], [f32; 3])], clip: &AnimClip, t_cli
 fn flatten_node(
     node: &gltf::Node<'_>,
     parent_transform: [[f32; 4]; 4],
+    skin_bases: &[u16],
     buffers: &[gltf::buffer::Data],
     out: &mut GlbData,
 ) {
     let local = node.transform().matrix();
     let world = mat4_mul(parent_transform, local);
+    // web3d-M9 session 3: a node's primitives use its own skin; their
+    // JOINTS_0 are offset by that skin's base in the combined array.
+    let skin_base = node
+        .skin()
+        .and_then(|s| skin_bases.get(s.index()).copied())
+        .unwrap_or(0);
     let is_skinned = node.skin().is_some();
     if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
-            flatten_primitive(&primitive, world, is_skinned, buffers, out);
+            flatten_primitive(&primitive, world, is_skinned, skin_base, buffers, out);
         }
     }
     for child in node.children() {
-        flatten_node(&child, world, buffers, out);
+        flatten_node(&child, world, skin_bases, buffers, out);
     }
 }
 
@@ -4724,6 +5069,7 @@ fn flatten_primitive(
     primitive: &gltf::Primitive<'_>,
     world: [[f32; 4]; 4],
     is_skinned: bool,
+    skin_base: u16,
     buffers: &[gltf::buffer::Data],
     out: &mut GlbData,
 ) {
@@ -4768,11 +5114,22 @@ fn flatten_primitive(
         WHITE,
     );
     // Phase 24: JOINTS_0 / WEIGHTS_0, or the identity skin.
-    let joints = or_default(
+    // web3d-M9 session 3: offset each skinned vertex's joint indices by
+    // this primitive's skin base, so they index into the combined
+    // multi-skin joint array (clamped to the cap).
+    let mut joints = or_default(
         reader.read_joints(0).map(|i| i.into_u16().collect()),
         count,
         UNSKINNED_J,
     );
+    if is_skinned && skin_base > 0 {
+        let cap = (MAX_JOINTS - 1) as u16;
+        for j in &mut joints {
+            for c in j.iter_mut() {
+                *c = c.saturating_add(skin_base).min(cap);
+            }
+        }
+    }
     let weights = or_default(
         reader.read_weights(0).map(|i| i.into_f32().collect()),
         count,
@@ -4847,6 +5204,70 @@ fn flatten_primitive(
         count: out.indices.len() as u32 - first,
         material,
     });
+
+    // web3d-M9 session 2: morph targets. Read each target's POSITION /
+    // NORMAL / TANGENT deltas (indexed by original vertex), then emit
+    // them in the same order as the vertices above (`order`), world-
+    // transformed as directions for unskinned prims. Target slots are
+    // kept aligned to `out.vertices`: a morph slot is back-filled with
+    // zeros for any earlier vertices, and every slot is padded to the
+    // current vertex count at the end (so a non-morph primitive after a
+    // morph one, or a primitive with fewer targets, stays aligned).
+    let morph_raw: Vec<MorphRawTarget> = reader
+        .read_morph_targets()
+        .map(|(p, n, t)| {
+            (
+                p.map(|it| it.collect()).unwrap_or_default(),
+                n.map(|it| it.collect()).unwrap_or_default(),
+                t.map(|it| it.collect()).unwrap_or_default(),
+            )
+        })
+        .collect();
+    let num_targets = morph_raw.len();
+    if num_targets > 0 {
+        let prev_total = base_index as usize;
+        let m = out.morph.get_or_insert_with(MorphCpu::default);
+        while m.targets.len() < num_targets {
+            m.targets.push(MorphTargetDeltas {
+                positions: vec![[0.0; 3]; prev_total],
+                normals: vec![[0.0; 3]; prev_total],
+                tangents: vec![[0.0; 3]; prev_total],
+            });
+        }
+        let xf = |d: [f32; 3]| -> [f32; 3] {
+            if is_skinned {
+                d
+            } else {
+                mat4_transform_dir(world, d)
+            }
+        };
+        for (t, slot) in m.targets.iter_mut().enumerate() {
+            for &i in &order {
+                let (dp, dn, dt) = if t < num_targets {
+                    let raw = &morph_raw[t];
+                    (
+                        xf(raw.0.get(i).copied().unwrap_or([0.0; 3])),
+                        xf(raw.1.get(i).copied().unwrap_or([0.0; 3])),
+                        xf(raw.2.get(i).copied().unwrap_or([0.0; 3])),
+                    )
+                } else {
+                    ([0.0; 3], [0.0; 3], [0.0; 3])
+                };
+                slot.positions.push(dp);
+                slot.normals.push(dn);
+                slot.tangents.push(dt);
+            }
+        }
+    }
+    // Keep all existing morph slots aligned to the full vertex buffer.
+    if let Some(m) = out.morph.as_mut() {
+        let total = out.vertices.len();
+        for slot in &mut m.targets {
+            slot.positions.resize(total, [0.0; 3]);
+            slot.normals.resize(total, [0.0; 3]);
+            slot.tangents.resize(total, [0.0; 3]);
+        }
+    }
 }
 
 /// Phase 28 session 5: GPU-upload portion of mesh load, split out
@@ -4869,11 +5290,19 @@ fn upload_loaded_glb(
         materials,
         images,
         skin: skin_data,
+        morph: morph_cpu,
     } = *loaded.0;
+    // web3d-M9 session 2: a morphing mesh re-uploads its vertices each
+    // time the weights change, so its buffer needs COPY_DST.
+    let vertex_usage = if morph_cpu.is_some() {
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
+    } else {
+        wgpu::BufferUsages::VERTEX
+    };
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("twec-play3d mesh vertices"),
         contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
+        usage: vertex_usage,
     });
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("twec-play3d mesh indices"),
@@ -4982,6 +5411,28 @@ fn upload_loaded_glb(
     if skin.is_some() {
         bound_radius *= 1.5;
     }
+    // web3d-M9 session 2: morph can push a vertex out by the sum of the
+    // per-target position-delta magnitudes; grow the bound by the worst
+    // case so a morphing mesh is not frustum-culled when it shouldn't be.
+    let morph = morph_cpu.map(|m| {
+        let mut extra: f32 = 0.0;
+        for slot in &m.targets {
+            let max_d = slot
+                .positions
+                .iter()
+                .map(|d| (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt())
+                .fold(0.0, f32::max);
+            extra += max_d;
+        }
+        bound_radius += extra;
+        MorphData {
+            base: vertices.clone(),
+            targets: m.targets,
+            default_weights: m.default_weights,
+            tracks: m.tracks,
+            last_weights: Vec::new(), // forces a blend on first use
+        }
+    });
     if bound_radius < 0.001 {
         bound_radius = 0.5; // fallback for empty / degenerate meshes
     }
@@ -4994,6 +5445,7 @@ fn upload_loaded_glb(
         index_format: wgpu::IndexFormat::Uint32,
         submeshes,
         skin,
+        morph,
     }
 }
 
@@ -5829,15 +6281,39 @@ impl Renderer {
                 Some(m) => m,
                 None => continue,
             };
-            let skin = match &gpu_mesh.skin {
-                Some(s) => s,
-                None => continue,
-            };
             let anim_state = (snap.anim)(mesh_id);
-            let joints_uniform = compute_skinned_joint_matrices(skin, &anim_state);
-            state
-                .queue
-                .write_buffer(&skin.joint_buffer, 0, bytemuck::bytes_of(&joints_uniform));
+            // Skinned meshes: rebuild the joint UBO from the active clip.
+            if let Some(skin) = &gpu_mesh.skin {
+                let joints_uniform = compute_skinned_joint_matrices(skin, &anim_state);
+                state
+                    .queue
+                    .write_buffer(&skin.joint_buffer, 0, bytemuck::bytes_of(&joints_uniform));
+            }
+            // web3d-M9 session 2: morphing meshes re-blend on the CPU
+            // and re-upload the vertex buffer when the weights change.
+            // The morph applies before skinning (glTF order), so a mesh
+            // can be both skinned and morphed.
+            if let Some(morph) = &gpu_mesh.morph {
+                let weights = sample_morph_weights(
+                    &morph.tracks,
+                    &anim_state.clip,
+                    anim_state.time,
+                    &morph.default_weights,
+                );
+                if weights != morph.last_weights {
+                    let blended = blend_morph(&morph.base, &morph.targets, &weights);
+                    state.queue.write_buffer(
+                        &gpu_mesh.vertex_buffer,
+                        0,
+                        bytemuck::cast_slice(&blended),
+                    );
+                    if let Some(m) = state.mesh_cache.get_mut(&mesh_id) {
+                        if let Some(md) = m.morph.as_mut() {
+                            md.last_weights = weights;
+                        }
+                    }
+                }
+            }
         }
 
         // web3d-M3: a pipeline per material used this frame, built on
@@ -8586,6 +9062,175 @@ mod tests {
         assert_eq!(vertices[0].position, [0.0, 0.0, 0.0]);
         assert_eq!(vertices[1].position, [1.0, 0.0, 0.0]);
         assert_eq!(vertices[2].position, [0.0, 1.0, 0.0]);
+    }
+
+    // web3d-M9 session 2: morph blend + weight sampling (pure, no GPU).
+    fn morph_vertex(pos: [f32; 3]) -> Vertex {
+        Vertex {
+            position: pos,
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            joints: UNSKINNED_J,
+            weights: UNSKINNED_W,
+            uv1: [0.0, 0.0],
+            tangent: NO_TANGENT,
+            color: WHITE,
+        }
+    }
+
+    #[test]
+    fn blend_morph_applies_weighted_deltas() {
+        let base = vec![morph_vertex([0.0, 0.0, 0.0]), morph_vertex([1.0, 0.0, 0.0])];
+        let targets = vec![MorphTargetDeltas {
+            positions: vec![[0.0, 2.0, 0.0], [0.0, 4.0, 0.0]],
+            normals: vec![[0.0; 3], [0.0; 3]],
+            tangents: vec![[0.0; 3], [0.0; 3]],
+        }];
+        // Half weight → half the delta.
+        let out = blend_morph(&base, &targets, &[0.5]);
+        assert_eq!(out[0].position, [0.0, 1.0, 0.0]);
+        assert_eq!(out[1].position, [1.0, 2.0, 0.0]);
+        // Zero weight → identity (and a fast path).
+        let out0 = blend_morph(&base, &targets, &[0.0]);
+        assert_eq!(out0[0].position, base[0].position);
+        assert_eq!(out0[1].position, base[1].position);
+    }
+
+    fn make_morph_glb() -> Vec<u8> {
+        // Triangle v0,v1,v2; morph target lifts v1 by +1 in Y; default
+        // weight 0.5; a "pulse" weights animation 0→1 over 1 s.
+        let pos: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let idx: [u32; 3] = [0, 1, 2];
+        let morph: [f32; 9] = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        let time: [f32; 2] = [0.0, 1.0];
+        let wts: [f32; 2] = [0.0, 1.0];
+        let mut bin = Vec::new();
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&pos));
+        bin.extend(bytemuck::cast_slice::<u32, u8>(&idx));
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&morph));
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&time));
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&wts));
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],"meshes":[{{"weights":[0.5],"primitives":[{{"attributes":{{"POSITION":0}},"indices":1,"targets":[{{"POSITION":2}}]}}]}}],"animations":[{{"name":"pulse","samplers":[{{"input":3,"output":4,"interpolation":"LINEAR"}}],"channels":[{{"sampler":0,"target":{{"node":0,"path":"weights"}}}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}},{{"bufferView":1,"componentType":5125,"count":3,"type":"SCALAR"}},{{"bufferView":2,"componentType":5126,"count":3,"type":"VEC3"}},{{"bufferView":3,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]}},{{"bufferView":4,"componentType":5126,"count":2,"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":12}},{{"buffer":0,"byteOffset":48,"byteLength":36}},{{"buffer":0,"byteOffset":84,"byteLength":8}},{{"buffer":0,"byteOffset":92,"byteLength":8}}],"buffers":[{{"byteLength":{}}}]}}"#,
+            bin.len()
+        );
+        let mut jb = json.into_bytes();
+        while !jb.len().is_multiple_of(4) {
+            jb.push(b' ');
+        }
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+        let total: u32 = 12 + 8 + jb.len() as u32 + 8 + bin.len() as u32;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&(jb.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"JSON");
+        out.extend_from_slice(&jb);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(&bin);
+        out
+    }
+
+    fn make_two_skin_glb() -> Vec<u8> {
+        // Two single-joint skins, two triangle meshes (A uses skin 0,
+        // B uses skin 1). Each vertex weights fully onto its skin's
+        // joint 0, so after combining, mesh B's JOINTS_0 must be 1.
+        let pos_a: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let pos_b: [f32; 9] = [2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0, 1.0, 0.0];
+        let idx: [u32; 3] = [0, 1, 2];
+        let joints: [u16; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let wts: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+        let ibm: [f32; 16] = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let mut bin = Vec::new();
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&pos_a));
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&pos_b));
+        bin.extend(bytemuck::cast_slice::<u32, u8>(&idx));
+        bin.extend(bytemuck::cast_slice::<u16, u8>(&joints));
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&wts));
+        bin.extend(bytemuck::cast_slice::<f32, u8>(&ibm));
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0,1,2,3]}}],"nodes":[{{"mesh":0,"skin":0}},{{"mesh":1,"skin":1}},{{"name":"jA"}},{{"name":"jB"}}],"skins":[{{"joints":[2],"inverseBindMatrices":5}},{{"joints":[3],"inverseBindMatrices":5}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":3,"WEIGHTS_0":4}},"indices":2}}]}},{{"primitives":[{{"attributes":{{"POSITION":1,"JOINTS_0":3,"WEIGHTS_0":4}},"indices":2}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}},{{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3","min":[2,0,0],"max":[3,1,0]}},{{"bufferView":2,"componentType":5125,"count":3,"type":"SCALAR"}},{{"bufferView":3,"componentType":5123,"count":3,"type":"VEC4"}},{{"bufferView":4,"componentType":5126,"count":3,"type":"VEC4"}},{{"bufferView":5,"componentType":5126,"count":1,"type":"MAT4"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":36}},{{"buffer":0,"byteOffset":72,"byteLength":12}},{{"buffer":0,"byteOffset":84,"byteLength":24}},{{"buffer":0,"byteOffset":108,"byteLength":48}},{{"buffer":0,"byteOffset":156,"byteLength":64}}],"buffers":[{{"byteLength":{}}}]}}"#,
+            bin.len()
+        );
+        let mut jb = json.into_bytes();
+        while !jb.len().is_multiple_of(4) {
+            jb.push(b' ');
+        }
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+        let total: u32 = 12 + 8 + jb.len() as u32 + 8 + bin.len() as u32;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&(jb.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"JSON");
+        out.extend_from_slice(&jb);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(&bin);
+        out
+    }
+
+    #[test]
+    fn parse_glb_combines_multiple_skins() {
+        let bytes = make_two_skin_glb();
+        let GlbData {
+            vertices, skin, ..
+        } = *parse_glb_bytes(&bytes).expect("decode").0;
+        let skin = skin.expect("combined skin");
+        // Both skins' joints are concatenated.
+        assert_eq!(skin.joint_node_indices, vec![2, 3]);
+        assert_eq!(skin.inverse_bind_matrices.len(), 2);
+        // Mesh A (first 3 vertices) stays at joint 0; mesh B (next 3)
+        // is offset into skin 1's slice → joint 1.
+        assert_eq!(vertices.len(), 6);
+        assert_eq!(vertices[0].joints[0], 0);
+        assert_eq!(vertices[3].joints[0], 1);
+    }
+
+    #[test]
+    fn parse_glb_captures_morph_targets_and_track() {
+        let bytes = make_morph_glb();
+        let GlbData { morph, .. } = *parse_glb_bytes(&bytes).expect("decode").0;
+        let m = morph.expect("morph captured");
+        assert_eq!(m.targets.len(), 1);
+        // v1's position delta lifts +1 in Y (unskinned ⇒ world identity here).
+        assert_eq!(m.targets[0].positions[1], [0.0, 1.0, 0.0]);
+        // Default weight from mesh.weights().
+        assert_eq!(m.default_weights, vec![0.5]);
+        // Weight track built from the "pulse" animation.
+        let track = m.tracks.get("pulse").expect("pulse track");
+        assert_eq!(track.times, vec![0.0, 1.0]);
+        assert_eq!(track.weights, vec![vec![0.0], vec![1.0]]);
+    }
+
+    #[test]
+    fn sample_morph_weights_interpolates_and_defaults() {
+        let mut tracks = HashMap::new();
+        tracks.insert(
+            "wave".to_string(),
+            MorphTrack {
+                times: vec![0.0, 1.0],
+                weights: vec![vec![0.0], vec![1.0]],
+            },
+        );
+        // Midpoint of the "wave" clip → 0.5.
+        let w = sample_morph_weights(&tracks, "wave", 0.5, &[0.0]);
+        assert!((w[0] - 0.5).abs() < 1e-6);
+        // Unknown clip → default weights.
+        let d = sample_morph_weights(&tracks, "idle", 0.5, &[0.25]);
+        assert_eq!(d, vec![0.25]);
+        // Loops within the track span.
+        let looped = sample_morph_weights(&tracks, "wave", 1.5, &[0.0]);
+        assert!((looped[0] - 0.5).abs() < 1e-6);
     }
 
     #[test]

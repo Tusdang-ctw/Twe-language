@@ -54,6 +54,7 @@ pub(crate) const ROLE_TRANSMISSION: usize = 7; // R
 pub(crate) const ROLE_THICKNESS: usize = 8; // G
 pub(crate) const ROLE_IRIDESCENCE: usize = 9; // R
 pub(crate) const ROLE_IRIDESCENCE_THICKNESS: usize = 10; // G
+pub(crate) const ROLE_ANISOTROPY: usize = 11; // RG = direction, B = strength (web3d-M9 s4)
 pub(crate) const ROLES: usize = 12;
 
 /// A glTF sampler, reduced to what wgpu needs.
@@ -136,6 +137,12 @@ pub(crate) struct Extensions {
     pub iridescence: f32,
     pub iridescence_ior: f32,
     pub iridescence_thickness: [f32; 2],
+    /// `KHR_materials_anisotropy` (web3d-M9 s4): strength in [0,1] and
+    /// the tangent-plane rotation (radians). An optional texture
+    /// (ROLE_ANISOTROPY) carries per-texel direction (rg) and strength
+    /// (b).
+    pub anisotropy_strength: f32,
+    pub anisotropy_rotation: f32,
     /// Which extension slot (0..4) each role samples, or -1.
     pub roles: [i32; ROLES],
 }
@@ -158,6 +165,8 @@ impl Default for Extensions {
             iridescence: 0.0,
             iridescence_ior: 1.3,
             iridescence_thickness: [100.0, 400.0],
+            anisotropy_strength: 0.0,
+            anisotropy_rotation: 0.0,
             roles: [-1; ROLES],
         }
     }
@@ -294,6 +303,12 @@ impl MaterialData {
                 [x.transmission, x.thickness, x.attenuation_distance, x.iridescence],
                 [x.attenuation_color[0], x.attenuation_color[1], x.attenuation_color[2], x.iridescence_ior],
                 [x.iridescence_thickness[0], x.iridescence_thickness[1], 0.0, 0.0],
+                [
+                    x.anisotropy_strength,
+                    x.anisotropy_rotation.cos(),
+                    x.anisotropy_rotation.sin(),
+                    0.0,
+                ],
             ],
             roles,
             base_color: self.base_color,
@@ -427,6 +442,13 @@ fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions,
         refs.extend(texture(e, "iridescenceTexture", false).map(|t| (ROLE_IRIDESCENCE, t.0)));
         refs.extend(texture(e, "iridescenceThicknessTexture", false).map(|t| (ROLE_IRIDESCENCE_THICKNESS, t.0)));
     }
+    // web3d-M9 s4: KHR_materials_anisotropy. The texture (linear) packs
+    // direction in rg and a per-texel strength multiplier in b.
+    if let Some(e) = all.get("KHR_materials_anisotropy") {
+        x.anisotropy_strength = num(e, "anisotropyStrength", 0.0);
+        x.anisotropy_rotation = num(e, "anisotropyRotation", 0.0);
+        refs.extend(texture(e, "anisotropyTexture", false).map(|t| (ROLE_ANISOTROPY, t.0)));
+    }
     for (role, t) in refs {
         let slot = match slots.iter().position(|s| s.is_some_and(|s| s.same_texels(&t))) {
             Some(i) => Some(i),
@@ -483,8 +505,9 @@ pub(crate) struct MaterialUniform {
     /// roughness), (specular colour, clearcoat normal scale), (sheen
     /// colour, sheen roughness), (transmission, thickness, attenuation
     /// distance, iridescence), (attenuation colour, iridescence IOR),
-    /// (iridescence thickness min, max, _, _).
-    pub ext: [[f32; 4]; 6],
+    /// (iridescence thickness min, max, _, _), (anisotropy strength,
+    /// rotation cos, rotation sin, _) — web3d-M9 s4.
+    pub ext: [[f32; 4]; 7],
     /// Extension slot per role (-1 = none), four roles per vec4.
     pub roles: [[f32; 4]; 3],
 }
@@ -768,9 +791,9 @@ mod tests {
         for i in 0..SLOTS {
             assert_eq!(u.xf[2 * i + 1], [1.0, 1.0, 0.0, 0.0], "slot {i} unused");
         }
-        // Four vec4 of factors, the transforms, six of extension
-        // parameters and three of texture roles.
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), (4 + 2 * SLOTS + 6 + 3) * 16);
+        // Four vec4 of factors, the transforms, seven of extension
+        // parameters (web3d-M9 s4 added anisotropy) and three of roles.
+        assert_eq!(std::mem::size_of::<MaterialUniform>(), (4 + 2 * SLOTS + 7 + 3) * 16);
         assert_eq!(u.ext[0], [1.5, 1.0, 0.0, 0.0], "IOR 1.5, full specular, no clearcoat");
         assert!(u.roles.iter().flatten().all(|r| *r == -1.0), "no extension textures");
     }
@@ -815,5 +838,29 @@ mod tests {
             assert!(data.slots[EXT + colour_slot as usize].unwrap().srgb);
         }
         assert!(!data.slots[EXT + x.roles[ROLE_CLEARCOAT] as usize].unwrap().srgb);
+    }
+
+    /// web3d-M9 s4: KHR_materials_anisotropy — strength, rotation, and
+    /// the direction texture's role + its packing into the uniform.
+    #[test]
+    fn anisotropy_extension_read_from_gltf() {
+        let json = r#"{"asset":{"version":"2.0"},
+            "images":[{"uri":"a.png"}],
+            "textures":[{"source":0}],
+            "materials":[{"extensions":{"KHR_materials_anisotropy":{
+                "anisotropyStrength":0.6,"anisotropyRotation":1.5707963,
+                "anisotropyTexture":{"index":0}}}}]}"#;
+        let gltf = gltf::Gltf::from_slice(json.as_bytes()).expect("parses");
+        let m = gltf.document.materials().next().expect("a material");
+        let data = MaterialData::from_gltf(&m, &gltf.document);
+        assert_eq!(data.ext.anisotropy_strength, 0.6);
+        assert!((data.ext.anisotropy_rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+        assert!(data.ext.roles[ROLE_ANISOTROPY] >= 0, "anisotropy texture assigned a slot");
+        // The uniform packs (strength, cos, sin) into ext[6]; rotation
+        // is ~90°, so cos≈0, sin≈1.
+        let u = data.uniform();
+        assert_eq!(u.ext[6][0], 0.6);
+        assert!(u.ext[6][1].abs() < 1e-4, "cos(90°)≈0");
+        assert!((u.ext[6][2] - 1.0).abs() < 1e-4, "sin(90°)≈1");
     }
 }

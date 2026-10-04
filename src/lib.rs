@@ -3,6 +3,15 @@
 // (stdlib manifest + keywords + tool versions) and supports
 // diffing two snapshots. Pure Rust, no platform deps.
 pub mod api_snapshot;
+// web3d-M9 session 1: `twec asset info <file>` — GPU-free glTF/image
+// inspector with a VRAM estimate against the 512 MiB budget. Reads
+// metadata only (no wgpu device), so it compiles everywhere.
+pub mod asset_info;
+// web3d-M9 sessions 5-7: build-time asset transcoding (Draco + meshopt
+// geometry, KTX2/Basis textures) → plain glb. Compiles only under the
+// `asset-tools` feature (the module is empty otherwise); its decoder
+// crates never reach the default runtime or the wasm build.
+pub mod asset_transcode;
 pub mod ast;
 pub mod ast_json;
 pub mod eval;

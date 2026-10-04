@@ -25,3 +25,9 @@
 
 # Default for everything else: let git auto-detect.
 * text=auto
+
+# web3d-M9: binary asset fixtures — never line-ending-convert or diff as text.
+*.glb binary
+*.bin binary
+*.ktx2 binary
+*.png binary

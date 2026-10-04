@@ -89,6 +89,13 @@ steam-net = ["steam"]
 # `twec llm-loop` and `twec bench` (blocking HTTPS through ureq). Off by
 # default: the language and engine never need a network client.
 llm-http = ["twe-llm/http"]
+# web3d-M9: build-time asset transcoding. `twec asset transcode`
+# decodes Draco + meshopt geometry and KTX2/Basis textures into a plain
+# `.glb` the runtime loads unchanged. These decoder crates compile ONLY
+# under this feature and are referenced only from `src/asset_transcode.rs`
+# (native, cli-side) — the default runtime and the wasm32 browser build
+# never see them, so the runtime stays pure-Rust and wasm-safe.
+asset-tools = ["dep:draco-gltf", "dep:meshopt", "dep:ktx2", "dep:basisu"]
 
 [dependencies.steamworks]
 version = "0.11"
@@ -102,6 +109,22 @@ optional = true
 # lets `cargo build --target wasm32-unknown-unknown` succeed without a
 # C toolchain configured for WASM. The corresponding modules are gated
 # with `#[cfg(not(target_arch = "wasm32"))]` in src/lib.rs.
+# web3d-M9: build-time asset transcoding decoders (asset-tools feature).
+# Native-only + optional: pulled in only by `twec asset transcode`,
+# never on the default runtime or wasm path.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.draco-gltf]
+version = "0.5"
+optional = true
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.meshopt]
+version = "0.6"
+optional = true
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.ktx2]
+version = "0.5"
+optional = true
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.basisu]
+version = "0.1"
+optional = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 winit = "0.30"
 # web3d-M4: sound in the native 3D shell (src/play3d.rs), which has no
