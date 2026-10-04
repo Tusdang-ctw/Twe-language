@@ -164,6 +164,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-10-04: 2D games reach the browser on the new engine.** Playing a Twe game in a web browser used to mean a second, separate build: the whole runtime recompiled as a macroquad game. That is gone. The browser now runs the same engine kernel as everything else, and `twec build --target web` ships a 2D game the same way it already shipped a 3D one. The page figures out which kind of game it is on its own — if the first frame draws a cube or a mesh it is 3D, otherwise it is 2D — so there is one build command for both. The live browser check waits for a session with the browser tools connected; the native window and the headless pixel tests already prove the 2D picture.
 
+- **2026-10-04: touch works on the real engine now.** The last pieces of the 2D toolkit — buttons, effects, lighting, tilemaps, panels — already drew through the new renderer. The one thing still tied to the old library was touch input, which only worked while the old 2D engine was running. Touch now flows through the same shared channel as keyboard and mouse: the window (desktop or browser) reports each finger, and the game's `touch` and virtual-joystick code reads it, whichever engine is drawing. A mobile demo that was dead on the new desktop player now shows its on-screen stick and finger count again.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

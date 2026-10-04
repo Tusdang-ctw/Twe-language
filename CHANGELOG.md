@@ -12,6 +12,9 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Changed (input)
+- **Touch is host-agnostic** (web3d-M6): `touch.*` and the `joystick` widget read a shell-fed state in canvas coordinates, so they work on `twec play` (winit), `twec play3d` and the browser, not only under macroquad. Browser touch events are wired through the canvas.
+
 ### Changed (web)
 - **`twec build --target web` builds 2D games too** (web3d-M6), on the one browser runtime (`twe-web`, WebGPU). The shell detects 2D vs 3D at startup and draws 2D through the kernel canvas. `--target wasm32` is now an alias of `--target web`.
 - **The macroquad browser build is removed.** The old `--target wasm32` recompiled the whole runtime as a macroquad game; the browser now always runs `twe-web`. Shipped web pages no longer carry `mq_js_bundle.js` or a per-game `game.wasm`.

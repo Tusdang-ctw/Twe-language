@@ -175,6 +175,9 @@ struct Shell {
     /// Input since the last tick, fed by the DOM listeners; each tick
     /// takes one command from it (`host3d::sim_tick`).
     input: Rc<RefCell<InputState>>,
+    /// Active touches by DOM identifier, in canvas coordinates
+    /// (web3d-M6). Fed to `touch.*` each frame.
+    touches: Rc<RefCell<std::collections::HashMap<i32, (f32, f32)>>>,
     audio: audio::WebAudio,
     /// Set by the first key press or click: browsers only let audio
     /// start after a user gesture.
@@ -248,6 +251,8 @@ async fn run() -> Result<(), String> {
     listen_keys(&window, input.clone(), gestured.clone())?;
     listen_focus(&window, &document, input.clone())?;
     listen_pointer(&canvas, input.clone(), gestured.clone())?;
+    let touches = Rc::new(RefCell::new(std::collections::HashMap::new()));
+    listen_touch(&canvas, touches.clone(), gestured.clone())?;
 
     let shell = Rc::new(RefCell::new(Shell {
         env,
@@ -256,6 +261,7 @@ async fn run() -> Result<(), String> {
         last_frame: now_secs(),
         accumulator: 0.0,
         input,
+        touches,
         audio: audio::WebAudio::default(),
         gestured,
         unlocked: false,
@@ -282,6 +288,7 @@ fn frame(shell: &mut Shell) {
             .as_ref()
             .map(|(buttons, axes)| (&buttons[..], *axes)),
     );
+    feed_touches(shell);
 
     shell.accumulator += dt;
     let tick_start = now_secs();
@@ -340,6 +347,7 @@ fn frame_2d(shell: &mut Shell) {
             .as_ref()
             .map(|(buttons, axes)| (&buttons[..], *axes)),
     );
+    feed_touches(shell);
     let tick_start = now_secs();
     let steps_before = shell.accumulator;
     {
@@ -388,6 +396,53 @@ fn frame_2d(shell: &mut Shell) {
         s.script_render_ms += script_render_ms;
         s.kernel_ms += kernel_ms;
     });
+}
+
+/// web3d-M6: hand the frame's touches to `touch.*` and tick the tap
+/// detector (both shells share the one host-agnostic touch state).
+fn feed_touches(shell: &Shell) {
+    let pts: Vec<(u64, f32, f32)> = shell
+        .touches
+        .borrow()
+        .iter()
+        .map(|(&id, &(x, y))| (id as u64, x, y))
+        .collect();
+    twec::stdlib::set_touches(&pts);
+    twec::stdlib::tick_touch_taps(now_secs());
+}
+
+/// web3d-M6: DOM touch events → the canvas-coordinate touch map. One
+/// handler for all four events rebuilds the map from `event.touches()`
+/// (the full active set), so start / move / end / cancel all land.
+fn listen_touch(
+    canvas: &web_sys::HtmlCanvasElement,
+    touches: Rc<RefCell<std::collections::HashMap<i32, (f32, f32)>>>,
+    gestured: Rc<std::cell::Cell<bool>>,
+) -> Result<(), String> {
+    let canvas_ref = canvas.clone();
+    let handler = Closure::<dyn FnMut(web_sys::TouchEvent)>::new(move |e: web_sys::TouchEvent| {
+        e.prevent_default();
+        gestured.set(true);
+        let rect = canvas_ref.get_bounding_client_rect();
+        let (rw, rh) = (rect.width().max(1.0), rect.height().max(1.0));
+        let list = e.touches();
+        let mut map = touches.borrow_mut();
+        map.clear();
+        for i in 0..list.length() {
+            if let Some(t) = list.item(i) {
+                let x = (f64::from(t.client_x()) - rect.left()) * f64::from(CANVAS_W) / rw;
+                let y = (f64::from(t.client_y()) - rect.top()) * f64::from(CANVAS_H) / rh;
+                map.insert(t.identifier(), (x as f32, y as f32));
+            }
+        }
+    });
+    for event in ["touchstart", "touchmove", "touchend", "touchcancel"] {
+        canvas
+            .add_event_listener_with_callback(event, handler.as_ref().unchecked_ref())
+            .map_err(|_| format!("{event} listener"))?;
+    }
+    handler.forget();
+    Ok(())
 }
 
 fn flush_output(env: &mut twec::value::Env) {

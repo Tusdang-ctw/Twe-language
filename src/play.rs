@@ -416,6 +416,14 @@ async fn run_loop(path: String) {
         // v1.0.2 Session 7: tap-event diff. Mirrored across every
         // `run_loop_*` variant; populates the sliding-window counter
         // `touch.tap_count()` reads.
+        // web3d-M6: feed the frame's touches to the host-agnostic
+        // state the `touch.*` builtins read (window is a fixed 640×480,
+        // so macroquad positions are already in canvas coordinates).
+        let mq_touches: Vec<(u64, f32, f32)> = macroquad::input::touches()
+            .iter()
+            .map(|t| (t.id, t.position.x, t.position.y))
+            .collect();
+        crate::stdlib::set_touches(&mq_touches);
         crate::stdlib::tick_touch_taps(macroquad::time::get_time());
         // web3d-M6: a capture advances exactly one tick per frame, so
         // frame N is the same picture on every machine.
@@ -919,6 +927,14 @@ async fn run_loop_embedded(source: String) {
         // Phase 29 session 4: replay hook (see run_loop for context).
         crate::replay::tick(&mut env);
         // v1.0.2 Session 7: tap-event diff (see run_loop for context).
+        // web3d-M6: feed the frame's touches to the host-agnostic
+        // state the `touch.*` builtins read (window is a fixed 640×480,
+        // so macroquad positions are already in canvas coordinates).
+        let mq_touches: Vec<(u64, f32, f32)> = macroquad::input::touches()
+            .iter()
+            .map(|t| (t.id, t.position.x, t.position.y))
+            .collect();
+        crate::stdlib::set_touches(&mq_touches);
         crate::stdlib::tick_touch_taps(macroquad::time::get_time());
         let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
         hud_record(frame_dt);

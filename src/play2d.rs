@@ -18,13 +18,15 @@
 //! surface), as macroquad blended, so pictures match the references in
 //! `tests/references/m6/`.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, KeyEvent, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -328,6 +330,8 @@ struct App {
     active: bool,
     /// Text typed since the last frame, for `text_input`.
     typed: String,
+    /// Active touches by id, in canvas coordinates (web3d-M6).
+    touches: HashMap<u64, (f32, f32)>,
     hud_visible: bool,
     hud_frames: VecDeque<f64>,
     screenshot_key: bool,
@@ -357,6 +361,7 @@ impl App {
             focused: true,
             active: false,
             typed: String::new(),
+            touches: HashMap::new(),
             hud_visible: false,
             hud_frames: VecDeque::with_capacity(HUD_HISTORY),
             screenshot_key: false,
@@ -435,6 +440,12 @@ impl App {
     /// Returns false when the game should end.
     fn frame(&mut self) -> bool {
         self.hot_reload();
+        let touches: Vec<(u64, f32, f32)> = self
+            .touches
+            .iter()
+            .map(|(&id, &(x, y))| (id, x, y))
+            .collect();
+        crate::stdlib::set_touches(&touches);
         crate::stdlib::tick_touch_taps(self.started_at.elapsed().as_secs_f64());
         if let Some(g) = self.gilrs.as_mut().filter(|_| self.capture.is_none()) {
             let pad = crate::play::read_first_pad(g);
@@ -577,6 +588,7 @@ impl ApplicationHandler for App {
                 | WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch { .. }
         );
         if input_event && self.capture.is_some() {
             return;
@@ -641,6 +653,23 @@ impl ApplicationHandler for App {
                     match state {
                         ElementState::Pressed => self.input.button_down(name),
                         ElementState::Released => self.input.button_up(name),
+                    }
+                }
+            }
+            WindowEvent::Touch(Touch {
+                phase,
+                location,
+                id,
+                ..
+            }) => {
+                self.active = true;
+                let (x, y) = self.to_canvas(location.x, location.y);
+                match phase {
+                    TouchPhase::Started | TouchPhase::Moved => {
+                        self.touches.insert(id, (x as f32, y as f32));
+                    }
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        self.touches.remove(&id);
                     }
                 }
             }

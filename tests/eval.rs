@@ -3140,11 +3140,31 @@ fn ui_widgets_draw_in_3d_without_macroquad() {
 
 #[test]
 fn touch_queries_are_inert_headless() {
-    // Headless runs have no macroquad window; touch queries report
+    // Headless runs have no shell feeding touches; touch queries report
     // "no touches" instead of panicking (examples/pixel_pop.twe).
+    twec::stdlib::set_touches(&[]);
     let out = run_program_str("print(touch.is_active())\nprint(touch.count())\n")
         .expect("touch queries should run headless");
     assert_eq!(out, "false\n0\n");
+}
+
+#[test]
+fn touch_state_reaches_the_touch_builtins() {
+    // web3d-M6: shells feed touches host-agnostically; the `touch.*`
+    // builtins read whatever the current shell set (canvas coords).
+    twec::stdlib::set_touches(&[(7, 120.0, 240.0), (8, 300.0, 100.0)]);
+    let out = run_program_str(concat!(
+        "print(touch.is_active())\n",
+        "print(touch.count())\n",
+        "print(touch.x())\n",
+        "print(touch.y())\n",
+        "let p = touch.pointer(1)\n",
+        "print(p.id)\n",
+    ))
+    .expect("touch queries read the fed state");
+    // Primary touch is the first in the set; pointer(1) is the second.
+    assert_eq!(out, "true\n2\n120.0\n240.0\n8\n");
+    twec::stdlib::set_touches(&[]);
 }
 
 #[test]

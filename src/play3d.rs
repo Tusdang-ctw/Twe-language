@@ -41,7 +41,8 @@ use std::time::{Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{
-    DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent,
+    DeviceEvent, DeviceId, ElementState, KeyEvent, MouseButton, MouseScrollDelta, Touch,
+    TouchPhase, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -260,6 +261,8 @@ struct App {
     /// the last simulation tick; each tick takes one command from it
     /// (`host3d::sim_tick`).
     input: crate::host3d::InputState,
+    /// Active touches by id, in canvas coordinates (web3d-M6).
+    touches: std::collections::HashMap<u64, (f32, f32)>,
     /// Phase 29 session 1: fixed-timestep accumulator. Same Glenn
     /// Fiedler pattern as the 2D macroquad path in `src/play.rs`.
     /// We drain `eval::PHYSICS_DT`-sized slices through
@@ -287,6 +290,7 @@ impl App {
             path,
             last_mtime,
             input: crate::host3d::InputState::default(),
+            touches: std::collections::HashMap::new(),
             sim_accumulator: 0.0,
             exit_code: 0,
             audio: crate::native_audio::NativeAudio::default(),
@@ -394,8 +398,10 @@ impl ApplicationHandler for App {
                 // web3d-M4: in the HUD's 640×480 canvas units, as in 2D.
                 let size = state.window.inner_size();
                 self.input.mouse_move(
-                    position.x * f64::from(crate::kernel::canvas::CANVAS_W) / f64::from(size.width.max(1)),
-                    position.y * f64::from(crate::kernel::canvas::CANVAS_H) / f64::from(size.height.max(1)),
+                    position.x * f64::from(crate::kernel::canvas::CANVAS_W)
+                        / f64::from(size.width.max(1)),
+                    position.y * f64::from(crate::kernel::canvas::CANVAS_H)
+                        / f64::from(size.height.max(1)),
                 );
             }
             WindowEvent::MouseInput {
@@ -407,6 +413,28 @@ impl ApplicationHandler for App {
                     match btn_state {
                         ElementState::Pressed => self.input.button_down(name),
                         ElementState::Released => self.input.button_up(name),
+                    }
+                }
+            }
+            WindowEvent::Touch(Touch {
+                phase,
+                location,
+                id,
+                ..
+            }) => {
+                // web3d-M6: in the HUD's 640×480 canvas units, as the
+                // cursor is. Mobile-3D reads these through `touch.*`.
+                let size = state.window.inner_size();
+                let x = location.x * f64::from(crate::kernel::canvas::CANVAS_W)
+                    / f64::from(size.width.max(1));
+                let y = location.y * f64::from(crate::kernel::canvas::CANVAS_H)
+                    / f64::from(size.height.max(1));
+                match phase {
+                    TouchPhase::Started | TouchPhase::Moved => {
+                        self.touches.insert(id, (x as f32, y as f32));
+                    }
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        self.touches.remove(&id);
                     }
                 }
             }
@@ -461,6 +489,12 @@ impl ApplicationHandler for App {
                 // be a mobile target too (Phase 39 reference scene
                 // composes touch + virtual joystick); same hook as
                 // every `run_loop_*` in play.rs.
+                let touches: Vec<(u64, f32, f32)> = self
+                    .touches
+                    .iter()
+                    .map(|(&id, &(x, y))| (id, x, y))
+                    .collect();
+                crate::stdlib::set_touches(&touches);
                 crate::stdlib::tick_touch_taps(self.started_at.elapsed().as_secs_f64());
                 if let Some(g) = self.gilrs.as_mut() {
                     let pad = crate::play::read_first_pad(g);
@@ -491,7 +525,11 @@ impl ApplicationHandler for App {
                 while self.sim_accumulator >= crate::eval::PHYSICS_DT
                     && substeps < crate::eval::MAX_SUBSTEPS
                 {
-                    step_simulation_3d(&mut self.env, &mut self.input, crate::eval::PHYSICS_DT as f32);
+                    step_simulation_3d(
+                        &mut self.env,
+                        &mut self.input,
+                        crate::eval::PHYSICS_DT as f32,
+                    );
                     self.sim_accumulator -= crate::eval::PHYSICS_DT;
                     substeps += 1;
                 }

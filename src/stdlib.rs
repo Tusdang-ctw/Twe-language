@@ -359,12 +359,20 @@ pub fn install(env: &mut Env) {
     // web3d-M7: spot lights.
     light_fields.insert(
         "cone".to_string(),
-        Value::from_builtin("light.cone", &["handle", "direction", "angle"], light_cone_impl),
+        Value::from_builtin(
+            "light.cone",
+            &["handle", "direction", "angle"],
+            light_cone_impl,
+        ),
     );
     // web3d-M7: exponential height fog; density 0 turns it off.
     light_fields.insert(
         "fog".to_string(),
-        Value::from_builtin("light.fog", &["density", "falloff", "color"], light_fog_impl),
+        Value::from_builtin(
+            "light.fog",
+            &["density", "falloff", "color"],
+            light_fog_impl,
+        ),
     );
     // web3d-M7: light the fog per point (shafts, halos).
     light_fields.insert(
@@ -374,7 +382,11 @@ pub fn install(env: &mut Env) {
     // web3d-M7 session 16: image-based lighting from an HDR sky.
     light_fields.insert(
         "environment".to_string(),
-        Value::from_builtin("light.environment", &["path", "intensity"], light_environment_impl),
+        Value::from_builtin(
+            "light.environment",
+            &["path", "intensity"],
+            light_environment_impl,
+        ),
     );
     light_fields.insert(
         "clear".to_string(),
@@ -428,7 +440,11 @@ pub fn install(env: &mut Env) {
     );
     postfx_fields.insert(
         "auto_exposure".to_string(),
-        Value::from_builtin("postfx.auto_exposure", &["enabled"], postfx_auto_exposure_impl),
+        Value::from_builtin(
+            "postfx.auto_exposure",
+            &["enabled"],
+            postfx_auto_exposure_impl,
+        ),
     );
     postfx_fields.insert(
         "ao".to_string(),
@@ -1193,7 +1209,10 @@ pub fn point_lights_snapshot() -> Vec<crate::render3d_types::PointLightU> {
 fn with_light(handle: u32, f: impl FnOnce(&mut crate::render3d_types::PointLightU)) {
     POINT_LIGHTS.with(|s| {
         let mut lights = s.borrow_mut();
-        if let Some(slot) = (handle as usize).checked_sub(1).and_then(|i| lights.get_mut(i)) {
+        if let Some(slot) = (handle as usize)
+            .checked_sub(1)
+            .and_then(|i| lights.get_mut(i))
+        {
             f(slot);
         }
     });
@@ -1237,7 +1256,10 @@ pub fn auto_exposure_enabled() -> bool {
 /// web3d-M7: ambient occlusion intensity and radius (`postfx.ao`,
 /// `postfx.ao_radius`).
 pub fn ao_settings() -> (f32, f32) {
-    (AO_INTENSITY.with(|s| *s.borrow()), AO_RADIUS.with(|s| *s.borrow()))
+    (
+        AO_INTENSITY.with(|s| *s.borrow()),
+        AO_RADIUS.with(|s| *s.borrow()),
+    )
 }
 
 /// web3d-M7: height fog as (density, falloff, sRGB colour), if on.
@@ -3996,15 +4018,7 @@ fn install_touch(env: &mut Env) {
 /// (no touch hardware) this always returns false.
 fn touch_is_active(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "touch.is_active")?;
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let n = touches().len();
-        Ok(Value::from_bool(n > 0))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        Ok(Value::from_bool(false))
-    }
+    Ok(Value::from_bool(!touches().is_empty()))
 }
 
 /// X-coordinate of the primary (first active) touch in screen
@@ -4028,14 +4042,7 @@ fn touch_y(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// two-finger pinch, etc).
 fn touch_count(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "touch.count")?;
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Ok(Value::from_int(touches().len() as i64))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        Ok(Value::from_int(0))
-    }
+    Ok(Value::from_int(touches().len() as i64))
 }
 
 /// Returns `{x, y, id}` for the i-th active touch, or nil if i is
@@ -4052,19 +4059,16 @@ fn touch_pointer(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
             help: None,
         });
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let tlist = touches();
-        if let Some(t) = tlist.get(i as usize) {
-            let mut fields: HashMap<String, Value> = HashMap::new();
-            fields.insert("x".to_string(), Value::from_float(t.position.x as f64));
-            fields.insert("y".to_string(), Value::from_float(t.position.y as f64));
-            fields.insert("id".to_string(), Value::from_int(t.id as i64));
-            return Ok(Value::from_object(Rc::new(RefCell::new(Object {
-                fields,
-                kind: "touch",
-            }))));
-        }
+    let tlist = touches();
+    if let Some(t) = tlist.get(i as usize) {
+        let mut fields: HashMap<String, Value> = HashMap::new();
+        fields.insert("x".to_string(), Value::from_float(t.x as f64));
+        fields.insert("y".to_string(), Value::from_float(t.y as f64));
+        fields.insert("id".to_string(), Value::from_int(t.id as i64));
+        return Ok(Value::from_object(Rc::new(RefCell::new(Object {
+            fields,
+            kind: "touch",
+        }))));
     }
     Ok(Value::NIL)
 }
@@ -4124,17 +4128,10 @@ fn current_tap_count(now_s: f64) -> usize {
     TAP_HISTORY.with(|h| h.borrow().len())
 }
 
-/// Public play-loop entry point: diff macroquad's active touch set
-/// against the previous frame and update the tap counters. Called
-/// once per frame from every `run_loop_*` variant in `play.rs`. The
-/// `now_s` argument is monotonic seconds — the play loop already
-/// tracks it for the `time.*` namespace.
-///
-/// `macroquad::input::touches()` is a cross-platform API that
-/// returns an empty list on desktop (no touch hardware), the active
-/// touch set on mobile, and the browser's TouchEvent translations
-/// on WASM. The hook is target-agnostic so a single play loop
-/// definition handles every build target.
+/// Public play-loop entry point: diff the frame's active touch set
+/// (fed by the shell through [`set_touches`]) against the previous
+/// frame and update the tap counters. Called once per frame by every
+/// shell after it sets the touches. `now_s` is monotonic seconds.
 pub fn tick_touch_taps(now_s: f64) {
     let active: std::collections::HashSet<u64> = touches().iter().map(|t| t.id).collect();
     for id in &active {
@@ -4183,15 +4180,8 @@ pub(crate) fn __test_set_tap_now(t: Option<f64>) {
     TAP_NOW_OVERRIDE.with(|c| *c.borrow_mut() = t);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn touch_primary() -> Option<(f32, f32)> {
-    let tlist = touches();
-    tlist.first().map(|t| (t.position.x, t.position.y))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn touch_primary() -> Option<(f32, f32)> {
-    None
+    touches().first().map(|t| (t.x, t.y))
 }
 
 // ---------------------------------------------------------------
@@ -4771,8 +4761,8 @@ fn joystick_builtin(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     // window exists, and on the web build it reports real browser touches.
     let mut nearest: Option<(f64, f64, f64)> = None; // (dist, dx, dy)
     for t in touches() {
-        let dx = t.position.x as f64 - cx;
-        let dy = t.position.y as f64 - cy;
+        let dx = t.x as f64 - cx;
+        let dy = t.y as f64 - cy;
         let d = (dx * dx + dy * dy).sqrt();
         if d <= size {
             match nearest {
@@ -6928,7 +6918,9 @@ fn anim_handle(env: &mut Env, v: &Value, what: &str) -> Result<u32, RuntimeError
         return Ok(env.intern_mesh_path(&v.as_string()));
     }
     handle_int(v, what).map_err(|mut e| {
-        e.help = Some(format!("pass the mesh's path, e.g. `{what}(\"assets/hero.glb\", ...)`"));
+        e.help = Some(format!(
+            "pass the mesh's path, e.g. `{what}(\"assets/hero.glb\", ...)`"
+        ));
         e
     })
 }
@@ -9019,7 +9011,13 @@ fn draw_sprite_frame(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let (path, cols, rows) = atlas_handle(&args[0], "sprite_frame")?;
     let (x, y) = xy_of(&args[1], "sprite_frame.at")?;
     let frame = as_i64(&args[2], "sprite_frame.frame")?;
-    let r = atlas_source_rect(image_size(&path, "sprite_frame")?, cols, rows, frame, "sprite_frame")?;
+    let r = atlas_source_rect(
+        image_size(&path, "sprite_frame")?,
+        cols,
+        rows,
+        frame,
+        "sprite_frame",
+    )?;
     {
         crate::draw2d::texture(&mut env.draw2d, &path, x as f32, y as f32, None, Some(r));
     }
@@ -9035,7 +9033,13 @@ fn draw_sprite_frame_at(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
     let (x, y) = xy_of(&args[1], "sprite_frame_at.at")?;
     let (w, h) = xy_of(&args[2], "sprite_frame_at.size")?;
     let frame = as_i64(&args[3], "sprite_frame_at.frame")?;
-    let r = atlas_source_rect(image_size(&path, "sprite_frame_at")?, cols, rows, frame, "sprite_frame_at")?;
+    let r = atlas_source_rect(
+        image_size(&path, "sprite_frame_at")?,
+        cols,
+        rows,
+        frame,
+        "sprite_frame_at",
+    )?;
     {
         crate::draw2d::texture(
             &mut env.draw2d,
@@ -9096,14 +9100,34 @@ fn macroquad_live() -> bool {
     MACROQUAD_LIVE.with(|c| c.get())
 }
 
-/// Current touch points, or none when no macroquad window exists
-/// (headless runs report "no touches" instead of crashing).
-fn touches() -> Vec<macroquad::input::Touch> {
-    if macroquad_live() {
-        macroquad::input::touches()
-    } else {
-        Vec::new()
-    }
+/// web3d-M6: one active touch, in the 640×480 canvas coordinates
+/// `mouse.*` uses, host-agnostic. Shells write the frame's touches with
+/// [`set_touches`]; the `touch.*` builtins and `joystick` read them.
+#[derive(Clone, Copy)]
+pub struct TouchPoint {
+    pub id: u64,
+    pub x: f32,
+    pub y: f32,
+}
+
+thread_local! {
+    static HOST_TOUCHES: RefCell<Vec<TouchPoint>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Called by a shell once per frame with every active touch
+/// `(id, x, y)` in canvas coordinates. The native winit shell maps
+/// winit touch events, the browser shell maps DOM touch events, and the
+/// macroquad fallback forwards `macroquad::input::touches()`.
+pub fn set_touches(points: &[(u64, f32, f32)]) {
+    HOST_TOUCHES.with(|t| {
+        let mut v = t.borrow_mut();
+        v.clear();
+        v.extend(points.iter().map(|&(id, x, y)| TouchPoint { id, x, y }));
+    });
+}
+
+fn touches() -> Vec<TouchPoint> {
+    HOST_TOUCHES.with(|t| t.borrow().clone())
 }
 
 thread_local! {
@@ -9226,7 +9250,14 @@ fn draw_rect(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (x, y) = xy_of(&args[0], "rect.at")?;
     let (w, h) = xy_of(&args[1], "rect.size")?;
     let color = color_of(&args[2], "rect.color")?;
-    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, color);
+    crate::draw2d::rect(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        color,
+    );
     Ok(Value::NIL)
 }
 
@@ -9247,7 +9278,14 @@ fn draw_circle_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     let radius = number(&args[1], "circle_outline.radius")? as f32;
     let thickness = number(&args[2], "circle_outline.thickness")? as f32;
     let color = color_of(&args[3], "circle_outline.color")?;
-    crate::draw2d::circle_lines(&mut env.draw2d, x as f32, y as f32, radius, thickness, color);
+    crate::draw2d::circle_lines(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        radius,
+        thickness,
+        color,
+    );
     Ok(Value::NIL)
 }
 
@@ -9258,8 +9296,14 @@ fn draw_rect_outline(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let (w, h) = xy_of(&args[1], "rect_outline.size")?;
     let thickness = number(&args[2], "rect_outline.thickness")? as f32;
     let color = color_of(&args[3], "rect_outline.color")?;
-    crate::draw2d::rect_lines(&mut env.draw2d, 
-        x as f32, y as f32, w as f32, h as f32, thickness, color,
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        thickness,
+        color,
     );
     Ok(Value::NIL)
 }
@@ -9271,7 +9315,15 @@ fn draw_line(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let (x2, y2) = xy_of(&args[1], "line.to")?;
     let thickness = number(&args[2], "line.width")? as f32;
     let color = color_of(&args[3], "line.color")?;
-    crate::draw2d::line(&mut env.draw2d, x1 as f32, y1 as f32, x2 as f32, y2 as f32, thickness, color);
+    crate::draw2d::line(
+        &mut env.draw2d,
+        x1 as f32,
+        y1 as f32,
+        x2 as f32,
+        y2 as f32,
+        thickness,
+        color,
+    );
     Ok(Value::NIL)
 }
 
@@ -9416,7 +9468,15 @@ fn draw_text_with_font(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
             ),
         });
     }
-    crate::draw2d::text_font(&mut env.draw2d, &content, x as f32, y as f32, size, color, &path);
+    crate::draw2d::text_font(
+        &mut env.draw2d,
+        &content,
+        x as f32,
+        y as f32,
+        size,
+        color,
+        &path,
+    );
     Ok(Value::NIL)
 }
 
@@ -9456,7 +9516,8 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     if hovered {
-        crate::draw2d::rect_lines(&mut env.draw2d, 
+        crate::draw2d::rect_lines(
+            &mut env.draw2d,
             x as f32,
             y as f32,
             w as f32,
@@ -9473,7 +9534,8 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     // baseline; macroquad's draw_text takes the baseline y, so center
     // by adding half the glyph height to the rect midline.
     let ty = y as f32 + (h as f32 + dim.height) / 2.0;
-    crate::draw2d::text(&mut env.draw2d, 
+    crate::draw2d::text(
+        &mut env.draw2d,
         &label,
         tx,
         ty,
@@ -9516,7 +9578,8 @@ fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let dim = crate::draw2d::measure_text(&text, font_size as u16);
     let tx = x as f32 + (w as f32 - dim.width) / 2.0;
     let ty = y as f32 + (h as f32 + dim.height) / 2.0;
-    crate::draw2d::text(&mut env.draw2d, 
+    crate::draw2d::text(
+        &mut env.draw2d,
         &text,
         tx,
         ty,
@@ -9542,12 +9605,27 @@ fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let fill_color = macroquad::color::Color::new(0.30, 0.65, 0.85, 1.0);
     let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
 
-    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, frame_color);
+    crate::draw2d::rect(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        frame_color,
+    );
     let fill_w = (w * value) as f32;
     if fill_w > 0.0 {
-        crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, fill_w, h as f32, fill_color);
+        crate::draw2d::rect(
+            &mut env.draw2d,
+            x as f32,
+            y as f32,
+            fill_w,
+            h as f32,
+            fill_color,
+        );
     }
-    crate::draw2d::rect_lines(&mut env.draw2d, 
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
         x as f32,
         y as f32,
         w as f32,
@@ -9608,7 +9686,14 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
     let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
 
-    crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, track_color);
+    crate::draw2d::rect(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        track_color,
+    );
     let t = if (max - min).abs() > f64::EPSILON {
         ((value - min) / (max - min)).clamp(0.0, 1.0)
     } else {
@@ -9616,8 +9701,16 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
     let knob_w = 12.0_f32;
     let knob_x = x as f32 + (t as f32) * (w as f32 - knob_w);
-    crate::draw2d::rect(&mut env.draw2d, knob_x, y as f32, knob_w, h as f32, knob_color);
-    crate::draw2d::rect_lines(&mut env.draw2d, 
+    crate::draw2d::rect(
+        &mut env.draw2d,
+        knob_x,
+        y as f32,
+        knob_w,
+        h as f32,
+        knob_color,
+    );
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
         x as f32,
         y as f32,
         w as f32,
@@ -9674,7 +9767,15 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let check = macroquad::color::Color::new(0.40, 0.85, 0.45, 1.0);
 
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
-    crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        2.0,
+        border,
+    );
     if value {
         // Two-segment check mark inside the box, padded by 25% of
         // the smaller dimension so it visually fits any aspect.
@@ -9795,11 +9896,20 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let border = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
     let txt = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
-    crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        2.0,
+        border,
+    );
     let label = &options[new_selected.min(n - 1)];
     let font_size: f32 = 18.0;
     let dim = crate::draw2d::measure_text(label, font_size as u16);
-    crate::draw2d::text(&mut env.draw2d, 
+    crate::draw2d::text(
+        &mut env.draw2d,
         label,
         x as f32 + 8.0,
         y as f32 + (h as f32 + dim.height) / 2.0,
@@ -9810,7 +9920,15 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let cx = x as f32 + w as f32 - 14.0;
     let cy = y as f32 + h as f32 / 2.0 - 2.0;
     crate::draw2d::line(&mut env.draw2d, cx, cy, cx + 4.0, cy + 5.0, 2.0, border);
-    crate::draw2d::line(&mut env.draw2d, cx + 4.0, cy + 5.0, cx + 8.0, cy, 2.0, border);
+    crate::draw2d::line(
+        &mut env.draw2d,
+        cx + 4.0,
+        cy + 5.0,
+        cx + 8.0,
+        cy,
+        2.0,
+        border,
+    );
 
     // Draw open list, if open.
     if open_after {
@@ -9822,9 +9940,17 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             } else {
                 macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
             };
-            crate::draw2d::rect(&mut env.draw2d, x as f32, oy as f32, w as f32, h as f32, row_bg);
+            crate::draw2d::rect(
+                &mut env.draw2d,
+                x as f32,
+                oy as f32,
+                w as f32,
+                h as f32,
+                row_bg,
+            );
             let dim = crate::draw2d::measure_text(opt, font_size as u16);
-            crate::draw2d::text(&mut env.draw2d, 
+            crate::draw2d::text(
+                &mut env.draw2d,
                 opt,
                 x as f32 + 8.0,
                 oy as f32 + (h as f32 + dim.height) / 2.0,
@@ -9834,7 +9960,15 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         }
         // Outline the whole panel to keep visual unity.
         let panel_h = h as f32 + (n as f32) * h as f32;
-        crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, panel_h, 2.0, border);
+        crate::draw2d::rect_lines(
+            &mut env.draw2d,
+            x as f32,
+            y as f32,
+            w as f32,
+            panel_h,
+            2.0,
+            border,
+        );
     }
 
     Ok(Value::from_int(new_selected as i64))
@@ -9930,7 +10064,8 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
 
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
-    crate::draw2d::rect_lines(&mut env.draw2d, 
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
         x as f32,
         y as f32,
         w as f32,
@@ -9942,14 +10077,22 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     let font_size: f32 = 18.0;
     let dim = crate::draw2d::measure_text(&value, font_size as u16);
     let baseline_y = y as f32 + (h as f32 + dim.height) / 2.0;
-    crate::draw2d::text(&mut env.draw2d, &value, x as f32 + 8.0, baseline_y, font_size, txt_color);
+    crate::draw2d::text(
+        &mut env.draw2d,
+        &value,
+        x as f32 + 8.0,
+        baseline_y,
+        font_size,
+        txt_color,
+    );
 
     if focused {
         // 1 Hz blink on the wall clock.
         let t = crate::clock::now_secs().unwrap_or(0.0);
         if t.fract() < 0.5 {
             let cursor_x = x as f32 + 8.0 + dim.width + 1.0;
-            crate::draw2d::line(&mut env.draw2d, 
+            crate::draw2d::line(
+                &mut env.draw2d,
                 cursor_x,
                 y as f32 + 4.0,
                 cursor_x,
@@ -10059,7 +10202,8 @@ fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
 
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
-    crate::draw2d::rect_lines(&mut env.draw2d, 
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
         x as f32,
         y as f32,
         w as f32,
@@ -10094,7 +10238,15 @@ fn draw_panel(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let bg = macroquad::color::Color::new(0.14, 0.14, 0.18, 1.0);
     let border = macroquad::color::Color::new(0.65, 0.65, 0.72, 1.0);
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
-    crate::draw2d::rect_lines(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, 2.0, border);
+    crate::draw2d::rect_lines(
+        &mut env.draw2d,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        2.0,
+        border,
+    );
     Ok(Value::NIL)
 }
 
@@ -10246,7 +10398,14 @@ fn draw_panel_skinned(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         }
     }
     for [x, y, w, h, sx, sy, sw, sh] in pieces {
-        crate::draw2d::texture(&mut env.draw2d, &path, x, y, Some([w, h]), Some([sx, sy, sw, sh]));
+        crate::draw2d::texture(
+            &mut env.draw2d,
+            &path,
+            x,
+            y,
+            Some([w, h]),
+            Some([sx, sy, sw, sh]),
+        );
     }
     Ok(Value::NIL)
 }
@@ -11464,7 +11623,8 @@ fn light_add_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             help: Some("a 0-radius light is disabled by definition".to_string()),
         });
     }
-    let light = crate::render3d_types::PointLightU::point(at, [color[0], color[1], color[2]], radius);
+    let light =
+        crate::render3d_types::PointLightU::point(at, [color[0], color[1], color[2]], radius);
     let handle = POINT_LIGHTS.with(|s| {
         let mut lights = s.borrow_mut();
         if let Some(i) = lights.iter().position(|l| l.color_radius[3] <= 0.0) {
@@ -11482,7 +11642,10 @@ fn light_add_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         None => Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("light.add: all {} light slots are in use", crate::render3d_types::MAX_LIGHTS),
+            message: format!(
+                "light.add: all {} light slots are in use",
+                crate::render3d_types::MAX_LIGHTS
+            ),
             help: Some("call light.remove(h) to free a slot".to_string()),
         }),
     }
@@ -11551,7 +11714,10 @@ fn light_volumetric_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("light.volumetric expects true or false, got {}", args[0].type_name()),
+            message: format!(
+                "light.volumetric expects true or false, got {}",
+                args[0].type_name()
+            ),
             help: Some("e.g. `light.volumetric(true)` (with fog from `light.fog`)".to_string()),
         });
     }
@@ -11715,7 +11881,8 @@ fn sun_shadow_extent_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runti
 fn postfx_tonemap_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     use crate::kernel::render::Tonemapper;
     arity(args, 1, "postfx.tonemap")?;
-    let bad = |got: String| RuntimeError {
+    let bad = |got: String| {
+        RuntimeError {
         line: 0,
         col: 0,
         message: format!("postfx.tonemap: unknown curve {got}"),
@@ -11723,6 +11890,7 @@ fn postfx_tonemap_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
             "use \"aces\" (default), \"agx\", \"neutral\" or \"none\" (true / false mean \"aces\" / \"none\")"
                 .to_string(),
         ),
+    }
     };
     let curve = if args[0].is_bool() {
         if args[0].as_bool() {
@@ -11759,7 +11927,10 @@ fn postfx_auto_exposure_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Ru
             line: 0,
             col: 0,
             message: "postfx.auto_exposure expects a bool".to_string(),
-            help: Some("`postfx.auto_exposure(true)` adapts exposure to the scene's brightness".to_string()),
+            help: Some(
+                "`postfx.auto_exposure(true)` adapts exposure to the scene's brightness"
+                    .to_string(),
+            ),
         });
     }
     AUTO_EXPOSURE.with(|s| *s.borrow_mut() = args[0].as_bool());
@@ -11838,7 +12009,9 @@ fn postfx_ao_radius_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
             line: 0,
             col: 0,
             message: "postfx.ao_radius: radius must be > 0".to_string(),
-            help: Some("the radius is in world units (metres); 0.5 suits human-scale scenes".to_string()),
+            help: Some(
+                "the radius is in world units (metres); 0.5 suits human-scale scenes".to_string(),
+            ),
         });
     }
     AO_RADIUS.with(|s| *s.borrow_mut() = r);
