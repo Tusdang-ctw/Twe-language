@@ -41,7 +41,7 @@ pub enum BuildTarget {
     LinuxServer,
     /// web3d-M2: browser 3D build (`--target web`). Produces
     /// `dist/web/` holding the prebuilt WebGPU runtime (`crates/twe-web`
-    /// → `twe_web.js` + `twe_web_bg.wasm`), `index.html`, `env.js`,
+    /// → `twe_web.js` + `twe_web_bg.wasm`), `index.html`,
     /// `main.twe` and the project's `assets/`. Nothing is compiled: the
     /// runtime ships prebuilt (see [`find_web_runtime`]), so authors
     /// need no Rust toolchain. Replaces Phase 38's placeholder
@@ -1579,7 +1579,7 @@ pub fn find_web_runtime() -> Result<PathBuf, String> {
 
 /// Write a browser build of `project` into `out`: the runtime from
 /// `runtime_dir`, the page (`web/index.html`, titled after the game),
-/// `env.js`, and `game.twebundle` — `main.twe` plus every asset, in the
+/// and `game.twebundle` — `main.twe` plus every asset, in the
 /// same bundle format a desktop build embeds. The web shell fetches the
 /// bundle once and mounts it, so scripts read sounds, meshes and
 /// textures synchronously, as they do natively (web3d-M4). Uncompressed:
@@ -1614,7 +1614,6 @@ pub fn write_web_build(
     let files = [
         ("twe_web", "js", &runtime[0][..]),
         ("twe_web_bg", "wasm", &runtime[1][..]),
-        ("env", "js", WEB_ENV_JS.as_bytes()),
         ("game", "twebundle", &bundle[..]),
     ];
     let mut names = Vec::new();
@@ -1633,12 +1632,8 @@ pub fn write_web_build(
                 .to_string(),
             format!(
                 r#"const FILES = {{ js: "./{}", wasm: "{}", bundle: "{}" }};"#,
-                names[0], names[1], names[3]
+                names[0], names[1], names[2]
             ),
-        ),
-        (
-            r#""env": "./env.js""#.to_string(),
-            format!(r#""env": "./{}""#, names[2]),
         ),
     ] {
         if !page.contains(&from) {
@@ -1661,7 +1656,7 @@ fn is_hashed_web_file(name: &str) -> bool {
                 && hash.bytes().all(|b| b.is_ascii_hexdigit())
                 && matches!(
                     (*stem, *ext),
-                    ("twe_web", "js") | ("twe_web_bg", "wasm") | ("env", "js") | ("game", "twebundle")
+                    ("twe_web", "js") | ("twe_web_bg", "wasm") | ("game", "twebundle")
                 )
     )
 }
@@ -1676,7 +1671,6 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 const WEB_INDEX_HTML: &str = include_str!("../web/index.html");
-const WEB_ENV_JS: &str = include_str!("../web/env.js");
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")

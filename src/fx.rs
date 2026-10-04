@@ -19,7 +19,7 @@
 
 use std::cell::RefCell;
 
-use macroquad::color::Color;
+use crate::color::Color;
 
 /// One effect instance. Visual-only — never read by scripts.
 #[derive(Clone)]
@@ -192,7 +192,7 @@ fn draw_one(out: &mut Vec<crate::draw2d::Draw2d>, fx: &ActiveFx) {
             draw_text(out, &s, fx.pos.0, fx.pos.1 + lift, 22.0, c);
         }
         FxKind::CritText { value } => {
-            let c = with_alpha(macroquad::color::YELLOW, inv_t);
+            let c = with_alpha(crate::color::YELLOW, inv_t);
             let lift = -60.0 * t;
             let s = format!("{}!", *value as i64);
             draw_text(out, &s, fx.pos.0, fx.pos.1 + lift, 32.0, c);

@@ -24,6 +24,12 @@ use crate::value::{Env, RuntimeError};
 /// loader when it imports), and refuse `look:` blocks, which only the
 /// 3D runtime draws. The error is the message to print.
 pub fn load(path: &str) -> Result<Env, String> {
+    refuse_looks(load_any(path)?, path)
+}
+
+/// [`load`] without refusing `look:` blocks — for the launcher that
+/// dispatches a game to the 2D or 3D shell by [`detect_dimension`].
+pub fn load_any(path: &str) -> Result<Env, String> {
     let src = std::fs::read_to_string(Path::new(path))
         .map_err(|e| format!("error: could not read '{path}': {e}"))?;
     // web3d-M1: a script that imports modules goes through the module
@@ -33,22 +39,26 @@ pub fn load(path: &str) -> Result<Env, String> {
         .and_then(|t| crate::parser::parse(&t).ok())
         .is_some_and(|p| crate::module::has_imports(&p));
     if imports {
-        let env = crate::module::prepare_entry(Path::new(path), &src)?;
-        return refuse_looks(env, path);
+        return crate::module::prepare_entry(Path::new(path), &src);
     }
-    load_source(&src, path)
+    load_source_any(&src, path)
 }
 
 /// [`load`] for source in hand (an embedded bundle). `label` names it
 /// in errors.
 pub fn load_source(src: &str, label: &str) -> Result<Env, String> {
+    refuse_looks(load_source_any(src, label)?, label)
+}
+
+/// [`load_source`] without refusing `look:` blocks (for dispatch).
+pub fn load_source_any(src: &str, label: &str) -> Result<Env, String> {
     let tokens = crate::lexer::lex(src).map_err(|e| format!("{label}:{e}"))?;
     let program = crate::parser::parse(&tokens).map_err(|e| format!("{label}:{e}"))?;
     let mut env = Env::new();
     crate::stdlib::install(&mut env);
     crate::eval::run_top_level(&mut env, &program)
         .map_err(|e| format!("{label}: runtime error: {e}"))?;
-    refuse_looks(env, label)
+    Ok(env)
 }
 
 /// web3d-M3: the 2D player can't draw `look:`; say so up front instead

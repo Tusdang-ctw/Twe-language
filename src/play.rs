@@ -1,115 +1,19 @@
-//! `twec play` — interactive macroquad backend.
+//! `twec play` — the native 2D/3D launcher.
 //!
-//! Owns the real game loop: reads keyboard input each frame, ticks the
-//! interpreter's active scene, runs `on render():` handlers inside a
-//! macroquad draw frame. The headless `twec run` path remains unchanged
-//! and is still the test entry point.
-//!
-//! Hot reload: the file's mtime is polled at the top of every frame.
-//! If it changed, the script is re-lexed, re-parsed, and a fresh `Env`
-//! initialised from scratch. Phase-2 simplification: scene fields are
-//! NOT preserved across reloads. Iteration is fast; tweaking values
-//! and saving brings the change in immediately, but in-flight game
-//! state is lost.
+//! web3d-M6: macroquad is gone. `twec play` draws through the kernel's
+//! 2D canvas in a winit window ([`crate::play2d`]); a 3D game (embedded
+//! in a shipped `.exe`) runs on the kernel's 3D renderer
+//! ([`crate::play3d`]). This module keeps the shared plumbing both
+//! shells use — the gamepad (gilrs) and the hot-reload debounce gate —
+//! and the public `launch` / `launch_embedded` entry points.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::path::Path;
-use std::rc::Rc;
 use std::time::SystemTime;
 
-use macroquad::prelude::*;
-
-use crate::value::{Env, Object, Value};
-
-// Phase 27: full key namespace for the 2D macroquad path —
-// matches the field set registered by `stdlib::register_keys`.
-// Letters a–z, digits 0–9, F1–F12, plus arrows + common
-// control keys. Field-style accesses (`key.m`, `key_press.f7`)
-// now actually plumb through.
-const KEYS: &[(&str, KeyCode)] = &[
-    // Movement / arrows.
-    ("right", KeyCode::Right),
-    ("left", KeyCode::Left),
-    ("up", KeyCode::Up),
-    ("down", KeyCode::Down),
-    // Common control keys.
-    ("space", KeyCode::Space),
-    ("escape", KeyCode::Escape),
-    ("enter", KeyCode::Enter),
-    ("tab", KeyCode::Tab),
-    ("backspace", KeyCode::Backspace),
-    ("shift", KeyCode::LeftShift),
-    ("ctrl", KeyCode::LeftControl),
-    ("alt", KeyCode::LeftAlt),
-    // Letters a–z.
-    ("a", KeyCode::A),
-    ("b", KeyCode::B),
-    ("c", KeyCode::C),
-    ("d", KeyCode::D),
-    ("e", KeyCode::E),
-    ("f", KeyCode::F),
-    ("g", KeyCode::G),
-    ("h", KeyCode::H),
-    ("i", KeyCode::I),
-    ("j", KeyCode::J),
-    ("k", KeyCode::K),
-    ("l", KeyCode::L),
-    ("m", KeyCode::M),
-    ("n", KeyCode::N),
-    ("o", KeyCode::O),
-    ("p", KeyCode::P),
-    ("q", KeyCode::Q),
-    ("r", KeyCode::R),
-    ("s", KeyCode::S),
-    ("t", KeyCode::T),
-    ("u", KeyCode::U),
-    ("v", KeyCode::V),
-    ("w", KeyCode::W),
-    ("x", KeyCode::X),
-    ("y", KeyCode::Y),
-    ("z", KeyCode::Z),
-    // Digits 0–9.
-    ("0", KeyCode::Key0),
-    ("1", KeyCode::Key1),
-    ("2", KeyCode::Key2),
-    ("3", KeyCode::Key3),
-    ("4", KeyCode::Key4),
-    ("5", KeyCode::Key5),
-    ("6", KeyCode::Key6),
-    ("7", KeyCode::Key7),
-    ("8", KeyCode::Key8),
-    ("9", KeyCode::Key9),
-    // Function row F1–F12.
-    ("f1", KeyCode::F1),
-    ("f2", KeyCode::F2),
-    ("f3", KeyCode::F3),
-    ("f4", KeyCode::F4),
-    ("f5", KeyCode::F5),
-    ("f6", KeyCode::F6),
-    ("f7", KeyCode::F7),
-    ("f8", KeyCode::F8),
-    ("f9", KeyCode::F9),
-    ("f10", KeyCode::F10),
-    ("f11", KeyCode::F11),
-    ("f12", KeyCode::F12),
-];
-
-const MOUSE_BUTTONS: &[(&str, MouseButton)] = &[
-    ("left", MouseButton::Left),
-    ("middle", MouseButton::Middle),
-    ("right", MouseButton::Right),
-];
-
-// Phase 30 session 1: gilrs has no WASM backend; all gamepad items
-// (constants, thread-locals, state enum, functions) are compiled only
-// on non-wasm32 targets. WASM stubs keep the call sites in
-// update_key_state / run_loop compiling without changes.
-
-/// Phase 9 session 5: Twe field name → gilrs::Button mapping. Order
-/// must mirror the `GAMEPAD_BUTTON_NAMES` const in stdlib (since
-/// scripts read fields by name, the Rust list is the source of truth
-/// for which buttons we poll).
+/// Twe gamepad-button name → gilrs::Button. The order and names mirror
+/// `stdlib::GAMEPAD_BUTTON_NAMES` (scripts read fields by name, so the
+/// Rust list is the source of truth for which buttons we poll).
 #[cfg(not(target_arch = "wasm32"))]
 const GAMEPAD_BUTTONS: &[(&str, gilrs::Button)] = &[
     ("a", gilrs::Button::South),
@@ -128,10 +32,9 @@ const GAMEPAD_BUTTONS: &[(&str, gilrs::Button)] = &[
     ("dright", gilrs::Button::DPadRight),
 ];
 
-/// Twe axis name → gilrs::Axis mapping. Triggers `lt` / `rt` use
-/// `LeftZ` / `RightZ` (gilrs's analog trigger axes); the `lt` / `rt`
-/// fields on `gamepad` and `gamepad_press` are the thresholded
-/// boolean variants.
+/// Twe axis name → gilrs::Axis. Triggers `lt` / `rt` use `LeftZ` /
+/// `RightZ` (gilrs's analog trigger axes); the boolean `lt` / `rt`
+/// fields on `gamepad` come from thresholding these.
 #[cfg(not(target_arch = "wasm32"))]
 const GAMEPAD_AXES: &[(&str, gilrs::Axis)] = &[
     ("lx", gilrs::Axis::LeftStickX),
@@ -144,10 +47,9 @@ const GAMEPAD_AXES: &[(&str, gilrs::Axis)] = &[
 
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
-    /// Lazily-initialised gilrs context. None means "tried and failed
-    /// to initialise" — we log the error once and continue without
-    /// gamepad input. Re-initialisation is not supported (matches
-    /// gilrs's lifecycle expectations).
+    /// Lazily-initialised gilrs context, held so `shutdown_gilrs` can
+    /// drop it before `process::exit`. The shells own their own
+    /// `gilrs::Gilrs` for polling; this is only the clean-shutdown slot.
     static GILRS: RefCell<GilrsState> = const { RefCell::new(GilrsState::Uninit) };
     /// Previous-frame button states for edge-triggered detection.
     /// Cleared on hot reload by `clear_gamepad_state`.
@@ -157,16 +59,17 @@ thread_local! {
 #[cfg(not(target_arch = "wasm32"))]
 enum GilrsState {
     Uninit,
-    // Boxed: gilrs::Gilrs is ~230 bytes (XInput buffers + connection
-    // table); without the Box, clippy's large_enum_variant fires
-    // because Uninit / Failed carry no data.
+    // Boxed: gilrs::Gilrs is ~230 bytes; without the Box, clippy's
+    // large_enum_variant fires because Uninit / Failed carry no data.
+    #[allow(dead_code)]
     Active(Box<gilrs::Gilrs>),
+    #[allow(dead_code)]
     Failed,
 }
 
 /// web3d-M4: the first connected pad's buttons (in
 /// `stdlib::GAMEPAD_BUTTON_NAMES` order) and axes (in
-/// `GAMEPAD_AXIS_NAMES` order), for the 3D shell's input state. Drains
+/// `GAMEPAD_AXIS_NAMES` order), for a shell's input state. Drains
 /// gilrs's events first so its connection state is current.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_first_pad(gilrs: &mut gilrs::Gilrs) -> Option<([bool; 14], [f64; 6])> {
@@ -192,9 +95,10 @@ pub fn clear_gamepad_state() {
 #[cfg(target_arch = "wasm32")]
 pub fn clear_gamepad_state() {}
 
-/// Drop the gilrs context before process::exit. gilrs 0.10 on Windows
-/// panics in Gilrs::drop when process::exit triggers TLS cleanup while
-/// the background polling thread handle is already consumed.
+/// Drop any held gilrs context before `process::exit`. gilrs 0.10 on
+/// Windows panics in `Gilrs::drop` when `process::exit` triggers TLS
+/// cleanup while the background polling thread handle is already
+/// consumed; resetting the slot here avoids that.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn shutdown_gilrs() {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -209,18 +113,14 @@ pub fn shutdown_gilrs() {}
 /// Phase 11 session 4: hot-reload reliability gate.
 ///
 /// Editor save sequences are typically `truncate → write → close` on
-/// POSIX or `write-temp → rename` on Windows. The Phase 1 mtime-poll
-/// raced both: a poll between truncate and the final write read a
-/// half-empty file and produced a parse error. The gate fixes that
-/// by debouncing — when mtime first changes, start a countdown; the
-/// reload only fires after the mtime has been stable for
-/// `DEBOUNCE_FRAMES` consecutive polls. A mid-debounce mtime change
-/// resets the countdown.
-///
-/// `reloaded_mtime` is the mtime we've already loaded against. The
-/// gate ignores polls that don't differ from it.
+/// POSIX or `write-temp → rename` on Windows. A naïve mtime-poll races
+/// both: a poll between truncate and the final write reads a half-empty
+/// file and produces a parse error. The gate debounces — when mtime
+/// first changes it starts a countdown; the reload only fires after the
+/// mtime has been stable for `RELOAD_DEBOUNCE_FRAMES` polls. A
+/// mid-debounce change resets the countdown.
 pub struct ReloadGate {
-    /// Last mtime that was successfully loaded (or initial mtime).
+    /// Last mtime that was successfully loaded (or the initial mtime).
     reloaded_mtime: Option<SystemTime>,
     /// Pending mtime + frames remaining before we attempt the reload.
     pending: Option<(SystemTime, u32)>,
@@ -246,8 +146,7 @@ impl ReloadGate {
         };
         if Some(cur) == self.reloaded_mtime {
             // Stable at the loaded version. Drop any pending state —
-            // the file came back to the same mtime (e.g. a touch then
-            // an undo).
+            // the file came back to the same mtime (touch then undo).
             self.pending = None;
             return false;
         }
@@ -257,8 +156,6 @@ impl ReloadGate {
                 false
             }
             Some((p, _)) if p != cur => {
-                // Mid-debounce mtime change — restart the countdown
-                // with the newer mtime.
                 self.pending = Some((cur, RELOAD_DEBOUNCE_FRAMES));
                 false
             }
@@ -276,924 +173,56 @@ impl ReloadGate {
     }
 }
 
-/// Set when the script fails to start (read / parse / top-level error),
-/// so `launch*` can return a failing exit code: the macroquad window
-/// owns the loop, and its future can't return one itself.
-static STARTUP_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn startup_exit_code() -> i32 {
-    i32::from(STARTUP_FAILED.load(std::sync::atomic::Ordering::Relaxed))
-}
-
-fn startup_failed() {
-    STARTUP_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// web3d-M6: `twec play` runs on the kernel (`play2d`). The macroquad
-/// loops below stay reachable with `TWE_PLAYER=macroquad`, for
-/// comparison, until macroquad is deleted (M6 session 6).
-#[cfg(not(target_arch = "wasm32"))]
-fn use_macroquad() -> bool {
-    std::env::var("TWE_PLAYER").is_ok_and(|v| v.eq_ignore_ascii_case("macroquad"))
-}
-
+/// `twec play <file>`: run the game in a window. A 2D game draws on the
+/// kernel canvas ([`crate::play2d`]); a 3D game runs on the kernel's 3D
+/// renderer ([`crate::play3d`]). The dimension is detected from the
+/// game ([`crate::frame2d::detect_dimension`]).
 pub fn launch(path: String) -> i32 {
     #[cfg(not(target_arch = "wasm32"))]
-    if !use_macroquad() {
-        return crate::play2d::launch(path);
+    {
+        if dimension_of_file(&path) == crate::frame2d::Dimension::Three {
+            return crate::play3d::launch(path);
+        }
+        crate::play2d::launch(path)
     }
-    let conf = window_conf();
-    macroquad::Window::from_config(conf, run_loop(path));
-    startup_exit_code()
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        0
+    }
 }
 
-/// Phase 12 session 4: launch the runtime against an in-memory
-/// `main.twe` source, with no hot-reload (the source lives in the
-/// `.exe`; nothing to watch). Used by self-extracting binaries —
-/// `cli::run` detects an embedded bundle, extracts main.twe, sets
-/// the bundle as the active asset source, then calls this.
+/// Phase 12 session 4: launch an embedded `main.twe` (a shipped `.exe`,
+/// no hot reload). `cli::run` detects the embedded bundle, mounts it,
+/// then calls this; web3d-M6 routes a 3D game to the 3D renderer.
 pub fn launch_embedded(source: String) -> i32 {
     #[cfg(not(target_arch = "wasm32"))]
-    if !use_macroquad() {
-        return crate::play2d::launch_embedded(source);
+    {
+        if dimension_of_source(&source) == crate::frame2d::Dimension::Three {
+            return crate::play3d::launch_embedded(source);
+        }
+        crate::play2d::launch_embedded(source)
     }
-    let conf = window_conf();
-    macroquad::Window::from_config(conf, run_loop_embedded(source));
-    startup_exit_code()
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn window_conf() -> Conf {
-    // high_dpi=false keeps the GL surface at the requested 640×480
-    // physical pixels — with high_dpi=true on a HiDPI display the
-    // surface scales up but draw calls stay in the configured 640×480
-    // logical box, leaving the rest of the window black. Same reason
-    // window_resizable=false: an enlarged window paints the world in
-    // the top-left and stretches mouse coords past the button rects.
-    // The trade-off is fuzzier text on Retina; a proper letterboxed
-    // render-target is a Phase 14+ polish session.
-    Conf {
-        window_title: "Twec play".to_string(),
-        window_width: 640,
-        window_height: 480,
-        high_dpi: false,
-        fullscreen: false,
-        sample_count: 1,
-        window_resizable: false,
-        platform: Default::default(),
-        icon: None,
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = source;
+        0
     }
 }
 
-async fn run_loop(path: String) {
-    // web3d-M0: macroquad is initialised from here on (see
-    // `stdlib::set_macroquad_live`).
-    crate::stdlib::set_macroquad_live(true);
-    // Phase 15 session 3: try to initialise the Steam client once
-    // before the first tick. No-op in non-steam builds.
-    crate::steam::init();
-    let path_ref = path.clone();
-    let mut env = match initialize(&path_ref) {
-        Ok(e) => e,
-        Err(()) => return startup_failed(),
-    };
-    let mut gate = ReloadGate::new(current_mtime(&path_ref));
-    let mut idle = IdleAutoPause::new();
-    let mut blur = BlurAutoPause::new();
-    // Phase 29 session 1: fixed-timestep accumulator. See `eval.rs`
-    // PHYSICS_DT / MAX_FRAME_DT / MAX_SUBSTEPS for the rate, clamp,
-    // and spiral cap.
-    let mut accumulator: f64 = 0.0;
-    flush_output(&mut env);
-    let capture = capture_request();
-    let mut frame_no: u32 = 0;
-
-    loop {
-        // web3d-M0: Escape quits unless the script took it over with
-        // `quit_on_escape(false)`; `quit()` requests exit explicitly.
-        if (crate::stdlib::quit_on_escape() && is_key_pressed(KeyCode::Escape))
-            || crate::stdlib::take_quit_request()
-        {
-            break;
-        }
-
-        // Hot reload: debounced mtime poll. The gate buffers
-        // mid-write reads (truncate → write → close on POSIX)
-        // and only fires the reload after the file's mtime has
-        // been stable for `RELOAD_DEBOUNCE_FRAMES` frames. If the
-        // reload itself fails (transient parse error), the gate
-        // doesn't retry until the next mtime change.
-        if gate.should_reload(current_mtime(&path_ref)) {
-            match initialize(&path_ref) {
-                Ok(new_env) => {
-                    eprintln!("[twec] hot reload: {path_ref}");
-                    crate::stdlib::clear_asset_caches();
-                    clear_gamepad_state();
-                    env = new_env;
-                    accumulator = 0.0;
-                    flush_output(&mut env);
-                }
-                Err(()) => {
-                    eprintln!("[twec] hot reload failed; keeping previous script live");
-                }
-            }
-        }
-
-        update_key_state(&mut env);
-        // web3d-M6: typed characters for `text_input`.
-        let mut typed = String::new();
-        while let Some(ch) = get_char_pressed() {
-            typed.push(ch);
-        }
-        crate::stdlib::set_typed_text(typed);
-        // Phase 29 session 4: replay hook. When recording, snapshot
-        // the just-refreshed input ambients to the log. When
-        // playing, overwrite them from the log so `tick_frame` sees
-        // synthetic input identical to the captured run. Idle in
-        // between — zero-cost when not recording or playing.
-        crate::replay::tick(&mut env);
-        // v1.0.2 Session 7: tap-event diff. Mirrored across every
-        // `run_loop_*` variant; populates the sliding-window counter
-        // `touch.tap_count()` reads.
-        // web3d-M6: feed the frame's touches to the host-agnostic
-        // state the `touch.*` builtins read (window is a fixed 640×480,
-        // so macroquad positions are already in canvas coordinates).
-        let mq_touches: Vec<(u64, f32, f32)> = macroquad::input::touches()
-            .iter()
-            .map(|t| (t.id, t.position.x, t.position.y))
-            .collect();
-        crate::stdlib::set_touches(&mq_touches);
-        crate::stdlib::tick_touch_taps(macroquad::time::get_time());
-        // web3d-M6: a capture advances exactly one tick per frame, so
-        // frame N is the same picture on every machine.
-        let frame_dt = if capture.is_some() {
-            crate::eval::PHYSICS_DT
-        } else {
-            (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT)
-        };
-        hud_record(frame_dt);
-        idle.tick(frame_dt);
-        idle.apply();
-        blur.tick(crate::window_focus::is_focused());
-        // Phase 10 session 8: when paused, skip `tick_frame` so no
-        // fibers advance and no every-clocks fire, but keep the
-        // render path live so a "PAUSED" overlay or settings menu
-        // can draw. Render-side `button` / `slider` etc. read mouse
-        // state directly so the pause menu still interacts.
-        //
-        // Phase 29 session 1: drive ticks via a fixed-step accumulator.
-        // Each render frame, drain as many PHYSICS_DT slices as the
-        // wall-clock budget allows (capped at MAX_SUBSTEPS). 60 Hz
-        // simulation on a 144 Hz display means most renders skip a
-        // tick; on 30 Hz displays most renders run two. Either way,
-        // the simulation sees a constant dt — required for replay
-        // determinism + sample-accurate audio + stable physics.
-        // web3d-M6: the frame's simulation and render code run in
-        // `frame2d`, shared with the kernel's 2D renderer.
-        let tick_err = crate::frame2d::tick(&mut env, None, &mut accumulator, frame_dt).err();
-        if let Some(e) = tick_err {
-            eprintln!("{path_ref}: runtime error: {e}");
-            break;
-        }
-        flush_output(&mut env);
-
-        clear_background(BLACK);
-        crate::audio_polish::tick(frame_dt);
-        crate::stdlib::sync_audio_polish();
-        let (camera, render_result) =
-            crate::frame2d::render(&mut env, frame_dt, screen_width(), screen_height());
-        if let Some(cam) = camera {
-            set_camera(&build_camera2d(
-                f64::from(cam.center[0]),
-                f64::from(cam.center[1]),
-                f64::from(cam.zoom),
-            ));
-        }
-        crate::draw2d::replay_macroquad(&env.draw2d);
-        if camera.is_some() {
-            set_default_camera();
-        }
-        if let Err(e) = render_result {
-            eprintln!("{path_ref}: runtime error: {e}");
-            env.in_render = false;
-            break;
-        }
-        env.in_render = false;
-        flush_output(&mut env);
-
-        hud_draw();
-        write_pending_screenshot();
-        frame_no += 1;
-        if let Some((at, out)) = &capture {
-            if frame_no == *at {
-                let img = get_screen_data();
-                img.export_png(out);
-                eprintln!("[twec] captured frame {at}: {out} ({} draw commands)", env.draw2d.len());
-                // `TWE_CAPTURE_DUMP=1` lists the frame's commands too.
-                if std::env::var_os("TWE_CAPTURE_DUMP").is_some() {
-                    for cmd in &env.draw2d {
-                        eprintln!("  {cmd:?}");
-                    }
-                }
-                break;
-            }
-        }
-
-        next_frame().await;
-    }
-}
-
-/// web3d-M6: `TWE_CAPTURE=N:path` makes `twec play` write frame `N`
-/// (1-based) to the PNG `path` and exit, with no input and one fixed
-/// tick per frame. It records the reference images M6 compares the
-/// kernel's 2D renderer against (`tests/references/m6/`).
-fn capture_request() -> Option<(u32, String)> {
-    let spec = std::env::var("TWE_CAPTURE").ok()?;
-    let (n, path) = spec.split_once(':')?;
-    match n.trim().parse::<u32>() {
-        Ok(n) if n > 0 && !path.is_empty() => Some((n, path.to_string())),
-        _ => {
-            eprintln!("[twec] TWE_CAPTURE should be FRAME:PATH, e.g. 60:out.png; ignoring '{spec}'");
-            None
-        }
-    }
-}
-
-/// Phase 11 session 1: F12 / `screenshot(path)` writer. Honor the
-/// `screenshot` builtin's queued path first; otherwise check whether
-/// F12 was pressed this frame and write a timestamped default.
-fn write_pending_screenshot() {
-    let path = if let Some(p) = crate::stdlib::take_pending_screenshot() {
-        Some(p)
-    } else if is_key_pressed(KeyCode::F12) {
-        Some(default_screenshot_path())
-    } else {
-        None
-    };
-    let Some(path) = path else { return };
-    // `export_png` panics on web and unwraps on save failure; catch it
-    // so a bad path (read-only dir, etc.) doesn't kill the game.
-    let img = get_screen_data();
-    let p = path.clone();
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || img.export_png(&p))) {
-        Ok(()) => eprintln!("[twec] screenshot saved: {path}"),
-        Err(_) => eprintln!("[twec] screenshot failed: {path}"),
-    }
-}
-
-fn default_screenshot_path() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("screenshot-{secs}.png")
-}
-
-// Phase 11 session 11: idle-pause tracking. The "real" auto-pause-
-// on-window-blur defers to a winit-integration session — macroquad
-// 0.4 still doesn't expose desktop focus events. Until then we
-// approximate the player-walked-away case with an idle timer: when
-// no keyboard or mouse input has arrived for `auto_pause_when_idle`
-// seconds, the play loop sets `pause(true)` and notes that *it*
-// did the pausing (so input resuming auto-resumes). The whole
-// machinery is opt-in; with the threshold at 0 the timer + the
-// auto-pause path are bypassed.
-struct IdleAutoPause {
-    /// Seconds since last input event. Resets to 0 on any key /
-    /// mouse / wheel motion this frame.
-    idle_secs: f64,
-    /// Mouse position last frame; used to detect motion.
-    last_mouse: (f32, f32),
-    /// Wheel-y last frame.
-    last_wheel: f32,
-    /// Key-down state we last saw — non-empty value means at least
-    /// one of the polled keys was held this frame.
-    last_any_key: bool,
-    /// True when the auto-pause path drove `pause(true)` — input
-    /// resuming will then drive `pause(false)`.
-    paused_by_us: bool,
-}
-
-impl IdleAutoPause {
-    fn new() -> Self {
-        Self {
-            idle_secs: 0.0,
-            last_mouse: (0.0, 0.0),
-            last_wheel: 0.0,
-            last_any_key: false,
-            paused_by_us: false,
-        }
-    }
-
-    /// Drive the idle timer one frame forward. Returns the new
-    /// idle-secs value; the caller compares it to the threshold.
-    fn tick(&mut self, dt: f64) {
-        let mp = mouse_position();
-        let (_wx, wy) = mouse_wheel();
-        let any_key = KEYS.iter().any(|(_, k)| is_key_down(*k));
-        let mouse_moved =
-            (mp.0 - self.last_mouse.0).abs() > 0.5 || (mp.1 - self.last_mouse.1).abs() > 0.5;
-        let wheel_moved = wy.abs() > 0.001 || self.last_wheel.abs() > 0.001;
-        let any_button = is_mouse_button_down(MouseButton::Left)
-            || is_mouse_button_down(MouseButton::Right)
-            || is_mouse_button_down(MouseButton::Middle);
-        let active = any_key || mouse_moved || wheel_moved || any_button;
-        self.last_mouse = mp;
-        self.last_wheel = wy;
-        self.last_any_key = any_key;
-        if active {
-            self.idle_secs = 0.0;
-        } else {
-            self.idle_secs += dt;
-        }
-    }
-
-    /// Apply the auto-pause decision against the user-set threshold.
-    fn apply(&mut self) {
-        let threshold = crate::stdlib::auto_pause_idle_threshold();
-        if threshold <= 0.0 {
-            // Disabled — also clear our flag so we don't auto-resume
-            // a pause the user set after disabling auto-pause.
-            self.paused_by_us = false;
-            return;
-        }
-        if self.idle_secs >= threshold {
-            if !crate::stdlib::is_paused() {
-                crate::stdlib::set_paused(true);
-                self.paused_by_us = true;
-            }
-        } else if self.paused_by_us && self.idle_secs == 0.0 {
-            // Input came back; the *paused-by-us* flag means we drove
-            // the pause, so dropping it is also our call.
-            crate::stdlib::set_paused(false);
-            self.paused_by_us = false;
-        }
-    }
-}
-
-// Phase 11 follow-on: auto-pause-on-window-blur lives in
-// `host3d::BlurAutoPause` (web3d-M4: shared with the 3D and web shells).
-use crate::host3d::BlurAutoPause;
-
-// Phase 11 session 2: frame-time HUD overlay (F3 to toggle).
-// Ring-buffered recent frame deltas; the HUD shows current ms +
-// rolling 60-frame average + fps. Drawn after the Twe render so it
-// overlays game content. Off by default; toggling persists for the
-// life of the process (hot reload is irrelevant — the HUD is dev-loop
-// only and isn't game state). 120-frame history gives 2 seconds of
-// data at 60fps and lets us catch the occasional hitch.
-const HUD_HISTORY: usize = 120;
-
-thread_local! {
-    static HUD_VISIBLE: RefCell<bool> = const { RefCell::new(false) };
-    static HUD_FRAMES: RefCell<FrameRing> = const {
-        RefCell::new(FrameRing { samples: [0.0; HUD_HISTORY], idx: 0, len: 0 })
-    };
-}
-
-struct FrameRing {
-    samples: [f64; HUD_HISTORY],
-    idx: usize,
-    len: usize,
-}
-
-impl FrameRing {
-    fn push(&mut self, dt: f64) {
-        self.samples[self.idx] = dt;
-        self.idx = (self.idx + 1) % HUD_HISTORY;
-        if self.len < HUD_HISTORY {
-            self.len += 1;
-        }
-    }
-    fn avg_ms(&self) -> f64 {
-        if self.len == 0 {
-            return 0.0;
-        }
-        let sum: f64 = self.samples.iter().take(self.len).sum();
-        (sum / self.len as f64) * 1000.0
-    }
-    fn max_ms(&self) -> f64 {
-        let mut m = 0.0_f64;
-        for s in self.samples.iter().take(self.len) {
-            if *s > m {
-                m = *s;
-            }
-        }
-        m * 1000.0
-    }
-}
-
-#[cfg(test)]
-mod reload_gate_tests {
-    use super::*;
-    use std::time::Duration;
-
-    fn t0() -> SystemTime {
-        std::time::UNIX_EPOCH + Duration::from_secs(1_000_000)
-    }
-
-    #[test]
-    fn no_change_never_fires() {
-        let mut g = ReloadGate::new(Some(t0()));
-        for _ in 0..100 {
-            assert!(!g.should_reload(Some(t0())));
-        }
-    }
-
-    #[test]
-    fn stable_change_fires_after_debounce() {
-        let mut g = ReloadGate::new(Some(t0()));
-        let new = t0() + Duration::from_secs(1);
-        // First change: pending starts.
-        assert!(!g.should_reload(Some(new)));
-        // Stable polls draining the countdown.
-        for _ in 0..(RELOAD_DEBOUNCE_FRAMES - 1) {
-            assert!(!g.should_reload(Some(new)));
-        }
-        // The next stable poll fires the reload.
-        assert!(g.should_reload(Some(new)));
-        // After firing, the gate is at the new mtime; no further fires.
-        for _ in 0..10 {
-            assert!(!g.should_reload(Some(new)));
-        }
-    }
-
-    #[test]
-    fn churning_mtime_resets_countdown() {
-        let mut g = ReloadGate::new(Some(t0()));
-        let mid = t0() + Duration::from_secs(1);
-        let later = t0() + Duration::from_secs(2);
-        // Editor's truncate seen as `mid`.
-        assert!(!g.should_reload(Some(mid)));
-        // Editor's final write seen as `later` partway through debounce.
-        assert!(!g.should_reload(Some(later)));
-        // Now we need a full debounce against `later` before firing.
-        for _ in 0..(RELOAD_DEBOUNCE_FRAMES - 1) {
-            assert!(!g.should_reload(Some(later)));
-        }
-        assert!(g.should_reload(Some(later)));
-    }
-
-    #[test]
-    fn unreadable_file_does_not_fire() {
-        let mut g = ReloadGate::new(Some(t0()));
-        for _ in 0..10 {
-            assert!(!g.should_reload(None));
-        }
-    }
-
-    #[test]
-    fn revert_to_loaded_mtime_clears_pending() {
-        let mut g = ReloadGate::new(Some(t0()));
-        let new = t0() + Duration::from_secs(1);
-        // Mid-debounce.
-        assert!(!g.should_reload(Some(new)));
-        // User undoes the save; mtime returns to the loaded version.
-        assert!(!g.should_reload(Some(t0())));
-        // No fire even after many stable polls.
-        for _ in 0..100 {
-            assert!(!g.should_reload(Some(t0())));
-        }
-    }
-}
-
-#[cfg(test)]
-mod hud_tests {
-    use super::FrameRing;
-    use super::HUD_HISTORY;
-
-    fn empty_ring() -> FrameRing {
-        FrameRing {
-            samples: [0.0; HUD_HISTORY],
-            idx: 0,
-            len: 0,
-        }
-    }
-
-    #[test]
-    fn avg_and_max_are_zero_when_empty() {
-        let r = empty_ring();
-        assert_eq!(r.avg_ms(), 0.0);
-        assert_eq!(r.max_ms(), 0.0);
-    }
-
-    #[test]
-    fn avg_is_mean_in_milliseconds() {
-        let mut r = empty_ring();
-        r.push(0.016);
-        r.push(0.020);
-        r.push(0.012);
-        let avg = r.avg_ms();
-        assert!((avg - 16.0).abs() < 1e-9, "got {avg}");
-    }
-
-    #[test]
-    fn max_is_largest_sample_in_milliseconds() {
-        let mut r = empty_ring();
-        r.push(0.016);
-        r.push(0.033);
-        r.push(0.012);
-        assert!((r.max_ms() - 33.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn ring_evicts_oldest_after_capacity() {
-        let mut r = empty_ring();
-        for _ in 0..HUD_HISTORY {
-            r.push(0.010);
-        }
-        // Capacity reached; pushing a heavy sample displaces a 10ms one.
-        r.push(0.100);
-        assert_eq!(r.len, HUD_HISTORY);
-        assert!((r.max_ms() - 100.0).abs() < 1e-9);
-    }
-}
-
-fn hud_record(dt: f64) {
-    if is_key_pressed(KeyCode::F3) {
-        HUD_VISIBLE.with(|v| {
-            let mut b = v.borrow_mut();
-            *b = !*b;
-        });
-    }
-    HUD_FRAMES.with(|c| c.borrow_mut().push(dt));
-}
-
-fn hud_draw() {
-    let visible = HUD_VISIBLE.with(|v| *v.borrow());
-    if !visible {
-        return;
-    }
-    let (cur_ms, avg_ms, max_ms) = HUD_FRAMES.with(|c| {
-        let r = c.borrow();
-        let cur = if r.len == 0 {
-            0.0
-        } else {
-            // last pushed sample is at (idx + HUD_HISTORY - 1) % HUD_HISTORY
-            let last = (r.idx + HUD_HISTORY - 1) % HUD_HISTORY;
-            r.samples[last] * 1000.0
-        };
-        (cur, r.avg_ms(), r.max_ms())
-    });
-    let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
-    let text =
-        format!("frame {cur_ms:>5.1}ms  avg {avg_ms:>5.1}ms  max {max_ms:>5.1}ms  {fps:>5.1} fps");
-    // Top-right anchored. Measure first to know how wide the panel is.
-    let font_size: u16 = 14;
-    let dim = measure_text(&text, None, font_size, 1.0);
-    let pad = 6.0;
-    let x = screen_width() - dim.width - pad * 2.0;
-    let y = pad;
-    draw_rectangle(
-        x,
-        y,
-        dim.width + pad * 2.0,
-        dim.height + pad * 2.0,
-        Color::new(0.0, 0.0, 0.0, 0.7),
-    );
-    draw_text(
-        &text,
-        x + pad,
-        y + pad + dim.height,
-        f32::from(font_size),
-        WHITE,
-    );
-}
-
-
-fn build_camera2d(cx: f64, cy: f64, zoom: f64) -> Camera2D {
-    let w = screen_width();
-    let h = screen_height();
-    let z = zoom as f32;
-    Camera2D {
-        target: vec2(cx as f32, cy as f32),
-        // zoom.x positive: world +x → screen +x.
-        // zoom.y negative: world +y → screen +y (orthographic flip
-        // would otherwise put +y up, which contradicts the rest of
-        // the runtime's pixel-coord convention).
-        zoom: vec2(2.0 / w * z, -2.0 / h * z),
-        offset: vec2(0.0, 0.0),
-        rotation: 0.0,
-        render_target: None,
-        viewport: None,
-    }
-}
-
-// Phase 12 session 4: embedded-bundle play loop. Mirrors `run_loop`
-// but with no hot-reload (the source lives in the running .exe;
-// nothing to watch). Uses the tree-walker — production default per
-// CLAUDE.md — since shipped games shouldn't gate on the in-flight
-// bytecode-VM perf gap from Phase 8.5. A future session can add a
-// `--vm` toggle in the embedded boot path if a bundled game wants
-// the bytecode backend explicitly.
-async fn run_loop_embedded(source: String) {
-    // web3d-M0: macroquad is initialised from here on (see
-    // `stdlib::set_macroquad_live`).
-    crate::stdlib::set_macroquad_live(true);
-    // web3d-M0: shipped (bundled) builds are exactly where Steam must be
-    // live — this loop previously skipped the init that `run_loop` does,
-    // so achievements / cloud saves silently no-oped in a Steam build.
-    // No-op in non-steam builds.
-    crate::steam::init();
-    const LABEL: &str = "<embedded>main.twe";
-    let mut env = match initialize_from_source(&source, LABEL) {
-        Ok(e) => e,
-        Err(()) => return startup_failed(),
-    };
-    let mut idle = IdleAutoPause::new();
-    let mut blur = BlurAutoPause::new();
-    // Phase 29 session 1: fixed-timestep accumulator (same as
-    // run_loop). Embedded games run with the determinism layer too.
-    let mut accumulator: f64 = 0.0;
-    flush_output(&mut env);
-
-    loop {
-        // web3d-M0: Escape quits unless the script took it over with
-        // `quit_on_escape(false)`; `quit()` requests exit explicitly.
-        if (crate::stdlib::quit_on_escape() && is_key_pressed(KeyCode::Escape))
-            || crate::stdlib::take_quit_request()
-        {
-            break;
-        }
-
-        update_key_state(&mut env);
-        // web3d-M6: typed characters for `text_input`.
-        let mut typed = String::new();
-        while let Some(ch) = get_char_pressed() {
-            typed.push(ch);
-        }
-        crate::stdlib::set_typed_text(typed);
-        // Phase 29 session 4: replay hook (see run_loop for context).
-        crate::replay::tick(&mut env);
-        // v1.0.2 Session 7: tap-event diff (see run_loop for context).
-        // web3d-M6: feed the frame's touches to the host-agnostic
-        // state the `touch.*` builtins read (window is a fixed 640×480,
-        // so macroquad positions are already in canvas coordinates).
-        let mq_touches: Vec<(u64, f32, f32)> = macroquad::input::touches()
-            .iter()
-            .map(|t| (t.id, t.position.x, t.position.y))
-            .collect();
-        crate::stdlib::set_touches(&mq_touches);
-        crate::stdlib::tick_touch_taps(macroquad::time::get_time());
-        let frame_dt = (get_frame_time() as f64).min(crate::eval::MAX_FRAME_DT);
-        hud_record(frame_dt);
-        idle.tick(frame_dt);
-        idle.apply();
-        blur.tick(crate::window_focus::is_focused());
-        // web3d-M6: the frame's simulation and render code run in
-        // `frame2d`, shared with the kernel's 2D renderer.
-        let tick_err = crate::frame2d::tick(&mut env, None, &mut accumulator, frame_dt).err();
-        if let Some(e) = tick_err {
-            eprintln!("{LABEL}: runtime error: {e}");
-            break;
-        }
-        flush_output(&mut env);
-
-        clear_background(BLACK);
-        crate::audio_polish::tick(frame_dt);
-        crate::stdlib::sync_audio_polish();
-        let (camera, render_result) =
-            crate::frame2d::render(&mut env, frame_dt, screen_width(), screen_height());
-        if let Some(cam) = camera {
-            set_camera(&build_camera2d(
-                f64::from(cam.center[0]),
-                f64::from(cam.center[1]),
-                f64::from(cam.zoom),
-            ));
-        }
-        crate::draw2d::replay_macroquad(&env.draw2d);
-        if camera.is_some() {
-            set_default_camera();
-        }
-        if let Err(e) = render_result {
-            eprintln!("{LABEL}: runtime error: {e}");
-            env.in_render = false;
-            break;
-        }
-        env.in_render = false;
-        flush_output(&mut env);
-
-        hud_draw();
-        write_pending_screenshot();
-
-        next_frame().await;
-    }
-}
-
-/// Write current mouse position + accumulated wheel delta into the
-/// `mouse` ambient. v0.2 session 3.
-fn write_mouse_object(mouse: Option<Value>) {
-    let Some(t) = mouse else {
-        return;
-    };
-    if !t.is_object() {
-        return;
-    }
-    let rc = t.as_object();
-    let (mx, my) = mouse_position();
-    let (_wx, wy) = mouse_wheel();
-    let mut o = rc.borrow_mut();
-    o.insert_field("x", Value::from_float(mx as f64));
-    o.insert_field("y", Value::from_float(my as f64));
-    o.insert_field(
-        "pos",
-        Value::from_tuple(vec![
-            Value::from_float(mx as f64),
-            Value::from_float(my as f64),
-        ]),
-    );
-    // y-axis wheel delta is the canonical "scroll" reading; macroquad
-    // resets `mouse_wheel()` between frames so the value here is the
-    // accumulated delta this frame.
-    o.insert_field("wheel", Value::from_float(wy as f64));
-}
-
-/// Write per-button state into `mouse_held` or `mouse_press`. The
-/// caller passes the button-state predicate (`is_mouse_button_down`
-/// for `mouse_held`, `is_mouse_button_pressed` for edge-triggered
-/// `mouse_press`). v0.2 session 3.
-fn write_mouse_buttons(target: Option<Value>, mut pred: impl FnMut(MouseButton) -> bool) {
-    let Some(t) = target else {
-        return;
-    };
-    if !t.is_object() {
-        return;
-    }
-    let rc = t.as_object();
-    let mut o = rc.borrow_mut();
-    for (name, btn) in MOUSE_BUTTONS {
-        o.insert_field((*name).to_string(), Value::from_bool(pred(*btn)));
-    }
-}
-
-fn current_mtime(path: &str) -> Option<SystemTime> {
-    std::fs::metadata(Path::new(path))
-        .ok()
-        .and_then(|m| m.modified().ok())
-}
-
-fn initialize(path: &str) -> Result<Env, ()> {
-    crate::frame2d::load(path).map_err(|msg| eprintln!("{msg}"))
-}
-
-/// Phase 12 session 4: the embedded-bundle launch's init (the source
-/// lives in the running `.exe`).
-fn initialize_from_source(src: &str, label: &str) -> Result<Env, ()> {
-    crate::frame2d::load_source(src, label).map_err(|msg| eprintln!("{msg}"))
-}
-
-fn flush_output(env: &mut Env) {
-    if !env.out.is_empty() {
-        print!("{}", env.out);
-        env.out.clear();
-    }
-}
-
-fn update_key_state(env: &mut Env) {
-    if let Some(t) = env.get("key") {
-        if t.is_object() {
-            let rc = t.as_object();
-            let mut o = rc.borrow_mut();
-            for (name, code) in KEYS {
-                o.insert_field(*name, Value::from_bool(is_key_down(*code)));
-            }
-        }
-    }
-    let kp = env.get("key_press");
-    if kp.as_ref().is_some_and(|t| t.is_object()) {
-        let rc = kp.unwrap().as_object();
-        let mut o = rc.borrow_mut();
-        for (name, code) in KEYS {
-            o.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
-        }
-    } else {
-        // Lazily install key_press as a sibling object next to key.
-        let mut press = Object {
-            fields: HashMap::new(),
-            kind: "input",
-        };
-        for (name, code) in KEYS {
-            press.insert_field(*name, Value::from_bool(is_key_pressed(*code)));
-        }
-        env.set(
-            "key_press".to_string(),
-            Value::from_object(Rc::new(RefCell::new(press))),
-        );
-    }
-    if let Some(t) = env.get("screen") {
-        if t.is_object() {
-            let rc = t.as_object();
-            let mut o = rc.borrow_mut();
-            let w = screen_width() as f64;
-            let h = screen_height() as f64;
-            o.insert_field(
-                "size".to_string(),
-                Value::from_tuple(vec![Value::from_float(w), Value::from_float(h)]),
-            );
-            o.insert_field(
-                "center".to_string(),
-                Value::from_tuple(vec![Value::from_float(w / 2.0), Value::from_float(h / 2.0)]),
-            );
-        }
-    }
-    write_mouse_object(env.get("mouse"));
-    write_mouse_buttons(env.get("mouse_held"), is_mouse_button_down);
-    write_mouse_buttons(env.get("mouse_press"), is_mouse_button_pressed);
-    poll_gamepad(env);
-}
-
-// Phase 30 session 1: WASM stub — no gamepad on the web.
-#[cfg(target_arch = "wasm32")]
-fn poll_gamepad(_env: &mut Env) {}
-
-/// Phase 9 session 5: poll gilrs and write button + axis state to
-/// the `gamepad`, `gamepad_press`, and `gamepad_axis` ambients. The
-/// first connected gamepad wins; multi-gamepad routing is a follow-on.
-/// `gamepad_press` is derived by diffing `PREV_GAMEPAD` against the
-/// current state (gilrs's event stream is drained but we don't use
-/// it directly — diffing keeps the surface symmetric with `key_press`).
+/// web3d-M6: 2D or 3D, by running the game's top level and inspecting
+/// its first frame. A load error resolves to 2D, so the 2D shell shows
+/// the real diagnostic.
 #[cfg(not(target_arch = "wasm32"))]
-fn poll_gamepad(env: &mut Env) {
-    GILRS.with(|g| {
-        // Lazy init the first time we're called inside the macroquad
-        // window context. gilrs init failures (e.g. no input
-        // subsystem) produce a single warning and disable polling.
-        let mut state = g.borrow_mut();
-        if matches!(*state, GilrsState::Uninit) {
-            *state = match gilrs::Gilrs::new() {
-                Ok(g) => GilrsState::Active(Box::new(g)),
-                Err(e) => {
-                    eprintln!("[twec] gamepad disabled: {e}");
-                    GilrsState::Failed
-                }
-            };
-        }
-        let GilrsState::Active(gilrs) = &mut *state else {
-            return;
-        };
-        let gilrs = gilrs.as_mut();
-        // Drain pending events so gilrs's internal connection /
-        // disconnection state stays current. We don't act on the
-        // event payloads — buttons are sampled below by polling.
-        while gilrs.next_event().is_some() {}
+fn dimension_of_file(path: &str) -> crate::frame2d::Dimension {
+    crate::frame2d::load_any(path)
+        .map(|mut env| crate::frame2d::detect_dimension(&mut env))
+        .unwrap_or(crate::frame2d::Dimension::Two)
+}
 
-        let pad = gilrs.gamepads().next().map(|(_id, p)| p);
-        let connected = pad.is_some();
-
-        // Continuous + edge-triggered booleans.
-        let cur: [bool; 14] = match pad {
-            Some(p) => {
-                let mut buf = [false; 14];
-                for (i, (_name, btn)) in GAMEPAD_BUTTONS.iter().enumerate() {
-                    buf[i] = p.is_pressed(*btn);
-                }
-                buf
-            }
-            None => [false; 14],
-        };
-        let prev = PREV_GAMEPAD.with(|p| *p.borrow());
-        if let Some(t) = env.get("gamepad") {
-            if t.is_object() {
-                let rc = t.as_object();
-                let mut o = rc.borrow_mut();
-                for (i, (name, _)) in GAMEPAD_BUTTONS.iter().enumerate() {
-                    o.insert_field(*name, Value::from_bool(cur[i]));
-                }
-                o.insert_field("connected", Value::from_bool(connected));
-            }
-        }
-        if let Some(t) = env.get("gamepad_press") {
-            if t.is_object() {
-                let rc = t.as_object();
-                let mut o = rc.borrow_mut();
-                for (i, (name, _)) in GAMEPAD_BUTTONS.iter().enumerate() {
-                    // Edge-trigger: true only on the frame the button
-                    // transitions from up to down.
-                    o.insert_field(*name, Value::from_bool(cur[i] && !prev[i]));
-                }
-            }
-        }
-        PREV_GAMEPAD.with(|p| *p.borrow_mut() = cur);
-
-        // Analog axes.
-        if let Some(t) = env.get("gamepad_axis") {
-            if t.is_object() {
-                let rc = t.as_object();
-                let mut o = rc.borrow_mut();
-                match pad {
-                    Some(p) => {
-                        for (name, axis) in GAMEPAD_AXES {
-                            o.insert_field(*name, Value::from_float(p.value(*axis) as f64));
-                        }
-                    }
-                    None => {
-                        for (name, _) in GAMEPAD_AXES {
-                            o.insert_field(*name, Value::from_float(0.0));
-                        }
-                    }
-                }
-            }
-        }
-    });
+#[cfg(not(target_arch = "wasm32"))]
+fn dimension_of_source(source: &str) -> crate::frame2d::Dimension {
+    crate::frame2d::load_source_any(source, "<embedded>main.twe")
+        .map(|mut env| crate::frame2d::detect_dimension(&mut env))
+        .unwrap_or(crate::frame2d::Dimension::Two)
 }

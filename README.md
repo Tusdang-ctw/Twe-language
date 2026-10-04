@@ -35,7 +35,7 @@ tone mapping, frustum culling. Try `twec play3d examples/crystal_hunter.twe`.
 | Hand-written recursive-descent parser | v0.1 |
 | Tree-walking interpreter (lexical scoping, NaN-tagged values, tracing GC) | v0.1 → web3d-M1 |
 | NaN-tagged 64-bit values + tracing GC | v0.2 |
-| `twec play` (2D macroquad runtime) | v0.1 |
+| `twec play` (2D runtime on the wgpu kernel) | v0.1 |
 | `twec play3d` (3D wgpu runtime) | v0.1 |
 | `twec play_visual` (procedural shader runtime) | v0.3 |
 | `visual` block → WGSL compilation | v0.3 |

@@ -29,13 +29,9 @@ unsafe_code = "deny"
 all = { level = "warn", priority = -1 }
 
 [dependencies]
-# web3d-M3: rasterises the 3D renderer's HUD font (src/kernel/hud.rs).
-# Pure Rust, wasm-safe, and already in the tree through macroquad (same
-# version), so it adds no new code to the build.
+# web3d-M3: rasterises every 2D glyph (the kernel's 2D canvas, the
+# HUD font, and `draw2d::measure_text`). Pure Rust and wasm-safe.
 fontdue = "0.9"
-# macroquad is the 2D backend and supports wasm32 natively —
-# stays in the unconditional section.
-macroquad = { version = "0.4", default-features = false, features = ["audio"] }
 
 # Phase 12 session 5: `twe.toml` project manifest parsing. Pure Rust,
 # compiles on all targets including wasm32.

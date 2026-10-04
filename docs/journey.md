@@ -166,6 +166,8 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-10-04: touch works on the real engine now.** The last pieces of the 2D toolkit — buttons, effects, lighting, tilemaps, panels — already drew through the new renderer. The one thing still tied to the old library was touch input, which only worked while the old 2D engine was running. Touch now flows through the same shared channel as keyboard and mouse: the window (desktop or browser) reports each finger, and the game's `touch` and virtual-joystick code reads it, whichever engine is drawing. A mobile demo that was dead on the new desktop player now shows its on-screen stick and finger count again.
 
+- **2026-10-04: one engine.** For most of its life Twe had two engines bolted together: a borrowed 2D library and its own 3D renderer. This was the day the borrowed one came out. Everything a game draws — 2D or 3D, in a window or a browser tab — now goes through Twe's own graphics kernel. The 2D launcher file shrank from about 1,260 lines to 240. Sound, images, fonts and colours all moved off the old library onto the engine's own paths. And `twec build`, which could only package 2D games into a runnable program before, now packages 3D ones too: it reads the game, notices whether it draws in 3D, and launches the right renderer. With this, the year's whole plan — from the first browser frame to beating Three.js on picture quality to merging the two engines — is complete. One kernel draws it all.
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.

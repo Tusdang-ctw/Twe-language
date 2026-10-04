@@ -12,6 +12,11 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Changed (one engine)
+- **macroquad is gone** (web3d-M6). Twe has one runtime now: the wgpu kernel draws 2D games, 3D games and the HUD, native and browser. `twec play` runs a 2D game on the kernel canvas (`play2d`) and a 3D game on the 3D renderer, detected from the game.
+- **`twec build` makes a desktop `.exe` for 3D games**, not only 2D: the embedded launcher dispatches by dimension.
+- **Sound plays through quad-snd (native) / WebAudio (browser)** directly; **colours** are a plain RGBA type; the browser runtime no longer needs the `env.js` shim.
+
 ### Changed (input)
 - **Touch is host-agnostic** (web3d-M6): `touch.*` and the `joystick` widget read a shell-fed state in canvas coordinates, so they work on `twec play` (winit), `twec play3d` and the browser, not only under macroquad. Browser touch events are wired through the canvas.
 

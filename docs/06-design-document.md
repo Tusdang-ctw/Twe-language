@@ -1262,7 +1262,7 @@ on render():
 
 Up to 16 lights per frame; further calls drop silently and increment a counter the engine HUD can expose. Lights are rendered as soft alpha-blended halos in 6 concentric rings (centre fully tinted, outer ring fully transparent). The ambient pass dims the world; lights brighten lit spots.
 
-**Determinism contract:** `light2d.*` calls return NIL — the script can't read the light buffer back. Flicker is driven by wall-clock seconds, same regime as the visual fx layer; replay parity is preserved by construction. Per-pixel shadow occlusion against the registered `cast_shadows` AABBs is the v1.0.2 follow-on, ideally implemented as a custom WGSL fragment-shader pass (true additive blending in the same pass). The MVP uses macroquad's default alpha blending; the visual effect is "dim dungeon + warm torch halos," not photoreal additive lighting.
+**Determinism contract:** `light2d.*` calls return NIL — the script can't read the light buffer back. Flicker is driven by wall-clock seconds, same regime as the visual fx layer; replay parity is preserved by construction. Per-pixel shadow occlusion against the registered `cast_shadows` AABBs is the v1.0.2 follow-on, ideally implemented as a custom WGSL fragment-shader pass (true additive blending in the same pass). The MVP uses the kernel canvas's alpha blending; the visual effect is "dim dungeon + warm torch halos," not photoreal additive lighting.
 
 Reference example: `examples/dungeon_demo.twe`.
 
@@ -1302,7 +1302,7 @@ The `_aabb` helpers sample all four corners of the box; they fit the platformer 
 ### 7.10 Audio
 
 **Where sound plays (web3d-M4):**
-- **2D player:** macroquad's audio.
+- **Native shells (`twec play` / `play3d`):** quad-snd; **browser:** WebAudio. 2D draw builtins queue sound through `audio_host`, the shell plays it (web3d-M6).
 - **Native 3D shell** (`twec play3d`): `quad-snd`.
 - **Browser** (`twec build --target web`): WebAudio. The first key press or click unlocks it, because browsers block sound until the player interacts.
 
@@ -1323,7 +1323,7 @@ WAV and Ogg Vorbis supported.
 
 `sound.now()` returns the simulation clock that `sound.schedule(...)` deadlines compare against. The clock advances by exactly `time.physics_dt` (1/60s) per fixed-step substep, so a sound queued for `t = sound.now() + 0.5` fires on the same tick across two runs of the same input — the foundation for rhythm-game determinism.
 
-**Honest deferral:** the underlying audio backend (macroquad's quad-snd) is buffer-aligned, not sample-aligned. Scheduled sounds fire on the simulation tick that crosses their deadline, giving ±1/60s ≈ ±16.7ms accuracy. True sample-accurate scheduling would require a different audio crate (cpal + custom mixer) — captured as a follow-on phase.
+**Honest deferral:** the underlying audio backend (quad-snd) is buffer-aligned, not sample-aligned. Scheduled sounds fire on the simulation tick that crosses their deadline, giving ±1/60s ≈ ±16.7ms accuracy. True sample-accurate scheduling would require a different audio crate (cpal + custom mixer) — captured as a follow-on phase.
 
 ### 7.10b Audio polish *(v1.0.1 Session 4)*
 
@@ -1343,9 +1343,9 @@ music.layer("music/drums.ogg", weight: enemy_count / 50.0)   # blends in as enem
 music.crossfade("music/level1.ogg", "music/level2.ogg", duration: 2.0)
 ```
 
-**How pool budgets are enforced.** macroquad's audio backend is fire-and-forget — once a sound starts, no per-voice handle exists to steal voices from. The pool is therefore implemented as a **rolling time-window throttle**: each call to `sound.play(handle)` for a pooled path records a timestamp; calls exceeding `max_voices` within the 1.0s window are silently dropped. The user experience is "200 overlapping plays no longer overlap into clipping," which is the actual ask.
+**How pool budgets are enforced.** The quad-snd audio backend is fire-and-forget — once a sound starts, no per-voice handle exists to steal voices from. The pool is therefore implemented as a **rolling time-window throttle**: each call to `sound.play(handle)` for a pooled path records a timestamp; calls exceeding `max_voices` within the 1.0s window are silently dropped. The user experience is "200 overlapping plays no longer overlap into clipping," which is the actual ask.
 
-**Duck factor application.** Duck scales are applied to the volume passed to `play_sound` at call time. A duck is "active" if any of: a music layer with that path has `current_weight > 0`, *or* a pool in the same path has a recent play within the window. Mid-play volume changes are not retro-applied to already-started sounds (consequence of the macroquad backend) — for music tracks this doesn't matter (`set_sound_volume` ramps work because layers are single-voice loops); for SFX one-shots the next play picks up the new factor.
+**Duck factor application.** Duck scales are applied to the volume passed to `play_sound` at call time. A duck is "active" if any of: a music layer with that path has `current_weight > 0`, *or* a pool in the same path has a recent play within the window. Mid-play volume changes are not retro-applied to already-started sounds (consequence of the fire-and-forget backend) — for music tracks this doesn't matter (`set_sound_volume` ramps work because layers are single-voice loops); for SFX one-shots the next play picks up the new factor.
 
 **Crossfades** ramp via `set_sound_volume` on both endpoints — the `from` track stops when its volume hits zero. Multiple concurrent crossfades are allowed and tick independently.
 

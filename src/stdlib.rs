@@ -7,41 +7,26 @@ use crate::value::{Env, Object, RuntimeError, Value};
 #[cfg(feature = "experimental")]
 mod experimental;
 
-// Texture cache: macroquad's `Texture2D` can only be constructed once
-// the GL context exists, so loading is lazy — the first `sprite(spr, at)`
-// call inside `on render():` decodes the file. Cleared by `clear_sprite_cache`
-// when `twec play` hot-reloads the script. Single-threaded (macroquad
-// runs on the main thread), so a thread_local is the right shape.
 thread_local! {
-    static SPRITE_CACHE: RefCell<HashMap<String, macroquad::texture::Texture2D>>
-        = RefCell::new(HashMap::new());
     // web3d-M6: image sizes by path, for the sprite / atlas / nine-slice
-    // builtins. They need only the size; the renderer (macroquad's
-    // replay, or the kernel canvas) loads the pixels itself.
+    // builtins. They need only the size; the kernel canvas loads the
+    // pixels itself (natively and in the browser).
     static IMAGE_SIZES: RefCell<HashMap<String, (f32, f32)>>
-        = RefCell::new(HashMap::new());
-    static SOUND_CACHE: RefCell<HashMap<String, macroquad::audio::Sound>>
         = RefCell::new(HashMap::new());
     // Phase 9 session 2: 2D camera shake state. The Twe-facing API is
     // `camera.shake(amplitude, duration)`; that builtin writes here.
     // Each frame the play loop calls `camera_tick` to decay the timer
     // and `camera_shake_offset` to read a fresh random offset that
-    // feeds the macroquad `Camera2D` transform.
+    // feeds the 2D camera transform.
     static CAMERA_SHAKE: RefCell<CameraShake> = const { RefCell::new(CameraShake {
         amplitude: 0.0,
         remaining: 0.0,
     }) };
-    // Phase 9 session 4: TTF font cache. Two-stage lazy load: the
-    // raw font bytes are cached at `load_font` time (headless-safe,
-    // path + TTF magic-bytes validation runs there), and macroquad's
-    // `Font` parse happens on first `text_with_font` draw inside
-    // `on render():` — same lazy-on-first-draw pattern as sprites.
-    // Reason: macroquad's `load_ttf_font_from_bytes` asserts on
-    // THREAD_ID, which is only initialised inside `Window::from_config`,
-    // so eager parsing would crash `twec run` and the test harness.
+    // Phase 9 session 4: TTF font bytes, cached at `load_font` time
+    // (headless-safe; path + magic-bytes validation runs there). The
+    // kernel canvas parses and rasterises a font the frame uses; here
+    // `text_with_font` only checks the handle was loaded.
     static FONT_BYTES_CACHE: RefCell<HashMap<String, Vec<u8>>>
-        = RefCell::new(HashMap::new());
-    static FONT_CACHE: RefCell<HashMap<String, macroquad::text::Font>>
         = RefCell::new(HashMap::new());
     // Phase 10 sessions 3 / 4 / 5: per-frame UI focus state shared
     // across the immediate-mode widget set. Sliders / dropdowns /
@@ -115,11 +100,8 @@ pub const GAMEPAD_AXIS_NAMES: &[&str] = &["lx", "ly", "rx", "ry", "lt", "rt"];
 /// shake — a hot-reloaded script shouldn't inherit jitter from the
 /// previous session.
 pub fn clear_asset_caches() {
-    SPRITE_CACHE.with(|c| c.borrow_mut().clear());
     IMAGE_SIZES.with(|c| c.borrow_mut().clear());
-    SOUND_CACHE.with(|c| c.borrow_mut().clear());
     FONT_BYTES_CACHE.with(|c| c.borrow_mut().clear());
-    FONT_CACHE.with(|c| c.borrow_mut().clear());
     CAMERA_SHAKE.with(|c| {
         let mut s = c.borrow_mut();
         s.amplitude = 0.0;
@@ -233,24 +215,6 @@ pub fn camera_view(env: &Env) -> ((f64, f64), f64) {
         None => 1.0,
     };
     ((pos.0, pos.1), zoom)
-}
-
-/// Drive a future to completion synchronously. Used for macroquad's
-/// async asset APIs (e.g. `audio::load_sound_from_bytes`) whose
-/// underlying work is sync CPU; the futures only exist for browser
-/// compatibility and never actually pend on native. Uses
-/// `Waker::noop()` (stable since Rust 1.85) so no unsafe is needed —
-/// `unsafe_code = "forbid"` stays intact.
-fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    use std::task::{Context, Poll, Waker};
-    let waker = Waker::noop();
-    let mut ctx = Context::from_waker(waker);
-    let mut f = std::pin::pin!(f);
-    loop {
-        if let Poll::Ready(out) = f.as_mut().poll(&mut ctx) {
-            return out;
-        }
-    }
 }
 
 pub fn install(env: &mut Env) {
@@ -2844,15 +2808,7 @@ fn sound_play3d_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 fn sound_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.stop")?;
     let path = sound_handle_path(&args[0], "sound.stop")?;
-    if !macroquad_live() {
-        crate::audio_host::push(crate::audio_host::AudioCmd::Stop { path });
-        return Ok(Value::NIL);
-    }
-    SOUND_CACHE.with(|cache| {
-        if let Some(snd) = cache.borrow().get(&path) {
-            macroquad::audio::stop_sound(snd);
-        }
-    });
+    crate::audio_host::push(crate::audio_host::AudioCmd::Stop { path });
     Ok(Value::NIL)
 }
 
@@ -2862,17 +2818,9 @@ fn sound_set_volume(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     arity(args, 2, "sound.set_volume")?;
     let path = sound_handle_path(&args[0], "sound.set_volume")?;
     let volume = number(&args[1], "sound.set_volume.volume")? as f32;
-    if !macroquad_live() {
-        crate::audio_host::push(crate::audio_host::AudioCmd::SetVolume {
-            path,
-            volume: volume.clamp(0.0, 1.0),
-        });
-        return Ok(Value::NIL);
-    }
-    SOUND_CACHE.with(|cache| {
-        if let Some(snd) = cache.borrow().get(&path) {
-            macroquad::audio::set_sound_volume(snd, volume.clamp(0.0, 1.0));
-        }
+    crate::audio_host::push(crate::audio_host::AudioCmd::SetVolume {
+        path,
+        volume: volume.clamp(0.0, 1.0),
     });
     Ok(Value::NIL)
 }
@@ -3108,47 +3056,16 @@ fn play_sound_path(
         // sfx under the same name by aliasing in user code.
         crate::audio_polish::duck_scale(path, volume)
     };
-    // web3d-M4: no macroquad window (3D / browser) — hand the sound to
-    // the shell's player.
-    if !macroquad_live() {
-        crate::audio_host::push(crate::audio_host::AudioCmd::Play {
-            path: path.to_string(),
-            volume: final_vol,
-            looped,
-        });
-        return Ok(());
-    }
-    SOUND_CACHE.with(|cache| -> Result<(), RuntimeError> {
-        let mut c = cache.borrow_mut();
-        if !c.contains_key(path) {
-            // Phase 12 session 3: route through the active bundle
-            // first; falls through to filesystem otherwise.
-            let bytes = crate::bundle::read_asset_bytes(path).map_err(|e| RuntimeError {
-                line: 0,
-                col: 0,
-                message: format!("{callee}: cannot read '{path}': {e}"),
-                help: None,
-            })?;
-            let snd = block_on(macroquad::audio::load_sound_from_bytes(&bytes)).map_err(|e| {
-                RuntimeError {
-                    line: 0,
-                    col: 0,
-                    message: format!("{callee}: failed to decode '{path}': {e}"),
-                    help: Some("supported formats: WAV, Ogg Vorbis".to_string()),
-                }
-            })?;
-            c.insert(path.to_string(), snd);
-        }
-        let snd = &c[path];
-        macroquad::audio::play_sound(
-            snd,
-            macroquad::audio::PlaySoundParams {
-                looped,
-                volume: final_vol,
-            },
-        );
-        Ok(())
-    })
+    // web3d-M6: the shell's player loads and plays the sound
+    // (`native_audio` through quad-snd natively, WebAudio in the
+    // browser). `callee` is unused now the decode moved shell-side.
+    let _ = callee;
+    crate::audio_host::push(crate::audio_host::AudioCmd::Play {
+        path: path.to_string(),
+        volume: final_vol,
+        looped,
+    });
+    Ok(())
 }
 
 // v1.0.1 session 4 wrappers. Each parses arguments, calls the
@@ -3205,34 +3122,17 @@ fn music_crossfade(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
 /// - Crossfades: `set_sound_volume` on both endpoints; on finish,
 ///   stop the `from` track.
 pub fn sync_audio_polish() {
-    // web3d-M6: without a macroquad window the shell's player applies
-    // the volume changes and stops (`audio_host`), as for `sound.*`.
+    // web3d-M6: the shell's player (`audio_host` -> native_audio /
+    // WebAudio) applies the volume changes and stops, as for `sound.*`.
     let set_volume = |path: &str, volume: f32| {
-        let volume = volume.clamp(0.0, 1.0);
-        if !macroquad_live() {
-            crate::audio_host::push(crate::audio_host::AudioCmd::SetVolume {
-                path: path.to_string(),
-                volume,
-            });
-            return;
-        }
-        SOUND_CACHE.with(|cache| {
-            if let Some(snd) = cache.borrow().get(path) {
-                macroquad::audio::set_sound_volume(snd, volume);
-            }
+        crate::audio_host::push(crate::audio_host::AudioCmd::SetVolume {
+            path: path.to_string(),
+            volume: volume.clamp(0.0, 1.0),
         });
     };
     let stop = |path: &str| {
-        if !macroquad_live() {
-            crate::audio_host::push(crate::audio_host::AudioCmd::Stop {
-                path: path.to_string(),
-            });
-            return;
-        }
-        SOUND_CACHE.with(|cache| {
-            if let Some(snd) = cache.borrow().get(path) {
-                macroquad::audio::stop_sound(snd);
-            }
+        crate::audio_host::push(crate::audio_host::AudioCmd::Stop {
+            path: path.to_string(),
         });
     };
     // Layers.
@@ -8949,37 +8849,6 @@ fn atlas_source_rect(
     Ok([col * cell_w, row * cell_h, cell_w, cell_h])
 }
 
-/// web3d-M6: run `f` with macroquad's texture for `path` (the 2D
-/// replay), decoding it on first use.
-pub(crate) fn with_cached_texture(path: &str, f: impl FnOnce(&macroquad::texture::Texture2D)) {
-    SPRITE_CACHE.with(|cache| {
-        let mut c = cache.borrow_mut();
-        if !c.contains_key(path) {
-            match crate::bundle::read_asset_bytes(path) {
-                Ok(bytes) => {
-                    let tex = macroquad::texture::Texture2D::from_file_with_format(&bytes, None);
-                    c.insert(path.to_string(), tex);
-                }
-                Err(_) => return,
-            }
-        }
-        f(&c[path]);
-    });
-}
-
-/// web3d-M6: run `f` with macroquad's font for `path` (the 2D replay),
-/// decoding it on first use.
-pub(crate) fn with_decoded_font(path: &str, f: impl FnOnce(&macroquad::text::Font)) {
-    if ensure_font_decoded(path).is_err() {
-        return;
-    }
-    FONT_CACHE.with(|cache| {
-        if let Some(font) = cache.borrow().get(path) {
-            f(font);
-        }
-    });
-}
-
 /// web3d-M6: an image's `(width, height)` in pixels, read once per path
 /// (bundle first, then the filesystem). Errors name the calling builtin.
 fn image_size(path: &str, callee: &str) -> Result<(f32, f32), RuntimeError> {
@@ -9081,25 +8950,6 @@ fn as_i64(v: &Value, op: &str) -> Result<i64, RuntimeError> {
     })
 }
 
-thread_local! {
-    /// web3d-M0: true only while a macroquad window loop is running
-    /// (the 2D `twec play` family in `play.rs`). macroquad asserts on a
-    /// thread-local it initialises inside `Window::from_config`; calling
-    /// any of its draw/input APIs outside that loop — `twec run`, the
-    /// test harness, `twec play3d` (winit + wgpu) — aborted the process.
-    static MACROQUAD_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Mark the macroquad backend as live (or not) on this thread. Called
-/// at the start of each macroquad loop in `play.rs`.
-pub fn set_macroquad_live(live: bool) {
-    MACROQUAD_LIVE.with(|c| c.set(live));
-}
-
-fn macroquad_live() -> bool {
-    MACROQUAD_LIVE.with(|c| c.get())
-}
-
 /// web3d-M6: one active touch, in the 640×480 canvas coordinates
 /// `mouse.*` uses, host-agnostic. Shells write the frame's touches with
 /// [`set_touches`]; the `touch.*` builtins and `joystick` read them.
@@ -9192,7 +9042,7 @@ fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
     }
 }
 
-fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeError> {
+fn color_of(v: &Value, what: &str) -> Result<crate::color::Color, RuntimeError> {
     if v.is_tuple() && {
         let elems = v.as_tuple();
         elems.len() >= 3
@@ -9206,7 +9056,7 @@ fn color_of(v: &Value, what: &str) -> Result<macroquad::color::Color, RuntimeErr
         } else {
             1.0
         };
-        Ok(macroquad::color::Color::new(r, g, b, a))
+        Ok(crate::color::Color::new(r, g, b, a))
     } else {
         let other = *v;
         Err(RuntimeError {
@@ -9508,11 +9358,11 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let hovered = point_in_rect(mx, my, x, y, w, h);
 
     let bg = if hovered && held_now {
-        macroquad::color::Color::new(0.45, 0.45, 0.50, 1.0)
+        crate::color::Color::new(0.45, 0.45, 0.50, 1.0)
     } else if hovered {
-        macroquad::color::Color::new(0.30, 0.30, 0.35, 1.0)
+        crate::color::Color::new(0.30, 0.30, 0.35, 1.0)
     } else {
-        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+        crate::color::Color::new(0.18, 0.18, 0.22, 1.0)
     };
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     if hovered {
@@ -9523,7 +9373,7 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             w as f32,
             h as f32,
             2.0,
-            macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0),
+            crate::color::Color::new(1.0, 1.0, 1.0, 1.0),
         );
     }
 
@@ -9540,7 +9390,7 @@ fn draw_button(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         tx,
         ty,
         font_size,
-        macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0),
+        crate::color::Color::new(1.0, 1.0, 1.0, 1.0),
     );
 
     Ok(if hovered && pressed_now {
@@ -9584,7 +9434,7 @@ fn draw_label(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         tx,
         ty,
         font_size,
-        macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0),
+        crate::color::Color::new(1.0, 1.0, 1.0, 1.0),
     );
     Ok(Value::NIL)
 }
@@ -9601,9 +9451,9 @@ fn draw_progress_bar(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     let raw = number(&args[2], "progress_bar.value")?;
     let value = raw.clamp(0.0, 1.0);
 
-    let frame_color = macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0);
-    let fill_color = macroquad::color::Color::new(0.30, 0.65, 0.85, 1.0);
-    let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
+    let frame_color = crate::color::Color::new(0.18, 0.18, 0.22, 1.0);
+    let fill_color = crate::color::Color::new(0.30, 0.65, 0.85, 1.0);
+    let border_color = crate::color::Color::new(0.85, 0.85, 0.90, 1.0);
 
     crate::draw2d::rect(
         &mut env.draw2d,
@@ -9676,15 +9526,15 @@ fn draw_slider(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         value_in
     };
 
-    let track_color = macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0);
+    let track_color = crate::color::Color::new(0.18, 0.18, 0.22, 1.0);
     let knob_color = if active {
-        macroquad::color::Color::new(0.85, 0.85, 0.95, 1.0)
+        crate::color::Color::new(0.85, 0.85, 0.95, 1.0)
     } else if hovered {
-        macroquad::color::Color::new(0.65, 0.65, 0.80, 1.0)
+        crate::color::Color::new(0.65, 0.65, 0.80, 1.0)
     } else {
-        macroquad::color::Color::new(0.50, 0.50, 0.60, 1.0)
+        crate::color::Color::new(0.50, 0.50, 0.60, 1.0)
     };
-    let border_color = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
+    let border_color = crate::color::Color::new(0.85, 0.85, 0.90, 1.0);
 
     crate::draw2d::rect(
         &mut env.draw2d,
@@ -9757,14 +9607,14 @@ fn draw_checkbox(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     };
 
     let bg = if hovered && held_now {
-        macroquad::color::Color::new(0.45, 0.45, 0.50, 1.0)
+        crate::color::Color::new(0.45, 0.45, 0.50, 1.0)
     } else if hovered {
-        macroquad::color::Color::new(0.30, 0.30, 0.35, 1.0)
+        crate::color::Color::new(0.30, 0.30, 0.35, 1.0)
     } else {
-        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+        crate::color::Color::new(0.18, 0.18, 0.22, 1.0)
     };
-    let border = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
-    let check = macroquad::color::Color::new(0.40, 0.85, 0.45, 1.0);
+    let border = crate::color::Color::new(0.85, 0.85, 0.90, 1.0);
+    let check = crate::color::Color::new(0.40, 0.85, 0.45, 1.0);
 
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     crate::draw2d::rect_lines(
@@ -9889,12 +9739,12 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 
     // Draw header.
     let bg = if header_hovered {
-        macroquad::color::Color::new(0.30, 0.30, 0.35, 1.0)
+        crate::color::Color::new(0.30, 0.30, 0.35, 1.0)
     } else {
-        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+        crate::color::Color::new(0.18, 0.18, 0.22, 1.0)
     };
-    let border = macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0);
-    let txt = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
+    let border = crate::color::Color::new(0.85, 0.85, 0.90, 1.0);
+    let txt = crate::color::Color::new(1.0, 1.0, 1.0, 1.0);
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     crate::draw2d::rect_lines(
         &mut env.draw2d,
@@ -9936,9 +9786,9 @@ fn draw_dropdown(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let oy = y + h + (i as f64) * h;
             let row_hovered = point_in_rect(mx, my, x, oy, w, h);
             let row_bg = if row_hovered {
-                macroquad::color::Color::new(0.30, 0.30, 0.45, 1.0)
+                crate::color::Color::new(0.30, 0.30, 0.45, 1.0)
             } else {
-                macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
+                crate::color::Color::new(0.22, 0.22, 0.28, 1.0)
             };
             crate::draw2d::rect(
                 &mut env.draw2d,
@@ -10050,18 +9900,18 @@ fn draw_text_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     let _ = was_focused;
 
     let bg = if focused {
-        macroquad::color::Color::new(0.10, 0.10, 0.14, 1.0)
+        crate::color::Color::new(0.10, 0.10, 0.14, 1.0)
     } else if hovered {
-        macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
+        crate::color::Color::new(0.22, 0.22, 0.28, 1.0)
     } else {
-        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+        crate::color::Color::new(0.18, 0.18, 0.22, 1.0)
     };
     let border_color = if focused {
-        macroquad::color::Color::new(0.40, 0.85, 0.45, 1.0)
+        crate::color::Color::new(0.40, 0.85, 0.45, 1.0)
     } else {
-        macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0)
+        crate::color::Color::new(0.85, 0.85, 0.90, 1.0)
     };
-    let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
+    let txt_color = crate::color::Color::new(1.0, 1.0, 1.0, 1.0);
 
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     crate::draw2d::rect_lines(
@@ -10188,18 +10038,18 @@ fn draw_key_input(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     }
 
     let bg = if focused {
-        macroquad::color::Color::new(0.10, 0.10, 0.14, 1.0)
+        crate::color::Color::new(0.10, 0.10, 0.14, 1.0)
     } else if hovered {
-        macroquad::color::Color::new(0.22, 0.22, 0.28, 1.0)
+        crate::color::Color::new(0.22, 0.22, 0.28, 1.0)
     } else {
-        macroquad::color::Color::new(0.18, 0.18, 0.22, 1.0)
+        crate::color::Color::new(0.18, 0.18, 0.22, 1.0)
     };
     let border_color = if focused {
-        macroquad::color::Color::new(0.95, 0.75, 0.30, 1.0)
+        crate::color::Color::new(0.95, 0.75, 0.30, 1.0)
     } else {
-        macroquad::color::Color::new(0.85, 0.85, 0.90, 1.0)
+        crate::color::Color::new(0.85, 0.85, 0.90, 1.0)
     };
-    let txt_color = macroquad::color::Color::new(1.0, 1.0, 1.0, 1.0);
+    let txt_color = crate::color::Color::new(1.0, 1.0, 1.0, 1.0);
 
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     crate::draw2d::rect_lines(
@@ -10235,8 +10085,8 @@ fn draw_panel(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "panel")?;
     let (x, y) = xy_of(&args[0], "panel.at")?;
     let (w, h) = xy_of(&args[1], "panel.size")?;
-    let bg = macroquad::color::Color::new(0.14, 0.14, 0.18, 1.0);
-    let border = macroquad::color::Color::new(0.65, 0.65, 0.72, 1.0);
+    let bg = crate::color::Color::new(0.14, 0.14, 0.18, 1.0);
+    let border = crate::color::Color::new(0.65, 0.65, 0.72, 1.0);
     crate::draw2d::rect(&mut env.draw2d, x as f32, y as f32, w as f32, h as f32, bg);
     crate::draw2d::rect_lines(
         &mut env.draw2d,
@@ -10627,38 +10477,6 @@ fn read_mouse_button(env: &Env, ambient: &str, field: &str) -> bool {
         Some(v) if v.is_bool() => v.as_bool(),
         _ => false,
     }
-}
-
-/// Decode the cached TTF bytes for `path` into a macroquad `Font`,
-/// caching the result. Returns Ok if the font is already cached or
-/// the parse succeeds. Errors if `load_font` was never called for
-/// this path or if the parse fails.
-fn ensure_font_decoded(path: &str) -> Result<(), RuntimeError> {
-    let already = FONT_CACHE.with(|c| c.borrow().contains_key(path));
-    if already {
-        return Ok(());
-    }
-    let bytes = FONT_BYTES_CACHE.with(|c| c.borrow().get(path).cloned());
-    let bytes = bytes.ok_or_else(|| RuntimeError {
-        line: 0,
-        col: 0,
-        message: format!(
-            "text_with_font: font '{path}' was not loaded (call `load_font(...)` first)"
-        ),
-        help: Some(
-            "store the handle from `load_font(...)` and reuse it across draw calls".to_string(),
-        ),
-    })?;
-    let font = macroquad::text::load_ttf_font_from_bytes(&bytes).map_err(|e| RuntimeError {
-        line: 0,
-        col: 0,
-        message: format!("text_with_font: failed to decode font '{path}': {e}"),
-        help: None,
-    })?;
-    FONT_CACHE.with(|c| {
-        c.borrow_mut().insert(path.to_string(), font);
-    });
-    Ok(())
 }
 
 /// Pull the cache key off a font handle. Atlas/sprite/sound handles

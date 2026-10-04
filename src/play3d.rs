@@ -174,6 +174,40 @@ pub fn launch(path: String) -> i32 {
     app.exit_code
 }
 
+/// web3d-M6: launch a 3D game from embedded source (a shipped `.exe`),
+/// with no hot reload. `cli` routes a 3D game's bundle here after
+/// mounting it, so meshes / textures / sounds read from the bundle.
+pub fn launch_embedded(source: String) -> i32 {
+    crate::audio_host::enable();
+    let mut env = match crate::frame2d::load_source_any(&source, "<embedded>main.twe") {
+        Ok(e) => e,
+        Err(msg) => {
+            eprintln!("{msg}");
+            return 1;
+        }
+    };
+    // web3d-M7: this host simulates compiled particles on the GPU.
+    env.gpu_particles = true;
+    if !env.out.is_empty() {
+        print!("{}", env.out);
+        env.out.clear();
+    }
+    let event_loop = match EventLoop::new() {
+        Ok(el) => el,
+        Err(e) => {
+            eprintln!("error: could not create event loop: {e}");
+            return 1;
+        }
+    };
+    // Empty path + no mtime: the hot-reload poll never fires.
+    let mut app = App::new(env, String::new(), None);
+    if let Err(e) = event_loop.run_app(&mut app) {
+        eprintln!("error: event loop: {e}");
+        return 1;
+    }
+    app.exit_code
+}
+
 fn current_mtime(path: &str) -> Option<SystemTime> {
     std::fs::metadata(Path::new(path))
         .ok()

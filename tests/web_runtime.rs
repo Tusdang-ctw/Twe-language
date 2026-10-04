@@ -1,24 +1,22 @@
-//! web3d-M2: the browser runtime's `env` imports are all provided.
+//! web3d-M6: the browser runtime imports nothing from `env`.
 //!
-//! macroquad / miniquad (the 2D backend, linked until web3d-M6) leave
-//! bare `env` imports in the Twe web runtime. `web/index.html` maps
-//! `env` to `web/env.js` with an import map; if the runtime ever needs an
-//! import `env.js` doesn't export, the page fails to instantiate with a
-//! link error — before any Twe code runs. This test reads the import
-//! section of the built runtime and checks every `env` import against
-//! the functions `env.js` exports.
+//! macroquad / miniquad left bare `env` imports in the Twe web runtime,
+//! which `web/env.js` provided through an import map. web3d-M6 removed
+//! macroquad, so the runtime should import nothing from `env` — and
+//! `web/env.js` + its import map are gone. This test re-parses the
+//! built runtime's imports and fails if an `env` import comes back
+//! (which would need that shim restored).
 //!
 //! Needs the runtime built first:
 //! `cargo build -p twe-web --target wasm32-unknown-unknown --release`.
 //! Without it the test prints a notice and passes, unless `TWE_WEB_WASM`
 //! names the file to check — CI sets that, so there it is mandatory.
 
-use std::collections::BTreeSet;
 
 const DEFAULT_WASM: &str = "target/wasm32-unknown-unknown/release/twe_web.wasm";
 
 #[test]
-fn env_js_provides_every_env_import() {
+fn the_runtime_imports_nothing_from_env() {
     let (path, required) = match std::env::var("TWE_WEB_WASM") {
         Ok(p) => (p, true),
         Err(_) => (DEFAULT_WASM.to_string(), false),
@@ -31,27 +29,14 @@ fn env_js_provides_every_env_import() {
         }
         Err(e) => panic!("TWE_WEB_WASM={path}: {e}"),
     };
-    let needed: BTreeSet<String> = wasm_imports(&bytes)
+    let env_imports: Vec<String> = wasm_imports(&bytes)
         .into_iter()
         .filter(|(module, _)| module == "env")
         .map(|(_, name)| name)
         .collect();
     assert!(
-        !needed.is_empty(),
-        "no `env` imports found in {path}: if macroquad is gone (web3d-M6), \
-         delete web/env.js, its import map and this test"
-    );
-    let env_js = std::fs::read_to_string("web/env.js").expect("read web/env.js");
-    let provided: BTreeSet<String> = env_js
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("export function "))
-        .filter_map(|rest| rest.split('(').next())
-        .map(|name| name.trim().to_string())
-        .collect();
-    let missing: Vec<_> = needed.difference(&provided).collect();
-    assert!(
-        missing.is_empty(),
-        "web/env.js is missing exports the runtime imports from `env`: {missing:?}"
+        env_imports.is_empty(),
+        "the browser runtime imports from `env` again ({env_imports:?}); if macroquad          is back, restore web/env.js, the import map in web/index.html, and the env          entry in build::write_web_build"
     );
 }
 

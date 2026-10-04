@@ -1096,7 +1096,6 @@ fn web_build_writes_a_servable_folder() {
     };
     let js = named("twe_web", "js");
     let wasm = named("twe_web_bg", "wasm");
-    let env = named("env", "js");
     let game = named("game", "twebundle");
     assert_ne!(game, "game.0123456789ab.twebundle");
     assert_eq!(fs::read_to_string(out.join(&js)).unwrap(), "runtime twe_web.js");
@@ -1106,14 +1105,12 @@ fn web_build_writes_a_servable_folder() {
     );
     let page = fs::read_to_string(out.join("index.html")).unwrap();
     assert!(page.contains("<title>orbit_game</title>"), "{page}");
-    assert!(page.contains(&format!(r#""env": "./{env}""#)), "import map");
     assert!(
         page.contains(&format!(r#"js: "./{js}", wasm: "{wasm}", bundle: "{game}""#)),
         "file names in the page"
     );
-    assert!(fs::read_to_string(out.join(&env))
-        .unwrap()
-        .contains("export function now()"));
+    // web3d-M6: macroquad is gone, so there is no env.js shim.
+    assert!(!out.join("index.html").exists() || !page.contains("importmap"), "no env import map");
     // web3d-M4: the script and assets travel in one bundle the shell mounts.
     let mut bundle = twec::bundle::BundleReader::from_bytes(fs::read(out.join(&game)).unwrap())
         .expect("a readable bundle");

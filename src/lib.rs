@@ -55,6 +55,7 @@ pub mod llm_eval;
 // web3d-M5: behavioural grading for the LLM benchmark (`twec bench`).
 pub mod bench;
 // web3d-M6: the 2D draw-command list every 2D draw builtin pushes to.
+pub mod color;
 pub mod draw2d;
 pub mod frame2d;
 // web3d-M5: running the benchmark against models (`twec bench run`).

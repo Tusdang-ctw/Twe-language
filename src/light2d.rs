@@ -25,7 +25,7 @@
 
 use std::cell::RefCell;
 
-use macroquad::color::Color;
+use crate::color::Color;
 
 /// Maximum lights per frame. Matches the 16-budget shape Phase 20
 /// used for 3D point lights; over-budget calls are silently dropped
