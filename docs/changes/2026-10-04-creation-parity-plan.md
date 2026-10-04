@@ -28,9 +28,9 @@ The pivot roadmap (M0–M7) answered "can Twe render a browser 3D game": one wgp
 
 ## Milestones
 
-### M8 — Browser truth (all four browsers)
+### M8 — Browser truth (all four browsers) — **CLOSED 2026-10-04** ([closeout](2026-10-04-web3d-m8-closeout.md))
 
-Everything Twe claims to run in a browser is *captured running in a browser*. Nothing downstream is credible until this is shown, not asserted.
+Everything Twe claims to run in a browser is *captured running in a browser*. Nothing downstream is credible until this is shown, not asserted. **Done:** pong (2D) + hello_3d (3D) pixel-match native in real Chrome/Edge/Firefox (0.1–0.2/255); WebKit→graceful fallback (Safari WebGPU needs a Mac); gamma-blend parity fixed (dungeon 13.2→0.25); web typed text verified live; a 3D `TWE_CAPTURE` hook; the heap-corruption flake gone after the M6 macroquad removal (0/32 runs).
 
 **Exit:** a CI Playwright job loads a built 2D game and a built 3D game in headless Chrome, captures a frame, diffs it against the native reference within tolerance, and records an FPS (probe WebGPU on a bare page first — it throttles to 1 fps when occluded); the capture confirmed on Edge, Firefox, Safari (or a documented graceful "needs WebGPU" message); web alpha blends match native via a non-sRGB surface view (verified on an alpha-heavy scene); typed text on web wired (`text_input` types in a browser); a `TWE_CAPTURE` hook on the 3D shell via surface readback; the `STATUS_HEAP_CORRUPTION` test flake root-caused and fixed.
 **Artifact:** a CI-published gallery — the same game in each browser with its FPS.

@@ -21,7 +21,7 @@
 >
 > | Milestone | Status |
 > |---|---|
-> | M8 — browser truth (Chrome/Edge/Firefox/Safari; close the live-browser debt) | planned |
+> | M8 — browser truth (Chrome/Edge/Firefox/Safari; close the live-browser debt) | **closed 2026-10-04** ([closeout](changes/2026-10-04-web3d-m8-closeout.md)) |
 > | M9 — asset pipeline parity (KTX2/Basis, meshopt, Draco, anisotropy, morph targets) | planned |
 > | M10 — Studio maturity (debugger, profiler, one-click publish, live editing) | planned |
 > | M11 — game-feature depth (anim blending, physics joints/CCD; a reference 3D game) | planned |

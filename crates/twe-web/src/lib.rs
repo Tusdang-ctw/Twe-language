@@ -178,6 +178,9 @@ struct Shell {
     /// Active touches by DOM identifier, in canvas coordinates
     /// (web3d-M6). Fed to `touch.*` each frame.
     touches: Rc<RefCell<std::collections::HashMap<i32, (f32, f32)>>>,
+    /// Printable characters typed since the last frame (web3d-M8), fed
+    /// to `text_input` each frame.
+    typed: Rc<RefCell<String>>,
     audio: audio::WebAudio,
     /// Set by the first key press or click: browsers only let audio
     /// start after a user gesture.
@@ -248,7 +251,8 @@ async fn run() -> Result<(), String> {
 
     let input = Rc::new(RefCell::new(InputState::default()));
     let gestured = Rc::new(std::cell::Cell::new(false));
-    listen_keys(&window, input.clone(), gestured.clone())?;
+    let typed = Rc::new(RefCell::new(String::new()));
+    listen_keys(&window, input.clone(), gestured.clone(), typed.clone())?;
     listen_focus(&window, &document, input.clone())?;
     listen_pointer(&canvas, input.clone(), gestured.clone())?;
     let touches = Rc::new(RefCell::new(std::collections::HashMap::new()));
@@ -262,16 +266,72 @@ async fn run() -> Result<(), String> {
         accumulator: 0.0,
         input,
         touches,
+        typed,
         audio: audio::WebAudio::default(),
         gestured,
         unlocked: false,
         dim,
     }));
-    start_frame_loop(shell);
+    // web3d-M8: `?capture=N` renders N deterministic ticks (fixed dt,
+    // no input) and stops, so Playwright can pixel-diff a browser frame
+    // against the native reference (`tests/references/m6/`).
+    if let Some(frames) = capture_param(&window) {
+        capture_web(shell, frames);
+    } else {
+        start_frame_loop(shell);
+    }
     if let Some(el) = document.get_element_by_id("twe-status") {
         el.set_text_content(None);
     }
     Ok(())
+}
+
+/// web3d-M8: `?capture=N` in the URL → render N deterministic frames.
+fn capture_param(window: &web_sys::Window) -> Option<u32> {
+    let search = window.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("capture")?.trim().parse().ok()
+}
+
+/// Run `frames` deterministic ticks (one per frame, fixed dt, no input)
+/// and render the last, then set `window.tweCaptured = true` so a
+/// headless browser knows the frame is up. The same per-dimension step
+/// the live loop uses, minus input, audio, stats and timing.
+fn capture_web(shell: Rc<RefCell<Shell>>, frames: u32) {
+    let dt = twec::eval::PHYSICS_DT;
+    let mut acc = 0.0;
+    let mut input = InputState::default();
+    let mut s = shell.borrow_mut();
+    for _ in 0..frames {
+        match s.dim {
+            Dimension::Two => {
+                let _ = frame2d::tick(&mut s.env, None, &mut acc, dt);
+                twec::audio_polish::tick(dt);
+                let (camera, _) = frame2d::render(&mut s.env, dt, CANVAS_W, CANVAS_H);
+                let Shell {
+                    env,
+                    renderer,
+                    assets,
+                    ..
+                } = &mut *s;
+                let _ = renderer.render_2d(&[(&env.draw2d, camera)], assets);
+            }
+            Dimension::Three => {
+                let _ = twec::host3d::sim_tick(&mut s.env, &mut input, dt);
+                let Shell {
+                    env,
+                    renderer,
+                    assets,
+                    ..
+                } = &mut *s;
+                let _ = twec::host3d::render_frame(renderer, env, assets);
+            }
+        }
+    }
+    flush_output(&mut s.env);
+    if let Some(w) = web_sys::window() {
+        let _ = js_sys::Reflect::set(&w, &"tweCaptured".into(), &JsValue::TRUE);
+    }
 }
 
 /// One animation frame: fixed-step simulation, then draw.
@@ -409,6 +469,7 @@ fn feed_touches(shell: &Shell) {
         .collect();
     twec::stdlib::set_touches(&pts);
     twec::stdlib::tick_touch_taps(now_secs());
+    twec::stdlib::set_typed_text(std::mem::take(&mut *shell.typed.borrow_mut()));
 }
 
 /// web3d-M6: DOM touch events → the canvas-coordinate touch map. One
@@ -476,6 +537,7 @@ fn listen_keys(
     window: &web_sys::Window,
     input: Rc<RefCell<InputState>>,
     gestured: Rc<std::cell::Cell<bool>>,
+    typed: Rc<RefCell<String>>,
 ) -> Result<(), String> {
     let name_of = |code: &str| KEYS.iter().find(|(_, c)| *c == code).map(|(n, _)| *n);
     // Keys the page itself would act on (scrolling, focus moves). All
@@ -491,6 +553,17 @@ fn listen_keys(
     let down =
         Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
             g.set(true);
+            // Printable character for `text_input` (not Ctrl/Alt-chorded,
+            // not a named key like "Enter"): DOM `key` is the glyph.
+            if !e.ctrl_key() && !e.alt_key() && !e.meta_key() {
+                let key = e.key();
+                let mut chars = key.chars();
+                if let (Some(ch), None) = (chars.next(), chars.clone().next()) {
+                    if !ch.is_control() {
+                        typed.borrow_mut().push(ch);
+                    }
+                }
+            }
             if let Some(name) = name_of(&e.code()) {
                 // A held key's auto-repeat is not a new press.
                 down_input.borrow_mut().key_down(name);

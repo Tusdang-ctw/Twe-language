@@ -2705,7 +2705,14 @@ pub struct Renderer {
     /// own format, or an sRGB view of it (browsers often give a
     /// WebGPU canvas a non-sRGB format).
     target_format: wgpu::TextureFormat,
+    /// The non-sRGB view format for 2D games: `render_2d` draws through
+    /// it so alpha blends composite in gamma space, matching the native
+    /// 2D shell (web3d-M8).
+    base_format: wgpu::TextureFormat,
     canvas: super::canvas::Canvas,
+    /// The 2D canvas, built for `base_format` (gamma-space blending).
+    /// `canvas` above is the sRGB one the 3D HUD draws through.
+    canvas_2d: super::canvas::Canvas,
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
@@ -3049,15 +3056,23 @@ impl Renderer {
             },
             None => None,
         };
-        let view = match (&frame, &state.offscreen) {
-            (Some(f), _) => f.texture.create_view(&wgpu::TextureViewDescriptor {
-                format: Some(state.target_format),
-                ..Default::default()
-            }),
-            (None, Some(t)) => t.create_view(&wgpu::TextureViewDescriptor::default()),
+        // A real surface draws through the non-sRGB (gamma) view with the
+        // 2D canvas; the headless offscreen (sRGB only) uses the sRGB one.
+        let (canvas, view) = match (&frame, &state.offscreen) {
+            (Some(f), _) => (
+                &mut state.canvas_2d,
+                f.texture.create_view(&wgpu::TextureViewDescriptor {
+                    format: Some(state.base_format),
+                    ..Default::default()
+                }),
+            ),
+            (None, Some(t)) => (
+                &mut state.canvas,
+                t.create_view(&wgpu::TextureViewDescriptor::default()),
+            ),
             (None, None) => return Err("renderer has no target".to_string()),
         };
-        state.canvas.prepare_layers_loaded(
+        canvas.prepare_layers_loaded(
             &state.device,
             &state.queue,
             layers,
@@ -3087,7 +3102,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            state.canvas.draw(&mut pass);
+            canvas.draw(&mut pass);
         }
         state.queue.submit(Some(encoder.finish()));
         if let Some(frame) = frame {
@@ -3170,6 +3185,13 @@ async fn init_renderer(
     let target_format = config.format.add_srgb_suffix();
     if target_format != config.format {
         config.view_formats.push(target_format);
+    }
+    // web3d-M8: a non-sRGB view so 2D games blend in gamma space (the
+    // native 2D shell does). Browsers hand back an sRGB surface, whose
+    // base format is the non-sRGB variant.
+    let base_format = config.format.remove_srgb_suffix();
+    if base_format != config.format && !config.view_formats.contains(&base_format) {
+        config.view_formats.push(base_format);
     }
     let surface_format = target_format;
     if let Some(surface) = &surface {
@@ -3766,6 +3788,7 @@ async fn init_renderer(
     });
 
     let canvas = super::canvas::Canvas::new(&device, &queue, target_format);
+    let canvas_2d = super::canvas::Canvas::new(&device, &queue, base_format);
     Ok(Renderer {
         surface,
         offscreen,
@@ -3783,7 +3806,9 @@ async fn init_renderer(
         displaced_depth: HashMap::new(),
         retained: None,
         target_format,
+        base_format,
         canvas,
+        canvas_2d,
         cube_vertex_buffer,
         cube_index_buffer,
         cube_index_count: CUBE_INDICES.len() as u32,

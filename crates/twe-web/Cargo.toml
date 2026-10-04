@@ -49,6 +49,8 @@ web-sys = { version = "0.3", features = [
     "DomRect",
     "WheelEvent",
     "Window",
+    "Location",
+    "UrlSearchParams",
 ] }
 
 [lints.rust]

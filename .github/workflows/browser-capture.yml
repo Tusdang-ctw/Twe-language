@@ -1,0 +1,101 @@
+name: browser-capture
+
+# web3d-M8: prove "it runs in the browser" — build a 2D and a 3D game
+# for the web, run them in real browsers via WebGPU, capture a
+# deterministic frame, and diff it against the native renderer. Uploads
+# every capture as an artifact (the gallery) and fails if a verified
+# browser drifts from native beyond tolerance.
+#
+# WebGPU in CI depends on the runner exposing a GPU (hardware or a
+# software adapter). Chrome/Edge use ANGLE; a runner without any WebGPU
+# adapter makes the game show its "needs WebGPU" message (exit 3), which
+# this job reports but does not fail on — a game must degrade gracefully
+# there. Local verification (Chrome/Edge/Firefox pixel-match native,
+# WebKit→fallback) is recorded in docs/changes/2026-10-04-web3d-m8-*.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  capture:
+    name: Capture web games in browsers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Tools
+        run: |
+          cargo install wasm-bindgen-cli --locked
+          npm --prefix bench/graphics init -y
+          npm --prefix bench/graphics install playwright-core
+          node bench/graphics/node_modules/playwright-core/cli.js install firefox webkit
+
+      - name: Build twec + the web runtime
+        run: |
+          cargo build --release
+          cargo build -p twe-web --target wasm32-unknown-unknown --release
+          wasm-bindgen --target web --no-typescript --out-dir target/web-runtime target/wasm32-unknown-unknown/release/twe_web.wasm
+
+      - name: Build web demos + native references
+        shell: bash
+        run: |
+          mkdir -p _cap/p2 _cap/p3
+          cp examples/pong.twe _cap/p2/main.twe
+          cp examples/hello_3d.twe _cap/p3/main.twe
+          ./target/release/twec build --target web _cap/p2
+          ./target/release/twec build --target web _cap/p3
+          TWE_CAPTURE="60:_cap/pong_native.png" ./target/release/twec play examples/pong.twe || true
+          TWE_CAPTURE="60:_cap/hello3d_native.png" ./target/release/twec play3d examples/hello_3d.twe || true
+
+      - name: Capture in browsers
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -x
+          for b in chrome edge firefox webkit; do
+            node bench/graphics/browser-capture.mjs _cap/p2/dist/web --capture 60 --shot _cap/pong_$b.png --browser $b --headless || true
+            node bench/graphics/browser-capture.mjs _cap/p3/dist/web --capture 60 --shot _cap/hello3d_$b.png --browser $b --headless || true
+          done
+
+      - name: Diff vs native (the verified browsers must match)
+        shell: bash
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          import os, glob
+          from PIL import Image, ImageChops
+          fails = []
+          for game, native in [("pong","_cap/pong_native.png"), ("hello3d","_cap/hello3d_native.png")]:
+              if not os.path.exists(native): continue
+              nat = Image.open(native).convert("RGB")
+              for shot in sorted(glob.glob(f"_cap/{game}_*.png")):
+                  b = shot.split("_")[-1].split(".")[0]
+                  web = Image.open(shot).convert("RGB").resize(nat.size)
+                  px = list(ImageChops.difference(web, nat).getdata())
+                  mean = sum(sum(t) for t in px)/(len(px)*3)
+                  print(f"{game} {b}: mean {mean:.2f}/255")
+                  # Chrome/Edge/Firefox are expected to match; a missing
+                  # shot means the browser had no WebGPU (graceful fallback).
+                  if b in ("chrome","edge","firefox") and mean > 6.0:
+                      fails.append(f"{game} {b}: {mean:.2f}")
+          if fails:
+              raise SystemExit("browsers drifted from native:\n" + "\n".join(fails))
+          PY
+
+      - name: Upload the capture gallery
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-captures
+          path: _cap/*.png

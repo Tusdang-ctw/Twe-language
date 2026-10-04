@@ -157,6 +157,9 @@ pub fn launch(path: String) -> i32 {
         Ok(env) => env,
         Err(()) => return 1,
     };
+    if let Some((at, out)) = capture_request() {
+        return run_capture(env, at, &out);
+    }
     let last_mtime = current_mtime(&path);
 
     let event_loop = match EventLoop::new() {
@@ -192,6 +195,9 @@ pub fn launch_embedded(source: String) -> i32 {
         print!("{}", env.out);
         env.out.clear();
     }
+    if let Some((at, out)) = capture_request() {
+        return run_capture(env, at, &out);
+    }
     let event_loop = match EventLoop::new() {
         Ok(el) => el,
         Err(e) => {
@@ -206,6 +212,74 @@ pub fn launch_embedded(source: String) -> i32 {
         return 1;
     }
     app.exit_code
+}
+
+/// web3d-M8: `TWE_CAPTURE=N:path` — render frame `N` to a PNG and exit,
+/// off-window through a headless renderer, so a 3D frame is capturable
+/// the way the 2D shell already is (`play.rs`). One fixed tick per
+/// frame, no input: frame `N` is the same picture on any machine.
+fn capture_request() -> Option<(u32, String)> {
+    let spec = std::env::var("TWE_CAPTURE").ok()?;
+    let (n, path) = spec.split_once(':')?;
+    match n.trim().parse::<u32>() {
+        Ok(n) if n > 0 && !path.is_empty() => Some((n, path.to_string())),
+        _ => {
+            eprintln!("[twec] TWE_CAPTURE should be FRAME:PATH, e.g. 90:out.png; ignoring '{spec}'");
+            None
+        }
+    }
+}
+
+fn run_capture(mut env: Env, at: u32, out: &str) -> i32 {
+    let (w, h) = (
+        crate::kernel::canvas::CANVAS_W as u32,
+        crate::kernel::canvas::CANVAS_H as u32,
+    );
+    let mut renderer = match pollster::block_on(Renderer::new_headless(w, h)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[twec] capture: no GPU: {e}");
+            return 1;
+        }
+    };
+    let mut assets = NativeAssets::default();
+    let mut input = crate::host3d::InputState::default();
+    for _ in 0..at {
+        if let Err(e) = crate::host3d::sim_tick(&mut env, &mut input, crate::eval::PHYSICS_DT) {
+            eprintln!("{}:{}: {}", e.line, e.col, e.message);
+            return 1;
+        }
+        if let Err(e) = crate::host3d::render_frame(&mut renderer, &mut env, &mut assets) {
+            eprintln!("[twec] capture render error: {e}");
+            return 1;
+        }
+    }
+    // Meshes load on worker threads; keep drawing until they arrive.
+    for _ in 0..200 {
+        if assets.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let _ = crate::host3d::render_frame(&mut renderer, &mut env, &mut assets);
+    }
+    let _ = crate::host3d::render_frame(&mut renderer, &mut env, &mut assets);
+    let pixels = match renderer.read_pixels() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[twec] capture read: {e}");
+            return 1;
+        }
+    };
+    match image::save_buffer(out, &pixels, w, h, image::ColorType::Rgba8) {
+        Ok(()) => {
+            eprintln!("[twec] captured frame {at}: {out}");
+            0
+        }
+        Err(e) => {
+            eprintln!("[twec] capture write {out}: {e}");
+            1
+        }
+    }
 }
 
 fn current_mtime(path: &str) -> Option<SystemTime> {
