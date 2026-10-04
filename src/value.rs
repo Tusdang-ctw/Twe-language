@@ -532,6 +532,11 @@ pub struct Env {
     global_names: Vec<Rc<str>>,
     global_values: Vec<Option<TaggedValue>>,
     global_index: NameMap<u32>,
+    /// web3d-M10 session 1: the global-slot index below which globals are
+    /// stdlib builtins / modules (set after `stdlib::install`). The
+    /// debugger's variable inspection skips these so only user globals
+    /// show.
+    user_global_base: usize,
     pub out: String,
     pub on_update: Option<OnUpdateHandler>,
     /// Top-level `on render():` handler — runs once per rendered
@@ -676,13 +681,24 @@ pub struct OnDeathHandler {
 }
 
 impl Env {
-    /// web3d-M10 session 1: the live global bindings as (name, display)
-    /// pairs, for the debugger's variable inspection.
+    /// Mark the current global count as the stdlib/user boundary — all
+    /// globals declared after this are user globals. Called once after
+    /// `stdlib::install`.
+    pub fn mark_user_globals(&mut self) {
+        self.user_global_base = self.global_names.len();
+    }
+
+    /// web3d-M10 session 1: the live USER global bindings as (name,
+    /// display) pairs, for the debugger's variable inspection. Stdlib
+    /// builtins / modules (installed before `mark_user_globals`) are
+    /// skipped so the panel shows only the script's own globals.
     pub fn debug_globals(&self) -> Vec<(String, String)> {
         self.global_names
             .iter()
             .zip(&self.global_values)
-            .filter_map(|(n, v)| v.map(|v| (n.to_string(), v.display())))
+            .enumerate()
+            .filter(|(i, _)| *i >= self.user_global_base)
+            .filter_map(|(_, (n, v))| v.map(|v| (n.to_string(), v.display())))
             .collect()
     }
 
@@ -710,6 +726,7 @@ impl Env {
             global_names: Vec::new(),
             global_values: Vec::new(),
             global_index: NameMap::default(),
+            user_global_base: 0,
             out: String::new(),
             on_update: None,
             top_on_render: None,

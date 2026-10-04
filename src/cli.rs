@@ -26,6 +26,7 @@ const USAGE: &str = "usage: twec [run [--frames N] <file> | \
      perf-diff [--threshold PCT] <baseline.json> <current.json> | \
      doctor [--json] [-o PATH] | \
      fmt [--in-place|--check] <file> | \
+     debug [--frames N] <file>  (stdio JSON debugger: breakpoints / step / inspect) | \
      types <file> | lsp | parse <file> | version]";
 
 /// web3d-M1: the bytecode VM was removed (see
@@ -79,6 +80,10 @@ pub fn run() {
         // targets, compression schemes, and a VRAM estimate vs the
         // 512 MiB budget. `--json` for Studio / LLM consumers.
         "asset" => process::exit(handle_asset(&args[2..])),
+        // web3d-M10 session 1: run a program under the debugger with a
+        // line-JSON protocol on stdio, so Studio can set breakpoints,
+        // step, and read the paused scope.
+        "debug" => process::exit(handle_debug(&args[2..])),
         "verify" => process::exit(handle_verify(&args[2..])),
         // Phase 33 session 1: portable grammar export — the LLM
         // contract surface. `twec grammar --format gbnf` produces a
@@ -472,6 +477,212 @@ fn handle_info(args: &[String]) -> i32 {
 /// material features the runtime does not yet load. Exit code is 1
 /// when the asset is over the VRAM budget (a CI-useful signal), 2 on
 /// a usage / read error.
+/// web3d-M10 session 1: `twec debug [--frames N] <file>`. Runs the
+/// program under the tree-walker debugger, speaking a line-oriented JSON
+/// protocol on stdio so Studio (or a test) can drive it:
+///
+/// Host → debugger (one JSON object per stdin line):
+///   {"cmd":"set_breakpoints","lines":[3,5]}
+///   {"cmd":"run"}                     (start execution)
+///   {"cmd":"continue"|"step_into"|"step_over"|"stop"}   (while paused)
+/// Debugger → host (one JSON object per stdout line):
+///   {"event":"ready"}
+///   {"event":"ok"}                    (after set_breakpoints)
+///   {"event":"paused","line":N,"reason":"breakpoint"|"step",
+///     "call_depth":D,"globals":[[n,v],…],"locals":[…],"entity_count":E}
+///   {"event":"exited","ok":true}
+fn handle_debug(args: &[String]) -> i32 {
+    use crate::debug::{self, Paused, Resume};
+    use crate::json::{self, Value};
+    use std::collections::HashSet;
+    use std::io::{BufRead, Write};
+
+    let mut frames: u32 = 300;
+    let mut path: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--frames" => {
+                let Some(v) = args.get(i + 1).and_then(|s| s.parse::<u32>().ok()) else {
+                    eprintln!("error: --frames takes a number");
+                    return 2;
+                };
+                frames = v;
+                i += 2;
+            }
+            s if s.starts_with('-') => {
+                eprintln!("error: unknown flag for `debug`: {s}");
+                return 2;
+            }
+            s => {
+                path = Some(s);
+                i += 1;
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("error: `twec debug` requires a file path");
+        return 2;
+    };
+    let src = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not read '{path}': {e}");
+            return 2;
+        }
+    };
+    let tokens = match crate::lexer::lex(&src) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+    let program = match crate::parser::parse(&tokens) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{path}:{e}");
+            return 1;
+        }
+    };
+
+    let emit = |v: Value| {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{}", json::to_string(&v));
+        let _ = out.flush();
+    };
+    emit(json::obj([("event", Value::Str("ready".into()))]));
+
+    // Command phase: read breakpoints / run on stdin until "run".
+    let mut reader = std::io::BufReader::new(std::io::stdin());
+    let mut breakpoints: HashSet<u32> = HashSet::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return 0, // EOF before run: nothing to do
+            Ok(_) => {}
+            Err(_) => return 1,
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(cmd) = json::parse(trimmed) else {
+            emit(json::obj([
+                ("event", Value::Str("error".into())),
+                ("message", Value::Str("bad JSON".into())),
+            ]));
+            continue;
+        };
+        match cmd.get("cmd").and_then(|c| c.as_str()) {
+            Some("set_breakpoints") => {
+                breakpoints = cmd
+                    .get("lines")
+                    .and_then(|l| l.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_i64().map(|n| n as u32)).collect())
+                    .unwrap_or_default();
+                emit(json::obj([("event", Value::Str("ok".into()))]));
+            }
+            Some("run") => break,
+            Some("stop") => {
+                emit(json::obj([
+                    ("event", Value::Str("exited".into())),
+                    ("ok", Value::Bool(true)),
+                ]));
+                return 0;
+            }
+            _ => emit(json::obj([
+                ("event", Value::Str("error".into())),
+                ("message", Value::Str("unknown cmd".into())),
+            ])),
+        }
+    }
+
+    // Run phase: install the debug session. The pause callback writes the
+    // snapshot and blocks reading the next command from stdin.
+    let pairs_json = |pairs: &[(String, String)]| {
+        Value::Array(
+            pairs
+                .iter()
+                .map(|(n, v)| Value::Array(vec![Value::Str(n.clone()), Value::Str(v.clone())]))
+                .collect(),
+        )
+    };
+    let on_pause = move |p: &Paused| -> Resume {
+        let ev = json::obj([
+            ("event", Value::Str("paused".into())),
+            ("line", Value::Int(p.line as i64)),
+            (
+                "reason",
+                Value::Str(
+                    match p.reason {
+                        debug::PauseReason::Breakpoint => "breakpoint",
+                        debug::PauseReason::Step => "step",
+                    }
+                    .into(),
+                ),
+            ),
+            ("call_depth", Value::Int(p.call_depth as i64)),
+            ("globals", pairs_json(&p.globals)),
+            ("locals", pairs_json(&p.locals)),
+            ("entity_count", Value::Int(p.entity_count as i64)),
+        ]);
+        {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{}", json::to_string(&ev));
+            let _ = out.flush();
+        }
+        // Block for the next command.
+        let mut cmd_line = String::new();
+        loop {
+            cmd_line.clear();
+            match reader.read_line(&mut cmd_line) {
+                Ok(0) => return Resume::Continue, // host closed stdin
+                Ok(_) => {}
+                Err(_) => return Resume::Stop,
+            }
+            let t = cmd_line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            let action = json::parse(t)
+                .ok()
+                .and_then(|c| c.get("cmd").and_then(|s| s.as_str()).map(String::from));
+            return match action.as_deref() {
+                Some("continue") => Resume::Continue,
+                Some("step_into") => Resume::StepInto,
+                Some("step_over") => Resume::StepOver,
+                Some("stop") => Resume::Stop,
+                _ => Resume::Continue,
+            };
+        }
+    };
+    debug::install(breakpoints, Box::new(on_pause));
+    let result = crate::eval::run_with_frames(&program, frames, 1.0 / 60.0);
+    debug::clear();
+    match result {
+        Ok(out) => {
+            if !out.is_empty() {
+                print!("{out}");
+            }
+            emit(json::obj([
+                ("event", Value::Str("exited".into())),
+                ("ok", Value::Bool(true)),
+            ]));
+            0
+        }
+        Err(e) => {
+            emit(json::obj([
+                ("event", Value::Str("exited".into())),
+                ("ok", Value::Bool(false)),
+                ("error", Value::Str(format!("{}:{}: {}", e.line, e.col, e.message))),
+            ]));
+            1
+        }
+    }
+}
+
 fn handle_asset(args: &[String]) -> i32 {
     let sub = args.first().map(|s| s.as_str());
     match sub {

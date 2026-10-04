@@ -1020,6 +1020,9 @@ pub fn install(env: &mut Env) {
             kind: "module",
         }))),
     );
+    // web3d-M10 session 1: everything above is stdlib; globals declared
+    // after this are the script's own (the debugger shows only those).
+    env.mark_user_globals();
 }
 
 // Phase 10 session 8: the pause flag, callable from the play loop
