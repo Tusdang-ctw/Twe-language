@@ -455,6 +455,10 @@ pub struct BuildArgs {
     /// artifact. CLI flag `--steam`; manifest equivalent
     /// `[steam] enabled = true`.
     pub steam: bool,
+    /// web3d-M10 session 3: emit a machine-readable JSON result on
+    /// stdout (target, config, artifact path, status) so Studio's
+    /// one-click publish can invoke one call and show the artifact links.
+    pub json: bool,
 }
 
 #[derive(Debug)]
@@ -750,6 +754,9 @@ pub fn run(mut args: BuildArgs) -> i32 {
             project.assets.len(),
             if project.assets.len() == 1 { "" } else { "s" }
         );
+        if args.json {
+            print_build_result_json(&args, &project, &out_path, true, true);
+        }
         return 0;
     }
     // Phase 12 session 4: produce a self-extracting `.exe` for
@@ -817,7 +824,45 @@ pub fn run(mut args: BuildArgs) -> i32 {
             return 1;
         }
     }
+    // web3d-M10 session 3: one-click-publish result for Studio. The
+    // human-readable progress above goes to stderr; this single JSON
+    // object goes to stdout so a caller can parse it unambiguously.
+    if args.json {
+        print_build_result_json(&args, &project, &out_path, exit == 0, false);
+    }
     exit
+}
+
+/// web3d-M10 session 3: emit the machine-readable build result on stdout
+/// (one JSON object) for Studio's one-click publish.
+fn print_build_result_json(
+    args: &BuildArgs,
+    project: &DiscoveredProject,
+    out_path: &Path,
+    ok: bool,
+    dry_run: bool,
+) {
+    use crate::json::{self, Value};
+    let result = json::obj([
+        ("ok", Value::Bool(ok)),
+        ("dry_run", Value::Bool(dry_run)),
+        ("target", Value::Str(args.target.label().to_string())),
+        ("config", Value::Str(format!("{:?}", args.config).to_lowercase())),
+        ("project", Value::Str(project.name.clone())),
+        ("artifact", Value::Str(out_path.display().to_string())),
+        (
+            "kind",
+            Value::Str(
+                if matches!(args.target, BuildTarget::Web) {
+                    "directory"
+                } else {
+                    "file"
+                }
+                .to_string(),
+            ),
+        ),
+    ]);
+    println!("{}", json::to_string(&result));
 }
 
 /// Phase 12 session 10: read a bundle's provenance + entry list and

@@ -35,6 +35,32 @@ fn temp_project(name: &str) -> PathBuf {
 }
 
 #[test]
+fn build_json_emits_machine_readable_result() {
+    // web3d-M10 session 3: `twec build --json` emits one JSON object on
+    // stdout (human progress goes to stderr). --dry-run keeps it fast.
+    let dir = temp_project("build_json");
+    fs::write(dir.join("main.twe"), "print(\"hi\")\n").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_twec"))
+        .args(["build", "--json", "--dry-run"])
+        .arg(&dir)
+        .output()
+        .expect("run twec build");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .expect("a JSON line on stdout");
+    let v = twec::json::parse(line).expect("parseable JSON");
+    assert_eq!(v.get("ok"), Some(&twec::json::Value::Bool(true)));
+    assert!(v
+        .get("project")
+        .and_then(|p| p.as_str())
+        .is_some_and(|p| p.contains("build_json")));
+    assert!(v.get("dry_run").is_some());
+    assert!(v.get("artifact").and_then(|a| a.as_str()).is_some());
+}
+
+#[test]
 fn audit_warns_about_draco_and_vram() {
     // web3d-M9 session 8: the build audit flags a compressed asset the
     // runtime can't load, and reports a VRAM estimate.
@@ -617,6 +643,7 @@ fn write_steam_layout_creates_expected_files() {
         out: None,
         dry_run: false,
         steam: true,
+        json: false,
     };
     write_steam_layout(&project, &out_path, None, &args).expect("layout");
     let steam_dir = out_path
@@ -662,6 +689,7 @@ fn steam_manifest_overrides_app_id() {
         out: None,
         dry_run: false,
         steam: true,
+        json: false,
     };
     write_steam_layout(&project, &out_path, Some(&manifest), &args).expect("layout");
     let steam_dir = out_path
@@ -1198,6 +1226,7 @@ fn scaffolding_targets_need_the_experimental_feature() {
             out: Some(dir.join("out")),
             dry_run: false,
             steam: false,
+            json: false,
         };
         assert_eq!(twec::build::run(args), 2, "{target:?} should be refused");
         assert!(!dir.join("out").exists(), "{target:?} wrote output");

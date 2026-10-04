@@ -12,6 +12,11 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Added (Studio, M10)
+- **`twec build --json`** (web3d-M10 session 3) — emits one machine-readable JSON result on stdout (`ok`, `target`, `config`, `project`, `artifact`, `kind`) with human progress on stderr, for Studio's one-click publish.
+- **Profiler feed** (web3d-M10 session 2) — a per-frame `FrameSample` ring (frame/sim/render ms, GC ms, bytes-alive, draw-calls, entity count) with a JSON API the Studio profiler panel polls; populated by the 3D play loop.
+- **Debugger engine** (web3d-M10 session 1) — the tree-walker gained breakpoints, step-into/over, and scope inspection (globals + locals + entity count), via a thread-local debug session hooked into `eval_stmt` (free when no debugger is attached). The stdio protocol + Studio UI follow.
+
 ### Added (assets)
 - **`twec asset transcode [-o out.glb] <file>`** (web3d-M9 sessions 5-7, `--features asset-tools`) — build-time decode of the glTF compression extensions into a plain `.glb` the runtime loads unchanged. **Draco** (`KHR_draco_mesh_compression`) and **KTX2/Basis** (`KHR_texture_basisu` → RGBA8 PNG) are decoded; **meshopt** errors clearly rather than risk corrupt geometry (the meshopt 0.6 crate exposes no inverse vertex filters). The decoder crates (draco-gltf, ktx2, basisu, meshopt) compile **only** under `asset-tools` and are referenced solely from `src/asset_transcode.rs` — the default runtime and the wasm32 browser build stay pure-Rust. Verified against real Khronos samples (Box-Draco vs plain Box; a Basis-UASTC KTX2).
 - **Build asset audit** (web3d-M9 session 8) — `twec build` now estimates total texture+geometry VRAM against the 512 MiB budget and warns about any asset using a compression extension the runtime can't load (pointing at `twec asset transcode`).

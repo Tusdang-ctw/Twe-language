@@ -630,6 +630,9 @@ impl ApplicationHandler for App {
                 let frame_dt_clamped = (frame_dt as f64).min(crate::eval::MAX_FRAME_DT);
                 self.sim_accumulator += frame_dt_clamped;
                 let mut substeps: u32 = 0;
+                // web3d-M10 session 2: time the sim + render split for the
+                // Studio profiler panel.
+                let sim_start = Instant::now();
                 while self.sim_accumulator >= crate::eval::PHYSICS_DT
                     && substeps < crate::eval::MAX_SUBSTEPS
                 {
@@ -644,11 +647,21 @@ impl ApplicationHandler for App {
                 if substeps >= crate::eval::MAX_SUBSTEPS {
                     self.sim_accumulator = 0.0;
                 }
+                let sim_ms = sim_start.elapsed().as_secs_f32() * 1000.0;
+                let render_start = Instant::now();
                 let rendered = crate::host3d::render_frame(
                     &mut state.renderer,
                     &mut self.env,
                     &mut self.assets,
                 );
+                let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
+                crate::profile::push_sample(crate::profile::FrameSample::from_env(
+                    &self.env,
+                    frame_dt * 1000.0,
+                    sim_ms,
+                    render_ms,
+                    0, // draw-call count from the renderer: a follow-on
+                ));
                 if !self.env.out.is_empty() {
                     print!("{}", self.env.out);
                     self.env.out.clear();

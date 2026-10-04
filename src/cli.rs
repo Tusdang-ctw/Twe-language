@@ -8,7 +8,7 @@ const USAGE: &str = "usage: twec [run [--frames N] <file> | \
      play_visual <file> | \
      replay <script.twe> <replay-file> | \
      profile [--frames N] [-o trace.json] <file> | \
-     build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] <project_dir> | \
+     build [--target T] [--config C] [--out PATH] [--dry-run] [--steam] [--json] <project_dir> | \
      bundle [-o PATH] <project_dir> | \
      info <bundle-or-exe> | \
      asset info [--json] <file.glb|.gltf|.png|.jpg|.hdr|.ktx2> | \
@@ -276,6 +276,7 @@ fn handle_build(args: &[String]) -> i32 {
     let mut out: Option<std::path::PathBuf> = None;
     let mut dry_run = false;
     let mut steam = false;
+    let mut json = false;
     let mut project_dir: Option<std::path::PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -325,6 +326,10 @@ fn handle_build(args: &[String]) -> i32 {
                 steam = true;
                 i += 1;
             }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
             other if other.starts_with("--") => {
                 eprintln!("error: unknown flag '{other}'");
                 eprintln!("{USAGE}");
@@ -356,6 +361,7 @@ fn handle_build(args: &[String]) -> i32 {
         out,
         dry_run,
         steam,
+        json,
     };
     crate::build::run(args)
 }

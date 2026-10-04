@@ -135,6 +135,107 @@ fn render_chrome_trace() -> String {
     out
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// web3d-M10 session 2: per-frame sample ring for the Studio profiler
+// panel. Separate from the Chrome-trace events above (which are
+// function-level): this is one compact sample per frame — frame time,
+// its sim/render split, GC cost, live bytes, draw calls, entity count —
+// kept in a small ring the panel polls. The push is a single struct
+// into a bounded deque, so the play loop populates it every frame.
+// ─────────────────────────────────────────────────────────────────────
+
+/// One frame's performance sample.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FrameSample {
+    pub frame_ms: f32,
+    pub sim_ms: f32,
+    pub render_ms: f32,
+    pub gc_ms: f32,
+    pub bytes_alive: u64,
+    pub draw_calls: u32,
+    pub entity_count: u32,
+    pub sim_time: f64,
+}
+
+impl FrameSample {
+    /// Assemble a sample from the live `Env` + the caller's timings,
+    /// pulling the GC cost, live bytes, entity count and sim time from
+    /// the engine so the play loop only supplies frame / sim / render
+    /// milliseconds and the draw-call count.
+    pub fn from_env(
+        env: &crate::value::Env,
+        frame_ms: f32,
+        sim_ms: f32,
+        render_ms: f32,
+        draw_calls: u32,
+    ) -> Self {
+        FrameSample {
+            frame_ms,
+            sim_ms,
+            render_ms,
+            gc_ms: crate::heap::gc_last_collect_ns() as f32 / 1.0e6,
+            bytes_alive: crate::heap::gc_bytes_alive() as u64,
+            draw_calls,
+            entity_count: env.debug_entity_count() as u32,
+            sim_time: env.sim_time,
+        }
+    }
+}
+
+/// How many frames of history the ring keeps (~4 s at 60 fps).
+pub const SAMPLE_RING_CAP: usize = 240;
+
+thread_local! {
+    static SAMPLES: RefCell<std::collections::VecDeque<FrameSample>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// Record one frame's sample (called once per frame by the play loop).
+pub fn push_sample(s: FrameSample) {
+    SAMPLES.with(|c| {
+        let mut ring = c.borrow_mut();
+        if ring.len() >= SAMPLE_RING_CAP {
+            ring.pop_front();
+        }
+        ring.push_back(s);
+    });
+}
+
+/// The most recent `n` frame samples (oldest first), for the panel.
+pub fn recent_samples(n: usize) -> Vec<FrameSample> {
+    SAMPLES.with(|c| {
+        let ring = c.borrow();
+        let start = ring.len().saturating_sub(n);
+        ring.iter().skip(start).copied().collect()
+    })
+}
+
+/// Clear the sample ring (e.g. on hot reload).
+pub fn clear_samples() {
+    SAMPLES.with(|c| c.borrow_mut().clear());
+}
+
+/// Serialise the most recent `n` samples as a JSON array for Studio.
+pub fn samples_json(n: usize) -> String {
+    use crate::json::{self, Value};
+    let arr: Vec<Value> = recent_samples(n)
+        .iter()
+        .map(|s| {
+            json::obj([
+                ("frame_ms", Value::Float(s.frame_ms as f64)),
+                ("sim_ms", Value::Float(s.sim_ms as f64)),
+                ("render_ms", Value::Float(s.render_ms as f64)),
+                ("gc_ms", Value::Float(s.gc_ms as f64)),
+                ("bytes_alive", Value::Int(s.bytes_alive as i64)),
+                ("draw_calls", Value::Int(s.draw_calls as i64)),
+                ("entity_count", Value::Int(s.entity_count as i64)),
+                ("sim_time", Value::Float(s.sim_time)),
+            ])
+        })
+        .collect();
+    json::to_string(&Value::Array(arr))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +285,34 @@ mod tests {
         assert!(body.ends_with("]}"));
         assert!(body.contains("\"name\":\"alpha\""));
         assert!(body.contains("\"ph\":\"X\""));
+    }
+
+    #[test]
+    fn frame_samples_ring_and_json() {
+        clear_samples();
+        for i in 0..(SAMPLE_RING_CAP + 10) {
+            push_sample(FrameSample {
+                frame_ms: i as f32 * 0.1,
+                entity_count: i as u32,
+                bytes_alive: 1000 + i as u64,
+                ..Default::default()
+            });
+        }
+        // The ring is bounded and keeps the newest samples.
+        let all = recent_samples(usize::MAX);
+        assert_eq!(all.len(), SAMPLE_RING_CAP);
+        assert_eq!(
+            all.last().unwrap().entity_count,
+            (SAMPLE_RING_CAP + 9) as u32
+        );
+        // JSON of the last few is a parseable array of objects.
+        let text = samples_json(3);
+        let v = crate::json::parse(&text).expect("samples JSON parses");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 3);
+        assert!(arr[0].get("frame_ms").is_some());
+        assert!(arr[0].get("entity_count").is_some());
+        clear_samples();
     }
 
     #[test]
