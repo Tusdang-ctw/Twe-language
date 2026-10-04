@@ -59,25 +59,36 @@ pub fn transcode(in_path: &Path, out_path: &Path) -> Result<TranscodeReport, Str
         ..Default::default()
     };
 
-    // Security: for a `.gltf` with external buffers/images, refuse any
-    // URI that escapes the input's directory before the decoder reads
-    // (and embeds) it — a crafted glTF must not exfiltrate an arbitrary
-    // local file, nor trigger a UNC/SMB fetch. GLB inputs are self-
-    // contained and have no external URIs.
-    reject_unsafe_uris(&bytes)?;
-
     // Which extensions are present (from the raw document).
     let exts = extensions_used(&bytes)?;
     let has_draco = exts.iter().any(|e| e == "KHR_draco_mesh_compression");
     let has_meshopt = exts.iter().any(|e| e == "EXT_meshopt_compression");
     let has_ktx2 = exts.iter().any(|e| e == "KHR_texture_basisu");
 
+    // Security: confine the decoder's file access. A GLB is self-
+    // contained (no external reads). A `.gltf` with external buffers /
+    // images is rebuilt into a sandbox temp dir that holds ONLY the
+    // referenced files — each validated (relative, no scheme/UNC/`..`)
+    // and canonicalised to be inside the input's own directory — copied
+    // under flat names, with the JSON reserialised through serde and its
+    // URIs rewritten to those names. The decoder then parses exactly the
+    // bytes we validated and can reach only files we placed, so neither a
+    // path-traversal nor a parser-differential can make it read (and
+    // embed) an arbitrary local file. (`twec asset transcode` is a local
+    // build tool on dev-authored assets — UGC is out of scope — but this
+    // removes the vector rather than guarding the string.)
+    let sandbox = sandbox_input(in_path, &bytes)?;
+
     // Pass 1 — Draco (and container normalisation). draco-gltf decodes
     // every Draco primitive and re-emits a plain GLB preserving scene,
     // materials, skins and animations; it also resolves an external
     // `.bin`, so a `.gltf` input becomes a self-contained `.glb`.
-    let base = in_path.parent();
-    let mut glb = draco_pass(&bytes, base)?;
+    let glb_result = draco_pass(&sandbox.bytes, sandbox.base.as_deref());
+    // Always clean up the sandbox, even on a decode error.
+    if let Some(dir) = &sandbox.tempdir {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let mut glb = glb_result?;
     report.draco = has_draco;
 
     // Pass 2 — meshopt geometry.
@@ -98,35 +109,149 @@ pub fn transcode(in_path: &Path, out_path: &Path) -> Result<TranscodeReport, Str
     Ok(report)
 }
 
-/// Refuse a glTF whose `buffers` or `images` reference a URI that would
-/// escape the input's directory (absolute / UNC / scheme / `..`), so the
-/// transcoder never reads — and embeds into its output — an arbitrary
-/// local file. `data:` URIs are embedded content and allowed.
-fn reject_unsafe_uris(bytes: &[u8]) -> Result<(), String> {
+/// A decoder input confined for safe external-file access.
+struct SandboxedInput {
+    /// The glTF/GLB bytes the decoder should parse.
+    bytes: Vec<u8>,
+    /// The directory the decoder resolves external URIs from (the
+    /// sandbox for a `.gltf`, `None` for a self-contained GLB).
+    base: Option<std::path::PathBuf>,
+    /// The temp dir to remove when done (if one was created).
+    tempdir: Option<std::path::PathBuf>,
+}
+
+/// Build a decoder input that can only reach validated files. A GLB is
+/// returned as-is (self-contained). A `.gltf` is rebuilt into a fresh
+/// temp dir containing only its external buffers/images — each a
+/// relative, scheme/UNC/`..`-free URI whose *canonical* path is inside
+/// the input's own directory — copied under flat names, with the JSON
+/// reserialised and its URIs rewritten. See the call site for why.
+fn sandbox_input(in_path: &Path, bytes: &[u8]) -> Result<SandboxedInput, String> {
     if bytes.len() >= 4 && &bytes[0..4] == b"glTF" {
-        return Ok(()); // a GLB is self-contained
+        return Ok(SandboxedInput {
+            bytes: bytes.to_vec(),
+            base: None,
+            tempdir: None,
+        });
     }
-    let doc: serde_json::Value =
+    let mut doc: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| format!("not valid glTF JSON: {e}"))?;
+    let in_dir = in_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Path::new(".").to_path_buf());
+    let canon_in_dir = in_dir
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve input directory: {e}"))?;
+
+    // Only create a sandbox if there is at least one external file URI.
+    let has_external = ["buffers", "images"].iter().any(|k| {
+        doc.get(k).and_then(|v| v.as_array()).is_some_and(|arr| {
+            arr.iter().any(|it| {
+                it.get("uri")
+                    .and_then(|u| u.as_str())
+                    .is_some_and(|u| !u.starts_with("data:"))
+            })
+        })
+    });
+    if !has_external {
+        return Ok(SandboxedInput {
+            bytes: bytes.to_vec(),
+            base: None,
+            tempdir: None,
+        });
+    }
+
+    let tempdir = std::env::temp_dir().join(format!(
+        "twe_transcode_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&tempdir).map_err(|e| format!("sandbox dir: {e}"))?;
+
+    let mut copy_counter = 0usize;
     for key in ["buffers", "images"] {
-        if let Some(arr) = doc.get(key).and_then(|v| v.as_array()) {
-            for item in arr {
-                if let Some(uri) = item.get("uri").and_then(|u| u.as_str()) {
-                    if uri.starts_with("data:") {
-                        continue;
-                    }
-                    if !crate::asset_info::is_safe_asset_uri(uri) {
-                        return Err(format!(
-                            "refusing to transcode: {key} references an unsafe URI '{uri}' \
-                             (absolute, UNC, a URL scheme, or '..' — it would read a file outside \
-                             the asset's directory)"
-                        ));
-                    }
-                }
+        let Some(arr) = doc.get_mut(key).and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for item in arr.iter_mut() {
+            let Some(uri) = item.get("uri").and_then(|u| u.as_str()).map(String::from) else {
+                continue;
+            };
+            if uri.starts_with("data:") {
+                continue;
             }
+            if !crate::asset_info::is_safe_asset_uri(&uri) {
+                let _ = std::fs::remove_dir_all(&tempdir);
+                return Err(format!(
+                    "refusing to transcode: {key} references an unsafe URI '{uri}' \
+                     (absolute, UNC, a URL scheme, or '..')"
+                ));
+            }
+            // Resolve + canonicalise + confirm it is inside the input dir
+            // (catches symlinks and any resolution quirk).
+            let src = in_dir.join(decode_uri(&uri));
+            let canon = src.canonicalize().map_err(|e| {
+                let _ = std::fs::remove_dir_all(&tempdir);
+                format!("cannot resolve '{uri}': {e}")
+            })?;
+            if !canon.starts_with(&canon_in_dir) {
+                let _ = std::fs::remove_dir_all(&tempdir);
+                return Err(format!(
+                    "refusing to transcode: '{uri}' resolves outside the asset's directory"
+                ));
+            }
+            let ext = canon
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("bin");
+            let flat = format!("f{copy_counter}.{ext}");
+            copy_counter += 1;
+            std::fs::copy(&canon, tempdir.join(&flat)).map_err(|e| {
+                let _ = std::fs::remove_dir_all(&tempdir);
+                format!("sandbox copy '{uri}': {e}")
+            })?;
+            item["uri"] = serde_json::json!(flat);
         }
     }
-    Ok(())
+
+    let gltf_path = tempdir.join("model.gltf");
+    let reserialised = serde_json::to_vec(&doc).map_err(|e| format!("reserialise glTF: {e}"))?;
+    std::fs::write(&gltf_path, &reserialised).map_err(|e| format!("sandbox write: {e}"))?;
+    Ok(SandboxedInput {
+        bytes: reserialised,
+        base: Some(tempdir.clone()),
+        tempdir: Some(tempdir),
+    })
+}
+
+/// Percent-decode a glTF URI (reuses the inspector's logic path via a
+/// small local copy to avoid a cross-module private dependency).
+fn decode_uri(uri: &str) -> String {
+    let b = uri.as_bytes();
+    let hv = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hv(b[i + 1]), hv(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Read `extensionsUsed` from the raw JSON — WITHOUT the strict `gltf`
