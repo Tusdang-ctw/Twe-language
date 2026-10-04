@@ -2704,6 +2704,9 @@ fn run_block(env: &mut Env, stmts: &[Stmt]) -> Result<(), RuntimeError> {
 }
 
 fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
+    // web3d-M10 session 1: debugger statement hook. A no-op (one
+    // thread-local check) unless a debug session is installed.
+    crate::debug::on_statement(stmt.line(), env);
     match stmt {
         Stmt::Let {
             name, value, res, ..

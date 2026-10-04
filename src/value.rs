@@ -676,6 +676,35 @@ pub struct OnDeathHandler {
 }
 
 impl Env {
+    /// web3d-M10 session 1: the live global bindings as (name, display)
+    /// pairs, for the debugger's variable inspection.
+    pub fn debug_globals(&self) -> Vec<(String, String)> {
+        self.global_names
+            .iter()
+            .zip(&self.global_values)
+            .filter_map(|(n, v)| v.map(|v| (n.to_string(), v.display())))
+            .collect()
+    }
+
+    /// The innermost call/handler frame's locals as (name, display)
+    /// pairs. Empty while running top-level code.
+    pub fn debug_locals(&self) -> Vec<(String, String)> {
+        self.frames
+            .last()
+            .map(|f| {
+                f.locals
+                    .iter()
+                    .map(|(n, v)| (n.to_string(), v.display()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The count of live entities (for the debugger's entity panel).
+    pub fn debug_entity_count(&self) -> usize {
+        self.active_entities.len()
+    }
+
     pub fn new() -> Self {
         Self {
             global_names: Vec::new(),

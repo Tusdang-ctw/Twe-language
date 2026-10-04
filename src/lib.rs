@@ -7,6 +7,10 @@ pub mod api_snapshot;
 // inspector with a VRAM estimate against the 512 MiB budget. Reads
 // metadata only (no wgpu device), so it compiles everywhere.
 pub mod asset_info;
+// web3d-M10 session 1: breakpoint / step debugger for the tree-walker.
+// A thread-local control block; `eval_stmt` calls `debug::on_statement`.
+// Cheap (immediate return) when no debug session is installed.
+pub mod debug;
 // web3d-M9 sessions 5-7: build-time asset transcoding (Draco + meshopt
 // geometry, KTX2/Basis textures) → plain glb. Compiles only under the
 // `asset-tools` feature (the module is empty otherwise); its decoder
