@@ -4,7 +4,7 @@
 >
 > All time estimates assume a single primary developer working ~15 hours per week with AI assistance and the reading list completed. Adjust upward for less time, broader scope, or unfinished prerequisites.
 
-> **Active line since 2026-09-27: `web3d-M0 … M6`.** The Web3D pivot reopened the v1.0 thesis: v1.0 is now a top-down 3D "survivors" game running in Chrome (WebGPU) and natively from one Rust + wgpu kernel. Milestones, exit criteria and scope are canonical in [`changes/2026-09-27-web3d-pivot.md`](changes/2026-09-27-web3d-pivot.md), with one closeout note per milestone in `docs/changes/`. The phase history below (Phases 0–41) is kept as the record of how Twe got here. Several later phases shipped as scaffolding that is now behind `--features experimental`.
+> **The web3d pivot (`M0 … M7`) is complete as of 2026-10-04.** It reopened the v1.0 thesis — a top-down 3D "survivors" game running in Chrome (WebGPU) and natively from one Rust + wgpu kernel — and delivered it: `survive3d` plays in Chrome, graphics are at or below Three.js's image error on all 12 benchmark scenes, and macroquad is gone (one kernel draws 2D and 3D, native and web). Milestones, exit criteria and scope are canonical in [`changes/2026-09-27-web3d-pivot.md`](changes/2026-09-27-web3d-pivot.md), with one closeout note per milestone in `docs/changes/`.
 >
 > | Milestone | Status |
 > |---|---|
@@ -13,9 +13,19 @@
 > | M2 — workspace + kernel + WebGPU | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m2-closeout.md)) |
 > | M3 — SoA entities, `look:`, materials, HUD | **closed 2026-09-28** ([closeout](changes/2026-09-28-web3d-m3-closeout.md)) |
 > | M4 — `survive3d` slice + Studio viewport | **codebase-closed 2026-09-28**; itch.io publish pending (maintainer) — [closeout](changes/2026-09-28-web3d-m4-closeout.md) |
-> | M5 — measured LLM benchmark (parallel, from week 10) | planned |
-> | M7 — graphics beyond Three.js (after M4; part of v1.0) | **active** (opened 2026-09-29; [sessions](changes/2026-09-29-web3d-m7-plan.md)) — [plan](changes/2026-09-28-web3d-m7-graphics-beyond-threejs.md) |
-> | M6 — one engine (retire macroquad; after M7) | planned |
+> | M7 — graphics beyond Three.js | **closed 2026-09-30** ([closeout](changes/2026-09-30-web3d-m7-closeout.md)) |
+> | M6 — one engine (retire macroquad) | **closed 2026-10-04** ([closeout](changes/2026-10-04-web3d-m6-closeout.md)) |
+> | M5 — measured LLM benchmark | built; live runs parked (deferred into M12) — [plan](changes/2026-10-01-web3d-m5-plan.md) |
+>
+> **Active line since 2026-10-04: `web3d-M8 … M12` — creation-parity with Three.js.** The question is no longer "can Twe render a browser 3D game" but "can a person or an AI *build* one better here than in Three.js." Canonical in [`changes/2026-10-04-creation-parity-plan.md`](changes/2026-10-04-creation-parity-plan.md). Target: *the best way for a human or an AI to make and ship a browser 3D game* — **not** feature-parity with Three.js at all aspects (that is scope-creep; Twe wins on wedges: AI authorability, code-only visuals, simplicity, determinism). **UGC is explicitly out of scope** (hosted browser UGC needs seven unmet sandbox blockers + a server runtime — a separate, later, team-sized track).
+>
+> | Milestone | Status |
+> |---|---|
+> | M8 — browser truth (Chrome/Edge/Firefox/Safari; close the live-browser debt) | planned |
+> | M9 — asset pipeline parity (KTX2/Basis, meshopt, Draco, anisotropy, morph targets) | planned |
+> | M10 — Studio maturity (debugger, profiler, one-click publish, live editing) | planned |
+> | M11 — game-feature depth (anim blending, physics joints/CCD; a reference 3D game) | planned |
+> | M12 — the measured proof (run M5 live; Twe-vs-Three.js same-game case study + kill-line verdict) | planned |
 
 ---
 
