@@ -346,6 +346,39 @@ fn hud_draws_text_and_rects_over_the_scene() {
     assert!(green > 100, "only {green} green text pixels");
 }
 
+/// web3d-M6: `Renderer::render_2d` — the browser 2D path. A headless
+/// renderer draws a 2D frame (the kernel canvas over the surface) into
+/// its offscreen target; the pixels come out where the canvas put them.
+#[test]
+fn render_2d_draws_a_frame_through_the_canvas() {
+    use twec::draw2d::Draw2d;
+    use twec::kernel::canvas::SyncAssets;
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    // The 320x240 target is half the 640x480 canvas.
+    let game = [
+        Draw2d::Rect { x: 0.0, y: 0.0, w: 320.0, h: 240.0, color: [0.1, 0.1, 0.4, 1.0] },
+        Draw2d::Circle { x: 320.0, y: 240.0, r: 60.0, color: [1.0, 1.0, 0.0, 1.0] },
+    ];
+    let hud = [Draw2d::Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0, color: [1.0, 0.0, 0.0, 1.0] }];
+    let mut assets = SyncAssets::default();
+    renderer
+        .render_2d(&[(&game, None), (&hud, None)], &mut assets)
+        .expect("render_2d");
+    let rgba = renderer.read_pixels().expect("read pixels");
+    save_png("render_2d", &rgba);
+    // Top-left: the HUD's red square (drawn last, over the blue field).
+    let [r, g, b] = pixel(&rgba, 10, 10);
+    assert!(r > 230 && g < 30 && b < 30, "hud red: {:?}", [r, g, b]);
+    // The blue field elsewhere in the top-left quadrant.
+    let [r, g, b] = pixel(&rgba, 60, 20);
+    assert!(b > r && b > g, "blue field: {:?}", [r, g, b]);
+    // The yellow circle at the canvas centre (160,120 of the target).
+    let [r, g, b] = pixel(&rgba, 160, 120);
+    assert!(r > 230 && g > 230 && b < 40, "circle yellow: {:?}", [r, g, b]);
+}
+
 /// web3d-M6: the 3D HUD draws every 2D primitive through the kernel
 /// canvas (it drew only `rect` and `text` before): circles, lines and
 /// sprites, in canvas coordinates scaled to the target.

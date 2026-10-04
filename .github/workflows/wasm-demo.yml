@@ -1,11 +1,14 @@
 name: wasm-demo
 
-# Phase 30 session 5: build examples/flappy.twe as a browser-playable
-# WASM demo and publish it to GitHub Pages on every push to main and
-# every GitHub Release.
+# web3d-M6: build examples/flappy.twe as a browser-playable web demo on
+# the one browser runtime (crates/twe-web, WebGPU) and publish it to
+# GitHub Pages on every push to main and every GitHub Release. Before
+# web3d-M6 this built a separate macroquad wasm game per project; now the
+# runtime is prebuilt once and `twec build --target web` ships it with
+# the game's scripts and assets (2D games run on it too since web3d-M6).
 #
 # One-time manual setup (repository owner):
-#   Settings → Pages → Source: "Deploy from a branch"
+#   Settings -> Pages -> Source: "Deploy from a branch"
 #   Branch: gh-pages   Folder: / (root)
 #
 # After that, every push to main updates the demo at:
@@ -13,11 +16,12 @@ name: wasm-demo
 #
 # How it works:
 #   1. Build twec for the Linux host (cargo build --release).
-#   2. Wrap examples/flappy.twe in a minimal project directory.
-#   3. Run `twec build --target wasm32 _flappy_demo/` which internally
-#      invokes `cargo build --target wasm32-unknown-unknown` to produce
-#      game.wasm, then copies index.html + mq_js_bundle.js + main.twe.
-#   4. Push dist/web/ to the gh-pages branch via peaceiris/actions-gh-pages.
+#   2. Build the browser runtime: twe-web for wasm32, then wasm-bindgen
+#      into target/web-runtime/ (twec build looks there by default).
+#   3. Wrap examples/flappy.twe in a minimal project directory.
+#   4. Run `twec build --target web _flappy_demo/`, which copies the
+#      prebuilt runtime + index.html + env.js + the game bundle.
+#   5. Push dist/web/ to the gh-pages branch.
 
 on:
   push:
@@ -31,7 +35,7 @@ env:
 
 jobs:
   build-and-deploy:
-    name: Build WASM + deploy to Pages
+    name: Build web demo + deploy to Pages
     runs-on: ubuntu-latest
     permissions:
       contents: write   # needed to push to gh-pages branch
@@ -43,9 +47,10 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.100 --locked || cargo install wasm-bindgen-cli --locked
+
       # Cache both the host build and the wasm32 build artifacts.
-      # The WASM build is the expensive part (~3 min first run, ~30 s
-      # after; cargo skips a rebuild if sources + env vars are unchanged).
       - uses: actions/cache@v4
         with:
           path: |
@@ -59,17 +64,21 @@ jobs:
       - name: Build twec (Linux host)
         run: cargo build --release
 
+      - name: Build the browser runtime (twe-web)
+        run: |
+          cargo build -p twe-web --target wasm32-unknown-unknown --release
+          wasm-bindgen --target web --no-typescript \
+            --out-dir target/web-runtime \
+            target/wasm32-unknown-unknown/release/twe_web.wasm
+
       - name: Prepare flappy demo project layout
         run: |
           mkdir -p _flappy_demo
           cp examples/flappy.twe _flappy_demo/main.twe
 
-      - name: Build WASM
-        run: ./target/release/twec build --target wasm32 _flappy_demo/
+      - name: Build web demo
+        run: ./target/release/twec build --target web _flappy_demo/
 
-      # Deploy the contents of dist/web/ to the gh-pages branch.
-      # peaceiris/actions-gh-pages creates the branch on first run and
-      # force-pushes it on subsequent runs (no history accumulation).
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:

@@ -75,3 +75,29 @@ fn a_pause_menu_gets_clicks_while_paused() {
     // 31 running ticks before the pause, 40ish after; none while paused.
     assert!((1.0..1.3).contains(&elapsed), "elapsed {elapsed}");
 }
+
+#[test]
+fn dimension_is_detected_from_the_game() {
+    use twec::frame2d::Dimension;
+    let two = ["pong", "snake", "tetris", "button_demo", "particles_demo"];
+    for name in two {
+        let path = format!("examples/{name}.twe");
+        let mut env = twec::frame2d::load(&path).expect("load");
+        assert_eq!(
+            twec::frame2d::detect_dimension(&mut env),
+            Dimension::Two,
+            "{name} should be 2D"
+        );
+    }
+    // A 3D example uses cube()/sphere() or a look: block.
+    let three = ["hello_3d", "hello_glb"];
+    for name in three {
+        let path = format!("examples/{name}.twe");
+        let mut env = twec::frame2d::load(&path).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        assert_eq!(
+            twec::frame2d::detect_dimension(&mut env),
+            Dimension::Three,
+            "{name} should be 3D"
+        );
+    }
+}

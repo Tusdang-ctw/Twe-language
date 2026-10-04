@@ -1,8 +1,11 @@
-// Phase 30 session 1: WASM builds need a different entry point —
-// they cannot call cli::run() because the CLI tooling modules
-// (build, cli, play3d, play_visual) are excluded from wasm32 targets.
-// The WASM entry launches the generic "Twe player" which fetches
-// main.twe from the same origin as the HTML page and runs it.
+// The `twec` CLI tooling (build, cli, play, play3d) is native-only, so
+// the binary's real entry point is gated to non-wasm targets.
+//
+// web3d-M6: the browser runtime is the separate `twe-web` crate, not
+// the `twec` binary — `twec build --target web` ships that prebuilt
+// runtime with a game's scripts and assets. The `twec` binary no longer
+// runs in the browser; its wasm entry point is an empty `main` so the
+// crate still type-checks for `wasm32-unknown-unknown` (a CI gate).
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
@@ -10,6 +13,4 @@ fn main() {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn main() {
-    twec::play::launch_wasm();
-}
+fn main() {}

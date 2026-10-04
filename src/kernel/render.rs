@@ -13,14 +13,14 @@ use std::collections::{HashMap, HashSet};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::kernel::graph::{Access, Extent, FrameGraph, TextureDesc, TexturePool};
 use crate::kernel::environment::EnvUniform;
 use crate::kernel::gpu_cull::{CullDraw, CullGroup};
-use crate::kernel::material::{
-    upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS,
-};
+use crate::kernel::graph::{Access, Extent, FrameGraph, TextureDesc, TexturePool};
+use crate::kernel::material::{upload_rgba, ImageData, MaterialData, MaterialKit, BASE, SLOTS};
 
-pub use crate::render3d_types::{AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive, MAX_LIGHTS};
+pub use crate::render3d_types::{
+    AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive, MAX_LIGHTS,
+};
 
 /// Camera placement for a frame.
 #[derive(Debug, Clone, Copy)]
@@ -2136,8 +2136,20 @@ fn surface_pipeline(
     double_sided: bool,
     surface: bool,
 ) -> wgpu::RenderPipeline {
-    let cull = if double_sided { None } else { Some(wgpu::Face::Back) };
-    surface_pipeline_with(device, layout, shader, (vs_entry, fs_entry), cull, false, surface)
+    let cull = if double_sided {
+        None
+    } else {
+        Some(wgpu::Face::Back)
+    };
+    surface_pipeline_with(
+        device,
+        layout,
+        shader,
+        (vs_entry, fs_entry),
+        cull,
+        false,
+        surface,
+    )
 }
 
 /// web3d-M7: the lit-surface pipelines of the main passes, without or
@@ -2156,12 +2168,26 @@ struct LitPipelines {
 }
 
 impl LitPipelines {
-    fn new(device: &wgpu::Device, layout: &wgpu::PipelineLayout, shader: &wgpu::ShaderModule, surface: bool) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        surface: bool,
+    ) -> Self {
         let entries = ("vs_main", "fs_main");
-        let blend = |cull| surface_pipeline_with(device, layout, shader, entries, Some(cull), true, surface);
+        let blend = |cull| {
+            surface_pipeline_with(device, layout, shader, entries, Some(cull), true, surface)
+        };
         LitPipelines {
             opaque: surface_pipeline(device, layout, shader, entries, false, surface),
-            script: surface_pipeline(device, layout, shader, ("vs_main", "fs_script"), false, surface),
+            script: surface_pipeline(
+                device,
+                layout,
+                shader,
+                ("vs_main", "fs_script"),
+                false,
+                surface,
+            ),
             double: surface_pipeline(device, layout, shader, entries, true, surface),
             blend_front: blend(wgpu::Face::Back),
             blend_back: blend(wgpu::Face::Front),
@@ -2991,6 +3017,84 @@ impl Renderer {
         self.texture_pending.clear();
         self.canvas.clear_asset_caches();
     }
+
+    /// web3d-M6: draw a 2D frame — clear to black, then draw the canvas
+    /// `layers` (the game under its camera, then the shell's overlay)
+    /// over the surface. The browser 2D shell uses this; the native 2D
+    /// shell (`play2d`) owns its own window and surface instead.
+    ///
+    /// The canvas is built for this renderer's sRGB target, so alpha
+    /// blends between layers composite in linear space — a shade off the
+    /// native 2D shell, which blends in gamma space. Solid draws match.
+    pub fn render_2d(
+        &mut self,
+        layers: &[crate::kernel::canvas::Layer<'_>],
+        assets: &mut dyn AssetSource,
+    ) -> Result<(), String> {
+        let state = self;
+        let frame = match &state.surface {
+            Some(surface) => match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    return Ok(());
+                }
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    surface.configure(&state.device, &state.config);
+                    return Ok(());
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    return Err("surface configuration failed validation".to_string());
+                }
+            },
+            None => None,
+        };
+        let view = match (&frame, &state.offscreen) {
+            (Some(f), _) => f.texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(state.target_format),
+                ..Default::default()
+            }),
+            (None, Some(t)) => t.create_view(&wgpu::TextureViewDescriptor::default()),
+            (None, None) => return Err("renderer has no target".to_string()),
+        };
+        state.canvas.prepare_layers_loaded(
+            &state.device,
+            &state.queue,
+            layers,
+            state.config.width,
+            state.config.height,
+            assets,
+        );
+        let mut encoder = state
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("twec-play2d encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("twec-play2d pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            state.canvas.draw(&mut pass);
+        }
+        state.queue.submit(Some(encoder.finish()));
+        if let Some(frame) = frame {
+            state.queue.present(frame);
+        }
+        Ok(())
+    }
 }
 
 async fn init_renderer(
@@ -3109,7 +3213,9 @@ async fn init_renderer(
     let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("twec-play3d instances"),
         size: INITIAL_INSTANCE_CAPACITY * std::mem::size_of::<Instance>() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let instance_capacity = INITIAL_INSTANCE_CAPACITY;
@@ -3141,16 +3247,17 @@ async fn init_renderer(
         },
         count: None,
     };
-    let texture_entry = |binding: u32, dim: wgpu::TextureViewDimension| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: dim,
-            multisampled: false,
-        },
-        count: None,
-    };
+    let texture_entry =
+        |binding: u32, dim: wgpu::TextureViewDimension| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: dim,
+                multisampled: false,
+            },
+            count: None,
+        };
     let sampler_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -3164,7 +3271,10 @@ async fn init_renderer(
             uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
             // web3d-M7: the fog volume (kernel/volumetric.rs) reads the
             // lights and clusters in a compute pass.
-            uniform_entry(1, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE),
+            uniform_entry(
+                1,
+                wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+            ),
             // web3d-M7: the environment.
             uniform_entry(2, wgpu::ShaderStages::FRAGMENT),
             texture_entry(3, wgpu::TextureViewDimension::Cube),
@@ -3199,7 +3309,10 @@ async fn init_renderer(
                 },
                 count: None,
             },
-            uniform_entry(13, wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE),
+            uniform_entry(
+                13,
+                wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+            ),
         ],
     });
     let fog_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3303,7 +3416,9 @@ async fn init_renderer(
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                visibility: wgpu::ShaderStages::VERTEX
+                    | wgpu::ShaderStages::FRAGMENT
+                    | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -3352,7 +3467,8 @@ async fn init_renderer(
         immediate_size: 0,
     });
     let lit = LitPipelines::new(&device, &pipeline_layout, &shader, false);
-    let volumetric = crate::kernel::volumetric::Volumetric::new(&device, &frame_bgl, &shadow_combined_bgl);
+    let volumetric =
+        crate::kernel::volumetric::Volumetric::new(&device, &frame_bgl, &shadow_combined_bgl);
 
     // Phase 28 session 2: cascaded shadow maps. The shadow texture
     // is a 2D array with `CASCADE_COUNT` layers; each shadow pass
@@ -3443,9 +3559,17 @@ async fn init_renderer(
         label: Some("twec-play3d shadow shader"),
         source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER_SRC.into()),
     });
-    let point_shadows = PointShadows::new(&device, &shadow_uniform_bgl, &joints_bgl, &shadow_shader);
-    let prepass = Prepass::new(&device, &shadow_uniform_bgl, &joints_bgl, &materials.layout, &shadow_shader);
-    let gpu_profile = crate::kernel::gpu_profile::GpuProfile::new(&device, &queue).map(std::cell::RefCell::new);
+    let point_shadows =
+        PointShadows::new(&device, &shadow_uniform_bgl, &joints_bgl, &shadow_shader);
+    let prepass = Prepass::new(
+        &device,
+        &shadow_uniform_bgl,
+        &joints_bgl,
+        &materials.layout,
+        &shadow_shader,
+    );
+    let gpu_profile =
+        crate::kernel::gpu_profile::GpuProfile::new(&device, &queue).map(std::cell::RefCell::new);
     let shadow_combined_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("twec-play3d shadow combined bg"),
         layout: &shadow_combined_bgl,
@@ -3775,7 +3899,11 @@ impl LoadedGlb {
                 hi[k] = hi[k].max(v.position[k]);
             }
         }
-        let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
+        let c = [
+            (lo[0] + hi[0]) / 2.0,
+            (lo[1] + hi[1]) / 2.0,
+            (lo[2] + hi[2]) / 2.0,
+        ];
         let r = verts
             .iter()
             .map(|v| {
@@ -3825,8 +3953,10 @@ pub fn parse_glb_bytes(bytes: &[u8]) -> Result<LoadedGlb, String> {
     // time resolves them via the joint matrices). Phase 24.
     // web3d-M7: every material of the document, then glTF's default
     // material for primitives that name none; every image as RGBA8.
-    let mut materials: Vec<MaterialData> =
-        doc.materials().map(|m| MaterialData::from_gltf(&m, &doc)).collect();
+    let mut materials: Vec<MaterialData> = doc
+        .materials()
+        .map(|m| MaterialData::from_gltf(&m, &doc))
+        .collect();
     materials.push(MaterialData {
         metallic: 1.0,
         roughness: 1.0,
@@ -4370,9 +4500,18 @@ fn compute_shadow_uniform(
         for d in [splits[i], splits[i + 1]] {
             for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
                 corners.push([
-                    cam.eye[0] + cam.forward[0] * d + cam.right[0] * sx * cam.tan_x * d + cam.up[0] * sy * cam.tan_y * d,
-                    cam.eye[1] + cam.forward[1] * d + cam.right[1] * sx * cam.tan_x * d + cam.up[1] * sy * cam.tan_y * d,
-                    cam.eye[2] + cam.forward[2] * d + cam.right[2] * sx * cam.tan_x * d + cam.up[2] * sy * cam.tan_y * d,
+                    cam.eye[0]
+                        + cam.forward[0] * d
+                        + cam.right[0] * sx * cam.tan_x * d
+                        + cam.up[0] * sy * cam.tan_y * d,
+                    cam.eye[1]
+                        + cam.forward[1] * d
+                        + cam.right[1] * sx * cam.tan_x * d
+                        + cam.up[1] * sy * cam.tan_y * d,
+                    cam.eye[2]
+                        + cam.forward[2] * d
+                        + cam.right[2] * sx * cam.tan_x * d
+                        + cam.up[2] * sy * cam.tan_y * d,
                 ]);
             }
         }
@@ -4393,7 +4532,10 @@ fn compute_shadow_uniform(
         radius = (radius * 16.0).ceil() / 16.0;
         let texel = 2.0 * radius / SHADOW_MAP_SIZE as f32;
         let c = mat4_transform_point(light_view, center);
-        let (cx, cy) = ((c[0] / texel).floor() * texel, (c[1] / texel).floor() * texel);
+        let (cx, cy) = (
+            (c[0] / texel).floor() * texel,
+            (c[1] / texel).floor() * texel,
+        );
         let dist = -c[2];
         let pull = radius + shadow.extent;
         let proj = ortho(
@@ -4590,7 +4732,11 @@ fn flatten_primitive(
         count,
         [0.0, 0.0],
     );
-    let tangents = or_default(reader.read_tangents().map(|i| i.collect()), count, NO_TANGENT);
+    let tangents = or_default(
+        reader.read_tangents().map(|i| i.collect()),
+        count,
+        NO_TANGENT,
+    );
     let colors = or_default(
         reader.read_colors(0).map(|i| i.into_rgba_f32().collect()),
         count,
@@ -4753,7 +4899,10 @@ fn upload_loaded_glb(
             double_sided: materials[sub.material].double_sided,
             masked: materials[sub.material].alpha_mode == crate::kernel::material::AlphaMode::Mask,
             blend: materials[sub.material].alpha_mode == crate::kernel::material::AlphaMode::Blend,
-            centroid: submesh_centroid(&vertices, &indices[sub.first as usize..(sub.first + sub.count) as usize]),
+            centroid: submesh_centroid(
+                &vertices,
+                &indices[sub.first as usize..(sub.first + sub.count) as usize],
+            ),
             transmissive: materials[sub.material].ext.transmission > 0.0,
         })
         .collect();
@@ -4856,7 +5005,12 @@ impl Renderer {
         let ssr_on = snap.post.ssr > 0.0;
         state.ssr_frame.set(ssr_on);
         if ssr_on && state.lit_ssr.is_none() {
-            state.lit_ssr = Some(LitPipelines::new(&state.device, &state.pipeline_layout, &state.main_shader, true));
+            state.lit_ssr = Some(LitPipelines::new(
+                &state.device,
+                &state.pipeline_layout,
+                &state.main_shader,
+                true,
+            ));
         }
         let unjittered_view_proj = mul(proj, view);
         let view_proj = if taa_on {
@@ -4897,7 +5051,8 @@ impl Renderer {
         // budget: the POINT_SHADOW_LIGHTS shadow-casting lights nearest
         // the camera get a shadow cube (pos.w = cube + 1), the rest light
         // without shadows.
-        let mut point_lights: Vec<PointLightU> = snap.point_lights.iter().take(MAX_LIGHTS).copied().collect();
+        let mut point_lights: Vec<PointLightU> =
+            snap.point_lights.iter().take(MAX_LIGHTS).copied().collect();
         let mut wanting: Vec<usize> = Vec::new();
         for (i, pl) in point_lights.iter_mut().enumerate() {
             if pl.pos[3] > 0.5 && pl.color_radius[3] > 0.0 {
@@ -4931,7 +5086,8 @@ impl Renderer {
         );
         for (light, (pos, radius)) in point_shadow_lights.iter().enumerate() {
             for face in 0..6 {
-                let pass_uniform = ShadowPassUniform::new(point_face_view_proj(*pos, face, *radius), snap.time);
+                let pass_uniform =
+                    ShadowPassUniform::new(point_face_view_proj(*pos, face, *radius), snap.time);
                 state.queue.write_buffer(
                     &state.point_shadows.pass_buffers[light * 6 + face],
                     0,
@@ -5073,23 +5229,29 @@ impl Renderer {
                 AssetReady::Raw(..) => {}
                 AssetReady::Lut(_, result) => {
                     let parsed = result.and_then(|bytes| {
-                        let text = String::from_utf8(bytes).map_err(|_| "a .cube file is text".to_string())?;
+                        let text = String::from_utf8(bytes)
+                            .map_err(|_| "a .cube file is text".to_string())?;
                         crate::kernel::post::parse_cube(&text)
                     });
                     match parsed {
                         Ok(lut) => {
-                            state.lut.view = crate::kernel::post::upload_lut(&state.device, &state.queue, &lut);
+                            state.lut.view =
+                                crate::kernel::post::upload_lut(&state.device, &state.queue, &lut);
                             state.lut.size = lut.size;
                             state.lut.loaded = state.lut.requested.clone();
                             state.lut.generation += 1;
                         }
-                        Err(e) => log_error(&format!("colour LUT `{}`: {e}", state.lut.requested.as_deref().unwrap_or(""))),
+                        Err(e) => log_error(&format!(
+                            "colour LUT `{}`: {e}",
+                            state.lut.requested.as_deref().unwrap_or("")
+                        )),
                     }
                 }
                 AssetReady::Environment(_, result) => {
                     let built = result.and_then(|bytes| {
-                        crate::kernel::environment::decode_hdr(&bytes)
-                            .map(|img| crate::kernel::environment::build(&state.device, &state.queue, &img))
+                        crate::kernel::environment::decode_hdr(&bytes).map(|img| {
+                            crate::kernel::environment::build(&state.device, &state.queue, &img)
+                        })
                     });
                     match built {
                         Ok(env) => {
@@ -5136,266 +5298,327 @@ impl Renderer {
             }
         }
 
-        let assets_key = (state.mesh_cache.len(), state.mesh_load_failures.len(), state.texture_cache.len());
+        let assets_key = (
+            state.mesh_cache.len(),
+            state.mesh_load_failures.len(),
+            state.texture_cache.len(),
+        );
         // Reuse outright: same generation, nothing new loaded.
         let reuse = retained.as_ref().filter(|r| kept && r.assets == assets_key);
-        let (cube_ranges, sphere_ranges, mesh_ranges, cull_groups, opaque_draws, opaque_count, transparent) =
-            if let Some(r) = reuse {
-                (
-                    r.cube_ranges.clone(),
-                    r.sphere_ranges.clone(),
-                    r.mesh_ranges.clone(),
-                    r.cull_groups.clone(),
-                    r.opaque_draws.clone(),
-                    r.opaque_count,
-                    Vec::new(),
-                )
-            } else {
-        instances.reserve(queue.len());
-        // Phase 17 session 3: group draws by (primitive, texture_id).
-        // Each unique combination becomes its own instanced draw call
-        // because group 1's bind group changes between textures.
-        // Within a group, instance order = queue order (preserves any
-        // back-to-front ordering the script established).
-        // web3d-M3: the material joins the key — a material draws with
-        // its own pipeline.
-        let mut cube_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
-        let mut sphere_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
-        let mut mesh_groups: Vec<(MeshKey, Vec<&DrawCall3d>)> = Vec::new();
-        // web3d-M7: a tint with alpha below 1 is translucent (drawn in
-        // the sorted transparent pass). `visual` materials stay opaque.
-        let translucent = |d: &DrawCall3d| d.color[3] < 0.999 && d.material == 0;
-        for d in queue.iter().filter(|d| !translucent(d)) {
-            match d.primitive {
-                Primitive::Cube => {
-                    let key = (d.texture, d.material);
-                    match cube_groups.iter_mut().find(|(k, _)| *k == key) {
-                        Some((_, list)) => list.push(d),
-                        None => cube_groups.push((key, vec![d])),
+        let (
+            cube_ranges,
+            sphere_ranges,
+            mesh_ranges,
+            cull_groups,
+            opaque_draws,
+            opaque_count,
+            transparent,
+        ) = if let Some(r) = reuse {
+            (
+                r.cube_ranges.clone(),
+                r.sphere_ranges.clone(),
+                r.mesh_ranges.clone(),
+                r.cull_groups.clone(),
+                r.opaque_draws.clone(),
+                r.opaque_count,
+                Vec::new(),
+            )
+        } else {
+            instances.reserve(queue.len());
+            // Phase 17 session 3: group draws by (primitive, texture_id).
+            // Each unique combination becomes its own instanced draw call
+            // because group 1's bind group changes between textures.
+            // Within a group, instance order = queue order (preserves any
+            // back-to-front ordering the script established).
+            // web3d-M3: the material joins the key — a material draws with
+            // its own pipeline.
+            let mut cube_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
+            let mut sphere_groups: Vec<(SurfaceKey, Vec<&DrawCall3d>)> = Vec::new();
+            let mut mesh_groups: Vec<(MeshKey, Vec<&DrawCall3d>)> = Vec::new();
+            // web3d-M7: a tint with alpha below 1 is translucent (drawn in
+            // the sorted transparent pass). `visual` materials stay opaque.
+            let translucent = |d: &DrawCall3d| d.color[3] < 0.999 && d.material == 0;
+            for d in queue.iter().filter(|d| !translucent(d)) {
+                match d.primitive {
+                    Primitive::Cube => {
+                        let key = (d.texture, d.material);
+                        match cube_groups.iter_mut().find(|(k, _)| *k == key) {
+                            Some((_, list)) => list.push(d),
+                            None => cube_groups.push((key, vec![d])),
+                        }
                     }
-                }
-                Primitive::Sphere => {
-                    let key = (d.texture, d.material);
-                    match sphere_groups.iter_mut().find(|(k, _)| *k == key) {
-                        Some((_, list)) => list.push(d),
-                        None => sphere_groups.push((key, vec![d])),
+                    Primitive::Sphere => {
+                        let key = (d.texture, d.material);
+                        match sphere_groups.iter_mut().find(|(k, _)| *k == key) {
+                            Some((_, list)) => list.push(d),
+                            None => sphere_groups.push((key, vec![d])),
+                        }
                     }
-                }
-                Primitive::Mesh(id) => {
-                    if !state.mesh_cache.contains_key(&id) {
-                        continue;
-                    }
-                    let key = (id, d.texture, d.material);
-                    match mesh_groups.iter_mut().find(|(k, _)| *k == key) {
-                        Some((_, list)) => list.push(d),
-                        None => mesh_groups.push((key, vec![d])),
+                    Primitive::Mesh(id) => {
+                        if !state.mesh_cache.contains_key(&id) {
+                            continue;
+                        }
+                        let key = (id, d.texture, d.material);
+                        match mesh_groups.iter_mut().find(|(k, _)| *k == key) {
+                            Some((_, list)) => list.push(d),
+                            None => mesh_groups.push((key, vec![d])),
+                        }
                     }
                 }
             }
-        }
 
-        // Phase 26: extract frustum planes from the camera view-proj
-        // for per-instance sphere culling. `frustum_culling_enabled`
-        // is a script-controlled toggle (default on); disable for
-        // benchmarking the cull path's contribution.
-        // web3d-M7: culling moved to the GPU (kernel/gpu_cull.rs); every
-        // instance is uploaded, colours still sRGB (the vertex shader
-        // decodes them).
-        let push_group =
-            |group: &[&DrawCall3d], out: &mut Vec<Instance>, _mesh_radius: f32| -> (u32, u32) {
-                let start = out.len() as u32;
-                for d in group {
-                    if out.len() >= cap {
-                        break;
+            // Phase 26: extract frustum planes from the camera view-proj
+            // for per-instance sphere culling. `frustum_culling_enabled`
+            // is a script-controlled toggle (default on); disable for
+            // benchmarking the cull path's contribution.
+            // web3d-M7: culling moved to the GPU (kernel/gpu_cull.rs); every
+            // instance is uploaded, colours still sRGB (the vertex shader
+            // decodes them).
+            let push_group =
+                |group: &[&DrawCall3d], out: &mut Vec<Instance>, _mesh_radius: f32| -> (u32, u32) {
+                    let start = out.len() as u32;
+                    for d in group {
+                        if out.len() >= cap {
+                            break;
+                        }
+                        let (s, c) = d.yaw.sin_cos();
+                        out.push(Instance {
+                            position: d.at,
+                            size: d.size,
+                            color: d.color,
+                            rot: [s, c, 0.0, 0.0],
+                        });
                     }
-                    let (s, c) = d.yaw.sin_cos();
-                    out.push(Instance {
-                        position: d.at,
-                        size: d.size,
-                        color: d.color,
-                        rot: [s, c, 0.0, 0.0],
+                    let end = out.len() as u32;
+                    (start, end)
+                };
+            // Cube has corner-distance √3/2 ≈ 0.866 in mesh-local space.
+            let cube_radius = 0.8660254;
+            // Sphere has radius 0.5 in mesh-local space.
+            let sphere_radius = 0.5;
+            let cube_ranges: Vec<(SurfaceKey, InstanceRange)> = cube_groups
+                .iter()
+                .map(|(k, list)| (*k, push_group(list, &mut instances, cube_radius)))
+                .collect();
+            let sphere_ranges: Vec<(SurfaceKey, InstanceRange)> = sphere_groups
+                .iter()
+                .map(|(k, list)| (*k, push_group(list, &mut instances, sphere_radius)))
+                .collect();
+            let mesh_ranges: Vec<(MeshKey, InstanceRange)> = mesh_groups
+                .iter()
+                .map(|(k, list)| {
+                    let r = state
+                        .mesh_cache
+                        .get(&k.0)
+                        .map(|m| m.bound_radius)
+                        .unwrap_or(1.0);
+                    (*k, push_group(list, &mut instances, r))
+                })
+                .collect();
+            // web3d-M7: the opaque draw list. Every group of instances (cube /
+            // sphere / mesh with a texture and material) is a cull group; each
+            // draw (a shape, a mesh, or one glTF primitive of a mesh) draws one
+            // group's instances, directly or through the GPU cull.
+            let mut cull_groups: Vec<CullGroup> = Vec::new();
+            let mut opaque_draws: Vec<OpaqueDraw> = Vec::new();
+            let mut add_group =
+                |range: InstanceRange, radius: f32, instances: &mut [Instance]| -> u32 {
+                    let g = cull_groups.len() as u32;
+                    for inst in &mut instances[range.0 as usize..range.1 as usize] {
+                        inst.rot[2] = g as f32;
+                    }
+                    cull_groups.push(CullGroup {
+                        radius,
+                        base: range.0,
+                        _pad: [0; 2],
                     });
-                }
-                let end = out.len() as u32;
-                (start, end)
-            };
-        // Cube has corner-distance √3/2 ≈ 0.866 in mesh-local space.
-        let cube_radius = 0.8660254;
-        // Sphere has radius 0.5 in mesh-local space.
-        let sphere_radius = 0.5;
-        let cube_ranges: Vec<(SurfaceKey, InstanceRange)> = cube_groups
-            .iter()
-            .map(|(k, list)| (*k, push_group(list, &mut instances, cube_radius)))
-            .collect();
-        let sphere_ranges: Vec<(SurfaceKey, InstanceRange)> = sphere_groups
-            .iter()
-            .map(|(k, list)| (*k, push_group(list, &mut instances, sphere_radius)))
-            .collect();
-        let mesh_ranges: Vec<(MeshKey, InstanceRange)> = mesh_groups
-            .iter()
-            .map(|(k, list)| {
-                let r = state
-                    .mesh_cache
-                    .get(&k.0)
-                    .map(|m| m.bound_radius)
-                    .unwrap_or(1.0);
-                (*k, push_group(list, &mut instances, r))
-            })
-            .collect();
-        // web3d-M7: the opaque draw list. Every group of instances (cube /
-        // sphere / mesh with a texture and material) is a cull group; each
-        // draw (a shape, a mesh, or one glTF primitive of a mesh) draws one
-        // group's instances, directly or through the GPU cull.
-        let mut cull_groups: Vec<CullGroup> = Vec::new();
-        let mut opaque_draws: Vec<OpaqueDraw> = Vec::new();
-        let mut add_group = |range: InstanceRange, radius: f32, instances: &mut [Instance]| -> u32 {
-            let g = cull_groups.len() as u32;
-            for inst in &mut instances[range.0 as usize..range.1 as usize] {
-                inst.rot[2] = g as f32;
-            }
-            cull_groups.push(CullGroup {
-                radius,
-                base: range.0,
-                _pad: [0; 2],
-            });
-            g
-        };
-        for ((tex, mat), range) in &cube_ranges {
-            let group = add_group(*range, cube_radius, &mut instances);
-            opaque_draws.push(OpaqueDraw {
-                shape: OpaqueShape::Cube,
-                surface: OpaqueSurface::Script { tex: *tex, mat: *mat },
-                group,
-                range: *range,
-                indices: 0..state.cube_index_count,
-            });
-        }
-        for ((tex, mat), range) in &sphere_ranges {
-            let group = add_group(*range, sphere_radius, &mut instances);
-            opaque_draws.push(OpaqueDraw {
-                shape: OpaqueShape::Sphere,
-                surface: OpaqueSurface::Script { tex: *tex, mat: *mat },
-                group,
-                range: *range,
-                indices: 0..state.sphere_index_count,
-            });
-        }
-        for ((id, tex, mat), range) in &mesh_ranges {
-            let Some(mesh) = state.mesh_cache.get(id) else { continue };
-            let group = add_group(*range, mesh.bound_radius, &mut instances);
-            // Skinned meshes' instances blend joints (rot.w); nothing
-            // else pays for it.
-            if mesh.skin.is_some() {
-                for inst in &mut instances[range.0 as usize..range.1 as usize] {
-                    inst.rot[3] = 1.0;
-                }
-            }
-            if *tex != 0 || *mat != 0 {
-                // A script texture or a `visual` material covers the whole
-                // mesh as one surface.
+                    g
+                };
+            for ((tex, mat), range) in &cube_ranges {
+                let group = add_group(*range, cube_radius, &mut instances);
                 opaque_draws.push(OpaqueDraw {
-                    shape: OpaqueShape::Mesh(*id),
-                    surface: OpaqueSurface::Script { tex: *tex, mat: *mat },
+                    shape: OpaqueShape::Cube,
+                    surface: OpaqueSurface::Script {
+                        tex: *tex,
+                        mat: *mat,
+                    },
                     group,
                     range: *range,
-                    indices: 0..mesh.index_count,
+                    indices: 0..state.cube_index_count,
                 });
-            } else {
-                // Each glTF primitive with its own material.
-                for (si, sub) in mesh.submeshes.iter().enumerate().filter(|(_, s)| !s.sorted()) {
+            }
+            for ((tex, mat), range) in &sphere_ranges {
+                let group = add_group(*range, sphere_radius, &mut instances);
+                opaque_draws.push(OpaqueDraw {
+                    shape: OpaqueShape::Sphere,
+                    surface: OpaqueSurface::Script {
+                        tex: *tex,
+                        mat: *mat,
+                    },
+                    group,
+                    range: *range,
+                    indices: 0..state.sphere_index_count,
+                });
+            }
+            for ((id, tex, mat), range) in &mesh_ranges {
+                let Some(mesh) = state.mesh_cache.get(id) else {
+                    continue;
+                };
+                let group = add_group(*range, mesh.bound_radius, &mut instances);
+                // Skinned meshes' instances blend joints (rot.w); nothing
+                // else pays for it.
+                if mesh.skin.is_some() {
+                    for inst in &mut instances[range.0 as usize..range.1 as usize] {
+                        inst.rot[3] = 1.0;
+                    }
+                }
+                if *tex != 0 || *mat != 0 {
+                    // A script texture or a `visual` material covers the whole
+                    // mesh as one surface.
                     opaque_draws.push(OpaqueDraw {
                         shape: OpaqueShape::Mesh(*id),
-                        surface: OpaqueSurface::Submesh(si),
+                        surface: OpaqueSurface::Script {
+                            tex: *tex,
+                            mat: *mat,
+                        },
                         group,
                         range: *range,
-                        indices: sub.first..sub.first + sub.count,
+                        indices: 0..mesh.index_count,
                     });
-                }
-            }
-        }
-        let opaque_count = cull_groups.last().map_or(0, |g| {
-            let last = opaque_draws.iter().rev().find(|d| d.group == cull_groups.len() as u32 - 1);
-            last.map_or(g.base, |d| d.range.1)
-        });
-
-        // web3d-M7: the transparent pass's draws — translucent draws, one
-        // instance each, and the blended glTF primitives of opaque mesh
-        // instances — sorted back to front by distance to the eye.
-        let mut transparent: Vec<TransparentDraw> = Vec::new();
-        let dist2 = |p: [f32; 3]| {
-            let v = sub(p, eye);
-            dot(v, v)
-        };
-        let world_point = |inst: &Instance, local: [f32; 3]| {
-            let (s, c) = (inst.rot[0], inst.rot[1]);
-            [
-                inst.position[0] + (c * local[0] + s * local[2]) * inst.size,
-                inst.position[1] + local[1] * inst.size,
-                inst.position[2] + (-s * local[0] + c * local[2]) * inst.size,
-            ]
-        };
-        for ((id, tex, mat), range) in &mesh_ranges {
-            if *tex != 0 || *mat != 0 {
-                continue;
-            }
-            let Some(mesh) = state.mesh_cache.get(id) else { continue };
-            for (si, sub) in mesh.submeshes.iter().enumerate().filter(|(_, s)| s.sorted()) {
-                for i in range.0..range.1 {
-                    transparent.push(TransparentDraw {
-                        shape: TransparentShape::Mesh { id: *id, tex: 0, sub: Some(si) },
-                        instance: i,
-                        depth: dist2(world_point(&instances[i as usize], sub.centroid)),
-                        double_sided: sub.double_sided,
-                        solid: sub.transmissive && !sub.blend,
-                    });
-                }
-            }
-        }
-        for d in queue.iter().filter(|d| translucent(d)) {
-            let (radius, shape) = match d.primitive {
-                Primitive::Cube => (cube_radius, TransparentShape::Cube(d.texture)),
-                Primitive::Sphere => (sphere_radius, TransparentShape::Sphere(d.texture)),
-                Primitive::Mesh(id) => match state.mesh_cache.get(&id) {
-                    Some(m) => (m.bound_radius, TransparentShape::Mesh { id, tex: d.texture, sub: None }),
-                    None => continue,
-                },
-            };
-            let (start, end) = push_group(&[d], &mut instances, radius);
-            if end == start {
-                continue;
-            }
-            if let Primitive::Mesh(id) = d.primitive {
-                if state.mesh_cache.get(&id).is_some_and(|m| m.skin.is_some()) {
-                    instances[start as usize].rot[3] = 1.0;
-                }
-            }
-            let inst = instances[start as usize];
-            match shape {
-                // A glTF mesh without a script texture: each primitive
-                // sorts on its own centroid.
-                TransparentShape::Mesh { id, tex: 0, .. } => {
-                    for (si, sub) in state.mesh_cache[&id].submeshes.iter().enumerate() {
-                        transparent.push(TransparentDraw {
-                            shape: TransparentShape::Mesh { id, tex: 0, sub: Some(si) },
-                            instance: start,
-                            depth: dist2(world_point(&inst, sub.centroid)),
-                            double_sided: sub.double_sided,
-                            solid: false,
+                } else {
+                    // Each glTF primitive with its own material.
+                    for (si, sub) in mesh
+                        .submeshes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| !s.sorted())
+                    {
+                        opaque_draws.push(OpaqueDraw {
+                            shape: OpaqueShape::Mesh(*id),
+                            surface: OpaqueSurface::Submesh(si),
+                            group,
+                            range: *range,
+                            indices: sub.first..sub.first + sub.count,
                         });
                     }
                 }
-                shape => transparent.push(TransparentDraw {
-                    shape,
-                    instance: start,
-                    depth: dist2(inst.position),
-                    double_sided: false,
-                    solid: false,
-                }),
             }
-        }
-        transparent.sort_by(|a, b| b.depth.total_cmp(&a.depth));
-        (cube_ranges, sphere_ranges, mesh_ranges, cull_groups, opaque_draws, opaque_count, transparent)
+            let opaque_count = cull_groups.last().map_or(0, |g| {
+                let last = opaque_draws
+                    .iter()
+                    .rev()
+                    .find(|d| d.group == cull_groups.len() as u32 - 1);
+                last.map_or(g.base, |d| d.range.1)
+            });
+
+            // web3d-M7: the transparent pass's draws — translucent draws, one
+            // instance each, and the blended glTF primitives of opaque mesh
+            // instances — sorted back to front by distance to the eye.
+            let mut transparent: Vec<TransparentDraw> = Vec::new();
+            let dist2 = |p: [f32; 3]| {
+                let v = sub(p, eye);
+                dot(v, v)
             };
+            let world_point = |inst: &Instance, local: [f32; 3]| {
+                let (s, c) = (inst.rot[0], inst.rot[1]);
+                [
+                    inst.position[0] + (c * local[0] + s * local[2]) * inst.size,
+                    inst.position[1] + local[1] * inst.size,
+                    inst.position[2] + (-s * local[0] + c * local[2]) * inst.size,
+                ]
+            };
+            for ((id, tex, mat), range) in &mesh_ranges {
+                if *tex != 0 || *mat != 0 {
+                    continue;
+                }
+                let Some(mesh) = state.mesh_cache.get(id) else {
+                    continue;
+                };
+                for (si, sub) in mesh
+                    .submeshes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.sorted())
+                {
+                    for i in range.0..range.1 {
+                        transparent.push(TransparentDraw {
+                            shape: TransparentShape::Mesh {
+                                id: *id,
+                                tex: 0,
+                                sub: Some(si),
+                            },
+                            instance: i,
+                            depth: dist2(world_point(&instances[i as usize], sub.centroid)),
+                            double_sided: sub.double_sided,
+                            solid: sub.transmissive && !sub.blend,
+                        });
+                    }
+                }
+            }
+            for d in queue.iter().filter(|d| translucent(d)) {
+                let (radius, shape) = match d.primitive {
+                    Primitive::Cube => (cube_radius, TransparentShape::Cube(d.texture)),
+                    Primitive::Sphere => (sphere_radius, TransparentShape::Sphere(d.texture)),
+                    Primitive::Mesh(id) => match state.mesh_cache.get(&id) {
+                        Some(m) => (
+                            m.bound_radius,
+                            TransparentShape::Mesh {
+                                id,
+                                tex: d.texture,
+                                sub: None,
+                            },
+                        ),
+                        None => continue,
+                    },
+                };
+                let (start, end) = push_group(&[d], &mut instances, radius);
+                if end == start {
+                    continue;
+                }
+                if let Primitive::Mesh(id) = d.primitive {
+                    if state.mesh_cache.get(&id).is_some_and(|m| m.skin.is_some()) {
+                        instances[start as usize].rot[3] = 1.0;
+                    }
+                }
+                let inst = instances[start as usize];
+                match shape {
+                    // A glTF mesh without a script texture: each primitive
+                    // sorts on its own centroid.
+                    TransparentShape::Mesh { id, tex: 0, .. } => {
+                        for (si, sub) in state.mesh_cache[&id].submeshes.iter().enumerate() {
+                            transparent.push(TransparentDraw {
+                                shape: TransparentShape::Mesh {
+                                    id,
+                                    tex: 0,
+                                    sub: Some(si),
+                                },
+                                instance: start,
+                                depth: dist2(world_point(&inst, sub.centroid)),
+                                double_sided: sub.double_sided,
+                                solid: false,
+                            });
+                        }
+                    }
+                    shape => transparent.push(TransparentDraw {
+                        shape,
+                        instance: start,
+                        depth: dist2(inst.position),
+                        double_sided: false,
+                        solid: false,
+                    }),
+                }
+            }
+            transparent.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+            (
+                cube_ranges,
+                sphere_ranges,
+                mesh_ranges,
+                cull_groups,
+                opaque_draws,
+                opaque_count,
+                transparent,
+            )
+        };
         let instance_count = match reuse {
             Some(r) => r.instance_count,
             None => instances.len(),
@@ -5414,7 +5637,9 @@ impl Renderer {
         // web3d-M7: transmissive surfaces need the opaque scene as a
         // texture: the main pass splits around a copy of it.
         let transmission_on = transparent.iter().any(|d| match d.shape {
-            TransparentShape::Mesh { id, sub: Some(si), .. } => state
+            TransparentShape::Mesh {
+                id, sub: Some(si), ..
+            } => state
                 .mesh_cache
                 .get(&id)
                 .and_then(|m| m.submeshes.get(si))
@@ -5444,7 +5669,12 @@ impl Renderer {
                         lights_uniform.sun_dir[2] / sun_len,
                         0.5 * lights_uniform.sun_dir[3].max(0.0),
                     ],
-                    background: [snap.background[0], snap.background[1], snap.background[2], far],
+                    background: [
+                        snap.background[0],
+                        snap.background[1],
+                        snap.background[2],
+                        far,
+                    ],
                 }
             }
             _ => FogUniform::zeroed(),
@@ -5462,7 +5692,11 @@ impl Renderer {
                     density: fog_uniform.params[0],
                     falloff: fog_uniform.params[1],
                     far,
-                    color: [fog_uniform.color[0], fog_uniform.color[1], fog_uniform.color[2]],
+                    color: [
+                        fog_uniform.color[0],
+                        fog_uniform.color[1],
+                        fog_uniform.color[2],
+                    ],
                     glow: fog_uniform.sun[3],
                     screen: (state.config.width, state.config.height),
                 },
@@ -5479,8 +5713,16 @@ impl Renderer {
                     eye,
                     strength: snap.post.ssr,
                     frame: state.frame_index.get(),
-                    env: [env_uniform.params[0], env_uniform.params[1], env_uniform.params[2]],
-                    ambient: [lights_uniform.ambient[0], lights_uniform.ambient[1], lights_uniform.ambient[2]],
+                    env: [
+                        env_uniform.params[0],
+                        env_uniform.params[1],
+                        env_uniform.params[2],
+                    ],
+                    ambient: [
+                        lights_uniform.ambient[0],
+                        lights_uniform.ambient[1],
+                        lights_uniform.ambient[2],
+                    ],
                 },
             );
         }
@@ -5503,7 +5745,9 @@ impl Renderer {
                 state.instance_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("twec-play3d instances (grown)"),
                     size: new_cap * std::mem::size_of::<Instance>() as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    usage: wgpu::BufferUsages::VERTEX
+                        | wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
                 state.instance_capacity = new_cap;
@@ -5533,7 +5777,11 @@ impl Renderer {
                 opaque_draws: opaque_draws.clone(),
                 opaque_count,
                 materials: {
-                    let mut m: Vec<u32> = queue.iter().map(|d| d.material).filter(|&m| m != 0).collect();
+                    let mut m: Vec<u32> = queue
+                        .iter()
+                        .map(|d| d.material)
+                        .filter(|&m| m != 0)
+                        .collect();
                     m.sort_unstable();
                     m.dedup();
                     m
@@ -5575,7 +5823,11 @@ impl Renderer {
         // (Kept draws: the materials recorded with them.)
         let mut used: Vec<u32> = match state.retained.as_ref().filter(|_| kept) {
             Some(r) => r.materials.clone(),
-            None => queue.iter().map(|d| d.material).filter(|&m| m != 0).collect(),
+            None => queue
+                .iter()
+                .map(|d| d.material)
+                .filter(|&m| m != 0)
+                .collect(),
         };
         used.sort_unstable();
         used.dedup();
@@ -5596,7 +5848,10 @@ impl Renderer {
                     &state.device,
                     &state.pipeline_layout,
                     &module,
-                    (if displaces { "vs_material" } else { "vs_main" }, "fs_material"),
+                    (
+                        if displaces { "vs_material" } else { "vs_main" },
+                        "fs_material",
+                    ),
                     false,
                     ssr_on,
                 );
@@ -5690,9 +5945,16 @@ impl Renderer {
                 samples: MSAA_SAMPLES,
                 ..TextureDesc::new("surface (msaa)", Extent::FULL, SURFACE_FORMAT)
             });
-            (msaa, graph.create(TextureDesc::new("surface", Extent::FULL, SURFACE_FORMAT)))
+            (
+                msaa,
+                graph.create(TextureDesc::new("surface", Extent::FULL, SURFACE_FORMAT)),
+            )
         });
-        let mut main_writes = vec![(hdr_msaa, Access::Attach), (depth, Access::Attach), (hdr, Access::Attach)];
+        let mut main_writes = vec![
+            (hdr_msaa, Access::Attach),
+            (depth, Access::Attach),
+            (hdr, Access::Attach),
+        ];
         if let Some((msaa, resolved)) = surface {
             main_writes.push((msaa, Access::Attach));
             main_writes.push((resolved, Access::Attach));
@@ -5721,11 +5983,23 @@ impl Renderer {
         // the main pass shades: a depth prepass, then GTAO into the
         // persistent AO texture the main pass reads.
         let ao_on = snap.post.ao > 0.0 && instance_count != 0;
-        let mut main_reads = vec![(shadow_map, Access::Sample), (point_shadow_map, Access::Sample)];
+        let mut main_reads = vec![
+            (shadow_map, Access::Sample),
+            (point_shadow_map, Access::Sample),
+        ];
         let prepass_depth = if ao_on {
-            let prepass_depth = graph.create(TextureDesc::new("prepass depth", Extent::FULL, DEPTH_FORMAT));
+            let prepass_depth = graph.create(TextureDesc::new(
+                "prepass depth",
+                Extent::FULL,
+                DEPTH_FORMAT,
+            ));
             let ao_texture = graph.import("ambient occlusion", false);
-            graph.add_pass(FramePass::Prepass, "depth prepass", &[], &[(prepass_depth, Access::Attach)]);
+            graph.add_pass(
+                FramePass::Prepass,
+                "depth prepass",
+                &[],
+                &[(prepass_depth, Access::Attach)],
+            );
             graph.add_pass(
                 FramePass::Ao,
                 "gtao + blur",
@@ -5740,7 +6014,12 @@ impl Renderer {
         // web3d-M7: the light clusters, before anything shades.
         if light_count > 0 {
             let grid = graph.import("light clusters", false);
-            graph.add_pass(FramePass::Clusters, "light clusters", &[], &[(grid, Access::Storage)]);
+            graph.add_pass(
+                FramePass::Clusters,
+                "light clusters",
+                &[],
+                &[(grid, Access::Storage)],
+            );
             main_reads.push((grid, Access::Sample));
         }
         // web3d-M7: with GPU culling, a compute pass picks the early set
@@ -5748,15 +6027,15 @@ impl Renderer {
         // cull and a second opaque pass run.
         if gpu_cull {
             let early_set = graph.import("culled early", false);
-            graph.add_pass(FramePass::CullEarly, "cull early", &[], &[(early_set, Access::Storage)]);
+            graph.add_pass(
+                FramePass::CullEarly,
+                "cull early",
+                &[],
+                &[(early_set, Access::Storage)],
+            );
             main_reads.push((early_set, Access::Sample));
         }
-        graph.add_pass(
-            FramePass::Main,
-            "main",
-            &main_reads,
-            &main_writes,
-        );
+        graph.add_pass(FramePass::Main, "main", &main_reads, &main_writes);
         if gpu_cull {
             let late_set = graph.import("culled late", false);
             graph.add_pass(
@@ -5800,7 +6079,11 @@ impl Renderer {
             graph.add_pass(
                 FramePass::Ssr,
                 "ssr trace",
-                &[(hdr, Access::Sample), (depth, Access::Sample), (surface_resolved, Access::Sample)],
+                &[
+                    (hdr, Access::Sample),
+                    (depth, Access::Sample),
+                    (surface_resolved, Access::Sample),
+                ],
                 &[(reflection, Access::Attach)],
             );
             graph.add_pass(
@@ -5840,8 +6123,16 @@ impl Renderer {
                 &[(pool, Access::Storage)],
             );
             use crate::kernel::particles::{ACCUM_FORMAT, REVEAL_FORMAT};
-            let accum = graph.create(TextureDesc::new("particle accum", Extent::FULL, ACCUM_FORMAT));
-            let reveal = graph.create(TextureDesc::new("particle reveal", Extent::FULL, REVEAL_FORMAT));
+            let accum = graph.create(TextureDesc::new(
+                "particle accum",
+                Extent::FULL,
+                ACCUM_FORMAT,
+            ));
+            let reveal = graph.create(TextureDesc::new(
+                "particle reveal",
+                Extent::FULL,
+                REVEAL_FORMAT,
+            ));
             graph.add_pass(
                 FramePass::ParticlesDraw,
                 "particle draw",
@@ -5966,9 +6257,12 @@ impl Renderer {
             &[(target, Access::Attach)],
         );
         let plan = graph.compile().map_err(|e| e.to_string())?;
-        state
-            .pool
-            .prepare(&state.device, &plan, state.config.width, state.config.height);
+        state.pool.prepare(
+            &state.device,
+            &plan,
+            state.config.width,
+            state.config.height,
+        );
         if taa_on {
             state.taa.prepare(
                 &state.device,
@@ -6036,14 +6330,21 @@ impl Renderer {
                     clusters: &state.clusters,
                 },
                 &state.env,
-                [state.ao.view(ao_on), state.transmission.view(transmission_on)],
+                [
+                    state.ao.view(ao_on),
+                    state.transmission.view(transmission_on),
+                ],
             );
             state.frame_ao_key = frame_key;
         }
         if bloom_on {
-            state
-                .bloom
-                .prepare(&state.device, &state.queue, width, height, snap.post.bloom_threshold);
+            state.bloom.prepare(
+                &state.device,
+                &state.queue,
+                width,
+                height,
+                snap.post.bloom_threshold,
+            );
         }
         if auto_exposure {
             state.exposure.prepare(&state.queue, snap.time);
@@ -6115,8 +6416,14 @@ impl Renderer {
             ]),
         );
         let state = &*state;
-        let main_color_view = state.pool.view(&plan, hdr).ok_or("render graph: no hdr target")?;
-        let depth_view = state.pool.view(&plan, depth).ok_or("render graph: no depth target")?;
+        let main_color_view = state
+            .pool
+            .view(&plan, hdr)
+            .ok_or("render graph: no hdr target")?;
+        let depth_view = state
+            .pool
+            .view(&plan, depth)
+            .ok_or("render graph: no depth target")?;
         let msaa_view = state
             .pool
             .view(&plan, hdr_msaa)
@@ -6134,8 +6441,14 @@ impl Renderer {
         // (resolved only when reflections read it).
         let surface_views = match surface {
             Some((msaa, resolved)) => Some((
-                state.pool.view(&plan, msaa).ok_or("render graph: no surface target")?,
-                state.pool.view(&plan, resolved).ok_or("render graph: no surface resolve")?,
+                state
+                    .pool
+                    .view(&plan, msaa)
+                    .ok_or("render graph: no surface target")?,
+                state
+                    .pool
+                    .view(&plan, resolved)
+                    .ok_or("render graph: no surface resolve")?,
             )),
             None => None,
         };
@@ -6151,7 +6464,11 @@ impl Renderer {
                     } else {
                         wgpu::LoadOp::Load
                     },
-                    store: if keep { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                    store: if keep {
+                        wgpu::StoreOp::Store
+                    } else {
+                        wgpu::StoreOp::Discard
+                    },
                 },
             })
         };
@@ -6190,38 +6507,51 @@ impl Renderer {
                 }
                 FramePass::Clusters => state.clusters.record(&mut encoder),
                 FramePass::CullEarly => {
-                    state
-                        .gpu_cull
-                        .record_early(&state.device, &mut encoder, &state.instance_buffer);
+                    state.gpu_cull.record_early(
+                        &state.device,
+                        &mut encoder,
+                        &state.instance_buffer,
+                    );
                 }
                 FramePass::CullLate => {
-                    state
-                        .gpu_cull
-                        .record_late(&state.device, &mut encoder, &state.instance_buffer, depth_view);
+                    state.gpu_cull.record_late(
+                        &state.device,
+                        &mut encoder,
+                        &state.instance_buffer,
+                        depth_view,
+                    );
                 }
                 FramePass::MainLate => {
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("twe-kernel main pass (late)"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: msaa_view,
-                            depth_slice: None,
-                            resolve_target: Some(main_color_view),
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: if transmission_on {
-                                    wgpu::StoreOp::Store
-                                } else {
-                                    wgpu::StoreOp::Discard
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: msaa_view,
+                                depth_slice: None,
+                                resolve_target: Some(main_color_view),
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: if transmission_on {
+                                        wgpu::StoreOp::Store
+                                    } else {
+                                        wgpu::StoreOp::Discard
+                                    },
                                 },
-                            },
-                        }),
-                        surface_target(false, transmission_on),
-                    ],
+                            }),
+                            surface_target(false, transmission_on),
+                        ],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
-                                store: if taa_on || dof_on || motion_on || transmission_on || particles_on || ssr_on || volumetric_on {
+                                store: if taa_on
+                                    || dof_on
+                                    || motion_on
+                                    || transmission_on
+                                    || particles_on
+                                    || ssr_on
+                                    || volumetric_on
+                                {
                                     wgpu::StoreOp::Store
                                 } else {
                                     wgpu::StoreOp::Discard
@@ -6236,75 +6566,138 @@ impl Renderer {
                     rpass.set_bind_group(0, &state.frame_bind_group, &[]);
                     rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
                     rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
-                    draw_opaque(&mut rpass, state, snap.materials, &opaque_draws, &cull_groups, OpaqueSource::Late);
-                    finish_scene(&mut rpass, state, env_uniform.params[3] > 0.5 || fog_on, &transparent, transmission_on);
+                    draw_opaque(
+                        &mut rpass,
+                        state,
+                        snap.materials,
+                        &opaque_draws,
+                        &cull_groups,
+                        OpaqueSource::Late,
+                    );
+                    finish_scene(
+                        &mut rpass,
+                        state,
+                        env_uniform.params[3] > 0.5 || fog_on,
+                        &transparent,
+                        transmission_on,
+                    );
                 }
                 FramePass::Ssr => {
-                    let (reflection, surface_resolved) = reflection.ok_or("render graph: ssr without targets")?;
-                    let view = |r| state.pool.view(&plan, r).ok_or("render graph: no ssr target");
+                    let (reflection, surface_resolved) =
+                        reflection.ok_or("render graph: ssr without targets")?;
+                    let view = |r| {
+                        state
+                            .pool
+                            .view(&plan, r)
+                            .ok_or("render graph: no ssr target")
+                    };
                     state.ssr.record_trace(
                         &state.device,
                         &mut encoder,
-                        [main_color_view, depth_view, view(surface_resolved)?, &state.env.current.specular],
+                        [
+                            main_color_view,
+                            depth_view,
+                            view(surface_resolved)?,
+                            &state.env.current.specular,
+                        ],
                         view(reflection)?,
                     );
                 }
                 FramePass::SsrComposite => {
                     let (reflection, _) = reflection.ok_or("render graph: ssr without targets")?;
-                    let reflection = state.pool.view(&plan, reflection).ok_or("render graph: no ssr target")?;
-                    state
-                        .ssr
-                        .record_composite(&state.device, &mut encoder, reflection, main_color_view);
+                    let reflection = state
+                        .pool
+                        .view(&plan, reflection)
+                        .ok_or("render graph: no ssr target")?;
+                    state.ssr.record_composite(
+                        &state.device,
+                        &mut encoder,
+                        reflection,
+                        main_color_view,
+                    );
                 }
                 FramePass::FogVolume => {
-                    state
-                        .volumetric
-                        .record_volume(&mut encoder, &state.frame_bind_group, &state.shadow_combined_bg);
+                    state.volumetric.record_volume(
+                        &mut encoder,
+                        &state.frame_bind_group,
+                        &state.shadow_combined_bg,
+                    );
                 }
                 FramePass::FogApply => {
-                    state
-                        .volumetric
-                        .record_apply(&state.device, &mut encoder, depth_view, main_color_view);
+                    state.volumetric.record_apply(
+                        &state.device,
+                        &mut encoder,
+                        depth_view,
+                        main_color_view,
+                    );
                 }
                 FramePass::ParticlesSim => {
-                    state.particles.record_sim(&state.device, &mut encoder, depth_view);
+                    state
+                        .particles
+                        .record_sim(&state.device, &mut encoder, depth_view);
                 }
                 FramePass::ParticlesDraw => {
                     let [accum, reveal] = wboit.ok_or("render graph: particles without targets")?;
-                    let view = |r| state.pool.view(&plan, r).ok_or("render graph: no particle target");
-                    state
-                        .particles
-                        .record_draw(&state.device, &mut encoder, [view(accum)?, view(reveal)?], depth_view);
+                    let view = |r| {
+                        state
+                            .pool
+                            .view(&plan, r)
+                            .ok_or("render graph: no particle target")
+                    };
+                    state.particles.record_draw(
+                        &state.device,
+                        &mut encoder,
+                        [view(accum)?, view(reveal)?],
+                        depth_view,
+                    );
                 }
                 FramePass::ParticlesComposite => {
                     let [accum, reveal] = wboit.ok_or("render graph: particles without targets")?;
-                    let view = |r| state.pool.view(&plan, r).ok_or("render graph: no particle target");
-                    state
-                        .particles
-                        .record_composite(&state.device, &mut encoder, view(accum)?, view(reveal)?, main_color_view);
+                    let view = |r| {
+                        state
+                            .pool
+                            .view(&plan, r)
+                            .ok_or("render graph: no particle target")
+                    };
+                    state.particles.record_composite(
+                        &state.device,
+                        &mut encoder,
+                        view(accum)?,
+                        view(reveal)?,
+                        main_color_view,
+                    );
                 }
                 FramePass::TransmissionCopy => {
-                    state.transmission.record(&state.device, &mut encoder, main_color_view);
+                    state
+                        .transmission
+                        .record(&state.device, &mut encoder, main_color_view);
                 }
                 FramePass::MainTransparent => {
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("twe-kernel transparent pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: msaa_view,
-                            depth_slice: None,
-                            resolve_target: Some(main_color_view),
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Discard,
-                            },
-                        }),
-                        surface_target(false, false),
-                    ],
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: msaa_view,
+                                depth_slice: None,
+                                resolve_target: Some(main_color_view),
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Discard,
+                                },
+                            }),
+                            surface_target(false, false),
+                        ],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                             view: depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Load,
-                                store: if taa_on || dof_on || motion_on || particles_on || ssr_on || volumetric_on {
+                                store: if taa_on
+                                    || dof_on
+                                    || motion_on
+                                    || particles_on
+                                    || ssr_on
+                                    || volumetric_on
+                                {
                                     wgpu::StoreOp::Store
                                 } else {
                                     wgpu::StoreOp::Discard
@@ -6322,13 +6715,18 @@ impl Renderer {
                     let (input, output) = dof_io.ok_or("render graph: dof without targets")?;
                     let input = view_of(input).ok_or("render graph: no dof input")?;
                     let output = view_of(output).ok_or("render graph: no dof output")?;
-                    state.dof.record(&state.device, &mut encoder, input, depth_view, output);
+                    state
+                        .dof
+                        .record(&state.device, &mut encoder, input, depth_view, output);
                 }
                 FramePass::MotionBlur => {
-                    let (input, output) = motion_io.ok_or("render graph: motion blur without targets")?;
+                    let (input, output) =
+                        motion_io.ok_or("render graph: motion blur without targets")?;
                     let input = view_of(input).ok_or("render graph: no motion blur input")?;
                     let output = view_of(output).ok_or("render graph: no motion blur output")?;
-                    state.motion.record(&state.device, &mut encoder, input, depth_view, output);
+                    state
+                        .motion
+                        .record(&state.device, &mut encoder, input, depth_view, output);
                 }
                 FramePass::Bloom => {
                     state.bloom.record(&state.device, &mut encoder, post_input);
@@ -6343,8 +6741,10 @@ impl Renderer {
                     // uniform. queue.write_buffer is recorded as a copy
                     // command; sequential write_buffer + render_pass pairs
                     // execute in order at submission time.
-                    let pass_uniform =
-                        ShadowPassUniform::new(shadow_uniform.light_space_matrices[cascade], snap.time);
+                    let pass_uniform = ShadowPassUniform::new(
+                        shadow_uniform.light_space_matrices[cascade],
+                        snap.time,
+                    );
                     state.queue.write_buffer(
                         &state.shadow_pass_buffers[cascade],
                         0,
@@ -6369,7 +6769,13 @@ impl Renderer {
                     spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
                     spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
                     let ranges = (&cube_ranges[..], &sphere_ranges[..], &mesh_ranges[..]);
-                    draw_depth(&mut spass, state, ranges, snap.materials, DepthPass::Cascade);
+                    draw_depth(
+                        &mut spass,
+                        state,
+                        ranges,
+                        snap.materials,
+                        DepthPass::Cascade,
+                    );
                 }
                 FramePass::PointShadow(layer) => {
                     let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -6397,43 +6803,54 @@ impl Renderer {
                     {
                         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("twec-play3d main pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: msaa_view,
-                                depth_slice: None,
-                                resolve_target: Some(main_color_view),
-                                ops: wgpu::Operations {
-                                    // With transmission, alpha 0 marks the
-                                    // background (alpha resolves to
-                                    // coverage) for refracted rays.
-                                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                                        r: f64::from(snap.background[0]),
-                                        g: f64::from(snap.background[1]),
-                                        b: f64::from(snap.background[2]),
-                                        a: if transmission_on { 0.0 } else { 1.0 },
-                                    }),
-                                    // Kept for the transparent pass when
-                                    // it runs separately.
-                                    store: if transmission_on || gpu_cull {
-                                        wgpu::StoreOp::Store
-                                    } else {
-                                        wgpu::StoreOp::Discard
-                                    },
-                                },
-                            }),
-                            surface_target(true, transmission_on || gpu_cull),
-                        ],
-                            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                                view: depth_view,
-                                depth_ops: Some(wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(1.0),
-                                    store: if taa_on || dof_on || motion_on || transmission_on || gpu_cull || particles_on || ssr_on || volumetric_on {
-                                        wgpu::StoreOp::Store
-                                    } else {
-                                        wgpu::StoreOp::Discard
+                            color_attachments: &[
+                                Some(wgpu::RenderPassColorAttachment {
+                                    view: msaa_view,
+                                    depth_slice: None,
+                                    resolve_target: Some(main_color_view),
+                                    ops: wgpu::Operations {
+                                        // With transmission, alpha 0 marks the
+                                        // background (alpha resolves to
+                                        // coverage) for refracted rays.
+                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                            r: f64::from(snap.background[0]),
+                                            g: f64::from(snap.background[1]),
+                                            b: f64::from(snap.background[2]),
+                                            a: if transmission_on { 0.0 } else { 1.0 },
+                                        }),
+                                        // Kept for the transparent pass when
+                                        // it runs separately.
+                                        store: if transmission_on || gpu_cull {
+                                            wgpu::StoreOp::Store
+                                        } else {
+                                            wgpu::StoreOp::Discard
+                                        },
                                     },
                                 }),
-                                stencil_ops: None,
-                            }),
+                                surface_target(true, transmission_on || gpu_cull),
+                            ],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: depth_view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(1.0),
+                                        store: if taa_on
+                                            || dof_on
+                                            || motion_on
+                                            || transmission_on
+                                            || gpu_cull
+                                            || particles_on
+                                            || ssr_on
+                                            || volumetric_on
+                                        {
+                                            wgpu::StoreOp::Store
+                                        } else {
+                                            wgpu::StoreOp::Discard
+                                        },
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
                             timestamp_writes: None,
                             occlusion_query_set: None,
                             multiview_mask: None,
@@ -6452,13 +6869,30 @@ impl Renderer {
                             rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
                             // web3d-M7: the opaque draw list, directly or (GPU
                             // culling) the early set through indirect draws.
-                            let source = if gpu_cull { OpaqueSource::Early } else { OpaqueSource::Direct };
-                            draw_opaque(&mut rpass, state, snap.materials, &opaque_draws, &cull_groups, source);
+                            let source = if gpu_cull {
+                                OpaqueSource::Early
+                            } else {
+                                OpaqueSource::Direct
+                            };
+                            draw_opaque(
+                                &mut rpass,
+                                state,
+                                snap.materials,
+                                &opaque_draws,
+                                &cull_groups,
+                                source,
+                            );
                         }
                         // With GPU culling the late opaque pass finishes
                         // the scene; otherwise it's finished here.
                         if !gpu_cull {
-                            finish_scene(&mut rpass, state, env_uniform.params[3] > 0.5 || fog_on, &transparent, transmission_on);
+                            finish_scene(
+                                &mut rpass,
+                                state,
+                                env_uniform.params[3] > 0.5 || fog_on,
+                                &transparent,
+                                transmission_on,
+                            );
                         }
                     }
                 }
@@ -6505,7 +6939,9 @@ impl Renderer {
         if taa_on {
             state.taa.advance();
         }
-        state.frame_index.set(state.frame_index.get().wrapping_add(1));
+        state
+            .frame_index
+            .set(state.frame_index.get().wrapping_add(1));
         if let Some(frame) = frame {
             state.queue.present(frame);
         }
@@ -6524,7 +6960,12 @@ impl Renderer {
     /// web3d-M7: the depth pipeline for a draw with material `mat` in
     /// depth pass `which`: the displacing material's own, else the
     /// pass's plain one.
-    fn depth_pipeline(&self, materials: &[String], mat: u32, which: DepthPass) -> &wgpu::RenderPipeline {
+    fn depth_pipeline(
+        &self,
+        materials: &[String],
+        mat: u32,
+        which: DepthPass,
+    ) -> &wgpu::RenderPipeline {
         let displaced = materials
             .get(mat as usize)
             .filter(|_| mat != 0)
@@ -6674,49 +7115,51 @@ impl EnvState {
             bind_group_layouts: &[Some(frame_bgl)],
             immediate_size: 0,
         });
-        let sky_pipeline = |surface: bool| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("twe-kernel sky"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_sky"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_sky"),
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: HDR_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    // The backdrop reflects nothing (the target's clear).
-                    surface.then_some(wgpu::ColorTargetState {
-                        format: SURFACE_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::empty(),
-                    }),
-                ],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            // At the far plane, only where the depth buffer is still clear.
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
-                ..Default::default()
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        let sky_pipeline = |surface: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("twe-kernel sky"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_sky"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_sky"),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: HDR_FORMAT,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                        // The backdrop reflects nothing (the target's clear).
+                        surface.then_some(wgpu::ColorTargetState {
+                            format: SURFACE_FORMAT,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::empty(),
+                        }),
+                    ],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                // At the far plane, only where the depth buffer is still clear.
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: MSAA_SAMPLES,
+                    ..Default::default()
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         EnvState {
             uniform: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("twe-kernel env uniform"),
@@ -6845,7 +7288,10 @@ fn draw_depth(
         if range.1 > range.0 {
             pass.set_pipeline(pipeline(*mat));
             pass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-            pass.set_index_buffer(state.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_index_buffer(
+                state.sphere_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
             pass.draw_indexed(0..state.sphere_index_count, 0, range.0..range.1);
         }
     }
@@ -6958,7 +7404,11 @@ impl DisplacedDepth {
             })
         };
         DisplacedDepth {
-            cascade: pipeline("twe-kernel displaced shadow", Some(wgpu::Face::Front), shadow_bias),
+            cascade: pipeline(
+                "twe-kernel displaced shadow",
+                Some(wgpu::Face::Front),
+                shadow_bias,
+            ),
             point: pipeline("twe-kernel displaced point shadow", None, shadow_bias),
             prepass: pipeline(
                 "twe-kernel displaced prepass",
@@ -7063,7 +7513,14 @@ impl Prepass {
                 None,
                 Some(wgpu::Face::Back),
             ),
-            double: pipeline("twe-kernel prepass (double-sided)", &depth_only, shadow_shader, "vs_shadow", None, None),
+            double: pipeline(
+                "twe-kernel prepass (double-sided)",
+                &depth_only,
+                shadow_shader,
+                "vs_shadow",
+                None,
+                None,
+            ),
             masked: pipeline(
                 "twe-kernel prepass (masked)",
                 &with_material,
@@ -7078,7 +7535,11 @@ impl Prepass {
     }
 
     fn write(&self, queue: &wgpu::Queue, view_proj: [[f32; 4]; 4], time: f32) {
-        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&ShadowPassUniform::new(view_proj, time)));
+        queue.write_buffer(
+            &self.buffer,
+            0,
+            bytemuck::bytes_of(&ShadowPassUniform::new(view_proj, time)),
+        );
     }
 }
 
@@ -7137,7 +7598,10 @@ fn draw_opaque(
         if tex == 0 {
             return &state.plain_material;
         }
-        state.texture_cache.get(&tex).unwrap_or(&state.plain_material)
+        state
+            .texture_cache
+            .get(&tex)
+            .unwrap_or(&state.plain_material)
     };
     let pipeline_for = |mat: u32| -> &wgpu::RenderPipeline {
         materials
@@ -7161,11 +7625,16 @@ fn draw_opaque(
             }
             OpaqueShape::Sphere => {
                 pass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-                pass.set_index_buffer(state.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                pass.set_index_buffer(
+                    state.sphere_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
                 None
             }
             OpaqueShape::Mesh(id) => {
-                let Some(mesh) = state.mesh_cache.get(&id) else { continue };
+                let Some(mesh) = state.mesh_cache.get(&id) else {
+                    continue;
+                };
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
                 if let Some(skin) = &mesh.skin {
@@ -7184,7 +7653,9 @@ fn draw_opaque(
                 pass.set_bind_group(1, texture_group(tex), &[]);
             }
             OpaqueSurface::Submesh(si) => {
-                let Some(sub) = skin.and_then(|m| m.submeshes.get(si)) else { continue };
+                let Some(sub) = skin.and_then(|m| m.submeshes.get(si)) else {
+                    continue;
+                };
                 pass.set_pipeline(if sub.double_sided {
                     &state.lit().double
                 } else {
@@ -7197,9 +7668,13 @@ fn draw_opaque(
             OpaqueSource::Direct => pass.draw_indexed(d.indices.clone(), 0, d.range.0..d.range.1),
             OpaqueSource::Early | OpaqueSource::Late => {
                 let g = &groups[d.group as usize];
-                state
-                    .gpu_cull
-                    .draw(pass, source == OpaqueSource::Late, i as u32, g, d.range.1 - d.range.0);
+                state.gpu_cull.draw(
+                    pass,
+                    source == OpaqueSource::Late,
+                    i as u32,
+                    g,
+                    d.range.1 - d.range.0,
+                );
             }
         }
         if skin.is_some_and(|m| m.skin.is_some()) {
@@ -7235,7 +7710,11 @@ enum TransparentShape {
     Sphere(u32),
     /// A mesh; `sub` is one glTF primitive (with its own material), or
     /// `None` for the whole mesh under a script texture `tex`.
-    Mesh { id: u32, tex: u32, sub: Option<usize> },
+    Mesh {
+        id: u32,
+        tex: u32,
+        sub: Option<usize>,
+    },
 }
 
 /// web3d-M7: one draw of the transparent pass: a shape, the instance
@@ -7266,7 +7745,11 @@ fn submesh_centroid(vertices: &[Vertex], indices: &[u32]) -> [f32; 3] {
         }
     }
     let n = indices.len().max(1) as f64;
-    [(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32]
+    [
+        (sum[0] / n) as f32,
+        (sum[1] / n) as f32,
+        (sum[2] / n) as f32,
+    ]
 }
 
 /// web3d-M7: the transparent pass: each sorted draw blended over the
@@ -7277,7 +7760,10 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
         if tex == 0 {
             return &state.plain_material;
         }
-        state.texture_cache.get(&tex).unwrap_or(&state.plain_material)
+        state
+            .texture_cache
+            .get(&tex)
+            .unwrap_or(&state.plain_material)
     };
     pass.set_bind_group(0, &state.frame_bind_group, &[]);
     pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
@@ -7295,11 +7781,16 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
             TransparentShape::Sphere(tex) => {
                 pass.set_bind_group(1, texture_group(tex), &[]);
                 pass.set_vertex_buffer(0, state.sphere_vertex_buffer.slice(..));
-                pass.set_index_buffer(state.sphere_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                pass.set_index_buffer(
+                    state.sphere_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
                 (0..state.sphere_index_count, false)
             }
             TransparentShape::Mesh { id, tex, sub } => {
-                let Some(mesh) = state.mesh_cache.get(&id) else { continue };
+                let Some(mesh) = state.mesh_cache.get(&id) else {
+                    continue;
+                };
                 if let Some(skin) = &mesh.skin {
                     pass.set_bind_group(2, &skin.joint_bind_group, &[]);
                 }
@@ -7319,7 +7810,11 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
             }
         };
         if d.solid {
-            pass.set_pipeline(if d.double_sided { &state.lit().double } else { &state.lit().opaque });
+            pass.set_pipeline(if d.double_sided {
+                &state.lit().double
+            } else {
+                &state.lit().opaque
+            });
             pass.draw_indexed(range, 0, instances);
         } else {
             if d.double_sided {
@@ -7337,7 +7832,12 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
 
 /// Draw every instance into the depth prepass, each glTF primitive with
 /// the pipeline its material needs (masked ones bind their material).
-fn draw_prepass(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, (cubes, spheres, meshes): DepthRanges<'_>, materials: &[String]) {
+fn draw_prepass(
+    pass: &mut wgpu::RenderPass<'_>,
+    state: &Renderer,
+    (cubes, spheres, meshes): DepthRanges<'_>,
+    materials: &[String],
+) {
     let pp = &state.prepass;
     let pipeline = |mat: u32| state.depth_pipeline(materials, mat, DepthPass::Prepass);
     pass.set_bind_group(0, &pp.bg, &[]);
@@ -7345,11 +7845,19 @@ fn draw_prepass(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, (cubes, spher
     pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
     for (buffers, ranges) in [
         (
-            (&state.cube_vertex_buffer, &state.cube_index_buffer, state.cube_index_count),
+            (
+                &state.cube_vertex_buffer,
+                &state.cube_index_buffer,
+                state.cube_index_count,
+            ),
             cubes,
         ),
         (
-            (&state.sphere_vertex_buffer, &state.sphere_index_buffer, state.sphere_index_count),
+            (
+                &state.sphere_vertex_buffer,
+                &state.sphere_index_buffer,
+                state.sphere_index_count,
+            ),
             spheres,
         ),
     ] {
@@ -7661,22 +8169,70 @@ fn tonemap_bind_group(
 fn invert4(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let a: Vec<f64> = m.iter().flatten().map(|v| f64::from(*v)).collect();
     let mut inv = [0.0f64; 16];
-    inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15] + a[9] * a[7] * a[14] + a[13] * a[6] * a[11] - a[13] * a[7] * a[10];
-    inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15] - a[8] * a[7] * a[14] - a[12] * a[6] * a[11] + a[12] * a[7] * a[10];
-    inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15] + a[8] * a[7] * a[13] + a[12] * a[5] * a[11] - a[12] * a[7] * a[9];
-    inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14] - a[8] * a[6] * a[13] - a[12] * a[5] * a[10] + a[12] * a[6] * a[9];
-    inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15] - a[9] * a[3] * a[14] - a[13] * a[2] * a[11] + a[13] * a[3] * a[10];
-    inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15] + a[8] * a[3] * a[14] + a[12] * a[2] * a[11] - a[12] * a[3] * a[10];
-    inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15] - a[8] * a[3] * a[13] - a[12] * a[1] * a[11] + a[12] * a[3] * a[9];
-    inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14] + a[8] * a[2] * a[13] + a[12] * a[1] * a[10] - a[12] * a[2] * a[9];
-    inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15] + a[5] * a[3] * a[14] + a[13] * a[2] * a[7] - a[13] * a[3] * a[6];
-    inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15] - a[4] * a[3] * a[14] - a[12] * a[2] * a[7] + a[12] * a[3] * a[6];
-    inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15] + a[4] * a[3] * a[13] + a[12] * a[1] * a[7] - a[12] * a[3] * a[5];
-    inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14] - a[4] * a[2] * a[13] - a[12] * a[1] * a[6] + a[12] * a[2] * a[5];
-    inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11] - a[5] * a[3] * a[10] - a[9] * a[2] * a[7] + a[9] * a[3] * a[6];
-    inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11] + a[4] * a[3] * a[10] + a[8] * a[2] * a[7] - a[8] * a[3] * a[6];
-    inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11] - a[4] * a[3] * a[9] - a[8] * a[1] * a[7] + a[8] * a[3] * a[5];
-    inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10] + a[4] * a[2] * a[9] + a[8] * a[1] * a[6] - a[8] * a[2] * a[5];
+    inv[0] = a[5] * a[10] * a[15] - a[5] * a[11] * a[14] - a[9] * a[6] * a[15]
+        + a[9] * a[7] * a[14]
+        + a[13] * a[6] * a[11]
+        - a[13] * a[7] * a[10];
+    inv[4] = -a[4] * a[10] * a[15] + a[4] * a[11] * a[14] + a[8] * a[6] * a[15]
+        - a[8] * a[7] * a[14]
+        - a[12] * a[6] * a[11]
+        + a[12] * a[7] * a[10];
+    inv[8] = a[4] * a[9] * a[15] - a[4] * a[11] * a[13] - a[8] * a[5] * a[15]
+        + a[8] * a[7] * a[13]
+        + a[12] * a[5] * a[11]
+        - a[12] * a[7] * a[9];
+    inv[12] = -a[4] * a[9] * a[14] + a[4] * a[10] * a[13] + a[8] * a[5] * a[14]
+        - a[8] * a[6] * a[13]
+        - a[12] * a[5] * a[10]
+        + a[12] * a[6] * a[9];
+    inv[1] = -a[1] * a[10] * a[15] + a[1] * a[11] * a[14] + a[9] * a[2] * a[15]
+        - a[9] * a[3] * a[14]
+        - a[13] * a[2] * a[11]
+        + a[13] * a[3] * a[10];
+    inv[5] = a[0] * a[10] * a[15] - a[0] * a[11] * a[14] - a[8] * a[2] * a[15]
+        + a[8] * a[3] * a[14]
+        + a[12] * a[2] * a[11]
+        - a[12] * a[3] * a[10];
+    inv[9] = -a[0] * a[9] * a[15] + a[0] * a[11] * a[13] + a[8] * a[1] * a[15]
+        - a[8] * a[3] * a[13]
+        - a[12] * a[1] * a[11]
+        + a[12] * a[3] * a[9];
+    inv[13] = a[0] * a[9] * a[14] - a[0] * a[10] * a[13] - a[8] * a[1] * a[14]
+        + a[8] * a[2] * a[13]
+        + a[12] * a[1] * a[10]
+        - a[12] * a[2] * a[9];
+    inv[2] = a[1] * a[6] * a[15] - a[1] * a[7] * a[14] - a[5] * a[2] * a[15]
+        + a[5] * a[3] * a[14]
+        + a[13] * a[2] * a[7]
+        - a[13] * a[3] * a[6];
+    inv[6] = -a[0] * a[6] * a[15] + a[0] * a[7] * a[14] + a[4] * a[2] * a[15]
+        - a[4] * a[3] * a[14]
+        - a[12] * a[2] * a[7]
+        + a[12] * a[3] * a[6];
+    inv[10] = a[0] * a[5] * a[15] - a[0] * a[7] * a[13] - a[4] * a[1] * a[15]
+        + a[4] * a[3] * a[13]
+        + a[12] * a[1] * a[7]
+        - a[12] * a[3] * a[5];
+    inv[14] = -a[0] * a[5] * a[14] + a[0] * a[6] * a[13] + a[4] * a[1] * a[14]
+        - a[4] * a[2] * a[13]
+        - a[12] * a[1] * a[6]
+        + a[12] * a[2] * a[5];
+    inv[3] = -a[1] * a[6] * a[11] + a[1] * a[7] * a[10] + a[5] * a[2] * a[11]
+        - a[5] * a[3] * a[10]
+        - a[9] * a[2] * a[7]
+        + a[9] * a[3] * a[6];
+    inv[7] = a[0] * a[6] * a[11] - a[0] * a[7] * a[10] - a[4] * a[2] * a[11]
+        + a[4] * a[3] * a[10]
+        + a[8] * a[2] * a[7]
+        - a[8] * a[3] * a[6];
+    inv[11] = -a[0] * a[5] * a[11] + a[0] * a[7] * a[9] + a[4] * a[1] * a[11]
+        - a[4] * a[3] * a[9]
+        - a[8] * a[1] * a[7]
+        + a[8] * a[3] * a[5];
+    inv[15] = a[0] * a[5] * a[10] - a[0] * a[6] * a[9] - a[4] * a[1] * a[10]
+        + a[4] * a[2] * a[9]
+        + a[8] * a[1] * a[6]
+        - a[8] * a[2] * a[5];
     let det = a[0] * inv[0] + a[1] * inv[4] + a[2] * inv[8] + a[3] * inv[12];
     if det.abs() < 1e-30 {
         return [
@@ -7772,7 +8328,11 @@ mod tests {
         let (sphere_vertices, sphere_indices) = sphere_mesh();
         for (name, vertices, indices) in [
             ("cube", CUBE_VERTICES, CUBE_INDICES),
-            ("sphere", sphere_vertices.as_slice(), sphere_indices.as_slice()),
+            (
+                "sphere",
+                sphere_vertices.as_slice(),
+                sphere_indices.as_slice(),
+            ),
         ] {
             for tri in indices.chunks(3) {
                 let [a, b, c] = [0, 1, 2].map(|k| vertices[tri[k] as usize].position);
@@ -7780,8 +8340,15 @@ mod tests {
                 if dot(n, n) < 1e-12 {
                     continue; // degenerate (the sphere's poles)
                 }
-                let centroid = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0];
-                assert!(dot(n, centroid) > 0.0, "{name}: triangle {tri:?} faces inward");
+                let centroid = [
+                    (a[0] + b[0] + c[0]) / 3.0,
+                    (a[1] + b[1] + c[1]) / 3.0,
+                    (a[2] + b[2] + c[2]) / 3.0,
+                ];
+                assert!(
+                    dot(n, centroid) > 0.0,
+                    "{name}: triangle {tri:?} faces inward"
+                );
             }
         }
     }
@@ -7900,7 +8467,9 @@ mod tests {
     /// Pack a glTF JSON (with `{bin_len}` for the buffer length) and a
     /// binary chunk into a .glb.
     fn glb(json: &str, bin: &[u8]) -> Vec<u8> {
-        let mut j = json.replace("{bin_len}", &bin.len().to_string()).into_bytes();
+        let mut j = json
+            .replace("{bin_len}", &bin.len().to_string())
+            .into_bytes();
         while !j.len().is_multiple_of(4) {
             j.push(b' ');
         }
@@ -7955,9 +8524,16 @@ mod tests {
         let data = parse_glb_bytes(&glb(json, &bin)).expect("decode").0;
         assert_eq!(data.submeshes.len(), 3);
         let mats: Vec<usize> = data.submeshes.iter().map(|s| s.material).collect();
-        assert_eq!(mats, [0, 1, 2], "the third primitive gets the default material");
         assert_eq!(
-            data.submeshes.iter().map(|s| (s.first, s.count)).collect::<Vec<_>>(),
+            mats,
+            [0, 1, 2],
+            "the third primitive gets the default material"
+        );
+        assert_eq!(
+            data.submeshes
+                .iter()
+                .map(|s| (s.first, s.count))
+                .collect::<Vec<_>>(),
             [(0, 3), (3, 3), (6, 3)]
         );
         let red = &data.materials[0];
@@ -8212,7 +8788,11 @@ mod tests {
             enabled: true,
             extent: 10.0,
         };
-        let a = compute_shadow_uniform(&sun_lights(), &test_camera([3.0, 6.0, 9.0], [0.0; 3]), shadow);
+        let a = compute_shadow_uniform(
+            &sun_lights(),
+            &test_camera([3.0, 6.0, 9.0], [0.0; 3]),
+            shadow,
+        );
         let b = compute_shadow_uniform(
             &sun_lights(),
             &test_camera([3.013, 6.0, 9.021], [0.013, 0.0, 0.021]),
@@ -8223,10 +8803,16 @@ mod tests {
             // A world point's shadow-map texel coordinate shifts by an
             // integer between the two frames.
             let p = [1.0, 0.0, -2.0];
-            let (qa, qb) = (clip(a.light_space_matrices[i], p), clip(b.light_space_matrices[i], p));
+            let (qa, qb) = (
+                clip(a.light_space_matrices[i], p),
+                clip(b.light_space_matrices[i], p),
+            );
             for k in 0..2 {
                 let shift = (qa[k] - qb[k]) * 0.5 * SHADOW_MAP_SIZE as f32;
-                assert!((shift - shift.round()).abs() < 0.02, "cascade {i}: {shift} texels");
+                assert!(
+                    (shift - shift.round()).abs() < 0.02,
+                    "cascade {i}: {shift} texels"
+                );
             }
         }
     }
@@ -8252,10 +8838,20 @@ mod tests {
             let m = point_face_view_proj(light, face, 20.0);
             for (u, v) in [(0.25, 0.25), (0.8, 0.3), (0.5, 0.9)] {
                 let d = face_dir(face, u, v);
-                let p = [light[0] + d[0] * 2.0, light[1] + d[1] * 2.0, light[2] + d[2] * 2.0];
+                let p = [
+                    light[0] + d[0] * 2.0,
+                    light[1] + d[1] * 2.0,
+                    light[2] + d[2] * 2.0,
+                ];
                 let q = clip(m, p);
-                assert!((q[0] - (u * 2.0 - 1.0)).abs() < 1e-4, "face {face} u: {q:?}");
-                assert!((q[1] - (1.0 - v * 2.0)).abs() < 1e-4, "face {face} v: {q:?}");
+                assert!(
+                    (q[0] - (u * 2.0 - 1.0)).abs() < 1e-4,
+                    "face {face} u: {q:?}"
+                );
+                assert!(
+                    (q[1] - (1.0 - v * 2.0)).abs() < 1e-4,
+                    "face {face} v: {q:?}"
+                );
                 assert!((0.0..1.0).contains(&q[2]));
             }
         }
@@ -8286,7 +8882,10 @@ mod tests {
         validate_wgsl("EXPOSURE", crate::kernel::post::exposure_shader_source());
         validate_wgsl("DOF", crate::kernel::post::dof_shader_source());
         validate_wgsl("MOTION", crate::kernel::post::motion_shader_source());
-        validate_wgsl("TRANSMISSION", crate::kernel::post::transmission_shader_source());
+        validate_wgsl(
+            "TRANSMISSION",
+            crate::kernel::post::transmission_shader_source(),
+        );
         let [cull, hiz] = crate::kernel::gpu_cull::shader_sources();
         validate_wgsl("CULL", cull);
         validate_wgsl("HIZ", hiz);

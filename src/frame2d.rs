@@ -67,6 +67,38 @@ fn refuse_looks(env: Env, label: &str) -> Result<Env, String> {
     }
 }
 
+/// Whether a game draws in 2D or 3D, decided once after its top level
+/// has run. 3D when any entity class has a `look:` block, or the first
+/// rendered frame enqueues a 3D draw (`cube`, `mesh`, `sphere`, …).
+///
+/// The check runs the top-level `on render():` once through the 3D path;
+/// render code is pure drawing, so running it again on the first real
+/// frame is harmless. It leaves `env` as it found it (both render queues
+/// cleared, `in_render` restored). Shells that have separate 2D and 3D
+/// entry points (native `twec play` / `play3d`) don't need it; the one
+/// browser shell does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dimension {
+    Two,
+    Three,
+}
+
+pub fn detect_dimension(env: &mut Env) -> Dimension {
+    if crate::eval::first_look_class(env).is_some() {
+        return Dimension::Three;
+    }
+    let was = env.in_render;
+    let three = crate::eval::render_frame3d(env).is_ok() && !env.render_queue3d.is_empty();
+    env.render_queue3d.clear();
+    env.draw2d.clear();
+    env.in_render = was;
+    if three {
+        Dimension::Three
+    } else {
+        Dimension::Two
+    }
+}
+
 /// Run as many fixed `PHYSICS_DT` ticks as `frame_dt` of wall-clock
 /// time allows (at most `MAX_SUBSTEPS`). `accumulator` carries the
 /// remainder between frames.

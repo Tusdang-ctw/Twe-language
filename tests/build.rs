@@ -1149,7 +1149,9 @@ fn web_target_parses_with_legacy_alias() {
     assert_eq!(BuildTarget::parse("web"), Some(BuildTarget::Web));
     assert_eq!(BuildTarget::parse("wasm32-3d"), Some(BuildTarget::Web));
     assert_eq!(BuildTarget::Web.label(), "web");
-    assert_eq!(BuildTarget::parse("wasm32"), Some(BuildTarget::Wasm32));
+    // web3d-M6: `wasm32` is a legacy alias for the one browser target.
+    assert_eq!(BuildTarget::parse("wasm32"), Some(BuildTarget::Web));
+    assert_eq!(BuildTarget::parse("wasm32-unknown-unknown"), Some(BuildTarget::Web));
 }
 
 /// web3d-M2 (M0 carry-over): scaffolding targets are behind

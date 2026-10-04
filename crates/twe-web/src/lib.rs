@@ -21,10 +21,12 @@ use twec::kernel::render::{parse_glb_bytes, AssetKind, AssetReady, AssetSource, 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+use twec::frame2d::{self, Dimension};
+use twec::host3d::InputState;
 /// Twe key names with their DOM `KeyboardEvent.code`: the same table
 /// the native shell reports (web3d-M4).
 use twec::host3d::KEY_CODES as KEYS;
-use twec::host3d::InputState;
+use twec::kernel::canvas::{CANVAS_H, CANVAS_W};
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -88,7 +90,8 @@ pub fn soak(bundle: &[u8], ticks: u32, variant: u32, gc_stress: bool) -> Result<
     let reader = twec::bundle::BundleReader::from_bytes(bundle.to_vec())
         .map_err(|e| format!("bundle: {e}"))?;
     twec::bundle::set_active_bundle(reader);
-    let source = twec::bundle::read_asset_bytes("main.twe").map_err(|e| format!("main.twe: {e}"))?;
+    let source =
+        twec::bundle::read_asset_bytes("main.twe").map_err(|e| format!("main.twe: {e}"))?;
     let source = String::from_utf8(source).map_err(|_| "main.twe is not UTF-8")?;
     twec::save::install_web_storage(memory_get, memory_set);
     twec::heap::gc_set_stress(gc_stress);
@@ -177,6 +180,8 @@ struct Shell {
     /// start after a user gesture.
     gestured: Rc<std::cell::Cell<bool>>,
     unlocked: bool,
+    /// 2D or 3D, decided once after the top level runs (web3d-M6).
+    dim: Dimension,
 }
 
 async fn run() -> Result<(), String> {
@@ -222,6 +227,9 @@ async fn run() -> Result<(), String> {
     twec::eval::run_top_level(&mut env, &program)
         .map_err(|e| format!("main.twe: runtime error: {e}"))?;
     flush_output(&mut env);
+    // web3d-M6: a 2D game (no `look:`, nothing 3D in its first frame)
+    // runs through the kernel canvas; a 3D game through the scene path.
+    let dim = frame2d::detect_dimension(&mut env);
 
     // WebGPU on the canvas.
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -251,6 +259,7 @@ async fn run() -> Result<(), String> {
         audio: audio::WebAudio::default(),
         gestured,
         unlocked: false,
+        dim,
     }));
     start_frame_loop(shell);
     if let Some(el) = document.get_element_by_id("twe-status") {
@@ -261,6 +270,9 @@ async fn run() -> Result<(), String> {
 
 /// One animation frame: fixed-step simulation, then draw.
 fn frame(shell: &mut Shell) {
+    if shell.dim == Dimension::Two {
+        return frame_2d(shell);
+    }
     let now = now_secs();
     let dt = (now - shell.last_frame).min(twec::eval::MAX_FRAME_DT);
     shell.last_frame = now;
@@ -314,6 +326,67 @@ fn frame(shell: &mut Shell) {
         s.script_render_ms += times.script_ms;
         s.kernel_ms += times.kernel_ms;
         s.culled += f64::from(u8::from(shell.renderer.last_frame_culled()));
+    });
+}
+
+/// web3d-M6: a 2D game's animation frame — the 2D frame step into the
+/// draw-command list, drawn by the kernel canvas.
+fn frame_2d(shell: &mut Shell) {
+    let now = now_secs();
+    let dt = (now - shell.last_frame).min(twec::eval::MAX_FRAME_DT);
+    shell.last_frame = now;
+    shell.input.borrow_mut().set_gamepad(
+        poll_gamepad()
+            .as_ref()
+            .map(|(buttons, axes)| (&buttons[..], *axes)),
+    );
+    let tick_start = now_secs();
+    let steps_before = shell.accumulator;
+    {
+        let mut input = shell.input.borrow_mut();
+        if let Err(e) = frame2d::tick(&mut shell.env, Some(&mut input), &mut shell.accumulator, dt)
+        {
+            web_sys::console::error_1(&format!("on update: {e}").into());
+        }
+    }
+    let ticks = ((steps_before + dt - shell.accumulator) / twec::eval::PHYSICS_DT)
+        .round()
+        .max(0.0);
+    let tick_ms = (now_secs() - tick_start) * 1e3;
+    twec::audio_polish::tick(dt);
+    twec::stdlib::sync_audio_polish();
+    let render_start = now_secs();
+    let (camera, result) = frame2d::render(&mut shell.env, dt, CANVAS_W, CANVAS_H);
+    let script_render_ms = (now_secs() - render_start) * 1e3;
+    if let Err(e) = result {
+        web_sys::console::error_1(&format!("render: {e}").into());
+    }
+    let kernel_start = now_secs();
+    {
+        let Shell {
+            env,
+            renderer,
+            assets,
+            ..
+        } = &mut *shell;
+        if let Err(e) = renderer.render_2d(&[(&env.draw2d, camera)], assets) {
+            web_sys::console::error_1(&format!("render: {e}").into());
+        }
+    }
+    let kernel_ms = (now_secs() - kernel_start) * 1e3;
+    flush_output(&mut shell.env);
+    if !shell.unlocked && shell.gestured.get() {
+        shell.audio.unlock();
+        shell.unlocked = true;
+    }
+    shell.audio.play_queued();
+    STATS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.frames += 1.0;
+        s.ticks += ticks;
+        s.tick_ms += tick_ms;
+        s.script_render_ms += script_render_ms;
+        s.kernel_ms += kernel_ms;
     });
 }
 
@@ -473,12 +546,13 @@ fn listen_pointer(
     };
 
     let (i, pos) = (input.clone(), to_canvas.clone());
-    let moved = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
-        let (x, y) = pos(&e);
-        let mut input = i.borrow_mut();
-        input.mouse_move(x, y);
-        input.mouse_motion(f64::from(e.movement_x()), f64::from(e.movement_y()));
-    });
+    let moved =
+        Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
+            let (x, y) = pos(&e);
+            let mut input = i.borrow_mut();
+            input.mouse_move(x, y);
+            input.mouse_motion(f64::from(e.movement_x()), f64::from(e.movement_y()));
+        });
     let (i, pos) = (input.clone(), to_canvas);
     let down = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
         gestured.set(true);

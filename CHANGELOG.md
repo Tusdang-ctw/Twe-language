@@ -12,6 +12,10 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Changed (web)
+- **`twec build --target web` builds 2D games too** (web3d-M6), on the one browser runtime (`twe-web`, WebGPU). The shell detects 2D vs 3D at startup and draws 2D through the kernel canvas. `--target wasm32` is now an alias of `--target web`.
+- **The macroquad browser build is removed.** The old `--target wasm32` recompiled the whole runtime as a macroquad game; the browser now always runs `twe-web`. Shipped web pages no longer carry `mq_js_bundle.js` or a per-game `game.wasm`.
+
 ### Changed (runtime)
 - **2D drawing goes through one command list** (web3d-M6). Drawing calls add commands that the runtime draws after the frame's render code, in call order. Scripts see no difference. 2D games and the 3D HUD now share it.
 - **`TWE_CAPTURE=N:path`** makes `twec play` save frame `N` as a PNG and exit, with fixed timing and no input.
