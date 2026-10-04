@@ -59,6 +59,13 @@ pub fn transcode(in_path: &Path, out_path: &Path) -> Result<TranscodeReport, Str
         ..Default::default()
     };
 
+    // Security: for a `.gltf` with external buffers/images, refuse any
+    // URI that escapes the input's directory before the decoder reads
+    // (and embeds) it — a crafted glTF must not exfiltrate an arbitrary
+    // local file, nor trigger a UNC/SMB fetch. GLB inputs are self-
+    // contained and have no external URIs.
+    reject_unsafe_uris(&bytes)?;
+
     // Which extensions are present (from the raw document).
     let exts = extensions_used(&bytes)?;
     let has_draco = exts.iter().any(|e| e == "KHR_draco_mesh_compression");
@@ -89,6 +96,37 @@ pub fn transcode(in_path: &Path, out_path: &Path) -> Result<TranscodeReport, Str
     std::fs::write(out_path, &glb).map_err(|e| format!("cannot write '{}': {e}", out_path.display()))?;
     report.out_bytes = glb.len() as u64;
     Ok(report)
+}
+
+/// Refuse a glTF whose `buffers` or `images` reference a URI that would
+/// escape the input's directory (absolute / UNC / scheme / `..`), so the
+/// transcoder never reads — and embeds into its output — an arbitrary
+/// local file. `data:` URIs are embedded content and allowed.
+fn reject_unsafe_uris(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() >= 4 && &bytes[0..4] == b"glTF" {
+        return Ok(()); // a GLB is self-contained
+    }
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("not valid glTF JSON: {e}"))?;
+    for key in ["buffers", "images"] {
+        if let Some(arr) = doc.get(key).and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(uri) = item.get("uri").and_then(|u| u.as_str()) {
+                    if uri.starts_with("data:") {
+                        continue;
+                    }
+                    if !crate::asset_info::is_safe_asset_uri(uri) {
+                        return Err(format!(
+                            "refusing to transcode: {key} references an unsafe URI '{uri}' \
+                             (absolute, UNC, a URL scheme, or '..' — it would read a file outside \
+                             the asset's directory)"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Read `extensionsUsed` from the raw JSON — WITHOUT the strict `gltf`
@@ -513,6 +551,23 @@ mod tests {
             matches!(g.images[0].format, crate::asset_info::ImageFormat::Png),
             "now a PNG the runtime decodes"
         );
+    }
+
+    #[test]
+    fn transcode_refuses_unsafe_external_uri() {
+        // A .gltf whose buffer points outside its directory must be
+        // refused before the decoder reads (and embeds) the file.
+        let dir = std::env::temp_dir().join("twe_m9_unsafe");
+        let _ = std::fs::create_dir_all(&dir);
+        let gltf = dir.join("evil.gltf");
+        std::fs::write(
+            &gltf,
+            br#"{"asset":{"version":"2.0"},"buffers":[{"uri":"../../../../../../etc/passwd","byteLength":10}]}"#,
+        )
+        .unwrap();
+        let out = dir.join("out.glb");
+        let err = transcode(&gltf, &out).unwrap_err();
+        assert!(err.contains("unsafe URI"), "refuses the traversal: {err}");
     }
 
     #[test]

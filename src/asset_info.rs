@@ -429,7 +429,12 @@ fn image_source_bytes(
             (name, slice)
         }
         gltf::image::Source::Uri { uri, .. } => {
-            if uri.starts_with("data:") {
+            // Security: only read a relative path that stays under the
+            // glTF's own directory. Rejecting absolute / UNC / scheme /
+            // `..` URIs stops a crafted glTF from reading an arbitrary
+            // local file — and, on Windows, from triggering an SMB/UNC
+            // fetch that would leak NTLM credentials.
+            if uri.starts_with("data:") || !is_safe_asset_uri(uri) {
                 (name, None)
             } else {
                 let decoded = percent_decode(uri);
@@ -441,6 +446,30 @@ fn image_source_bytes(
             }
         }
     }
+}
+
+/// True when `uri` is a relative file reference that stays within the
+/// referencing glTF's directory: no URL scheme, no UNC path, no drive
+/// letter, no absolute path, and no `..` component. A `data:` URI is
+/// not a file and returns false here (callers handle it separately).
+/// Shared by the inspector and the transcoder.
+pub fn is_safe_asset_uri(uri: &str) -> bool {
+    if uri.is_empty() || uri.starts_with("data:") {
+        return false;
+    }
+    if uri.contains("://") || uri.starts_with("//") || uri.starts_with('\\') {
+        return false; // scheme (http/file/…) or UNC
+    }
+    let decoded = percent_decode(uri);
+    if decoded.contains(':') || decoded.starts_with('\\') || decoded.starts_with('/') {
+        return false; // drive letter / UNC / absolute after decoding
+    }
+    let p = Path::new(&decoded);
+    if p.is_absolute() {
+        return false;
+    }
+    !p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// Minimal percent-decode for glTF URIs (spaces as %20 etc.). Avoids a
@@ -784,6 +813,24 @@ mod tests {
     fn percent_decode_spaces() {
         assert_eq!(percent_decode("my%20tex.png"), "my tex.png");
         assert_eq!(percent_decode("plain.png"), "plain.png");
+    }
+
+    #[test]
+    fn safe_uri_rejects_traversal_and_unc() {
+        // Allowed: ordinary relative references.
+        assert!(is_safe_asset_uri("tex.png"));
+        assert!(is_safe_asset_uri("textures/base.png"));
+        assert!(is_safe_asset_uri("my%20tex.png"));
+        // Rejected: escapes, absolutes, UNC, schemes, drive letters.
+        assert!(!is_safe_asset_uri("../secret.png"));
+        assert!(!is_safe_asset_uri("a/../../secret"));
+        assert!(!is_safe_asset_uri("/etc/passwd"));
+        assert!(!is_safe_asset_uri("\\\\attacker\\share\\x")); // UNC → SMB cred leak
+        assert!(!is_safe_asset_uri("//attacker/share/x"));
+        assert!(!is_safe_asset_uri("C:\\Windows\\x"));
+        assert!(!is_safe_asset_uri("http://evil/x.png"));
+        assert!(!is_safe_asset_uri("file:///etc/passwd"));
+        assert!(!is_safe_asset_uri("data:image/png;base64,AAAA"));
     }
 
     #[test]

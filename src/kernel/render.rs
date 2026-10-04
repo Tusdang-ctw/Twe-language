@@ -509,6 +509,12 @@ pub const CASCADE_COUNT: usize = 3;
 /// with headroom for complex rigs.
 pub const MAX_JOINTS: usize = 128;
 
+/// web3d-M9: cap on morph targets per mesh. glTF files use a handful in
+/// practice; the cap bounds the O(targets × vertices) delta allocation
+/// so a crafted file can't exhaust memory with millions of (even empty)
+/// targets.
+pub const MAX_MORPH_TARGETS: usize = 128;
+
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct JointsUniform {
@@ -5223,7 +5229,7 @@ fn flatten_primitive(
             )
         })
         .collect();
-    let num_targets = morph_raw.len();
+    let num_targets = morph_raw.len().min(MAX_MORPH_TARGETS);
     if num_targets > 0 {
         let prev_total = base_index as usize;
         let m = out.morph.get_or_insert_with(MorphCpu::default);
