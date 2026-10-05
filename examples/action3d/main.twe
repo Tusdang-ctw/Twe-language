@@ -75,6 +75,58 @@ entity Hero:
 
 spawn Hero at vec3(0, -0.5, 6)
 
+# True during the attack's mid-swing hit window; enemies in range read it.
+var attack_hit = false
+var kills = 0
+
+# Ground-plane distance² to the hero.
+function dist2_to_hero(x, z):
+    let dx = x - hero_x
+    let dz = z - hero_z
+    return dx * dx + dz * dz
+
+# ---------------------------------------------------------------
+# Enemies: blobs that chase the hero; a sword swing in range kills them.
+# ---------------------------------------------------------------
+visual EnemyMat:
+    surface(uv, time, pos) -> material:
+        let pulse = 0.5 + 0.5 * math.sin(time * 4 + pos.x + pos.z)
+        let mottle = noise((uv.x * 7, uv.y * 7)) * 0.12
+        return material(albedo: (0.7 + mottle, 0.12, 0.14), roughness: 0.3, emission: (0.5, 0.04, 0.05) * pulse)
+
+entity Enemy:
+    var pos = vec3(0, 0, 0)
+    var hp = 2
+    var hurt = 0.0
+    look:
+        mesh: "sphere"
+        tint: (1.0, 1.0, 1.0)
+        scale: 0.8
+        material: EnemyMat
+
+    function update(dt):
+        # Chase the hero on the ground plane.
+        let dx = hero_x - pos.x
+        let dz = hero_z - pos.z
+        let mag = math.sqrt(dx * dx + dz * dz)
+        if mag > 0.9:
+            let s = 2.0 * dt / mag
+            pos = vec3(pos.x + dx * s, 0.0, pos.z + dz * s)
+        if hurt > 0.0:
+            hurt = hurt - dt
+        # Take a hit when the hero's swing connects in range.
+        if attack_hit and dist2_to_hero(pos.x, pos.z) < 3.2 and hurt <= 0.0:
+            hp = hp - 1
+            hurt = 0.3
+            if hp <= 0:
+                kills = kills + 1
+                despawn self
+
+# A ring of enemies around the arena.
+for i in 0..<8:
+    let a = i / 8.0 * 6.2832
+    spawn Enemy at vec3(math.sin(a) * 12.0, 0.0, math.cos(a) * 12.0)
+
 # ---------------------------------------------------------------
 # The game loop.
 # ---------------------------------------------------------------
@@ -103,6 +155,8 @@ scene Action:
                 mesh_anim.play(hero, "attack", false)
             if attacking > 0.0:
                 attacking = attacking - dt
+            # The swing connects mid-animation (0.12..0.3 s remaining).
+            attack_hit = attacking > 0.12 and attacking < 0.3
 
             # --- Move + face ---
             var target_speed = 0.0
@@ -140,3 +194,4 @@ scene Action:
 
         on render():
             text(at: (14, 14), content: "WASD move · Shift run · Space/click attack", size: 16, color: color.white)
+            text(at: (14, 36), content: "Slain: " + kills, size: 16, color: color.yellow)
