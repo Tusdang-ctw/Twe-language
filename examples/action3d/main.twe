@@ -35,11 +35,13 @@ var cam_z = 12.0
 # Lighting + materials (procedural; web3d-M7).
 # ---------------------------------------------------------------
 light.clear()
+light.environment("assets/sky.hdr", 0.55)   # image-based ambient + backdrop
 sun.direction(vec3(-0.4, 0.85, 0.3))
 sun.shadow(true)
 sun.shadow_extent(20.0)
 postfx.ao(0.9)
 postfx.bloom(0.3)
+postfx.taa(false)
 auto_pause_on_blur(true)
 
 visual GrassMat:
