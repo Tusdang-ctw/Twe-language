@@ -548,6 +548,31 @@ pub fn install(env: &mut Env) {
             "gravity".to_string(),
             Value::from_builtin("physics.gravity", &["v"], physics_gravity_impl),
         );
+        // web3d-M11 session 2: joints + CCD.
+        physics_fields.insert(
+            "fixed_joint".to_string(),
+            Value::from_builtin("physics.fixed_joint", &["a", "b", "anchor_a", "anchor_b"], physics_fixed_joint_impl),
+        );
+        physics_fields.insert(
+            "spherical_joint".to_string(),
+            Value::from_builtin("physics.spherical_joint", &["a", "b", "anchor_a", "anchor_b"], physics_spherical_joint_impl),
+        );
+        physics_fields.insert(
+            "revolute_joint".to_string(),
+            Value::from_builtin("physics.revolute_joint", &["a", "b", "anchor_a", "anchor_b", "axis"], physics_revolute_joint_impl),
+        );
+        physics_fields.insert(
+            "prismatic_joint".to_string(),
+            Value::from_builtin("physics.prismatic_joint", &["a", "b", "anchor_a", "anchor_b", "axis"], physics_prismatic_joint_impl),
+        );
+        physics_fields.insert(
+            "remove_joint".to_string(),
+            Value::from_builtin("physics.remove_joint", &["handle"], physics_remove_joint_impl),
+        );
+        physics_fields.insert(
+            "set_ccd".to_string(),
+            Value::from_builtin("physics.set_ccd", &["handle", "on"], physics_set_ccd_impl),
+        );
         physics_fields.insert(
             "character".to_string(),
             Value::from_builtin(
@@ -12013,6 +12038,78 @@ fn physics_body_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         help: Some("expected shape: \"box\", \"sphere\", or \"capsule\"".to_string()),
     })?;
     Ok(Value::from_int(id as i64))
+}
+
+// web3d-M11 session 2: physics joints + CCD. The rapier joint + CCD sets
+// were already stepped; these expose them to scripts.
+#[cfg(not(target_arch = "wasm32"))]
+fn joint_result(h: Option<u32>, what: &str) -> Result<Value, RuntimeError> {
+    match h {
+        Some(id) => Ok(Value::from_int(id as i64)),
+        None => Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: unknown body handle (pass handles from physics.body / static_*)"),
+            help: None,
+        }),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn physics_fixed_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "physics.fixed_joint")?;
+    let a = handle_int(&args[0], "physics.fixed_joint.a")?;
+    let b = handle_int(&args[1], "physics.fixed_joint.b")?;
+    let aa = xyz_of(&args[2], "physics.fixed_joint.anchor_a")?;
+    let ab = xyz_of(&args[3], "physics.fixed_joint.anchor_b")?;
+    joint_result(crate::physics3d::fixed_joint(a, b, aa, ab), "physics.fixed_joint")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn physics_spherical_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "physics.spherical_joint")?;
+    let a = handle_int(&args[0], "physics.spherical_joint.a")?;
+    let b = handle_int(&args[1], "physics.spherical_joint.b")?;
+    let aa = xyz_of(&args[2], "physics.spherical_joint.anchor_a")?;
+    let ab = xyz_of(&args[3], "physics.spherical_joint.anchor_b")?;
+    joint_result(crate::physics3d::spherical_joint(a, b, aa, ab), "physics.spherical_joint")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn physics_revolute_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "physics.revolute_joint")?;
+    let a = handle_int(&args[0], "physics.revolute_joint.a")?;
+    let b = handle_int(&args[1], "physics.revolute_joint.b")?;
+    let aa = xyz_of(&args[2], "physics.revolute_joint.anchor_a")?;
+    let ab = xyz_of(&args[3], "physics.revolute_joint.anchor_b")?;
+    let axis = xyz_of(&args[4], "physics.revolute_joint.axis")?;
+    joint_result(crate::physics3d::revolute_joint(a, b, aa, ab, axis), "physics.revolute_joint")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn physics_prismatic_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 5, "physics.prismatic_joint")?;
+    let a = handle_int(&args[0], "physics.prismatic_joint.a")?;
+    let b = handle_int(&args[1], "physics.prismatic_joint.b")?;
+    let aa = xyz_of(&args[2], "physics.prismatic_joint.anchor_a")?;
+    let ab = xyz_of(&args[3], "physics.prismatic_joint.anchor_b")?;
+    let axis = xyz_of(&args[4], "physics.prismatic_joint.axis")?;
+    joint_result(crate::physics3d::prismatic_joint(a, b, aa, ab, axis), "physics.prismatic_joint")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn physics_remove_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "physics.remove_joint")?;
+    let h = handle_int(&args[0], "physics.remove_joint.handle")?;
+    Ok(Value::from_bool(crate::physics3d::remove_joint(h)))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn physics_set_ccd_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "physics.set_ccd")?;
+    let h = handle_int(&args[0], "physics.set_ccd.handle")?;
+    let on = args[1].is_bool() && args[1].as_bool();
+    Ok(Value::from_bool(crate::physics3d::set_ccd(h, on)))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

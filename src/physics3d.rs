@@ -102,6 +102,9 @@ pub struct PhysicsWorld {
     /// event handler to translate rapier collider handles back to
     /// what scripts see.
     collider_to_twe: HashMap<ColliderHandle, u32>,
+    /// web3d-M11 session 2: Twe-side joint handle (u32) → rapier
+    /// impulse-joint handle, for `physics.remove_joint`.
+    joints: HashMap<u32, ImpulseJointHandle>,
     next_handle: u32,
     /// Phase 18 finish: characters use a kinematic-position-based
     /// body driven by `KinematicCharacterController::move_shape`.
@@ -132,6 +135,7 @@ impl PhysicsWorld {
             query_pipeline: QueryPipeline::new(),
             handles: HashMap::new(),
             collider_to_twe: HashMap::new(),
+            joints: HashMap::new(),
             next_handle: 1,
             character_controller: KinematicCharacterController::default(),
             collision_events: Vec::new(),
@@ -503,6 +507,96 @@ impl PhysicsWorld {
         }
     }
 
+    fn rapier_body(&self, h: u32) -> Option<RigidBodyHandle> {
+        self.handles.get(&h).copied()
+    }
+
+    /// web3d-M11 session 2: insert an impulse joint between two bodies
+    /// and return a Twe-side joint handle. The rapier joint + CCD sets
+    /// were already part of the step; these just expose them.
+    fn add_joint(&mut self, a: u32, b: u32, joint: impl Into<GenericJoint>) -> Option<u32> {
+        let ha = self.rapier_body(a)?;
+        let hb = self.rapier_body(b)?;
+        let jh = self.impulse_joints.insert(ha, hb, joint, true);
+        let id = self.next_handle;
+        self.next_handle += 1;
+        self.joints.insert(id, jh);
+        Some(id)
+    }
+
+    /// Rigidly lock two bodies' relative transform.
+    pub fn fixed_joint(&mut self, a: u32, b: u32, anchor_a: [f32; 3], anchor_b: [f32; 3]) -> Option<u32> {
+        let j = FixedJointBuilder::new()
+            .local_anchor1(point![anchor_a[0], anchor_a[1], anchor_a[2]])
+            .local_anchor2(point![anchor_b[0], anchor_b[1], anchor_b[2]])
+            .build();
+        self.add_joint(a, b, j)
+    }
+
+    /// Ball joint: the two anchor points coincide, free rotation (chains, ropes).
+    pub fn spherical_joint(&mut self, a: u32, b: u32, anchor_a: [f32; 3], anchor_b: [f32; 3]) -> Option<u32> {
+        let j = SphericalJointBuilder::new()
+            .local_anchor1(point![anchor_a[0], anchor_a[1], anchor_a[2]])
+            .local_anchor2(point![anchor_b[0], anchor_b[1], anchor_b[2]])
+            .build();
+        self.add_joint(a, b, j)
+    }
+
+    /// Hinge: rotation only about `axis` (doors, wheels, a rope bridge's planks).
+    pub fn revolute_joint(
+        &mut self,
+        a: u32,
+        b: u32,
+        anchor_a: [f32; 3],
+        anchor_b: [f32; 3],
+        axis: [f32; 3],
+    ) -> Option<u32> {
+        let ax = UnitVector::new_normalize(vector![axis[0], axis[1], axis[2]]);
+        let j = RevoluteJointBuilder::new(ax)
+            .local_anchor1(point![anchor_a[0], anchor_a[1], anchor_a[2]])
+            .local_anchor2(point![anchor_b[0], anchor_b[1], anchor_b[2]])
+            .build();
+        self.add_joint(a, b, j)
+    }
+
+    /// Slider: translation only along `axis` (pistons, lifts).
+    pub fn prismatic_joint(
+        &mut self,
+        a: u32,
+        b: u32,
+        anchor_a: [f32; 3],
+        anchor_b: [f32; 3],
+        axis: [f32; 3],
+    ) -> Option<u32> {
+        let ax = UnitVector::new_normalize(vector![axis[0], axis[1], axis[2]]);
+        let j = PrismaticJointBuilder::new(ax)
+            .local_anchor1(point![anchor_a[0], anchor_a[1], anchor_a[2]])
+            .local_anchor2(point![anchor_b[0], anchor_b[1], anchor_b[2]])
+            .build();
+        self.add_joint(a, b, j)
+    }
+
+    pub fn remove_joint(&mut self, h: u32) -> bool {
+        if let Some(jh) = self.joints.remove(&h) {
+            self.impulse_joints.remove(jh, true);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Enable continuous collision detection on a body (fast movers that
+    /// would tunnel through thin colliders — a thrown sword, a bullet).
+    pub fn set_ccd(&mut self, h: u32, on: bool) -> bool {
+        if let Some(bh) = self.rapier_body(h) {
+            if let Some(rb) = self.bodies.get_mut(bh) {
+                rb.enable_ccd(on);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn reset(&mut self) {
         *self = Self::new();
     }
@@ -571,6 +665,26 @@ pub fn step(dt: f32) {
 
 pub fn body(shape: &str, at: [f32; 3], mass: f32) -> Result<u32, String> {
     WORLD.with(|w| w.borrow_mut().body(shape, at, mass))
+}
+
+// web3d-M11 session 2: joints + CCD.
+pub fn fixed_joint(a: u32, b: u32, aa: [f32; 3], ab: [f32; 3]) -> Option<u32> {
+    WORLD.with(|w| w.borrow_mut().fixed_joint(a, b, aa, ab))
+}
+pub fn spherical_joint(a: u32, b: u32, aa: [f32; 3], ab: [f32; 3]) -> Option<u32> {
+    WORLD.with(|w| w.borrow_mut().spherical_joint(a, b, aa, ab))
+}
+pub fn revolute_joint(a: u32, b: u32, aa: [f32; 3], ab: [f32; 3], axis: [f32; 3]) -> Option<u32> {
+    WORLD.with(|w| w.borrow_mut().revolute_joint(a, b, aa, ab, axis))
+}
+pub fn prismatic_joint(a: u32, b: u32, aa: [f32; 3], ab: [f32; 3], axis: [f32; 3]) -> Option<u32> {
+    WORLD.with(|w| w.borrow_mut().prismatic_joint(a, b, aa, ab, axis))
+}
+pub fn remove_joint(h: u32) -> bool {
+    WORLD.with(|w| w.borrow_mut().remove_joint(h))
+}
+pub fn set_ccd(h: u32, on: bool) -> bool {
+    WORLD.with(|w| w.borrow_mut().set_ccd(h, on))
 }
 
 pub fn static_box(at: [f32; 3], size: [f32; 3]) -> u32 {
