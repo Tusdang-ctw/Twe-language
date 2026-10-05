@@ -79,16 +79,31 @@
     // it falls back to fetching `game.twebundle` itself.
     window.tweBundle = download(FILES.bundle, track("bundle")).catch(() => null);
     try {
-      const [{ default: init }, wasm] = await Promise.all([
+      const [mod, wasm] = await Promise.all([
         import(FILES.js),
         download(FILES.wasm, track("wasm")),
       ]);
       await window.tweBundle;
       $("twe-progress").style.width = "100%";
       $("twe-bytes").textContent = "Starting…";
-      await init({ module_or_path: wasm });
+      await mod.default({ module_or_path: wasm });
       // The shell clears #twe-status once the first frame is up.
       $("twe-loading").remove();
+      // web3d-M10 session 5: when embedded (the Studio Viewport iframe),
+      // post rolling frame stats to the parent for the Profiler panel.
+      // Standalone top-level games don't post. frame_stats() returns
+      // [frames, ticks/frame, tick_ms, render_ms, kernel_ms, culled] and
+      // resets, so this is a 250 ms rolling average.
+      if (window.parent !== window && typeof mod.frame_stats === "function") {
+        setInterval(() => {
+          try {
+            window.parent.postMessage(
+              { type: "twe-profile", stats: Array.from(mod.frame_stats()), t: performance.now() },
+              "*"
+            );
+          } catch {}
+        }, 250);
+      }
     } catch (e) {
       fail(`Could not load the game: ${e.message ?? e}`);
     }
