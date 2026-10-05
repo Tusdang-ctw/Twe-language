@@ -1,0 +1,7 @@
+[game]
+name = "Action3D"
+version = "0.1.0"
+main = "main.twe"
+
+[build]
+target = "web"

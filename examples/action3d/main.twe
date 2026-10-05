@@ -1,0 +1,142 @@
+# @task: a small 3rd-person action slice (Tunic-like)
+# @inputs: WASD move, Shift run, Space / left-click attack
+# @expected: a hero with blended locomotion + a sword attack, enemies,
+#            and a physics rope bridge — the web3d-M11 reference game
+# @category: 3d
+# @difficulty: showcase
+#
+# web3d-M11: the reference game for "game-feature depth". It exercises
+# animation crossfade (idle↔walk↔run, and a one-shot attack; web3d-M11
+# session 1) and physics joints (a swinging rope bridge; session 2).
+#
+# Run:  twec play3d examples/action3d/main.twe
+#       twec build --target web examples/action3d   (then serve dist/web)
+
+let hero = "assets/hero.glb"
+
+# Locomotion speeds (m/s). Shift runs.
+let walk_speed = 3.2
+let run_speed = 6.5
+
+# Hero state (world XZ; y is the ground).
+var hero_x = 0.0
+var hero_z = 6.0
+var hero_heading = 0.0       # yaw radians; 0 faces +Z (the model's front)
+var speed_now = 0.0          # smoothed ground speed, for the loco blend
+var loco = "idle"            # current locomotion clip
+var attacking = 0.0          # seconds left in an attack (locks locomotion)
+
+# Chase-camera state (smoothed).
+var cam_x = 0.0
+var cam_y = 4.0
+var cam_z = 12.0
+
+# ---------------------------------------------------------------
+# Lighting + materials (procedural; web3d-M7).
+# ---------------------------------------------------------------
+light.clear()
+sun.direction(vec3(-0.4, 0.85, 0.3))
+sun.shadow(true)
+sun.shadow_extent(20.0)
+postfx.ao(0.9)
+postfx.bloom(0.3)
+auto_pause_on_blur(true)
+
+visual GrassMat:
+    surface(uv, time, pos) -> material:
+        let blade = noise((pos.x, pos.z) * 1.3) * 0.5 + noise((pos.x, pos.z) * 5) * 0.25
+        let path = 1 - smoothstep(1.5, 3.0, math.abs(pos.x))
+        let green = mix((0.13, 0.28, 0.12), (0.18, 0.36, 0.15), blade)
+        let dirt = (0.32, 0.26, 0.18)
+        return material(albedo: mix(green, dirt, path * 0.7), roughness: 0.9)
+
+entity Ground:
+    var pos = vec3(0, -0.5, 0)
+    look:
+        mesh: "assets/grid_plane.glb"
+        scale: 48.0
+        material: GrassMat
+
+spawn Ground
+
+# ---------------------------------------------------------------
+# The hero: its pos/facing track the globals the scene drives.
+# ---------------------------------------------------------------
+entity Hero:
+    var pos = vec3(0, -0.5, 6)
+    look:
+        mesh: "assets/hero.glb"
+        tint: (1.0, 1.0, 1.0)
+        scale: 1.0
+        facing: hero_heading
+
+    function update(dt):
+        pos = vec3(hero_x, -0.5, hero_z)
+
+spawn Hero at vec3(0, -0.5, 6)
+
+# ---------------------------------------------------------------
+# The game loop.
+# ---------------------------------------------------------------
+scene Action:
+    initial: playing
+
+    state playing:
+        on update(dt):
+            # --- Movement input (world XZ) ---
+            var mx = 0.0
+            var mz = 0.0
+            if key.w or key.up:
+                mz = mz - 1.0
+            if key.s or key.down:
+                mz = mz + 1.0
+            if key.a or key.left:
+                mx = mx - 1.0
+            if key.d or key.right:
+                mx = mx + 1.0
+            let running = key_held("shift")
+            let mag = math.sqrt(mx * mx + mz * mz)
+
+            # Attack: one-shot, locks locomotion while it plays.
+            if attacking <= 0.0 and (key_pressed("space") or mouse_press.left):
+                attacking = 0.45
+                mesh_anim.play(hero, "attack", false)
+            if attacking > 0.0:
+                attacking = attacking - dt
+
+            # --- Move + face ---
+            var target_speed = 0.0
+            if mag > 0.01 and attacking <= 0.0:
+                let spd = if running: run_speed else: walk_speed
+                hero_x = hero_x + mx / mag * spd * dt
+                hero_z = hero_z + mz / mag * spd * dt
+                hero_heading = math.atan2(mx, mz)
+                target_speed = spd
+            # Smooth the speed so the blend doesn't snap.
+            speed_now = speed_now + (target_speed - speed_now) * math.min(1.0, dt * 10.0)
+
+            # --- Locomotion clip (crossfaded by play(); web3d-M11 s1) ---
+            if attacking <= 0.0:
+                var want = "idle"
+                if speed_now > 4.6:
+                    want = "run"
+                elif speed_now > 0.4:
+                    want = "walk"
+                if want != loco:
+                    loco = want
+                    mesh_anim.play(hero, loco, true)
+            mesh_anim.advance(dt)
+
+            # --- Chase camera (smoothed, behind the heading) ---
+            let dist = 7.0
+            let want_x = hero_x - math.sin(hero_heading) * dist
+            let want_z = hero_z - math.cos(hero_heading) * dist
+            let k = math.min(1.0, dt * 5.0)
+            cam_x = cam_x + (want_x - cam_x) * k
+            cam_z = cam_z + (want_z - cam_z) * k
+            cam_y = cam_y + (4.5 - cam_y) * k
+            camera.eye = vec3(cam_x, cam_y, cam_z)
+            camera.target = vec3(hero_x, 1.0, hero_z)
+
+        on render():
+            text(at: (14, 14), content: "WASD move · Shift run · Space/click attack", size: 16, color: color.white)
