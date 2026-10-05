@@ -6809,7 +6809,22 @@ struct MeshAnimEntry {
     /// `blend_clip` by `blend_t` ∈ [0, 1].
     blend_clip: Option<String>,
     blend_t: f32,
+    /// web3d-M11 session 1: the blend target's own playback time, so a
+    /// crossfade's outgoing clip (or an explicit `blend` partner)
+    /// animates independently of the primary clip.
+    blend_time: f32,
+    /// Seconds left in an auto-crossfade started by `play()` (0 = none).
+    crossfade_remaining: f32,
+    /// The crossfade's total duration, for computing `blend_t`.
+    crossfade_duration: f32,
+    /// Per-mesh crossfade length (`None` → `DEFAULT_CROSSFADE`), set by
+    /// `mesh_anim.set_crossfade`. 0 means hard clip switches.
+    crossfade_config: Option<f32>,
 }
+
+/// web3d-M11 session 1: default auto-crossfade when `play()` changes the
+/// clip — smooths walk↔idle↔attack transitions instead of popping.
+const DEFAULT_CROSSFADE: f32 = 0.15;
 
 /// web3d-M4: `mesh_anim.*` names a mesh by the path its draws use
 /// (`look: mesh: "hero.glb"` / `mesh("hero.glb", ...)`), which is the
@@ -6840,13 +6855,28 @@ fn mesh_play_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     MESH_ANIM_STATE.with(|s| {
         let mut st = s.borrow_mut();
         let entry = st.entry(handle).or_default();
-        if entry.clip != clip {
+        let switching = entry.clip != clip;
+        if switching {
+            let cf = entry.crossfade_config.unwrap_or(DEFAULT_CROSSFADE);
+            // web3d-M11 s1: crossfade from the current clip to the new one
+            // (the old clip becomes the blend target, fully weighted, and
+            // ramps out over `cf`). A hard switch when there's no prior
+            // clip or the crossfade is disabled.
+            if cf > 0.0 && !entry.clip.is_empty() {
+                entry.blend_clip = Some(std::mem::take(&mut entry.clip));
+                entry.blend_time = entry.time;
+                entry.blend_t = 1.0;
+                entry.crossfade_remaining = cf;
+                entry.crossfade_duration = cf;
+            } else {
+                entry.blend_clip = None;
+                entry.blend_t = 0.0;
+                entry.crossfade_remaining = 0.0;
+            }
             entry.time = 0.0;
         }
         entry.clip = clip;
         entry.looping = looping;
-        entry.blend_clip = None;
-        entry.blend_t = 0.0;
     });
     Ok(Value::NIL)
 }
@@ -6872,9 +6902,26 @@ fn mesh_blend_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         if entry.clip != clip_a {
             entry.clip = clip_a;
             entry.time = 0.0;
+            entry.blend_time = 0.0;
         }
         entry.blend_clip = Some(clip_b);
         entry.blend_t = t;
+        // Explicit blend takes over from any auto-crossfade; the partner
+        // clip plays in sync with the primary.
+        entry.crossfade_remaining = 0.0;
+        entry.blend_time = entry.time;
+    });
+    Ok(Value::NIL)
+}
+
+/// web3d-M11 session 1: set the auto-crossfade length (seconds) `play()`
+/// uses when it changes this mesh's clip. 0 = hard switch.
+fn mesh_set_crossfade_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "mesh.set_crossfade")?;
+    let handle = anim_handle(env, &args[0], "mesh_anim.set_crossfade")?;
+    let secs = (number(&args[1], "mesh.set_crossfade.seconds")? as f32).max(0.0);
+    MESH_ANIM_STATE.with(|s| {
+        s.borrow_mut().entry(handle).or_default().crossfade_config = Some(secs);
     });
     Ok(Value::NIL)
 }
@@ -6902,6 +6949,20 @@ fn mesh_advance_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
     MESH_ANIM_STATE.with(|s| {
         for entry in s.borrow_mut().values_mut() {
             entry.time += dt;
+            entry.blend_time += dt;
+            // web3d-M11 s1: ramp an active auto-crossfade out.
+            if entry.crossfade_remaining > 0.0 {
+                entry.crossfade_remaining = (entry.crossfade_remaining - dt).max(0.0);
+                entry.blend_t = if entry.crossfade_duration > 0.0 {
+                    (entry.crossfade_remaining / entry.crossfade_duration).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                if entry.crossfade_remaining <= 0.0 {
+                    entry.blend_clip = None;
+                    entry.blend_t = 0.0;
+                }
+            }
         }
     });
     Ok(Value::NIL)
@@ -6921,6 +6982,7 @@ pub(crate) fn mesh_anim_state(handle: u32) -> crate::render3d_types::AnimSnapsho
                 time: e.time,
                 blend_clip: e.blend_clip.clone(),
                 blend_t: e.blend_t,
+                blend_time: e.blend_time,
             },
             None => crate::render3d_types::AnimSnapshot::default(),
         }
@@ -10687,6 +10749,10 @@ fn install_3d(env: &mut Env) {
         "advance".to_string(),
         Value::from_builtin("mesh.advance", &["dt"], mesh_advance_impl),
     );
+    mesh_anim.insert(
+        "set_crossfade".to_string(),
+        Value::from_builtin("mesh.set_crossfade", &["mesh", "seconds"], mesh_set_crossfade_impl),
+    );
     env.set(
         "mesh_anim".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -12285,6 +12351,63 @@ mod tests {
     #[test]
     fn point_in_rect_inside_returns_true() {
         assert!(point_in_rect(50.0, 50.0, 0.0, 0.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn mesh_anim_crossfade_ramps_then_clears() {
+        use crate::value::{Env, Value};
+        let mut env = Env::new();
+        super::install(&mut env);
+        let path = "m11_crossfade_test.glb"; // unique: thread-local state is shared
+        let h = env.intern_mesh_path(path);
+        let play = |env: &mut Env, clip: &str, looping: bool| {
+            super::mesh_play_impl(
+                env,
+                &[
+                    Value::from_string(path.to_string()),
+                    Value::from_string(clip.to_string()),
+                    Value::from_bool(looping),
+                ],
+            )
+            .unwrap();
+        };
+        let advance = |env: &mut Env, dt: f64| {
+            super::mesh_advance_impl(env, &[Value::from_float(dt)]).unwrap();
+        };
+
+        play(&mut env, "walk", true);
+        advance(&mut env, 0.5);
+        // Switching clips starts a crossfade: the old clip is the blend
+        // target, fully weighted (blend_t = 1), continuing from 0.5 s.
+        play(&mut env, "attack", false);
+        let s = super::mesh_anim_state(h);
+        assert_eq!(s.clip, "attack");
+        assert_eq!(s.blend_clip.as_deref(), Some("walk"));
+        assert!((s.blend_t - 1.0).abs() < 1e-6);
+        assert!((s.blend_time - 0.5).abs() < 1e-6, "old clip continues from its time");
+        assert_eq!(s.time, 0.0, "new clip starts at 0");
+
+        // Halfway through the 0.15 s default crossfade → blend_t ≈ 0.5.
+        advance(&mut env, 0.075);
+        let s = super::mesh_anim_state(h);
+        assert!(s.blend_t > 0.4 && s.blend_t < 0.6, "ramping: {}", s.blend_t);
+
+        // Past the crossfade → the blend target is cleared.
+        advance(&mut env, 0.2);
+        let s = super::mesh_anim_state(h);
+        assert_eq!(s.blend_clip, None);
+        assert_eq!(s.blend_t, 0.0);
+
+        // set_crossfade(0) → a hard switch (no blend target).
+        super::mesh_set_crossfade_impl(
+            &mut env,
+            &[Value::from_string(path.to_string()), Value::from_float(0.0)],
+        )
+        .unwrap();
+        play(&mut env, "idle", true);
+        let s = super::mesh_anim_state(h);
+        assert_eq!(s.clip, "idle");
+        assert_eq!(s.blend_clip, None);
     }
 
     #[test]

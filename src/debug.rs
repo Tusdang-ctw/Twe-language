@@ -17,15 +17,18 @@
 //! yet instrumented (a documented follow-on).
 
 use crate::value::Env;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Fast path: `on_statement` is called for every statement, so when no
-/// debugger is attached it must cost ~nothing. This atomic is checked
-/// first (a relaxed load) before touching the thread-local. Set true
-/// while any thread has a session installed.
-static DEBUG_ACTIVE: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// Fast path: `on_statement` runs for every statement, so when no
+    /// debugger is attached on this thread it must cost ~nothing — a
+    /// thread-local `Cell<bool>` read, checked before the `RefCell`
+    /// borrow. Thread-local (not a global atomic) so a debug session on
+    /// one thread never gates another's (debugging is per-thread; the
+    /// play loop is single-threaded).
+    static DEBUG_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Why execution paused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,13 +91,13 @@ pub fn install(breakpoints: HashSet<u32>, on_pause: Box<dyn FnMut(&Paused) -> Re
             on_pause,
         });
     });
-    DEBUG_ACTIVE.store(true, Ordering::Relaxed);
+    DEBUG_ACTIVE.with(|a| a.set(true));
 }
 
 /// Remove the debug session on this thread.
 pub fn clear() {
     DEBUG.with(|cell| *cell.borrow_mut() = None);
-    DEBUG_ACTIVE.store(false, Ordering::Relaxed);
+    DEBUG_ACTIVE.with(|a| a.set(false));
 }
 
 /// True when a debug session is installed on this thread.
@@ -118,7 +121,7 @@ pub fn set_breakpoints(breakpoints: HashSet<u32>) {
 /// returned action.
 pub fn on_statement(line: u32, env: &Env) {
     // Fast path: a single relaxed atomic load when no debugger is on.
-    if !DEBUG_ACTIVE.load(Ordering::Relaxed) {
+    if !DEBUG_ACTIVE.with(|a| a.get()) {
         return;
     }
     DEBUG.with(|cell| {

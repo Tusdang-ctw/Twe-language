@@ -80,6 +80,9 @@ pub struct AnimSnapshot {
     pub time: f32,
     pub blend_clip: Option<String>,
     pub blend_t: f32,
+    /// web3d-M11 session 1: the blend target's own playback time (for a
+    /// crossfade's outgoing clip), independent of `time`.
+    pub blend_time: f32,
 }
 
 /// One queued 3D primitive. Phase 6 session 7 added the `Primitive`

@@ -4707,8 +4707,10 @@ fn compute_skinned_joint_matrices(skin: &MeshSkin, anim: &AnimSnapshot) -> Joint
     // wise lerp (translation/scale) and slerp (rotation).
     if let Some(blend_name) = &anim.blend_clip {
         if let Some(clip_b) = skin.clips.get(blend_name) {
+            // web3d-M11 s1: the blend partner plays on its own time (a
+            // crossfade's outgoing clip; an explicit blend keeps it synced).
             let t_clip = if clip_b.duration > 0.0 {
-                anim.time.rem_euclid(clip_b.duration)
+                anim.blend_time.rem_euclid(clip_b.duration)
             } else {
                 0.0
             };

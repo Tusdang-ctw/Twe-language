@@ -12,6 +12,9 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Added (game-feature depth, M11)
+- **Animation crossfade** (web3d-M11 session 1) — `mesh_anim.play()` now crossfades from the current clip to the new one over `mesh_anim.set_crossfade(mesh, seconds)` (default 0.15 s; 0 = hard switch), so walk → idle → attack blends smoothly instead of popping. The outgoing clip keeps animating on its own time during the fade.
+
 ### Added (Studio, M10)
 - **`twec build --json`** (web3d-M10 session 3) — emits one machine-readable JSON result on stdout (`ok`, `target`, `config`, `project`, `artifact`, `kind`) with human progress on stderr, for Studio's one-click publish.
 - **Profiler feed** (web3d-M10 session 2) — a per-frame `FrameSample` ring (frame/sim/render ms, GC ms, bytes-alive, draw-calls, entity count) with a JSON API the Studio profiler panel polls; populated by the 3D play loop.

@@ -606,12 +606,17 @@ A visual that fails the checks (`twec verify`) is an error when a look first use
 - **Animated meshes** *(web3d-M4)*. A skinned `.glb` plays the clip `mesh_anim` selects for that mesh path; every entity drawing the mesh shares it. `survive3d`'s hero:
 
   ```twe
-  mesh_anim.play("assets/hero.glb", "walk", true)   # clip by name, looping; restarts only when the clip changes
+  mesh_anim.play("assets/hero.glb", "walk", true)   # clip by name, looping; changing the clip crossfades (web3d-M11)
   mesh_anim.advance(dt)                              # move every playing clip on by dt (call each tick)
-  mesh_anim.blend("assets/hero.glb", "idle", "walk", 0.5)
+  mesh_anim.blend("assets/hero.glb", "idle", "walk", 0.5)  # hold a 2-clip blend (e.g. walk↔run by speed)
+  mesh_anim.set_crossfade("assets/hero.glb", 0.2)   # crossfade length for play() changes (default 0.15 s; 0 = hard switch)
   mesh_anim.current("assets/hero.glb")              # the playing clip's name
   mesh_anim.stop("assets/hero.glb")                 # back to the rest pose
   ```
+  web3d-M11 s1: `play()` now **crossfades** from the current clip to the new
+  one over `set_crossfade` seconds (default 0.15), so walk→idle→attack blends
+  smoothly instead of popping. The outgoing clip keeps animating on its own
+  time during the fade.
 
   Clips advance only through `mesh_anim.advance`, so a paused game's models hold still and replays match. Per-entity clips (each slime on its own frame) are not in M4.
 - **In the 2D player** (`twec play`), a program that declares a look is refused at startup with an error pointing at `twec play3d` / `twec build --target web`, until the 2D player moves onto the kernel (web3d-M6).
