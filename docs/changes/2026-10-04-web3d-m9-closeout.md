@@ -42,7 +42,7 @@ These are code-complete and headlessly verified; what remains is a human with a 
 - **Visual confirmation** of the morph animation, a 2-skin scene, and the anisotropic highlight — code + naga + headless-render pass here, but pixels were not eyeballed.
 - **The AnisotropyBarnLamp ꟻLIP re-score** — the anisotropic BRDF uses the standard Filament/Khronos formulation; exact match to the Khronos reference image is unmeasured here.
 - **The session-9 parity artifact** — a Blender export with Draco + KTX2 rendered in Twe *side-by-side with Three.js*. The transcode is instead verified against real Khronos compressed samples (reproducible, stronger than a one-off export); the side-by-side render is the maintainer step.
-- **meshopt** (above) and a **GPU-compressed BCn upload path** for KTX2 (RGBA8 PNG renders correctly today; BCn would save VRAM).
+- **meshopt** (above) and a **GPU-compressed BCn upload path** for KTX2 (RGBA8 PNG renders correctly today; BCn would save VRAM). **UPDATE 2026-10-08:** the BCn upload path is closed — see [`2026-10-08-web3d-bcn-ktx2-upload.md`](2026-10-08-web3d-bcn-ktx2-upload.md). A `.ktx2` holding BC1–BC7 now uploads compressed on a GPU with `TEXTURE_COMPRESSION_BC`. meshopt remains deferred (upstream crate lacks inverse vertex filters).
 - **Per-instance / per-node morph routing** and **>128 combined joints** stay out of scope.
 
 ## Gates

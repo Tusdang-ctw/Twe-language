@@ -77,6 +77,11 @@ serde_json = "1"
 # for the single-threaded VM and required for wasm. Referenced only by
 # src/physics3d.rs; the world is a no-op until a script spawns a body.
 rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f32"] }
+# web3d (2026-10-08): KTX2 container parser for the runtime BCn upload path
+# (src/kernel/ktx2_bc.rs). Pure Rust — parses on every target; the compressed
+# upload is gated on the GPU's TEXTURE_COMPRESSION_BC feature at runtime. The
+# Basis/compressed decoders stay build-time behind `asset-tools`.
+ktx2 = "0.5"
 
 [features]
 # web3d-M0: scaffolding namespaces (console / platform services / mmo /
@@ -102,7 +107,7 @@ llm-http = ["twe-llm/http"]
 # under this feature and are referenced only from `src/asset_transcode.rs`
 # (native, cli-side) — the default runtime and the wasm32 browser build
 # never see them, so the runtime stays pure-Rust and wasm-safe.
-asset-tools = ["dep:draco-gltf", "dep:meshopt", "dep:ktx2", "dep:basisu"]
+asset-tools = ["dep:draco-gltf", "dep:meshopt", "dep:basisu"]
 
 [dependencies.steamworks]
 version = "0.11"
@@ -124,9 +129,6 @@ version = "0.5"
 optional = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.meshopt]
 version = "0.6"
-optional = true
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.ktx2]
-version = "0.5"
 optional = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.basisu]
 version = "0.1"

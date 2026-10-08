@@ -9,6 +9,7 @@ pub(crate) mod clusters;
 pub(crate) mod environment;
 pub(crate) mod gpu_cull;
 pub(crate) mod gpu_profile;
+pub(crate) mod ktx2_bc;
 pub mod graph;
 pub mod canvas;
 pub(crate) mod material;

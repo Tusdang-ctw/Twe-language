@@ -3349,7 +3349,10 @@ async fn init_renderer(
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("twe-kernel device"),
             // web3d-M7 follow-up: timestamps, only for `TWE_GPU_PROFILE`.
-            required_features: crate::kernel::gpu_profile::wanted_features(&adapter),
+            // web3d 2026-10-08: BC texture compression when the adapter has
+            // it, so a BCn `.ktx2` can upload compressed (src/kernel/ktx2_bc).
+            required_features: crate::kernel::gpu_profile::wanted_features(&adapter)
+                | crate::kernel::ktx2_bc::bc_device_feature(&adapter),
             required_limits,
             memory_hints: wgpu::MemoryHints::default(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -4089,6 +4092,14 @@ fn upload_texture_bytes(
     queue: &wgpu::Queue,
     bytes: &[u8],
 ) -> Result<wgpu::TextureView, String> {
+    // web3d (2026-10-08): a KTX2 holding BCn blocks uploads compressed,
+    // straight to VRAM, with no CPU decode (desktop GPUs with BC support).
+    if crate::kernel::ktx2_bc::is_ktx2(bytes) {
+        let bc = crate::kernel::ktx2_bc::parse_ktx2_bc(bytes)?;
+        let texture =
+            crate::kernel::ktx2_bc::upload_ktx2_bc(device, queue, "twec-play3d ktx2 texture", &bc)?;
+        return Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    }
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
