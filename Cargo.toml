@@ -70,6 +70,13 @@ twe-llm = { path = "crates/twe-llm" }
 # web3d-M5: llm-loop traces and benchmark results. Already compiled in
 # through gltf, so no new code in the build.
 serde_json = "1"
+# Phase 18 / web3d: rapier3d physics. Pure Rust, so it compiles for
+# native AND wasm32 — browser 3D games get the same physics world as
+# native (web3d-M11 follow-on: `physics.*` on the web shell). default-
+# features = false keeps `parallel` (rayon) off, which is both correct
+# for the single-threaded VM and required for wasm. Referenced only by
+# src/physics3d.rs; the world is a no-op until a script spawns a body.
+rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f32"] }
 
 [features]
 # web3d-M0: scaffolding namespaces (console / platform services / mmo /
@@ -138,10 +145,6 @@ gilrs = "0.10"
 # Phase 10 session 5b: cross-platform OS clipboard (Win32, NSPasteboard,
 # X11, Wayland). Not available in the browser sandbox.
 arboard = "3"
-# Phase 18: rapier3d physics (referenced only by physics3d.rs which is
-# excluded from WASM). Pure Rust — could compile to wasm32, but the
-# 3D play loop is native-only for Phase 30.
-rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f32"] }
 # Phase 12 session 8: zstd bundle compression. Links libzstd via `cc`
 # which requires a C toolchain configured for the target; not available
 # for wasm32-unknown-unknown without emscripten/wasi-sdk. WASM builds

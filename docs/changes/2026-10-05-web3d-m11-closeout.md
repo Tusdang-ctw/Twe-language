@@ -38,7 +38,7 @@ The action slice is **~237 lines of Twe, one file, no dependencies**, built to a
 ## Deferrals (maintainer / follow-on)
 
 - **Visual polish + playtest** of the slice (combat feel, the bridge's swing, the crossfades) — needs a GPU.
-- **The physics bridge on the web** — rapier isn't on wasm; the browser build ships locomotion + combat and shows a note. A wasm physics backend is out of scope.
+- **The physics bridge on the web** — rapier isn't on wasm; the browser build ships locomotion + combat and shows a note. A wasm physics backend is out of scope. **UPDATE 2026-10-08:** this was closed by the wasm-physics follow-on ([`2026-10-08-web3d-wasm-physics.md`](2026-10-08-web3d-wasm-physics.md)) — rapier3d does compile to wasm, so `physics.*` now runs in the browser and the bridge's `not assets.is_browser()` guards are gone.
 - **A true blend-space / anim state machine** (beyond crossfade + the 2-clip blend) and **per-instance morph/anim** — follow-ons.
 - **The measured Three.js side-by-side** — M12.
 

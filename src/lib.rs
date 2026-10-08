@@ -165,7 +165,10 @@ pub mod terrain;
 pub mod build;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cli;
-#[cfg(not(target_arch = "wasm32"))]
+// web3d-M11 follow-on: rapier3d is pure Rust and compiles to wasm32, so
+// physics3d is no longer native-only — browser 3D games step the same
+// world as native (`physics.*` installs on every target; the step runs
+// in the shared `host3d::sim_tick`).
 pub mod physics3d;
 // web3d-M2: renderer kernel — builds for native and wasm32 (WebGPU).
 pub mod kernel;

@@ -487,14 +487,15 @@ pub fn install(env: &mut Env) {
         }))),
     );
 
-    // web3d-M0: rapier (physics3d) is native-only; `physics.*` is not
-    // installed in the wasm32 build until the kernel's physics lands.
-    #[cfg(not(target_arch = "wasm32"))]
+    // web3d-M11 follow-on: `physics.*` installs on every target now that
+    // rapier3d compiles for wasm32 (see Cargo.toml). Browser 3D games get
+    // the same physics surface as native.
     {
         // Phase 18: 3D physics surface. All builtins forward to the
-        // thread-local PhysicsWorld in src/physics3d.rs. The play3d
-        // loop steps the world before each Twe `on update(dt)` so
-        // scripts read authoritative positions.
+        // thread-local PhysicsWorld in src/physics3d.rs. The shared
+        // `host3d::sim_tick` steps the world before each Twe `on
+        // update(dt)` so scripts read authoritative positions — on
+        // native and in the browser alike.
         let mut physics_fields = HashMap::new();
         physics_fields.insert(
             "body".to_string(),
@@ -12025,7 +12026,6 @@ fn handle_int(v: &Value, what: &str) -> Result<u32, RuntimeError> {
     Ok(i as u32)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_body_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.body")?;
     let shape = string_arg(&args[0], "physics.body", "shape")?;
@@ -12042,7 +12042,6 @@ fn physics_body_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
 
 // web3d-M11 session 2: physics joints + CCD. The rapier joint + CCD sets
 // were already stepped; these expose them to scripts.
-#[cfg(not(target_arch = "wasm32"))]
 fn joint_result(h: Option<u32>, what: &str) -> Result<Value, RuntimeError> {
     match h {
         Some(id) => Ok(Value::from_int(id as i64)),
@@ -12055,7 +12054,6 @@ fn joint_result(h: Option<u32>, what: &str) -> Result<Value, RuntimeError> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_fixed_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "physics.fixed_joint")?;
     let a = handle_int(&args[0], "physics.fixed_joint.a")?;
@@ -12065,7 +12063,6 @@ fn physics_fixed_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Run
     joint_result(crate::physics3d::fixed_joint(a, b, aa, ab), "physics.fixed_joint")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_spherical_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "physics.spherical_joint")?;
     let a = handle_int(&args[0], "physics.spherical_joint.a")?;
@@ -12075,7 +12072,6 @@ fn physics_spherical_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value,
     joint_result(crate::physics3d::spherical_joint(a, b, aa, ab), "physics.spherical_joint")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_revolute_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 5, "physics.revolute_joint")?;
     let a = handle_int(&args[0], "physics.revolute_joint.a")?;
@@ -12086,7 +12082,6 @@ fn physics_revolute_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, 
     joint_result(crate::physics3d::revolute_joint(a, b, aa, ab, axis), "physics.revolute_joint")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_prismatic_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 5, "physics.prismatic_joint")?;
     let a = handle_int(&args[0], "physics.prismatic_joint.a")?;
@@ -12097,14 +12092,12 @@ fn physics_prismatic_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value,
     joint_result(crate::physics3d::prismatic_joint(a, b, aa, ab, axis), "physics.prismatic_joint")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_remove_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.remove_joint")?;
     let h = handle_int(&args[0], "physics.remove_joint.handle")?;
     Ok(Value::from_bool(crate::physics3d::remove_joint(h)))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_set_ccd_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.set_ccd")?;
     let h = handle_int(&args[0], "physics.set_ccd.handle")?;
@@ -12112,7 +12105,6 @@ fn physics_set_ccd_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
     Ok(Value::from_bool(crate::physics3d::set_ccd(h, on)))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_box")?;
     let at = xyz_of(&args[0], "physics.static_box.at")?;
@@ -12122,7 +12114,6 @@ fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runt
     ))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_sphere")?;
     let at = xyz_of(&args[0], "physics.static_sphere.at")?;
@@ -12132,7 +12123,6 @@ fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, R
     ))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_position_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.position")?;
     let handle = handle_int(&args[0], "physics.position")?;
@@ -12149,7 +12139,6 @@ fn physics_position_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
     ]))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_velocity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.velocity")?;
     let handle = handle_int(&args[0], "physics.velocity")?;
@@ -12163,7 +12152,6 @@ fn physics_velocity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtim
     Ok(Value::NIL)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_impulse_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.impulse")?;
     let handle = handle_int(&args[0], "physics.impulse")?;
@@ -12177,7 +12165,6 @@ fn physics_impulse_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
     Ok(Value::NIL)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_gravity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.gravity")?;
     let v = xyz_of(&args[0], "physics.gravity.v")?;
@@ -12185,7 +12172,6 @@ fn physics_gravity_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runtime
     Ok(Value::NIL)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_character_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.character")?;
     let at = xyz_of(&args[0], "physics.character.at")?;
@@ -12196,7 +12182,6 @@ fn physics_character_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Runti
     ))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.character_move")?;
     let handle = handle_int(&args[0], "physics.character_move")?;
@@ -12225,7 +12210,6 @@ fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, 
     }))))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_collisions_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
     let events = crate::physics3d::drain_collisions();
     let list: Vec<Value> = events
@@ -12244,14 +12228,12 @@ fn physics_collisions_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, Run
     Ok(Value::from_list(Rc::new(RefCell::new(list))))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_despawn_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.despawn")?;
     let handle = handle_int(&args[0], "physics.despawn")?;
     Ok(Value::from_bool(crate::physics3d::despawn(handle)))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_reset_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
     crate::physics3d::reset();
     Ok(Value::NIL)
@@ -12263,7 +12245,6 @@ fn physics_reset_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeE
 /// transforms are flattened into the positions at load time.
 /// Returns the body handle (mostly for record-keeping; static
 /// bodies rarely need post-creation lookup).
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_static_mesh_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_mesh")?;
     let path = string_arg(&args[0], "physics.static_mesh", "path")?;
@@ -12287,7 +12268,6 @@ fn physics_static_mesh_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Run
 /// nil on miss, or an Object `{ handle, point, distance }` on
 /// hit. The handle field is the same u32 id `physics.body()`
 /// returns, so callers can look up the body that was struck.
-#[cfg(not(target_arch = "wasm32"))]
 fn physics_raycast_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.raycast")?;
     let origin = xyz_of(&args[0], "physics.raycast.origin")?;

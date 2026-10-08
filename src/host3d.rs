@@ -461,11 +461,21 @@ pub fn apply_command(env: &mut Env, cmd: &InputCommand) {
     }
 }
 
-/// One fixed simulation tick: take the tick's input command, let the
-/// replay recorder / player see it (`replay::step`), write it into the
-/// ambients, then run `eval::tick_frame`. Every 3D shell ticks through
-/// here, so input reaches the simulation one way only.
+/// One fixed simulation tick: step the physics world, take the tick's
+/// input command, let the replay recorder / player see it
+/// (`replay::step`), write it into the ambients, then run
+/// `eval::tick_frame`. Every 3D shell — native `play3d`, the browser
+/// shell, the soak harness — ticks through here, so both input and the
+/// physics step reach the simulation one way only.
+///
+/// web3d-M11 follow-on: the `physics3d::step` used to live in the
+/// native-only `play3d` loop, so browser 3D games never advanced
+/// physics. Stepping here (before the script's `on update(dt)` body)
+/// gives native and web the same authoritative integrator. The step is
+/// a near-instant no-op until a script spawns a body, so non-physics
+/// scenes pay nothing.
 pub fn sim_tick(env: &mut Env, input: &mut InputState, dt: f64) -> Result<(), RuntimeError> {
+    crate::physics3d::step(dt as f32);
     let cmd = crate::replay::step(input.take_command());
     apply_command(env, &cmd);
     eval::tick_frame(env, dt)

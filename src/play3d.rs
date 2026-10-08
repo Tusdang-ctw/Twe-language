@@ -735,12 +735,10 @@ pub(crate) fn load_glb(path: &str) -> Result<LoadedGlb, String> {
 /// physics state and script state advance in lockstep. Called zero
 /// or more times per render frame from the App event loop.
 fn step_simulation_3d(env: &mut Env, input: &mut crate::host3d::InputState, dt: f32) {
-    // Phase 18: step the rapier3d world before the Twe `on update`
-    // body runs, so script logic reads authoritative positions.
-    // Scripts own intent (velocity / impulse), the integrator owns
-    // truth. No-op if the script never created any bodies — the
-    // world's empty body set means step() returns near-instantly.
-    crate::physics3d::step(dt);
+    // web3d-M11 follow-on: the rapier3d step moved into the shared
+    // `host3d::sim_tick` (below) so the browser shell steps physics too.
+    // Scripts own intent (velocity / impulse), the integrator owns truth;
+    // the step is a no-op until a script creates a body.
 
     // Tick the per-frame logic — top-level `on update(dt):`
     // plus any active scene / entity tick. Without this the script's

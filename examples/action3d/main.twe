@@ -134,27 +134,26 @@ for i in 0..<8:
 # joints (web3d-M11 session 2), anchored to two static posts. It sags
 # into a catenary and sways when shoved (press E).
 #
-# Physics is native-only (rapier isn't on wasm), so the bridge is built
-# only off the web; the browser build ships the locomotion + combat.
+# web3d-M11 follow-on: rapier3d now compiles to wasm, so the bridge runs
+# in the browser too — same physics world as native, no guard needed.
 # ---------------------------------------------------------------
 var plank_handles = []
-if not assets.is_browser():
-    let n = 9
-    let span = 11.0
-    let by = 3.4
-    let bz = -8.0
-    let seg = span / n
-    let edge = seg / 2
-    let left_post = physics.static_box(vec3(-span / 2 - 0.3, by, bz), vec3(0.3, 0.6, 1.4))
-    let right_post = physics.static_box(vec3(span / 2 + 0.3, by, bz), vec3(0.3, 0.6, 1.4))
-    var prev = left_post
-    for i in 0..<n:
-        let px = -span / 2 + (i + 0.5) * seg
-        let plank = physics.body("box", vec3(px, by, bz), 0.4)
-        plank_handles.append(plank)
-        physics.spherical_joint(prev, plank, vec3(edge, 0, 0), vec3(0 - edge, 0, 0))
-        prev = plank
-    physics.spherical_joint(prev, right_post, vec3(edge, 0, 0), vec3(0 - edge, 0, 0))
+let n = 9
+let span = 11.0
+let by = 3.4
+let bz = -8.0
+let seg = span / n
+let edge = seg / 2
+let left_post = physics.static_box(vec3(-span / 2 - 0.3, by, bz), vec3(0.3, 0.6, 1.4))
+let right_post = physics.static_box(vec3(span / 2 + 0.3, by, bz), vec3(0.3, 0.6, 1.4))
+var prev = left_post
+for i in 0..<n:
+    let px = -span / 2 + (i + 0.5) * seg
+    let plank = physics.body("box", vec3(px, by, bz), 0.4)
+    plank_handles.append(plank)
+    physics.spherical_joint(prev, plank, vec3(edge, 0, 0), vec3(0 - edge, 0, 0))
+    prev = plank
+physics.spherical_joint(prev, right_post, vec3(edge, 0, 0), vec3(0 - edge, 0, 0))
 
 # ---------------------------------------------------------------
 # The game loop.
@@ -221,17 +220,15 @@ scene Action:
             camera.eye = vec3(cam_x, cam_y, cam_z)
             camera.target = vec3(hero_x, 1.0, hero_z)
 
-            # Shove the bridge (native-only; see above).
-            if key_pressed("e") and not assets.is_browser() and plank_handles.length > 0:
+            # Shove the bridge (native and browser alike).
+            if key_pressed("e") and plank_handles.length > 0:
                 let mid = plank_handles[plank_handles.length / 2]
                 physics.impulse(mid, vec3(0.0, 4.0, 3.0))
 
         on render():
             text(at: (14, 14), content: "WASD move · Shift run · Space/click attack", size: 16, color: color.white)
             text(at: (14, 36), content: "Slain: " + kills, size: 16, color: color.yellow)
-            # The physics rope bridge, drawn at its live plank positions.
-            if not assets.is_browser():
-                for h in plank_handles:
-                    cube(at: physics.position(h), color: (0.55, 0.38, 0.22), size: 0.5)
-            else:
-                text(at: (14, 58), content: "(rope bridge is native-only — rapier isn't on wasm)", size: 13, color: color.gray)
+            # The physics rope bridge, drawn at its live plank positions
+            # (native and browser alike — rapier runs on wasm now).
+            for h in plank_handles:
+                cube(at: physics.position(h), color: (0.55, 0.38, 0.22), size: 0.5)

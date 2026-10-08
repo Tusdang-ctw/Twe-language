@@ -13,8 +13,9 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added (game-feature depth, M11)
-- **`examples/action3d`** (web3d-M11) — a new 3rd-person action slice (the M11 reference game): a hero with crossfaded idle↔walk↔run locomotion + a sword attack, 8 chasing enemies, a spherical-jointed rope bridge (native-only), IBL + sun shadows + AO + bloom. Runs natively and builds for the browser.
-- **Physics joints + CCD** (web3d-M11 session 2) — `physics.fixed_joint`, `physics.spherical_joint`, `physics.revolute_joint`, `physics.prismatic_joint` (each takes two body handles + local anchor points, plus an axis for the hinge/slider), `physics.remove_joint(h)`, and `physics.set_ccd(body, on)` (continuous collision detection for fast movers). The rapier joint + CCD solvers were already stepped; these expose them. Native-only (3D physics).
+- **Physics in the browser** (web3d, 2026-10-08) — the `physics.*` surface (rapier3d) now runs on the web target, not just native. rapier3d is pure Rust and compiles to wasm, so browser 3D games get the same physics world as native; the step runs in the shared `host3d::sim_tick`. `examples/action3d`'s rope bridge now sways in the browser (its `not assets.is_browser()` guards are gone). See `docs/changes/2026-10-08-web3d-wasm-physics.md`.
+- **`examples/action3d`** (web3d-M11) — a new 3rd-person action slice (the M11 reference game): a hero with crossfaded idle↔walk↔run locomotion + a sword attack, 8 chasing enemies, a spherical-jointed rope bridge, IBL + sun shadows + AO + bloom. Runs natively and in the browser.
+- **Physics joints + CCD** (web3d-M11 session 2) — `physics.fixed_joint`, `physics.spherical_joint`, `physics.revolute_joint`, `physics.prismatic_joint` (each takes two body handles + local anchor points, plus an axis for the hinge/slider), `physics.remove_joint(h)`, and `physics.set_ccd(body, on)` (continuous collision detection for fast movers). The rapier joint + CCD solvers were already stepped; these expose them. Native and browser (3D physics).
 - **Animation crossfade** (web3d-M11 session 1) — `mesh_anim.play()` now crossfades from the current clip to the new one over `mesh_anim.set_crossfade(mesh, seconds)` (default 0.15 s; 0 = hard switch), so walk → idle → attack blends smoothly instead of popping. The outgoing clip keeps animating on its own time during the fade.
 
 ### Added (Studio, M10)
