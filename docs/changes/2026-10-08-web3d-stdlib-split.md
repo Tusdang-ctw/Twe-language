@@ -64,10 +64,31 @@ still resolves. Families whose `fn`s are only referenced by `install()`
 - Tests green: `physics_web` (2), `physics_joints` (2), `eval` (226, the
   core language/stdlib suite).
 
+## Second cut: save, mesh_anim, quat
+
+Three more cohesive families moved out in one pass:
+
+- **`src/stdlib/save.rs`** — the `save.*` typed-field helpers (18 fns), no
+  items used outside `stdlib`, so a plain `pub(super)` + `use super::*`.
+- **`src/stdlib/mesh_anim.rs`** — the `mesh_anim.*` builtins (play / stop /
+  blend / `blend_space` / crossfade / advance / current + their list
+  helpers + the `MeshAnimEntry` struct). `mesh_anim_state` is `pub(crate)`
+  (the renderer reads it), so the parent adds
+  `pub(crate) use mesh_anim::mesh_anim_state;`. `MESH_ANIM_STATE` is a
+  thread-local in the parent's central `thread_local!` block, so it stays
+  put and the module reaches it through `use super::*`; `MeshAnimEntry` is
+  `pub(super)` so that thread-local (in the parent) still names it.
+- **`src/stdlib/quat.rs`** — the `quat.*` quaternion helpers (7 fns), clean.
+
+`src/stdlib.rs`: ~12,739 → ~12,031 lines (−708 this cut; −973 total since
+the split began, across physics + these three). Verified: `cargo check`,
+clippy `-D` native + wasm, the inline `mesh_anim` tests (the `super::` paths
+resolve through the parent's glob re-export), and the `eval` suite (226).
+
 ## Next
 
-Continue family-by-family (candidates with clean boundaries:
-`mesh_anim` + quat/mat4 math, `save`, `light`/`light2d`, `fx`/`tween`,
-`postfx`, audio scheduling), each a green commit. Then the harder
-`kernel/render.rs` split (GPU state + WGSL + pipelines — more
+Continue family-by-family (remaining clean boundaries: `light`/`light2d`,
+`fx`/`tween`, `postfx`, audio scheduling, the `mat4` math + the long
+unmarked draw/text/color/input stretch), each a green commit. Then the
+harder `kernel/render.rs` split (GPU state + WGSL + pipelines — more
 interdependent, a dedicated pass).
