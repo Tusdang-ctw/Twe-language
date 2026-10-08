@@ -1,0 +1,19 @@
+{
+  "name": "action3d-threejs",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A faithful Three.js re-implementation of Twe's examples/action3d, for the web3d-M12 same-game case study.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.14.0",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

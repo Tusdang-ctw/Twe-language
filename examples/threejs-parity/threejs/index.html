@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>action3d — Three.js</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+      #app { position: fixed; inset: 0; }
+      /* The Twe version draws its HUD with text(); Three.js has no HUD, so
+         this is a DOM overlay — one of the measured differences. */
+      #hud {
+        position: fixed; left: 14px; top: 12px; pointer-events: none;
+        font: 16px/1.4 system-ui, sans-serif; color: #fff;
+        text-shadow: 0 1px 2px #000;
+      }
+      #hud .kills { color: #ffe23a; }
+      #hud .hint { font-size: 13px; color: #cfcfcf; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud">
+      <div>WASD move · Shift run · Space/click attack · E shoves the bridge</div>
+      <div class="kills">Slain: <span id="kills">0</span></div>
+      <div class="hint" id="status">loading…</div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
