@@ -85,10 +85,24 @@ the split began, across physics + these three). Verified: `cargo check`,
 clippy `-D` native + wasm, the inline `mesh_anim` tests (the `super::` paths
 resolve through the parent's glob re-export), and the `eval` suite (226).
 
-## Next
+## Third cut: lighting
 
-Continue family-by-family (remaining clean boundaries: `light`/`light2d`,
-`fx`/`tween`, `postfx`, audio scheduling, the `mat4` math + the long
-unmarked draw/text/color/input stretch), each a green commit. Then the
-harder `kernel/render.rs` split (GPU state + WGSL + pipelines — more
-interdependent, a dedicated pass).
+- **`src/stdlib/lighting.rs`** — the `light.*` / `sun.*` builtins (30 fns),
+  no items used outside `stdlib`, clean. Point/sun/cull state stays in the
+  parent's thread-locals, reached via `use super::*`.
+
+`src/stdlib.rs`: ~12,031 → ~11,557 lines. **Total since the split began:
+13,004 → 11,557, −1,447 lines (−11%), five modules** (physics, save,
+mesh_anim, quat, lighting). Verified: `cargo check`, clippy `-D` native +
+wasm, `eval` (226).
+
+## Where the split stands
+
+This **exhausts the cleanly section-bounded families.** What remains in
+`stdlib.rs` is one large unmarked region (~4,300 lines of mat4 math,
+tilemap, draw/text/color, math, random, input, …) with no clean family
+boundaries — carving it means grouping functions by hand, which is high
+churn for modest gain, so it is left until a group earns its own module. The
+other god-file, `kernel/render.rs` (~9.6k lines: GPU pipelines + WGSL +
+the `Renderer` impl), is a separate, more interdependent refactor best done
+as its own dedicated pass rather than squeezed in here.
