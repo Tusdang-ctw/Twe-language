@@ -22,8 +22,7 @@ let run_speed = 6.5
 var hero_x = 0.0
 var hero_z = 6.0
 var hero_heading = 0.0       # yaw radians; 0 faces +Z (the model's front)
-var speed_now = 0.0          # smoothed ground speed, for the loco blend
-var loco = "idle"            # current locomotion clip
+var speed_now = 0.0          # smoothed ground speed, drives the loco blend space
 var attacking = 0.0          # seconds left in an attack (locks locomotion)
 
 # Chase-camera state (smoothed).
@@ -197,16 +196,12 @@ scene Action:
             # Smooth the speed so the blend doesn't snap.
             speed_now = speed_now + (target_speed - speed_now) * math.min(1.0, dt * 10.0)
 
-            # --- Locomotion clip (crossfaded by play(); web3d-M11 s1) ---
+            # --- Locomotion: a 1-D blend space driven by ground speed ---
+            # idle@0 → walk@walk_speed → run@run_speed, blended continuously
+            # (no popping as the speed crosses a threshold). The attack clip
+            # locks it out while a swing plays.
             if attacking <= 0.0:
-                var want = "idle"
-                if speed_now > 4.6:
-                    want = "run"
-                elif speed_now > 0.4:
-                    want = "walk"
-                if want != loco:
-                    loco = want
-                    mesh_anim.play(hero, loco, true)
+                mesh_anim.blend_space(hero, ["idle", "walk", "run"], [0.0, walk_speed, run_speed], speed_now)
             mesh_anim.advance(dt)
 
             # --- Chase camera (smoothed, behind the heading) ---

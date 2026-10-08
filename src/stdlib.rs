@@ -6940,6 +6940,123 @@ fn mesh_blend_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     Ok(Value::NIL)
 }
 
+/// Read a Twe list argument as `Vec<String>` for the anim builtins.
+fn anim_string_list(v: &Value, what: &str, field: &str) -> Result<Vec<String>, RuntimeError> {
+    if !v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: `{field}` must be a list of clip names, got {}", v.type_name()),
+            help: Some(format!("e.g. `{what}(hero, [\"idle\", \"walk\", \"run\"], [0, 3, 6], speed)`")),
+        });
+    }
+    let list = v.as_list();
+    let borrowed = list.borrow();
+    let mut out = Vec::with_capacity(borrowed.len());
+    for item in borrowed.iter() {
+        if !item.is_str() {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("{what}: every `{field}` entry must be a clip name (string), got {}", item.type_name()),
+                help: None,
+            });
+        }
+        out.push(item.as_string());
+    }
+    Ok(out)
+}
+
+/// Read a Twe list argument as `Vec<f32>` for the anim builtins.
+fn anim_f32_list(v: &Value, what: &str, field: &str) -> Result<Vec<f32>, RuntimeError> {
+    if !v.is_list() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("{what}: `{field}` must be a list of numbers, got {}", v.type_name()),
+            help: Some(format!("e.g. `{what}(hero, [\"idle\", \"walk\", \"run\"], [0, 3, 6], speed)`")),
+        });
+    }
+    let list = v.as_list();
+    let borrowed = list.borrow();
+    let mut out = Vec::with_capacity(borrowed.len());
+    for item in borrowed.iter() {
+        out.push(number(item, &format!("{what}.{field}"))? as f32);
+    }
+    Ok(out)
+}
+
+/// web3d-M11 follow-on: a 1-D locomotion blend space. `clips` are clip
+/// names at ascending `stops` (e.g. idle@0, walk@3.2, run@6.5); `value`
+/// (say the ground speed) picks the two bracketing clips and the weight
+/// between them. Below the first stop it plays the first clip; above the
+/// last, the last. The two active clips share one clock, so gaits stay
+/// foot-synced, and nothing resets when `value` crosses a stop — it is a
+/// continuous weighted blend, not a discrete `play()` switch. It reduces
+/// to the existing 2-clip blend (`clip` ⊕ `blend_clip` by `blend_t`), so
+/// the renderer is unchanged.
+fn mesh_blend_space_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 4, "mesh.blend_space")?;
+    let handle = anim_handle(env, &args[0], "mesh_anim.blend_space")?;
+    let clips = anim_string_list(&args[1], "mesh_anim.blend_space", "clips")?;
+    let stops = anim_f32_list(&args[2], "mesh_anim.blend_space", "stops")?;
+    let value = number(&args[3], "mesh.blend_space.value")? as f32;
+    if clips.len() < 2 || clips.len() != stops.len() {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "mesh_anim.blend_space: `clips` and `stops` must be the same length and at least 2 (got {} clips, {} stops)",
+                clips.len(),
+                stops.len()
+            ),
+            help: Some("e.g. `mesh_anim.blend_space(hero, [\"idle\", \"walk\", \"run\"], [0, 3.2, 6.5], speed)`".to_string()),
+        });
+    }
+    if stops.windows(2).any(|w| w[1] < w[0]) {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: "mesh_anim.blend_space: `stops` must be in ascending order".to_string(),
+            help: None,
+        });
+    }
+    // Find the bracketing pair and the weight toward the upper clip.
+    let last = stops.len() - 1;
+    let (lo_i, hi_i, t) = if value <= stops[0] {
+        (0, 0, 0.0)
+    } else if value >= stops[last] {
+        (last, last, 0.0)
+    } else {
+        let mut i = 0;
+        while i < last && value > stops[i + 1] {
+            i += 1;
+        }
+        let span = stops[i + 1] - stops[i];
+        let t = if span > 0.0 { (value - stops[i]) / span } else { 0.0 };
+        (i, i + 1, t.clamp(0.0, 1.0))
+    };
+    MESH_ANIM_STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let entry = st.entry(handle).or_default();
+        entry.clip = clips[lo_i].clone();
+        entry.looping = true;
+        if lo_i == hi_i {
+            entry.blend_clip = None;
+            entry.blend_t = 0.0;
+        } else {
+            entry.blend_clip = Some(clips[hi_i].clone());
+            entry.blend_t = t;
+        }
+        // The blend space owns the weight — cancel any timed crossfade,
+        // and keep the two active clips phase-synced on the shared clock
+        // (so neither foot-slides relative to the other).
+        entry.crossfade_remaining = 0.0;
+        entry.blend_time = entry.time;
+    });
+    Ok(Value::NIL)
+}
+
 /// web3d-M11 session 1: set the auto-crossfade length (seconds) `play()`
 /// uses when it changes this mesh's clip. 0 = hard switch.
 fn mesh_set_crossfade_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -10768,6 +10885,14 @@ fn install_3d(env: &mut Env) {
         ),
     );
     mesh_anim.insert(
+        "blend_space".to_string(),
+        Value::from_builtin(
+            "mesh.blend_space",
+            &["mesh", "clips", "stops", "value"],
+            mesh_blend_space_impl,
+        ),
+    );
+    mesh_anim.insert(
         "current".to_string(),
         Value::from_builtin("mesh.current", &["mesh"], mesh_current_impl),
     );
@@ -12485,6 +12610,80 @@ mod tests {
         let s = super::mesh_anim_state(h);
         assert_eq!(s.clip, "idle");
         assert_eq!(s.blend_clip, None);
+    }
+
+    #[test]
+    fn mesh_anim_blend_space_brackets_and_weights() {
+        use crate::value::{Env, Value};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let mut env = Env::new();
+        super::install(&mut env);
+        let path = "m11_blendspace_test.glb"; // unique: thread-local state
+        let h = env.intern_mesh_path(path);
+        let names = ["idle", "walk", "run"];
+        let stops = [0.0_f64, 3.0, 6.0];
+        let blend_space = |env: &mut Env, value: f64| {
+            let clips = Value::from_list(Rc::new(RefCell::new(
+                names.iter().map(|n| Value::from_string((*n).to_string())).collect(),
+            )));
+            let stops_v = Value::from_list(Rc::new(RefCell::new(
+                stops.iter().map(|s| Value::from_float(*s)).collect(),
+            )));
+            super::mesh_blend_space_impl(
+                env,
+                &[Value::from_string(path.to_string()), clips, stops_v, Value::from_float(value)],
+            )
+            .unwrap();
+        };
+
+        // Below the first stop → the first clip only, no blend.
+        blend_space(&mut env, -1.0);
+        let s = super::mesh_anim_state(h);
+        assert_eq!(s.clip, "idle");
+        assert_eq!(s.blend_clip, None);
+        assert_eq!(s.blend_t, 0.0);
+
+        // Halfway idle→walk (value 1.5 of the 0..3 span) → weight 0.5 to walk.
+        blend_space(&mut env, 1.5);
+        let s = super::mesh_anim_state(h);
+        assert_eq!(s.clip, "idle");
+        assert_eq!(s.blend_clip.as_deref(), Some("walk"));
+        assert!((s.blend_t - 0.5).abs() < 1e-6, "weight {}", s.blend_t);
+
+        // Into the walk→run span (value 4.5 of 3..6) → walk with 0.5 to run.
+        blend_space(&mut env, 4.5);
+        let s = super::mesh_anim_state(h);
+        assert_eq!(s.clip, "walk");
+        assert_eq!(s.blend_clip.as_deref(), Some("run"));
+        assert!((s.blend_t - 0.5).abs() < 1e-6, "weight {}", s.blend_t);
+
+        // Above the last stop → the last clip only, no blend.
+        blend_space(&mut env, 99.0);
+        let s = super::mesh_anim_state(h);
+        assert_eq!(s.clip, "run");
+        assert_eq!(s.blend_clip, None);
+
+        // The blend space is continuous: it must not reset the clock when
+        // the parameter moves, and the two active clips stay phase-synced.
+        let advance = |env: &mut Env, dt: f64| {
+            super::mesh_advance_impl(env, &[Value::from_float(dt)]).unwrap();
+        };
+        blend_space(&mut env, 1.5);
+        advance(&mut env, 0.4);
+        blend_space(&mut env, 2.0); // same bracket, new weight
+        let s = super::mesh_anim_state(h);
+        assert!(s.time >= 0.4 - 1e-6, "clock kept running, got {}", s.time);
+        assert!((s.blend_time - s.time).abs() < 1e-6, "partner clip stays phase-synced");
+
+        // Bad input is reported, not silently accepted.
+        let one = Value::from_list(Rc::new(RefCell::new(vec![Value::from_string("idle".into())])));
+        let stops_v = Value::from_list(Rc::new(RefCell::new(vec![Value::from_float(0.0)])));
+        assert!(super::mesh_blend_space_impl(
+            &mut env,
+            &[Value::from_string(path.to_string()), one, stops_v, Value::from_float(0.0)],
+        )
+        .is_err(), "fewer than two clips is an error");
     }
 
     #[test]
