@@ -1,7 +1,7 @@
 // web3d-M7 session 16: frame rate of a web page in Chrome.
 //
 //   node fps.mjs <dir-or-url> [--page path.html] [--gpu low|high] [--seconds N] [--warmup N]
-//                [--size WxH] [--vsync] [--shot out.png]
+//                [--size WxH] [--vsync] [--shot out.png] [--timeline]
 //
 // Serves <dir> (a `twec build --target web` output or any static page)
 // and opens its index.html in the installed Chrome (playwright-core,
@@ -15,6 +15,10 @@
 // --gpu high asks Chrome for the discrete GPU on a machine with two
 // (`--force_high_performance_gpu`); the default lets Chrome choose,
 // which on this laptop is the integrated one.
+//
+// --timeline also prints the frame rate for every second from page load
+// (warmup included), to see transients such as the quality governor
+// settling (G5).
 
 import { createServer } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -80,14 +84,33 @@ const browser = await chromium.launch({ channel: "chrome", headless: false, args
 try {
   const page = await browser.newPage({ viewport: { width, height } });
   const errors = [];
+  const quality = [];
   page.on("console", (m) => {
     if (m.type() === "error" || m.type() === "warning") errors.push(`${m.type()}: ${m.text()}`);
+    // The runtime's automatic quality governor (crates/twe-web).
+    if (m.text().startsWith("twe: quality")) quality.push(m.text().slice(5));
   });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   await page.goto(url);
+  const timeline = args.includes("--timeline");
   const result = await page.evaluate(
-    async ({ warmup, seconds }) => {
+    async ({ warmup, seconds, timeline }) => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      // Frames in each second since load, when asked for.
+      const perSecond = [];
+      if (timeline) {
+        let n = 0;
+        const count = () => {
+          n += 1;
+          requestAnimationFrame(count);
+        };
+        requestAnimationFrame(count);
+        const id = setInterval(() => {
+          perSecond.push(n);
+          n = 0;
+        }, 1000);
+        setTimeout(() => clearInterval(id), (warmup + seconds) * 1000);
+      }
       await sleep(warmup * 1000);
       // A Twe page: its runtime's own counters (see crates/twe-web).
       const script = [...document.scripts].map((s) => s.textContent).join("\n");
@@ -119,9 +142,10 @@ try {
         // [frames, ticks/frame, ms/tick, script render ms, kernel ms].
         stats,
         pixels,
+        perSecond,
       };
     },
-    { warmup, seconds },
+    { warmup, seconds, timeline },
   );
   console.log(
     `${target}: ${result.fps.toFixed(1)} fps, ${result.msPerFrame.toFixed(2)} ms/frame ` +
@@ -136,6 +160,8 @@ try {
     );
   }
   if (process.env.FPS_STATS) console.log("  stats", JSON.stringify(result.stats));
+  if (quality.length) console.log(`  quality: ${quality.join(" -> ")}`);
+  if (timeline) console.log(`  fps by second: ${result.perSecond.join(" ")}`);
   if (errors.length) console.log(errors.slice(0, 10).join("\n"));
   const shot = opt("shot", null);
   if (shot) {

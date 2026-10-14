@@ -429,10 +429,40 @@ fn render_stress_scene() {
         twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
         twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
     }
+    // `TWE_STRESS_RAMP=1`: step down through the tiers and scales the
+    // automatic governor would (G5), a few frames each, then measure at
+    // the last — to compare with starting there.
+    if std::env::var_os("TWE_STRESS_RAMP").is_some() {
+        use twec::kernel::quality::{AutoQuality, Tier};
+        let mut governor = AutoQuality::new(Tier::High, 60.0);
+        // The governor's floor: Low at half of Low's own scale.
+        let floor = twec::kernel::quality::Quality::tier(Tier::Low).render_scale * 0.5;
+        for _ in 0..2000 {
+            if !governor.update(0.05) {
+                continue;
+            }
+            let q = governor.quality();
+            twec::stdlib::set_auto_quality(Some(q));
+            for _ in 0..3 {
+                twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+                twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+            }
+            // Sync each step, as a presenting host's frame pacing would;
+            // without it the CPU queues hundreds of frames ahead and the
+            // targets each step frees can't be released in time.
+            renderer.read_pixels().expect("sync");
+            if q.tier == Tier::Low && (q.render_scale - floor).abs() < 1e-4 {
+                break;
+            }
+        }
+        eprintln!("ramped to {:?}", renderer.quality());
+    }
     renderer.read_pixels().expect("sync");
     let (mut tick, mut script, mut kernel) = (0.0, 0.0, 0.0);
     let start = std::time::Instant::now();
-    for _ in 0..FRAMES {
+    // `TWE_STRESS_FRAMES` measures longer (the GPU profile prints every 60).
+    let frames: u32 = std::env::var("TWE_STRESS_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(FRAMES);
+    for _ in 0..frames {
         let t = std::time::Instant::now();
         twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
         tick += t.elapsed().as_secs_f64();
@@ -443,7 +473,7 @@ fn render_stress_scene() {
     let rgba = renderer.read_pixels().expect("sync");
     std::fs::create_dir_all(&out_dir).expect("output dir");
     image::save_buffer(out_dir.join("stress.png"), &rgba, W, H, image::ColorType::Rgba8).expect("png");
-    let n = f64::from(FRAMES);
+    let n = f64::from(frames);
     eprintln!(
         "stress: tick {:.2} ms, looks {:.2} ms, kernel {:.2} ms (CPU), {:.2} ms/frame",
         tick * 1e3 / n,

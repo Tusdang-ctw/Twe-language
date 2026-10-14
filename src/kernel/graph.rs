@@ -380,12 +380,21 @@ impl TexturePool {
                 generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             };
             if i < self.entries.len() {
-                self.entries[i] = entry;
+                // Low-end track (G5): free the replaced target now. A
+                // browser otherwise keeps it until a JavaScript garbage
+                // collection, and each render-scale step replaces every
+                // full-size target: on an integrated GPU's shared memory
+                // that slowed a governed frame from 21 to 43 ms.
+                // (Work already submitted with it still completes.)
+                let old = std::mem::replace(&mut self.entries[i], entry);
+                old.texture.destroy();
             } else {
                 self.entries.push(entry);
             }
         }
-        self.entries.truncate(plan.slots.len());
+        for old in self.entries.drain(plan.slots.len()..) {
+            old.texture.destroy();
+        }
     }
 
     /// The view behind transient `r` (after [`prepare`](Self::prepare)).

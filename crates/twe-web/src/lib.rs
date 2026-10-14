@@ -191,6 +191,9 @@ struct Shell {
     /// The page's canvas; its backing store follows its displayed size
     /// (`fit_canvas`).
     canvas: web_sys::HtmlCanvasElement,
+    /// Low-end track (G5): automatic quality for games that don't
+    /// choose a tier (`host3d::govern_quality`).
+    quality_governor: Option<twec::kernel::quality::AutoQuality>,
 }
 
 /// Low-end track (G3): size the canvas's backing store to the size it
@@ -296,6 +299,7 @@ async fn run() -> Result<(), String> {
         unlocked: false,
         dim,
         canvas: canvas.clone(),
+        quality_governor: None,
     }));
     // web3d-M8: `?capture=N` renders N deterministic ticks (fixed dt,
     // no input) and stops, so Playwright can pixel-diff a browser frame
@@ -366,8 +370,19 @@ fn frame(shell: &mut Shell) {
         return frame_2d(shell);
     }
     let now = now_secs();
-    let dt = (now - shell.last_frame).min(twec::eval::MAX_FRAME_DT);
+    let interval = now - shell.last_frame;
+    let dt = interval.min(twec::eval::MAX_FRAME_DT);
     shell.last_frame = now;
+    if let Some(q) = twec::host3d::govern_quality(
+        &mut shell.quality_governor,
+        shell.renderer.device_type(),
+        interval as f32,
+        60.0,
+    ) {
+        web_sys::console::info_1(
+            &format!("twe: quality {} at {:.0}% scale", q.tier.name(), q.render_scale * 100.0).into(),
+        );
+    }
 
     shell.input.borrow_mut().set_gamepad(
         poll_gamepad()

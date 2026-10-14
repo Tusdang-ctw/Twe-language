@@ -297,6 +297,7 @@ impl Bloom {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
+            crate::kernel::release_view(self.levels.first());
             self.levels = (0..levels)
                 .map(|mip| {
                     texture.create_view(&wgpu::TextureViewDescriptor {
@@ -998,6 +999,7 @@ impl Dof {
             return false;
         };
         if self.size != (width, height) || self.half.is_none() {
+            crate::kernel::release_view(self.half.as_ref());
             self.half = Some(
                 device
                     .create_texture(&wgpu::TextureDescriptor {
@@ -1370,6 +1372,9 @@ impl MotionBlur {
                     .create_view(&wgpu::TextureViewDescriptor::default())
             };
             let (tw, th) = (width.div_ceil(tile), height.div_ceil(tile));
+            for t in self.targets.iter().flatten() {
+                t.texture().destroy();
+            }
             self.targets = Some([
                 target("twe-kernel motion velocity", width, height),
                 target("twe-kernel motion tiles", tw, th),
@@ -1706,6 +1711,7 @@ impl Transmission {
                 })
             })
             .collect();
+        crate::kernel::release_view(self.chain.as_ref().map(|c| &c.0));
         self.chain = Some((texture.create_view(&wgpu::TextureViewDescriptor::default()), levels));
         self.size = (width, height);
         self.generation += 1;

@@ -585,6 +585,16 @@ impl GpuCull {
         self.probe.borrow_mut().decide(eligible, crate::clock::now_secs())
     }
 
+    /// Low-end track (G5): the frame's cost changed for another reason
+    /// (a quality tier or render scale): throw away the timings taken
+    /// before it and probe again. Otherwise a probe whose "on" window
+    /// fell before a cheaper tier credits culling with the saving, and
+    /// keeps a culling that costs (18 ms a frame in Chrome on an
+    /// integrated GPU) for a whole cycle.
+    pub fn reprobe(&self) {
+        *self.probe.borrow_mut() = CullProbe::new();
+    }
+
     /// Size the buffers and pyramid, and upload this frame's groups,
     /// draws and camera. `groups[i].base` must already lay the groups
     /// out one after another.
@@ -608,6 +618,7 @@ impl GpuCull {
         let storage_usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         if need.0 != ci {
             // New flags start at 0: the first frame draws everything late.
+            self.visible.destroy();
             self.visible = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("twe-kernel cull visible"),
                 size: need.0 * 4,
@@ -616,6 +627,7 @@ impl GpuCull {
             });
         }
         if need.1 != cg {
+            self.groups.destroy();
             self.groups = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("twe-kernel cull groups"),
                 size: need.1 * 16,
@@ -624,6 +636,7 @@ impl GpuCull {
             });
         }
         if need.2 != cd {
+            self.draws.destroy();
             self.draws = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("twe-kernel cull draws"),
                 size: need.2 * 16,
@@ -676,6 +689,11 @@ impl GpuCull {
                     bind,
                 }
             };
+            for p in self.phases.iter().flatten() {
+                p.counts.destroy();
+                p.out.destroy();
+                p.args.destroy();
+            }
             self.phases = Some([phase("twe-kernel cull early"), phase("twe-kernel cull late")]);
             self.caps = need;
         }
@@ -704,6 +722,7 @@ impl GpuCull {
                     })
                 })
                 .collect();
+            crate::kernel::release_view(self.hiz.as_ref().map(|h| &h.0));
             self.hiz = Some((texture.create_view(&wgpu::TextureViewDescriptor::default()), mips));
             self.hiz_size = size;
         }

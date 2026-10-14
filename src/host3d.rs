@@ -618,3 +618,30 @@ mod input_tests {
         assert!(after.keys_held.is_empty() && after.mb_held.is_empty());
     }
 }
+
+/// Low-end track (G5): one live frame of the automatic quality governor.
+/// When the game hasn't fixed a budget (`graphics.quality`,
+/// `graphics.render_scale`, `TWE_QUALITY`), feed the governor the
+/// interval since the last frame and publish its budget for
+/// `render_frame`; otherwise switch it off. The governor is created on
+/// the first such frame, from the GPU's kind. Live hosts only: tests,
+/// benchmarks and `?capture` never call this, so they render on `Ultra`.
+/// Returns the new budget when it changed (hosts log it).
+pub fn govern_quality(
+    governor: &mut Option<crate::kernel::quality::AutoQuality>,
+    device: wgpu::DeviceType,
+    interval_secs: f32,
+    target_fps: f32,
+) -> Option<crate::kernel::quality::Quality> {
+    use crate::kernel::quality::{starting_tier, AutoQuality};
+    if crate::stdlib::graphics_quality_is_explicit() {
+        crate::stdlib::set_auto_quality(None);
+        return None;
+    }
+    let mut changed = governor.is_none();
+    let g = governor.get_or_insert_with(|| AutoQuality::new(starting_tier(device), target_fps));
+    changed |= g.update(interval_secs);
+    let q = g.quality();
+    crate::stdlib::set_auto_quality(Some(q));
+    changed.then_some(q)
+}

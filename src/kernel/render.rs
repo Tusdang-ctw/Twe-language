@@ -1209,10 +1209,11 @@ fn surface_light(p: Lobes, l: vec3<f32>, radiance: vec3<f32>) -> vec3<f32> {
 }
 
 // web3d-M7: this pixel's screen-space ambient occlusion (computed at
-// half resolution; a 1×1 white texture when off).
+// half or quarter resolution; a 1×1 white texture when off). The AO
+// texel is found by the texture's size relative to the scene's.
 fn screen_ao(frag: vec2<f32>) -> f32 {
     let dim = textureDimensions(t_ao);
-    let p = min(vec2<u32>(frag * 0.5), dim - vec2<u32>(1u));
+    let p = min(vec2<u32>(frag * vec2<f32>(dim) / clusters.screen.xy), dim - vec2<u32>(1u));
     return textureLoad(t_ao, p, 0).r;
 }
 
@@ -2845,6 +2846,11 @@ pub struct Renderer {
     /// Low-end track: the GPU budget (`kernel/quality.rs`); `Ultra` by
     /// default, which is the renderer before tiers existed.
     quality: crate::kernel::quality::Quality,
+    /// The adapter's kind (browsers report `Other`).
+    device_type: wgpu::DeviceType,
+    /// The budget the GPU-culling probe last measured under; a change
+    /// restarts the probe (G5).
+    probed_quality: crate::kernel::quality::Quality,
     /// web3d-M7 follow-up: per-pass GPU times (`TWE_GPU_PROFILE`).
     gpu_profile: Option<std::cell::RefCell<crate::kernel::gpu_profile::GpuProfile>>,
     /// web3d-M7 follow-up: whether the last frame culled on the GPU
@@ -3232,6 +3238,11 @@ impl Renderer {
         self.quality
     }
 
+    /// The GPU's kind, for picking a starting quality tier.
+    pub fn device_type(&self) -> wgpu::DeviceType {
+        self.device_type
+    }
+
     /// Reconfigure for a new drawable size (the graph's targets follow
     /// on the next frame).
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -3239,7 +3250,12 @@ impl Renderer {
         self.config.height = height.max(1);
         match &self.surface {
             Some(surface) => surface.configure(&self.device, &self.config),
-            None => self.offscreen = Some(create_offscreen(&self.device, &self.config)),
+            None => {
+                if let Some(old) = self.offscreen.take() {
+                    old.destroy();
+                }
+                self.offscreen = Some(create_offscreen(&self.device, &self.config));
+            }
         }
     }
 
@@ -3356,6 +3372,8 @@ async fn init_renderer(
         })
         .await
         .map_err(|e| format!("no compatible wgpu adapter found (WebGPU unavailable?): {e}"))?;
+    // Low-end track (G5): what kind of GPU this is, for the starting tier.
+    let device_type = adapter.get_info().device_type;
     // web3d-M2: request only the WebGPU default limits (4 bind groups,
     // etc.) so the renderer runs on any conformant device — browsers
     // and mobile GPUs included. The main pipeline uses exactly 4 groups.
@@ -4070,6 +4088,8 @@ async fn init_renderer(
         clusters,
         frame_index: std::cell::Cell::new(0),
         quality: crate::kernel::quality::Quality::default(),
+        device_type,
+        probed_quality: crate::kernel::quality::Quality::default(),
         gpu_profile,
         last_culled: std::cell::Cell::new(false),
         point_shadows,
@@ -5501,6 +5521,10 @@ impl Renderer {
         let mut budgeted = *snap;
         state.quality.clamp(&mut budgeted.post, &mut budgeted.fog);
         let snap = &budgeted;
+        if state.quality != state.probed_quality {
+            state.gpu_cull.reprobe();
+            state.probed_quality = state.quality;
+        }
         // The 3D scene's size: the window, scaled by the tier. The 2D
         // canvas, the camera's aspect and the swapchain stay at the
         // window's size; the tonemap pass samples the scene up to it.
@@ -6263,6 +6287,9 @@ impl Renderer {
                 while new_cap < needed {
                     new_cap *= 2;
                 }
+                // Freed now, not at a browser garbage collection
+                // (`kernel::release_view`); every user binds it per frame.
+                state.instance_buffer.destroy();
                 state.instance_buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("twec-play3d instances (grown)"),
                     size: new_cap * std::mem::size_of::<Instance>() as u64,
@@ -6834,6 +6861,7 @@ impl Renderer {
                     intensity: snap.post.ao,
                     // A still pattern without TAA (no flicker).
                     frame: if taa_on { state.frame_index.get() } else { 0 },
+                    downsample: state.quality.ao_downsample,
                 },
             );
         }
@@ -7490,6 +7518,11 @@ impl Renderer {
         if let Some(frame) = frame {
             state.queue.present(frame);
         }
+        // Low-end track (G5): let wgpu free what earlier frames dropped
+        // (targets replaced on a resize or a quality change). Without a
+        // poll, a host that never maps a buffer piles them up until the
+        // device runs out of memory. Non-blocking; a no-op in browsers.
+        let _ = state.device.poll(wgpu::PollType::Poll);
         Ok(())
     }
 

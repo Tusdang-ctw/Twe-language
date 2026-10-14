@@ -20,3 +20,18 @@ pub mod render;
 pub(crate) mod ssr;
 pub(crate) mod taa;
 pub(crate) mod volumetric;
+
+/// Low-end track (G5): free the texture behind a view that is being
+/// replaced, now. wgpu's browser backend frees nothing when a texture or
+/// buffer is dropped: the GPU memory waits for a JavaScript garbage
+/// collection. A resize or a quality change replaces every screen-sized
+/// target at once, and on an integrated GPU's shared memory the stale
+/// ones halved Chrome's frame rate until a collection. Work already
+/// submitted with the texture still completes (WebGPU and wgpu both
+/// defer the free); callers bump their generation so no bind group
+/// built on the old view is used again.
+pub(crate) fn release_view(view: Option<&wgpu::TextureView>) {
+    if let Some(v) = view {
+        v.texture().destroy();
+    }
+}

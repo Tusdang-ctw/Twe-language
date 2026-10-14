@@ -19,7 +19,7 @@ mod lighting;
 use lighting::*;
 mod graphics;
 use graphics::*;
-pub use graphics::graphics_quality;
+pub use graphics::{graphics_quality, graphics_quality_is_explicit, set_auto_quality};
 
 thread_local! {
     // web3d-M6: image sizes by path, for the sprite / atlas / nine-slice

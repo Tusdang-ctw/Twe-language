@@ -42,7 +42,9 @@ struct AoUniform {
     /// Width, height, world radius, power (intensity).
     size: [f32; 4],
     /// x = pixels per world unit at distance 1 (proj[1][1] · height / 2),
-    /// y = this frame's slice rotation offset (0..1), zw unused.
+    /// y = this frame's slice rotation offset (0..1), z = the AO
+    /// textures' downsample factor (2 = half resolution, 4 = quarter;
+    /// low-end track G4), w unused.
     params: [f32; 4],
 }
 
@@ -82,6 +84,11 @@ fn size_i() -> vec2<i32> {
     return vec2<i32>(ao.size.xy);
 }
 
+// Full-resolution pixels per AO texel, per axis (2 or 4).
+fn down() -> i32 {
+    return i32(ao.params.z);
+}
+
 // View-space position of pixel `px` (clamped to the screen).
 fn view_pos(px: vec2<i32>) -> vec3<f32> {
     let q = clamp(px, vec2<i32>(0), size_i() - vec2<i32>(1));
@@ -101,9 +108,9 @@ fn pattern(px: vec2<i32>) -> f32 {
 
 @fragment
 fn fs_gtao(in: VOut) -> @location(0) vec4<f32> {
-    // A half-resolution texel, at its full-resolution pixel.
+    // A downsampled texel, at its top-left full-resolution pixel.
     let hpx = vec2<i32>(in.pos.xy);
-    let px = min(hpx * 2, size_i() - vec2<i32>(1));
+    let px = min(hpx * down(), size_i() - vec2<i32>(1));
     let d = textureLoad(t_depth, px, 0);
     if (d >= 1.0) {
         return vec4<f32>(1.0);
@@ -188,13 +195,13 @@ fn fs_gtao(in: VOut) -> @location(0) vec4<f32> {
     return vec4<f32>(pow(visibility, ao.size.w));
 }
 
-// 4x4 blur (at half resolution), weighted by depth similarity so
+// 4x4 blur (at the AO resolution), weighted by depth similarity so
 // occlusion doesn't bleed across silhouettes.
 @fragment
 fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
     let hpx = vec2<i32>(in.pos.xy);
     let half = vec2<i32>(textureDimensions(t_raw));
-    let d = textureLoad(t_depth, min(hpx * 2, size_i() - vec2<i32>(1)), 0);
+    let d = textureLoad(t_depth, min(hpx * down(), size_i() - vec2<i32>(1)), 0);
     if (d >= 1.0) {
         return vec4<f32>(1.0);
     }
@@ -204,7 +211,7 @@ fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
     for (var y: i32 = -2; y < 2; y = y + 1) {
         for (var x: i32 = -2; x < 2; x = x + 1) {
             let q = clamp(hpx + vec2<i32>(x, y), vec2<i32>(0), half - vec2<i32>(1));
-            let l = linear_depth(textureLoad(t_depth, min(q * 2, size_i() - vec2<i32>(1)), 0));
+            let l = linear_depth(textureLoad(t_depth, min(q * down(), size_i() - vec2<i32>(1)), 0));
             let w = max(1.0 - abs(l - center) / (0.05 * center), 0.0) + 1e-4;
             sum = sum + textureLoad(t_raw, q, 0).r * w;
             weight = weight + w;
@@ -228,6 +235,9 @@ pub(crate) struct AoFrame {
     pub radius: f32,
     pub intensity: f32,
     pub frame: u32,
+    /// Full-resolution pixels per AO texel per axis: 2 (half
+    /// resolution) or 4 (quarter; the `medium` quality tier).
+    pub downsample: u32,
 }
 
 pub(crate) struct Ao {
@@ -238,7 +248,8 @@ pub(crate) struct Ao {
     /// Raw and blurred occlusion, at half the target's size.
     raw: Option<wgpu::TextureView>,
     blurred: Option<wgpu::TextureView>,
-    size: (u32, u32),
+    /// Target size and downsample factor the textures were made for.
+    size: (u32, u32, u32),
     /// A 1×1 white texture, bound when AO is off.
     white: wgpu::TextureView,
     /// Bumped when `blurred` is reallocated.
@@ -339,7 +350,7 @@ impl Ao {
             }),
             raw: None,
             blurred: None,
-            size: (0, 0),
+            size: (0, 0, 0),
             white,
             generation: 0,
         }
@@ -355,14 +366,15 @@ impl Ao {
         height: u32,
         f: &AoFrame,
     ) {
-        if self.size != (width, height) || self.blurred.is_none() {
+        let down = f.downsample.clamp(2, 4);
+        if self.size != (width, height, down) || self.blurred.is_none() {
             let target = |label| {
                 device
                     .create_texture(&wgpu::TextureDescriptor {
                         label: Some(label),
                         size: wgpu::Extent3d {
-                            width: width.div_ceil(2),
-                            height: height.div_ceil(2),
+                            width: width.div_ceil(down),
+                            height: height.div_ceil(down),
                             depth_or_array_layers: 1,
                         },
                         mip_level_count: 1,
@@ -375,9 +387,11 @@ impl Ao {
                     })
                     .create_view(&wgpu::TextureViewDescriptor::default())
             };
+            crate::kernel::release_view(self.raw.as_ref());
+            crate::kernel::release_view(self.blurred.as_ref());
             self.raw = Some(target("twe-kernel ao raw"));
             self.blurred = Some(target("twe-kernel ao"));
-            self.size = (width, height);
+            self.size = (width, height, down);
             self.generation += 1;
         }
         // Rotate the slices a little every frame, so TAA can average
@@ -389,7 +403,7 @@ impl Ao {
             params: [
                 f.proj[1][1] * height as f32 * 0.5,
                 ROTATION[(f.frame % 4) as usize] / 16.0,
-                0.0,
+                down as f32,
                 0.0,
             ],
         };

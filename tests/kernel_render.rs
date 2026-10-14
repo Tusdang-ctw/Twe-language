@@ -2123,3 +2123,112 @@ fn low_tier_scales_the_scene_to_the_window() {
         "the lit sphere stays at the centre of the frame"
     );
 }
+
+/// Low-end track (G4): the `medium` tier computes ambient occlusion at
+/// quarter resolution. It still darkens the contact between a block and
+/// the floor, and still leaves open floor alone.
+#[test]
+fn quarter_resolution_ao_still_darkens_contact() {
+    if headless().is_none() {
+        return;
+    }
+    let scene = |ao: f32| {
+        format!(
+            r#"
+graphics.quality("medium")
+graphics.render_scale(1.0)
+light.clear()
+sun.intensity(0.0)
+light.ambient((0.8, 0.8, 0.8, 1.0))
+postfx.ao({ao})
+postfx.ao_radius(1.0)
+camera.eye = vec3(0, 3, 5)
+camera.target = vec3(0, 0, 0)
+on render():
+    cube(at: vec3(0, -5.5, 0), color: (0.8, 0.8, 0.8, 1), size: 10.0)
+    cube(at: vec3(0, 0, 0), color: (0.8, 0.8, 0.8, 1), size: 1.0)
+"#
+        )
+    };
+    let off = render_once(&scene(0.0));
+    let on = render_once(&scene(1.0));
+    save_png("ambient_occlusion_quarter", &on);
+    let (darker, brighter) = darkened(&off, &on, 8);
+    assert!(darker > 400, "only {darker} pixels occluded");
+    assert!(brighter < 20, "{brighter} pixels got brighter");
+    let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+    for (x, y) in [(30, 225), (290, 225), (160, 230)] {
+        let (a, b) = (pixel(&off, x, y), pixel(&on, x, y));
+        assert!((luma(a) - luma(b)).abs() <= 6, "open floor at ({x}, {y}): off {a:?}, on {b:?}");
+    }
+}
+
+/// Low-end track (G5): changing the quality budget at runtime — what the
+/// automatic governor does — reallocates every screen-sized target, and
+/// the old ones are destroyed at once (wgpu's browser backend frees
+/// nothing on drop). A destroyed texture used again is a validation
+/// error, which panics natively: step through tiers and scales with
+/// every scale-dependent effect on (AO, TAA, bloom, depth of field,
+/// motion blur, SSR, fog, particles) and render each.
+#[test]
+fn quality_changes_at_runtime_render_cleanly() {
+    use twec::kernel::quality::{Quality, Tier};
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let src = r#"
+postfx.ao(1.0)
+postfx.taa(true)
+postfx.bloom(0.4)
+postfx.dof(4.0, 2.8)
+postfx.motion_blur(0.5)
+postfx.ssr(1.0)
+light.fog(0.02, 0.1, (0.6, 0.7, 0.8))
+var t = 0.0
+particles Sparks:
+    count: 2000
+    lifetime: 5.0
+    on_spawn(p):
+        p.pos = (random.float() * 4.0 - 2.0, random.float() * 2.0, random.float() * 4.0 - 2.0)
+        p.size = 0.05
+spawn Sparks at vec3(0, 0, 0)
+on render():
+    t += 0.05
+    camera.eye = vec3(4 * math.sin(t), 2.5, 4 * math.cos(t))
+    camera.target = vec3(0, 0, 0)
+    cube(at: vec3(0, -1, 0), color: (0.8, 0.8, 0.8, 1), size: 6.0)
+    sphere(at: vec3(0, 0.5, 0), color: (0.9, 0.3, 0.2, 1), size: 1.0)
+"#;
+    let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    let mut assets = twec::play3d::NativeAssets::default();
+    let mut steps: Vec<Quality> = Vec::new();
+    for tier in [Tier::Ultra, Tier::High, Tier::Medium, Tier::Low, Tier::Ultra] {
+        for scale in [1.0, 0.8, 0.55] {
+            let mut q = Quality::tier(tier);
+            q.render_scale *= scale;
+            steps.push(q);
+        }
+    }
+    for q in steps {
+        twec::stdlib::set_auto_quality(Some(q));
+        for _ in 0..3 {
+            twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
+            twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+        }
+        assert_eq!(renderer.quality(), q);
+        // Sync, so the frames really ran (and the freed targets went).
+        renderer.read_pixels().expect("read pixels");
+    }
+    // The window was resized too: the headless target is replaced.
+    renderer.resize(W / 2, H / 2);
+    twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render after resize");
+    renderer.resize(W, H);
+    twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render after resize");
+    let rgba = renderer.read_pixels().expect("read pixels");
+    save_png("quality_changes", &rgba);
+    let lit = rgba.chunks(4).filter(|p| p[0] > 100).count();
+    assert!(lit > 500, "only {lit} lit pixels after the changes");
+}

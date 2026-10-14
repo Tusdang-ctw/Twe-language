@@ -1080,21 +1080,33 @@ TAA is off by default, because it trades a little sharpness for stability. Shado
 **Quality tiers** *(low-end track, 2026-10-14)*. A tier is the GPU budget a game runs under. The effects above are *requests*; the tier decides which of them the GPU can afford and drops the rest silently. Dropping an effect is a budget decision, not an error, so `twec verify` doesn't report it.
 
 ```twe
-graphics.quality("medium")      # "low" | "medium" | "high" | "ultra" (default "ultra")
+graphics.quality("medium")      # "auto" (default) | "low" | "medium" | "high" | "ultra"
 graphics.render_scale(0.8)      # render the 3D scene at 80 % of the window per axis (0.25 – 1.0)
 print(graphics.tier())          # the tier in effect: "medium"
 ```
+
+**`"auto"` (the default when a game runs in a window or a browser tab).** A governor picks the budget, following the frame rate. It starts from the GPU's kind:
+- discrete GPUs start on `ultra`;
+- integrated or unknown GPUs on `high` (browsers don't report the kind);
+- software rasterisers on `low`.
+
+How it moves:
+- **Down, fast.** When the frame interval stays above 1.2× the 60 fps target (or the monitor's refresh, if lower) for half a second, it lowers the render scale by 0.1. Below half the tier's own scale, it steps down a tier.
+- **Up, slowly.** After three seconds on target, it probes back up 0.05. It never probes within ten seconds of a step down, and never above the tier it started on.
+- **What it ignores.** Hitches over a quarter of a second, such as a tab switch or an asset load.
+
+Tests, benchmarks, `?capture` and headless renders don't run the governor and render on `ultra`. Any explicit choice switches the governor off: `graphics.quality(tier)`, `graphics.render_scale`, or `TWE_QUALITY`. The browser console logs each change as `twe: quality <tier> at <n>% scale`; natively, `TWE_QUALITY_LOG=1` prints them.
 
 | Tier | Scene scale | Particles | Shadowed point lights | Dropped effects |
 |---|---:|---:|---:|---|
 | `ultra` | 100 % | all | 4 | none |
 | `high` | 100 % | all | 4 | volumetric fog (falls back to closed-form fog) |
-| `medium` | 85 % | ½ | 2 | SSR, volumetric fog, TAA, motion blur |
+| `medium` | 85 % | ½ | 2 | SSR, volumetric fog, TAA, motion blur; AO at quarter resolution |
 | `low` | 70 % | ¼ | 0 | AO, SSR, volumetric fog, TAA, depth of field, motion blur |
 
 How the tiers behave:
 - **A tier never adds effects.** `high` doesn't turn bloom on; it only allows it.
-- **`ultra` is the renderer as it was before tiers existed**, so it is the default.
+- **`ultra` is the renderer as it was before tiers existed.** It is what tests, benchmarks and captures render on; a live game without a choice runs on `"auto"` (above).
 - **Scene scale.** The 3D scene renders below the window's size, and the tonemap pass scales it up with bilinear filtering. The 2D HUD always draws at the window's own resolution, so text stays sharp.
 - **`graphics.render_scale`** overrides the tier's scale and keeps everything else about the tier.
 - **Particles are thinned per emission,** never to zero. They are cosmetic, so thinning them doesn't change a replay.

@@ -542,6 +542,8 @@ pub(crate) struct Particles {
     frame: u32,
     /// This frame's new particles.
     spawned: u32,
+    /// The quality tier's particle density the pool was sized under.
+    density: f32,
 }
 
 impl Particles {
@@ -760,6 +762,7 @@ impl Particles {
             emission_capacity: 16,
             cpu,
             cpu_capacity: 1,
+            density: 1.0,
             cpu_count: 0,
             pool_bg,
             cpu_bg,
@@ -783,6 +786,21 @@ impl Particles {
     ) -> bool {
         let dt = self.last_time.map_or(0.0, |t| (time - t).clamp(0.0, 0.1));
         self.last_time = Some(time);
+        // Low-end track (G5): the simulation and the draw both cover the
+        // pool's whole capacity, and the pool only grows. When the
+        // quality governor lowers the density, a pool sized for the
+        // denser tier would keep costing what it did; start over small
+        // instead (particles are cosmetic, so dropping the live ones
+        // changes no replay).
+        if quality.particle_density < self.density && self.capacity > MIN_CAPACITY {
+            self.pool.destroy();
+            self.pool = particle_buffer(device, "twe-kernel particle pool", MIN_CAPACITY);
+            self.capacity = MIN_CAPACITY;
+            self.cursor = 0;
+            self.pool_bg = draw_bind_group(device, &self.draw_layout, &self.pool, &self.params);
+            self.batches.clear();
+        }
+        self.density = quality.particle_density;
         if frame.programs != self.programs.as_slice() {
             self.build(device, frame.programs);
         }
@@ -901,7 +919,8 @@ impl Particles {
         queue.submit(Some(encoder.finish()));
         self.cursor = self.capacity;
         self.capacity = capacity;
-        self.pool = pool;
+        // Freed once the copy above has run (see `kernel::release_view`).
+        std::mem::replace(&mut self.pool, pool).destroy();
         self.pool_bg = draw_bind_group(device, &self.draw_layout, &self.pool, &self.params);
     }
 

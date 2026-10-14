@@ -385,6 +385,9 @@ struct App {
     /// web3d-M4: `auto_pause_on_blur(true)` pauses when the window
     /// loses focus.
     blur: crate::host3d::BlurAutoPause,
+    /// Low-end track (G5): automatic quality, for games that don't
+    /// choose a tier (`host3d::govern_quality`).
+    quality_governor: Option<crate::kernel::quality::AutoQuality>,
 }
 
 impl App {
@@ -403,6 +406,7 @@ impl App {
             exit_code: 0,
             audio: crate::native_audio::NativeAudio::default(),
             blur: crate::host3d::BlurAutoPause::new(),
+            quality_governor: None,
             gilrs: gilrs::Gilrs::new()
                 .map_err(|e| eprintln!("[twec] gamepad disabled: {e}"))
                 .ok(),
@@ -648,6 +652,26 @@ impl ApplicationHandler for App {
                     self.sim_accumulator = 0.0;
                 }
                 let sim_ms = sim_start.elapsed().as_secs_f32() * 1000.0;
+                // Aim for 60 fps, or the monitor's refresh when lower.
+                let target_fps = state
+                    .window
+                    .current_monitor()
+                    .and_then(|m| m.refresh_rate_millihertz())
+                    .map_or(60.0, |mhz| (mhz as f32 / 1000.0).min(60.0));
+                if let Some(q) = crate::host3d::govern_quality(
+                    &mut self.quality_governor,
+                    state.renderer.device_type(),
+                    frame_dt,
+                    target_fps,
+                ) {
+                    if std::env::var_os("TWE_QUALITY_LOG").is_some() {
+                        eprintln!(
+                            "[twec] quality {} at {:.0}% scale",
+                            q.tier.name(),
+                            q.render_scale * 100.0
+                        );
+                    }
+                }
                 let render_start = Instant::now();
                 let rendered = crate::host3d::render_frame(
                     &mut state.renderer,

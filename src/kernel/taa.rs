@@ -268,6 +268,9 @@ impl Taa {
         inv_view_proj: [[f32; 4]; 4],
     ) {
         if self.size != (width, height) || self.history.len() != 2 {
+            for (t, _) in &self.history {
+                t.destroy();
+            }
             self.history = (0..2)
                 .map(|_| {
                     let t = device.create_texture(&wgpu::TextureDescriptor {
