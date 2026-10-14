@@ -17,6 +17,9 @@ mod quat;
 use quat::*;
 mod lighting;
 use lighting::*;
+mod graphics;
+use graphics::*;
+pub use graphics::graphics_quality;
 
 thread_local! {
     // web3d-M6: image sizes by path, for the sprite / atlas / nine-slice
@@ -487,6 +490,27 @@ pub fn install(env: &mut Env) {
         "postfx".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
             fields: postfx_fields,
+            kind: "module",
+        }))),
+    );
+    // Low-end track: the GPU budget (`stdlib/graphics.rs`).
+    let mut graphics_fields = HashMap::new();
+    graphics_fields.insert(
+        "quality".to_string(),
+        Value::from_builtin("graphics.quality", &["tier"], graphics_quality_impl),
+    );
+    graphics_fields.insert(
+        "render_scale".to_string(),
+        Value::from_builtin("graphics.render_scale", &["scale"], graphics_render_scale_impl),
+    );
+    graphics_fields.insert(
+        "tier".to_string(),
+        Value::from_builtin("graphics.tier", &[], graphics_tier_impl),
+    );
+    env.set(
+        "graphics".to_string(),
+        Value::from_object(Rc::new(RefCell::new(Object {
+            fields: graphics_fields,
             kind: "module",
         }))),
     );

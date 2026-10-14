@@ -6,9 +6,13 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn run_debug(src: &str, commands: &str) -> Vec<twec::json::Value> {
+    // One file per call: the tests run in parallel in one process, and a
+    // shared path let one test's program overwrite the other's mid-run.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("twe_dbg_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("prog.twe");
+    let file = dir.join(format!("prog{n}.twe"));
     std::fs::write(&file, src).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_twec"))

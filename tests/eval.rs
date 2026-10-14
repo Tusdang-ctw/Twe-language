@@ -3513,3 +3513,16 @@ fn runs_nil_literal() {
     let out = run_program("tests/programs/nil_literal.twe").expect("program should run");
     assert_eq!(out, "called\ntrue\ntrue\ntrue\ntrue\nnil is truthy\n");
 }
+
+/// Low-end track (G2): `graphics.*` picks a GPU budget; names and
+/// scales outside the allowed set fail with a fix, not silently.
+#[test]
+fn graphics_quality_and_render_scale() {
+    let out = run_program_str("graphics.quality(\"low\")\nprint(graphics.tier())\n").expect("runs");
+    assert_eq!(out.trim(), "low");
+    let err = run_program_str("graphics.quality(\"epic\")\n").expect_err("unknown tier");
+    assert!(err.contains("unknown tier") && err.contains("medium"), "{err}");
+    let err = run_program_str("graphics.render_scale(2.0)\n").expect_err("too big");
+    assert!(err.contains("0.25"), "{err}");
+    run_program_str("graphics.render_scale(0.5)\n").expect("in range");
+}

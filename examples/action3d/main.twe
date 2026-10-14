@@ -3,7 +3,7 @@
 # @expected: a hero with blended locomotion + a sword attack, enemies,
 #            and a physics rope bridge — the web3d-M11 reference game
 # @category: 3d
-# @difficulty: showcase
+# @difficulty: large
 #
 # web3d-M11: the reference game for "game-feature depth". It exercises
 # animation crossfade (idle↔walk↔run, and a one-shot attack; web3d-M11

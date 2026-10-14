@@ -409,7 +409,13 @@ fn render_stress_scene() {
     };
     // `TWE_STRESS_SCRIPT` swaps in a variant (for splitting the cost).
     let path = std::env::var("TWE_STRESS_SCRIPT").unwrap_or_else(|_| "examples/stress_3d.twe".to_string());
-    let src = std::fs::read_to_string(path).expect("read");
+    let src = std::fs::read_to_string(&path).expect("read");
+    let out_dir = std::env::current_dir().expect("cwd").join("target/kernel-render");
+    // Asset paths are relative to the game's directory, as when it's played
+    // (a multi-file game like survive3d loads `assets/…`).
+    if let Some(dir) = std::path::Path::new(&path).parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::env::set_current_dir(dir).expect("cd into the script's directory");
+    }
     let tokens = twec::lexer::lex(&src).expect("lex");
     let program = twec::parser::parse(&tokens).expect("parse");
     let mut env = twec::value::Env::new();
@@ -435,8 +441,8 @@ fn render_stress_scene() {
         kernel += times.kernel_ms;
     }
     let rgba = renderer.read_pixels().expect("sync");
-    std::fs::create_dir_all("target/kernel-render").expect("output dir");
-    image::save_buffer("target/kernel-render/stress.png", &rgba, W, H, image::ColorType::Rgba8).expect("png");
+    std::fs::create_dir_all(&out_dir).expect("output dir");
+    image::save_buffer(out_dir.join("stress.png"), &rgba, W, H, image::ColorType::Rgba8).expect("png");
     let n = f64::from(FRAMES);
     eprintln!(
         "stress: tick {:.2} ms, looks {:.2} ms, kernel {:.2} ms (CPU), {:.2} ms/frame",

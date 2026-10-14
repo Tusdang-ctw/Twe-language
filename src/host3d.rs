@@ -184,6 +184,7 @@ pub fn render_frame(
         anim: &anim,
     };
     let scripted = crate::clock::now_secs();
+    renderer.set_quality(crate::stdlib::graphics_quality());
     let result = renderer.render(&snap, assets);
     // Hand the (cleared) allocation back so the queue doesn't regrow.
     let mut draws = draws;

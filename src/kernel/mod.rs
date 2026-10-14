@@ -15,6 +15,7 @@ pub mod canvas;
 pub(crate) mod material;
 pub(crate) mod post;
 pub mod particles;
+pub mod quality;
 pub mod render;
 pub(crate) mod ssr;
 pub(crate) mod taa;

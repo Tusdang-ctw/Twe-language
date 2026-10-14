@@ -176,6 +176,7 @@ pub struct LutSettings<'a> {
     pub strength: f32,
 }
 
+#[derive(Clone, Copy)]
 pub struct RenderSnapshot<'a> {
     pub camera: Camera3d,
     /// web3d-M7: colour grading, applied after the tonemap curve.
@@ -2841,6 +2842,9 @@ pub struct Renderer {
     /// web3d-M7: the clustered point / spot light list.
     clusters: crate::kernel::clusters::Clusters,
     frame_index: std::cell::Cell<u32>,
+    /// Low-end track: the GPU budget (`kernel/quality.rs`); `Ultra` by
+    /// default, which is the renderer before tiers existed.
+    quality: crate::kernel::quality::Quality,
     /// web3d-M7 follow-up: per-pass GPU times (`TWE_GPU_PROFILE`).
     gpu_profile: Option<std::cell::RefCell<crate::kernel::gpu_profile::GpuProfile>>,
     /// web3d-M7 follow-up: whether the last frame culled on the GPU
@@ -3215,6 +3219,17 @@ impl Renderer {
     pub async fn new_headless(width: u32, height: u32) -> Result<Renderer, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         init_renderer(&instance, None, width, height).await
+    }
+
+    /// Low-end track: set the GPU budget. Effects the tier can't afford
+    /// are dropped from each frame's requests; the 3D scene renders at
+    /// the tier's `render_scale` and is scaled up to the window.
+    pub fn set_quality(&mut self, quality: crate::kernel::quality::Quality) {
+        self.quality = quality;
+    }
+
+    pub fn quality(&self) -> crate::kernel::quality::Quality {
+        self.quality
     }
 
     /// Reconfigure for a new drawable size (the graph's targets follow
@@ -4054,6 +4069,7 @@ async fn init_renderer(
         volumetric,
         clusters,
         frame_index: std::cell::Cell::new(0),
+        quality: crate::kernel::quality::Quality::default(),
         gpu_profile,
         last_culled: std::cell::Cell::new(false),
         point_shadows,
@@ -5481,6 +5497,14 @@ impl Renderer {
         assets: &mut dyn AssetSource,
     ) -> Result<(), String> {
         let state = self;
+        // Low-end track: the frame as the quality tier allows it.
+        let mut budgeted = *snap;
+        state.quality.clamp(&mut budgeted.post, &mut budgeted.fog);
+        let snap = &budgeted;
+        // The 3D scene's size: the window, scaled by the tier. The 2D
+        // canvas, the camera's aspect and the swapchain stay at the
+        // window's size; the tonemap pass samples the scene up to it.
+        let (scene_w, scene_h) = state.quality.scene_size(state.config.width, state.config.height);
         let Camera3d {
             eye,
             target,
@@ -5510,7 +5534,7 @@ impl Renderer {
         }
         let unjittered_view_proj = mul(proj, view);
         let view_proj = if taa_on {
-            let j = state.taa.jitter(state.config.width, state.config.height);
+            let j = state.taa.jitter(scene_w, scene_h);
             mul(crate::kernel::taa::jitter_projection(proj, j), view)
         } else {
             state.taa.reset();
@@ -5537,9 +5561,10 @@ impl Renderer {
                 eye,
                 right: [view[0][0], view[1][0], view[2][0]],
                 up: [view[0][1], view[1][1], view[2][1]],
+                size: (scene_w, scene_h),
             },
-            (state.config.width, state.config.height),
             snap.time,
+            &state.quality,
         );
 
         let lights_uniform = snap.lights;
@@ -5562,7 +5587,7 @@ impl Renderer {
         };
         wanting.sort_by(|&a, &b| reach(&point_lights[a]).total_cmp(&reach(&point_lights[b])));
         let mut point_shadow_lights: Vec<([f32; 3], f32)> = Vec::new();
-        for &i in wanting.iter().take(POINT_SHADOW_LIGHTS) {
+        for &i in wanting.iter().take(POINT_SHADOW_LIGHTS.min(state.quality.point_shadows)) {
             let pl = &mut point_lights[i];
             point_shadow_lights.push(([pl.pos[0], pl.pos[1], pl.pos[2]], pl.color_radius[3]));
             pl.pos[3] = point_shadow_lights.len() as f32;
@@ -5576,7 +5601,7 @@ impl Renderer {
                 invert4(proj),
                 near,
                 far,
-                (state.config.width, state.config.height),
+                (scene_w, scene_h),
                 light_count,
             ),
         );
@@ -6194,7 +6219,7 @@ impl Renderer {
                         fog_uniform.color[2],
                     ],
                     glow: fog_uniform.sun[3],
-                    screen: (state.config.width, state.config.height),
+                    screen: (scene_w, scene_h),
                 },
             );
             fog_uniform.params[3] = 0.0;
@@ -6202,7 +6227,7 @@ impl Renderer {
         if ssr_on {
             state.ssr.prepare(
                 &state.queue,
-                (state.config.width, state.config.height),
+                (scene_w, scene_h),
                 &crate::kernel::ssr::SsrFrame {
                     view_proj,
                     inv_view_proj: camera_uniform.inv_view_proj,
@@ -6685,7 +6710,7 @@ impl Renderer {
         };
         // web3d-M7: depth of field, then motion blur, each a new HDR
         // target read by the next step.
-        let (width, height) = (state.config.width, state.config.height);
+        let (width, height) = (scene_w, scene_h);
         let dof_on = snap.post.dof_focus > 0.0
             && instance_count != 0
             && state.dof.prepare(
@@ -6780,15 +6805,15 @@ impl Renderer {
         state.pool.prepare(
             &state.device,
             &plan,
-            state.config.width,
-            state.config.height,
+            scene_w,
+            scene_h,
         );
         if taa_on {
             state.taa.prepare(
                 &state.device,
                 &state.queue,
-                state.config.width,
-                state.config.height,
+                scene_w,
+                scene_h,
                 unjittered_view_proj,
                 invert4(unjittered_view_proj),
             );

@@ -94,6 +94,9 @@ pub(crate) struct ParticleCamera {
     pub eye: [f32; 3],
     pub right: [f32; 3],
     pub up: [f32; 3],
+    /// The render target's size in pixels (the scene's, with a quality
+    /// tier's render scale applied).
+    pub size: (u32, u32),
 }
 
 #[repr(C)]
@@ -775,25 +778,27 @@ impl Particles {
         queue: &wgpu::Queue,
         frame: &ParticleFrame,
         camera: &ParticleCamera,
-        size: (u32, u32),
         time: f32,
+        quality: &crate::kernel::quality::Quality,
     ) -> bool {
         let dt = self.last_time.map_or(0.0, |t| (time - t).clamp(0.0, 0.1));
         self.last_time = Some(time);
         if frame.programs != self.programs.as_slice() {
             self.build(device, frame.programs);
         }
-        // Emissions of programs the pipelines don't have are dropped.
-        let emissions: Vec<&ParticleEmission> = frame
+        // Emissions of programs the pipelines don't have are dropped;
+        // the quality tier thins the rest (particles are cosmetic).
+        let emissions: Vec<(&ParticleEmission, u32)> = frame
             .emissions
             .iter()
             .filter(|e| e.count > 0 && (e.program as usize) < self.programs.len())
+            .map(|e| (e, quality.particles(e.count)))
             .collect();
         while self.batches.front().is_some_and(|b| b.dies <= time) {
             self.batches.pop_front();
         }
         let live: u64 = self.batches.iter().map(|b| u64::from(b.count)).sum();
-        let new: u64 = emissions.iter().map(|e| u64::from(e.count)).sum();
+        let new: u64 = emissions.iter().map(|&(_, count)| u64::from(count)).sum();
         let total = new.min(u64::from(MAX_PARTICLES)) as u32;
         // Room for twice what's alive: the ring then rarely reaches a
         // particle that outlives its neighbours.
@@ -803,7 +808,7 @@ impl Particles {
         }
         let mut first = 0u32;
         let mut uploads = Vec::with_capacity(emissions.len());
-        for e in &emissions {
+        for &(e, count) in &emissions {
             if first >= total {
                 break;
             }
@@ -811,15 +816,15 @@ impl Particles {
                 pos: e.at,
                 program: e.program,
                 first,
-                count: e.count,
+                count,
                 seed: e.seed,
                 lifetime: e.lifetime,
             });
             self.batches.push_back(Batch {
                 dies: time + e.lifetime,
-                count: e.count,
+                count,
             });
-            first = first.saturating_add(e.count);
+            first = first.saturating_add(count);
         }
         if uploads.len() as u32 > self.emission_capacity {
             self.emission_capacity = (uploads.len() as u32).next_power_of_two();
@@ -845,7 +850,7 @@ impl Particles {
             right: [camera.right[0], camera.right[1], camera.right[2], 0.0],
             up: [camera.up[0], camera.up[1], camera.up[2], 0.0],
             eye: [camera.eye[0], camera.eye[1], camera.eye[2], 1.0],
-            size: [size.0 as f32, size.1 as f32],
+            size: [camera.size.0 as f32, camera.size.1 as f32],
             dt,
             frame: self.frame,
             capacity: self.capacity,

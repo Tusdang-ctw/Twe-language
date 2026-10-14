@@ -188,6 +188,30 @@ struct Shell {
     unlocked: bool,
     /// 2D or 3D, decided once after the top level runs (web3d-M6).
     dim: Dimension,
+    /// The page's canvas; its backing store follows its displayed size
+    /// (`fit_canvas`).
+    canvas: web_sys::HtmlCanvasElement,
+}
+
+/// Low-end track (G3): size the canvas's backing store to the size it
+/// is displayed at × `devicePixelRatio` (capped at 2), so a phone
+/// doesn't render 1280×960 to show it at a third of that and a HiDPI
+/// screen doesn't stretch a low-resolution frame. The quality tier's
+/// render scale then applies on top. Not in `?capture` mode, which
+/// keeps the page's fixed 1280×960 so frames compare with native ones.
+fn fit_canvas(shell: &mut Shell) {
+    let (cw, ch) = (shell.canvas.client_width(), shell.canvas.client_height());
+    if cw <= 0 || ch <= 0 {
+        return; // hidden: keep the last size
+    }
+    let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio()).clamp(1.0, 2.0);
+    let w = ((f64::from(cw) * dpr).round() as u32).max(1);
+    let h = ((f64::from(ch) * dpr).round() as u32).max(1);
+    if (w, h) != (shell.canvas.width(), shell.canvas.height()) {
+        shell.canvas.set_width(w);
+        shell.canvas.set_height(h);
+        shell.renderer.resize(w, h);
+    }
 }
 
 async fn run() -> Result<(), String> {
@@ -271,6 +295,7 @@ async fn run() -> Result<(), String> {
         gestured,
         unlocked: false,
         dim,
+        canvas: canvas.clone(),
     }));
     // web3d-M8: `?capture=N` renders N deterministic ticks (fixed dt,
     // no input) and stops, so Playwright can pixel-diff a browser frame
@@ -336,6 +361,7 @@ fn capture_web(shell: Rc<RefCell<Shell>>, frames: u32) {
 
 /// One animation frame: fixed-step simulation, then draw.
 fn frame(shell: &mut Shell) {
+    fit_canvas(shell);
     if shell.dim == Dimension::Two {
         return frame_2d(shell);
     }

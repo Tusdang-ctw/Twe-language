@@ -2093,3 +2093,33 @@ spawn Floor
     let [r, g, b] = pixel(&rgba, W / 2, H / 2);
     assert!(r > g + 60 && r > b + 60, "the loaded mesh draws: {:?}", [r, g, b]);
 }
+
+/// Low-end track (G2/G3): the `low` tier renders the scene at 70 % of
+/// the window and scales it up in the tonemap pass. The picture must
+/// be the same one — filling the whole frame, the sphere still in the
+/// middle — only softer; a scene drawn into a corner of the frame, or
+/// a black border, would differ by far more.
+#[test]
+fn low_tier_scales_the_scene_to_the_window() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    // Same frame count both times (hello_3d animates).
+    let src = std::fs::read_to_string("examples/hello_3d.twe").expect("read");
+    let ultra = render_source(&mut renderer, "hello_3d_ultra", &src);
+    let low = render_source(&mut renderer, "hello_3d_low", &(src + "\ngraphics.quality(\"low\")\n"));
+    save_png("hello_3d_low", &low);
+    assert_eq!(renderer.quality().tier, twec::kernel::quality::Tier::Low);
+    let diff: u64 = ultra
+        .iter()
+        .zip(&low)
+        .map(|(&a, &b)| u64::from(a.abs_diff(b)))
+        .sum();
+    let mean = diff as f64 / ultra.len() as f64;
+    assert!(mean < 8.0, "low tier differs from ultra by {mean:.2}/255 on average");
+    let brightness = |p: [u8; 3]| p.iter().map(|&c| u32::from(c)).sum::<u32>();
+    assert!(
+        brightness(pixel(&low, W / 2, H / 2)) > brightness(pixel(&low, 2, 2)) + 100,
+        "the lit sphere stays at the centre of the frame"
+    );
+}

@@ -1077,6 +1077,38 @@ TAA is off by default, because it trades a little sharpness for stability. Shado
 - **Screen-space limits.** Only what is on screen can be reflected: rays leaving the screen, passing behind something or turning back toward the camera fade to the environment. Rough reflections aren't blurred (they fade instead).
 - **Cost.** The main pass writes a second target (the surface's normal, roughness and reflectance) only on frames with reflections on.
 
+**Quality tiers** *(low-end track, 2026-10-14)*. A tier is the GPU budget a game runs under. The effects above are *requests*; the tier decides which of them the GPU can afford and drops the rest silently. Dropping an effect is a budget decision, not an error, so `twec verify` doesn't report it.
+
+```twe
+graphics.quality("medium")      # "low" | "medium" | "high" | "ultra" (default "ultra")
+graphics.render_scale(0.8)      # render the 3D scene at 80 % of the window per axis (0.25 – 1.0)
+print(graphics.tier())          # the tier in effect: "medium"
+```
+
+| Tier | Scene scale | Particles | Shadowed point lights | Dropped effects |
+|---|---:|---:|---:|---|
+| `ultra` | 100 % | all | 4 | none |
+| `high` | 100 % | all | 4 | volumetric fog (falls back to closed-form fog) |
+| `medium` | 85 % | ½ | 2 | SSR, volumetric fog, TAA, motion blur |
+| `low` | 70 % | ¼ | 0 | AO, SSR, volumetric fog, TAA, depth of field, motion blur |
+
+How the tiers behave:
+- **A tier never adds effects.** `high` doesn't turn bloom on; it only allows it.
+- **`ultra` is the renderer as it was before tiers existed**, so it is the default.
+- **Scene scale.** The 3D scene renders below the window's size, and the tonemap pass scales it up with bilinear filtering. The 2D HUD always draws at the window's own resolution, so text stays sharp.
+- **`graphics.render_scale`** overrides the tier's scale and keeps everything else about the tier.
+- **Particles are thinned per emission,** never to zero. They are cosmetic, so thinning them doesn't change a replay.
+- **Native builds** also read `TWE_QUALITY=low|medium|high|ultra` for games that don't choose a tier.
+
+Measured on an Intel UHD integrated GPU at 1280×720, GPU time per frame:
+
+| Scene | `ultra` | `medium` | `low` |
+|---|---:|---:|---:|
+| `examples/stress_3d.twe` | 47 ms | 38 ms | 27 ms |
+| `survive3d` | 8.4 ms | 6.5 ms | 3.4 ms |
+
+Design and measurements: `docs/changes/2026-10-14-web3d-quality-tiers.md`.
+
 ### 7.7c 3D lights and shadows  *(`twec play3d` and web builds)*
 
 ```twe
