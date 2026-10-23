@@ -76,7 +76,16 @@ serde_json = "1"
 # features = false keeps `parallel` (rayon) off, which is both correct
 # for the single-threaded VM and required for wasm. Referenced only by
 # src/physics3d.rs; the world is a no-op until a script spawns a body.
-rapier3d = { version = "0.22", default-features = false, features = ["dim3", "f32"] }
+# web3d Track D: `enhanced-determinism` makes rapier reproduce bit-identical
+# results across different CPUs / SIMD paths (assuming the surrounding code is
+# deterministic) — the prerequisite for P2P rollback netcode. It is compatible
+# here because no `simd-*` feature is enabled. Gate check:
+# tests/physics_determinism.rs.
+rapier3d = { version = "0.22", default-features = false, features = [
+    "dim3",
+    "f32",
+    "enhanced-determinism",
+] }
 # web3d (2026-10-08): KTX2 container parser for the runtime BCn upload path
 # (src/kernel/ktx2_bc.rs). Pure Rust — parses on every target; the compressed
 # upload is gated on the GPU's TEXTURE_COMPRESSION_BC feature at runtime. The
