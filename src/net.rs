@@ -155,11 +155,40 @@ struct Peer {
     last_seen_at: Instant,
 }
 
+/// web3d Track D: the datagram seam the lockstep runner needs from its
+/// transport — send a packet to a peer, receive the next pending packet
+/// (non-blocking), report the local address, and (UDP only) clone the
+/// underlying socket for STUN / reconnect. The only implementation today
+/// is `UdpSocket`; the browser WebRTC-DataChannel backend will implement
+/// the same send/recv/local_addr methods and map its peer handles onto
+/// `SocketAddr`, so it slots in here without touching the peer table or
+/// the handshake below.
+trait Transport {
+    fn send_to(&self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize>;
+    fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
+    /// UDP-only: share the socket's file descriptor for STUN address
+    /// discovery / reconnect (preserves the kernel's NAT mapping). A
+    /// non-UDP transport returns an error.
+    fn try_clone_udp(&self) -> std::io::Result<UdpSocket>;
+}
+
+impl Transport for UdpSocket {
+    fn send_to(&self, buf: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+        UdpSocket::send_to(self, buf, addr)
+    }
+    fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        UdpSocket::recv_from(self, buf)
+    }
+    fn try_clone_udp(&self) -> std::io::Result<UdpSocket> {
+        UdpSocket::try_clone(self)
+    }
+}
+
 /// Top-level multiplayer state. The whole module is a singleton —
 /// one socket, one peer table, thread-local for parity with replay.rs
 /// and to avoid threading a handle through every play-loop call.
 struct Session {
-    socket: UdpSocket,
+    socket: Box<dyn Transport>,
     /// 0 for the host, 1..=N-1 for clients. Assigned by the host on
     /// hello-ack; clients learn their id from the reply packet.
     local_peer_id: u8,
@@ -240,7 +269,7 @@ pub fn host(port: u16, expected_peers: u8) -> Result<(), String> {
     let session_id = pseudorandom_u32();
     SESSION.with(|s| {
         *s.borrow_mut() = Some(Session {
-            socket,
+            socket: Box::new(socket),
             local_peer_id: 0,
             expected_peers,
             session_id,
@@ -355,7 +384,7 @@ pub fn connect(addr: &str) -> Result<(), String> {
     };
     SESSION.with(|s| {
         *s.borrow_mut() = Some(Session {
-            socket,
+            socket: Box::new(socket),
             local_peer_id: peer_id,
             expected_peers,
             session_id,
@@ -808,7 +837,7 @@ pub fn try_reconnect(peer_id: u8, timeout_ms: u64) -> Result<bool, String> {
         };
         let sc = sess
             .socket
-            .try_clone()
+            .try_clone_udp()
             .map_err(|e| format!("net.try_reconnect: try_clone: {e}"))?;
         Ok::<_, String>((sc, addr, sess.session_id, sess.local_peer_id))
     })?;
@@ -901,7 +930,7 @@ pub fn socket_clone() -> Result<UdpSocket, String> {
             );
         };
         sess.socket
-            .try_clone()
+            .try_clone_udp()
             .map_err(|e| format!("net.socket_clone: try_clone: {e}"))
     })
 }
@@ -1399,6 +1428,8 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .socket
+                .try_clone_udp()
+                .unwrap()
                 .local_addr()
                 .unwrap()
                 .port()
@@ -1456,6 +1487,8 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .socket
+                .try_clone_udp()
+                .unwrap()
                 .local_addr()
                 .unwrap()
                 .port()
@@ -1491,6 +1524,8 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .socket
+                .try_clone_udp()
+                .unwrap()
                 .local_addr()
                 .unwrap()
                 .port()
