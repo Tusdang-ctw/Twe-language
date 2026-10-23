@@ -220,7 +220,17 @@ pub struct AutoQuality {
     over: f32,
     under: f32,
     since_drop: f32,
+    /// Seconds left in the post-change settle window (see `SETTLE_SECS`).
+    settle: f32,
 }
+
+/// Low-end track: how long to ignore load after a budget change. Changing
+/// the budget reallocates every full-size GPU target, and some browsers
+/// stall for a moment while they free the old ones. That transient says
+/// nothing about steady-state cost, so reading it as real load would
+/// cascade the budget to its floor and recover only slowly. Tunable:
+/// confirm against a `chrome://tracing` capture across a switch.
+const SETTLE_SECS: f32 = 1.0;
 
 impl AutoQuality {
     /// Aim for `target_fps` (60 unless the display is known to differ).
@@ -235,6 +245,7 @@ impl AutoQuality {
             over: 0.0,
             under: 0.0,
             since_drop: f32::INFINITY,
+            settle: 0.0,
         }
     }
 
@@ -256,6 +267,17 @@ impl AutoQuality {
             return false;
         }
         let dt = interval;
+        // Low-end track: inside the settle window after a budget change,
+        // ignore load entirely — the realloc transient says nothing about
+        // steady-state cost. Hold the average at the target so the window
+        // ends on a clean slate rather than the spike it was absorbing.
+        if self.settle > 0.0 {
+            self.settle -= dt;
+            self.ema = self.target;
+            self.over = 0.0;
+            self.under = 0.0;
+            return false;
+        }
         self.ema += (dt - self.ema) * 0.1;
         self.since_drop += dt;
         if self.ema > self.target * 1.2 {
@@ -282,18 +304,21 @@ impl AutoQuality {
             } else {
                 return false;
             }
+            self.settle = SETTLE_SECS;
             return true;
         }
         if self.under >= 3.0 && self.since_drop >= 10.0 {
             self.under = 0.0;
             if self.scale < 1.0 {
                 self.scale = (self.scale + 0.05).min(1.0);
+                self.settle = SETTLE_SECS;
                 return true;
             }
             if self.tier < self.ceiling {
                 if let Some(higher) = self.step(1) {
                     self.tier = higher;
                     self.scale = 0.5;
+                    self.settle = SETTLE_SECS;
                     return true;
                 }
             }
@@ -407,6 +432,26 @@ mod tests {
         // ...then it climbs back, but not past High.
         run(&mut g, 1.0 / 60.0, 300.0);
         assert_eq!(g.quality(), Quality::tier(Tier::High));
+    }
+
+    #[test]
+    fn settle_window_absorbs_the_post_change_transient() {
+        let mut g = AutoQuality::new(Tier::Ultra, 60.0);
+        // Drive it just past its first drop.
+        run(&mut g, 1.0 / 30.0, 1.0);
+        let after_first = g.quality();
+        assert!(after_first.render_scale < 1.0);
+        // The realloc transient right after a change — a short burst of
+        // very slow frames — must not cascade the budget further while the
+        // settle window is open.
+        for _ in 0..5 {
+            g.update(0.1);
+        }
+        assert_eq!(
+            g.quality(),
+            after_first,
+            "slow frames inside the settle window are ignored"
+        );
     }
 
     #[test]
