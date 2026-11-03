@@ -19,6 +19,10 @@
 // --timeline also prints the frame rate for every second from page load
 // (warmup included), to see transients such as the quality governor
 // settling (G5).
+//
+// --keys "2:Enter,4:Space" presses keys at seconds after load (Lanternfall
+// G8: through the title's Play and off the barge, so a measurement is of
+// a round in play, not the title).
 
 import { createServer } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -92,6 +96,14 @@ try {
   });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   await page.goto(url);
+  // Scheduled key presses, alongside the measurement below.
+  const presses = (opt("keys", "") || "")
+    .split(",")
+    .filter(Boolean)
+    .map((k) => k.split(":"))
+    .map(([at, key]) =>
+      new Promise((ok) => setTimeout(() => page.keyboard.press(key).catch(() => {}).then(ok), Number(at) * 1000)),
+    );
   const timeline = args.includes("--timeline");
   const result = await page.evaluate(
     async ({ warmup, seconds, timeline }) => {
@@ -147,6 +159,7 @@ try {
     },
     { warmup, seconds, timeline },
   );
+  await Promise.all(presses);
   console.log(
     `${target}: ${result.fps.toFixed(1)} fps, ${result.msPerFrame.toFixed(2)} ms/frame ` +
       `(window ${width}x${height}, canvas ${result.pixels}, ${seconds}s after ${warmup}s, vsync ${args.includes("--vsync") ? "on" : "off"}, gpu ${result.gpu})`,

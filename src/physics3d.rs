@@ -95,6 +95,13 @@ pub struct PhysicsWorld {
     multibody_joints: MultibodyJointSet,
     ccd_solver: CCDSolver,
     query_pipeline: QueryPipeline,
+    /// Lanternfall G8: colliders were added or removed since the query
+    /// pipeline was last brought up to date. A step brings it up to
+    /// date incrementally; `raycast` / `character_move` rebuild it only
+    /// when this is set — rebuilding is a full BVH rebuild over every
+    /// collider, which on every call cost Lanternfall's 31 rivals
+    /// ~0.6 ms a tick against the island's ~600 colliders.
+    queries_stale: bool,
     /// Twe-side handle (u32) → rapier RigidBodyHandle. Scripts
     /// pass the u32 around; we look up the rapier handle here.
     handles: HashMap<u32, RigidBodyHandle>,
@@ -133,6 +140,7 @@ impl PhysicsWorld {
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             query_pipeline: QueryPipeline::new(),
+            queries_stale: true,
             handles: HashMap::new(),
             collider_to_twe: HashMap::new(),
             joints: HashMap::new(),
@@ -166,6 +174,9 @@ impl PhysicsWorld {
             &physics_hooks,
             &event_handler,
         );
+        // The step updated the query pipeline incrementally (every
+        // collider inserted, moved or removed since the last one).
+        self.queries_stale = false;
         // Drain the global event queue and translate rapier handles
         // into Twe-side u32 handles. Events whose colliders aren't
         // in `collider_to_twe` (despawned bodies, foreign colliders
@@ -216,6 +227,7 @@ impl PhysicsWorld {
         let coll_h = self
             .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
+        self.queries_stale = true;
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
         Ok(twe)
@@ -235,6 +247,7 @@ impl PhysicsWorld {
         let coll_h = self
             .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
+        self.queries_stale = true;
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
         twe
@@ -251,6 +264,7 @@ impl PhysicsWorld {
         let coll_h = self
             .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
+        self.queries_stale = true;
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
         twe
@@ -284,6 +298,7 @@ impl PhysicsWorld {
         let coll_h = self
             .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
+        self.queries_stale = true;
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
         Ok(twe)
@@ -315,6 +330,7 @@ impl PhysicsWorld {
         let coll_h = self
             .colliders
             .insert_with_parent(collider, body_h, &mut self.bodies);
+        self.queries_stale = true;
         let twe = self.allocate_handle(body_h);
         self.collider_to_twe.insert(coll_h, twe);
         twe
@@ -330,7 +346,7 @@ impl PhysicsWorld {
         max_dist: f32,
     ) -> Option<(u32, [f32; 3], f32)> {
         // Ensure the broad-phase index is current before querying.
-        self.query_pipeline.update(&self.colliders);
+        self.fresh_queries();
         let ray = Ray::new(
             Point::new(origin[0], origin[1], origin[2]),
             vector![direction[0], direction[1], direction[2]],
@@ -441,11 +457,8 @@ impl PhysicsWorld {
         };
         let desired_v = vector![desired[0] * dt, desired[1] * dt, desired[2] * dt];
         let filter = QueryFilter::default().exclude_collider(collider_handle);
-        // Update the query pipeline so the controller sees the
-        // current world state. The pipeline.step() already does
-        // this internally on its own pass; doing it again here is
-        // cheap and ensures KCC's queries are fresh.
-        self.query_pipeline.update(&self.colliders);
+        // The controller must see colliders added since the last step.
+        self.fresh_queries();
         let movement = self.character_controller.move_shape(
             dt,
             &self.bodies,
@@ -489,6 +502,7 @@ impl PhysicsWorld {
 
     pub fn despawn(&mut self, handle: u32) -> bool {
         if let Some(rh) = self.handles.remove(&handle) {
+            self.queries_stale = true;
             // Clean up the reverse collider→twe map for any
             // colliders this body owned; otherwise stale entries
             // accumulate across long-running games.
@@ -599,6 +613,15 @@ impl PhysicsWorld {
 
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Bring the query pipeline up to date if colliders were added or
+    /// removed since it last was (see `queries_stale`).
+    fn fresh_queries(&mut self) {
+        if self.queries_stale {
+            self.query_pipeline.update(&self.colliders);
+            self.queries_stale = false;
+        }
     }
 }
 

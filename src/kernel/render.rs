@@ -483,7 +483,9 @@ pub struct ShadowUniform {
     /// xyz = view-space z thresholds: pixels with view_z < x use
     /// cascade 0; < y use cascade 1; otherwise cascade 2. w pad.
     pub split_distances: [f32; 4],
-    /// xyz unused, w = 1.0 if shadows are enabled this frame.
+    /// x = 1.0 for the cheap 4-tap sun-shadow filter instead of soft
+    /// (PCSS) shadows (`Quality::soft_shadows` off); yz unused; w = 1.0
+    /// if shadows are enabled this frame.
     pub flags: [f32; 4],
     /// web3d-M7, per cascade: (world units across the map, light-space
     /// depth range in world units, _, _), for soft-shadow sizing.
@@ -931,6 +933,18 @@ fn sample_shadow(world_pos: vec3<f32>, view_z: f32, n: vec3<f32>, frag: vec2<f32
         return 1.0;
     }
     let receiver = suv.z - 0.5 * texel_world / depth_range;
+
+    // Lanternfall G8: the cheap filter (lower quality tiers): four
+    // hardware-filtered compares a texel apart — a fixed soft edge for
+    // 4 taps instead of up to 32.
+    if (shadow_u.flags.x > 0.5) {
+        let o = 0.75 / dim.x;
+        var lit4 = textureSampleCompareLevel(t_shadow, s_shadow, suv.xy + vec2<f32>(-o, -o), cascade, receiver);
+        lit4 = lit4 + textureSampleCompareLevel(t_shadow, s_shadow, suv.xy + vec2<f32>(o, -o), cascade, receiver);
+        lit4 = lit4 + textureSampleCompareLevel(t_shadow, s_shadow, suv.xy + vec2<f32>(-o, o), cascade, receiver);
+        lit4 = lit4 + textureSampleCompareLevel(t_shadow, s_shadow, suv.xy + vec2<f32>(o, o), cascade, receiver);
+        return lit4 * 0.25;
+    }
 
     var disk = array<vec2<f32>, 16>(
         vec2<f32>(-0.9420, -0.3991), vec2<f32>(0.9456, -0.7689),
@@ -5804,7 +5818,10 @@ impl Renderer {
             near,
             far,
         };
-        let shadow_uniform = compute_shadow_uniform(&lights_uniform, &cascade_camera, snap.shadow);
+        let mut shadow_uniform = compute_shadow_uniform(&lights_uniform, &cascade_camera, snap.shadow);
+        if !state.quality.soft_shadows {
+            shadow_uniform.flags[0] = 1.0;
+        }
         state
             .queue
             .write_buffer(&state.shadow_buffer, 0, bytemuck::bytes_of(&shadow_uniform));

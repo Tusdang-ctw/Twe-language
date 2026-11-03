@@ -57,6 +57,11 @@ pub struct Quality {
     pub particle_density: f32,
     /// Point / spot lights that may cast shadows at once.
     pub point_shadows: usize,
+    /// Lanternfall G8: contact-hardening soft sun shadows (PCSS: a
+    /// 16-tap blocker search plus a 16-tap filter per shadowed pixel).
+    /// Off, the sun's shadow is a fixed 4-tap filtered edge — on an
+    /// integrated GPU the soft filter was ~2.7 ms of a 12 ms frame.
+    pub soft_shadows: bool,
     pub ao: bool,
     /// Full-resolution pixels per ambient-occlusion texel per axis:
     /// 2 (half resolution) or 4 (quarter).
@@ -76,6 +81,7 @@ impl Quality {
             render_scale: 1.0,
             particle_density: 1.0,
             point_shadows: 4,
+            soft_shadows: true,
             ao: true,
             ao_downsample: 2,
             ssr: true,
@@ -95,26 +101,28 @@ impl Quality {
                 ..ultra
             },
             // Medium: an integrated GPU at 1080p. Half the particles, two
-            // shadowed lights, quarter-resolution AO, no SSR /
-            // volumetrics / TAA, 85 % scale.
+            // shadowed lights, hard-edged (4-tap) sun shadows,
+            // quarter-resolution AO, no SSR / volumetrics / TAA, 85 % scale.
             Tier::Medium => Quality {
                 render_scale: 0.85,
                 ao_downsample: 4,
                 particle_density: 0.5,
                 point_shadows: 2,
+                soft_shadows: false,
                 ssr: false,
                 volumetric_fog: false,
                 taa: false,
                 motion_blur: false,
                 ..ultra
             },
-            // Low: weak integrated / mobile GPUs. Sun shadows only, no
+            // Low: weak integrated / mobile GPUs. Hard sun shadows only, no
             // screen-space effects apart from bloom, a quarter of the
             // particles, 70 % scale.
             Tier::Low => Quality {
                 render_scale: 0.7,
                 particle_density: 0.25,
                 point_shadows: 0,
+                soft_shadows: false,
                 ao: false,
                 ao_downsample: 4,
                 ssr: false,
@@ -199,11 +207,21 @@ pub fn starting_tier(device: wgpu::DeviceType) -> Tier {
 /// With vsync the interval sits at the display's refresh period while
 /// the GPU keeps up, so the governor can't see headroom directly:
 /// - **Down, fast.** When the smoothed interval stays over 1.2× the
-///   target for half a second, the render scale drops 0.1. Below 0.5 of
-///   the tier's own scale it steps down a tier.
+///   target for half a second, the render scale drops 0.1. Below
+///   `TIER_FLOOR` of the tier's own scale it steps down a tier instead
+///   (on the lowest tier the scale may fall to 0.5): a cheaper tier at a
+///   sharp resolution looks better than a dear one at a blurry one, and
+///   each change reallocates the GPU's targets, so fewer steps stutter
+///   less (Lanternfall G8: on the Intel iGPU `high` at 50 % lost to
+///   `medium` at 85 % on both looks and frame time).
+///   Frames only a little late — over 1.08× the target for two seconds,
+///   the 50–57 fps judder of a GPU that just misses — count as slow too.
 /// - **Up, slowly.** After three seconds at the target it probes 0.05
 ///   up. It never probes within ten seconds of a step down, so it
-///   doesn't oscillate on a scene that only just fits.
+///   doesn't oscillate on a scene that only just fits; and it probes a
+///   higher *tier* only after `tier_hold` seconds, which doubles each
+///   time it has to step a tier down again (each change stutters while
+///   the GPU's targets reallocate).
 ///
 /// Off in `?capture` mode and in tests and benchmarks: hosts create it
 /// only for live, interactive frames.
@@ -219,7 +237,13 @@ pub struct AutoQuality {
     ema: f32,
     over: f32,
     under: f32,
+    /// Seconds the frames have been a little late (see the doc above).
+    late: f32,
     since_drop: f32,
+    /// Seconds since the last tier step down before a higher tier is
+    /// probed again.
+    tier_hold: f32,
+    since_tier_drop: f32,
     /// Seconds left in the post-change settle window (see `SETTLE_SECS`).
     settle: f32,
 }
@@ -231,6 +255,10 @@ pub struct AutoQuality {
 /// cascade the budget to its floor and recover only slowly. Tunable:
 /// confirm against a `chrome://tracing` capture across a switch.
 const SETTLE_SECS: f32 = 1.0;
+
+/// The lowest fraction of a tier's own render scale the governor uses
+/// before stepping down a tier (see [`AutoQuality`]).
+const TIER_FLOOR: f32 = 0.8;
 
 impl AutoQuality {
     /// Aim for `target_fps` (60 unless the display is known to differ).
@@ -244,7 +272,10 @@ impl AutoQuality {
             ema: target,
             over: 0.0,
             under: 0.0,
+            late: 0.0,
             since_drop: f32::INFINITY,
+            tier_hold: 10.0,
+            since_tier_drop: f32::INFINITY,
             settle: 0.0,
         }
     }
@@ -276,10 +307,17 @@ impl AutoQuality {
             self.ema = self.target;
             self.over = 0.0;
             self.under = 0.0;
+            self.late = 0.0;
             return false;
         }
         self.ema += (dt - self.ema) * 0.1;
         self.since_drop += dt;
+        self.since_tier_drop += dt;
+        if self.ema > self.target * 1.08 {
+            self.late += dt;
+        } else {
+            self.late = 0.0;
+        }
         if self.ema > self.target * 1.2 {
             self.over += dt;
             self.under = 0.0;
@@ -290,17 +328,25 @@ impl AutoQuality {
             self.over = 0.0;
             self.under = 0.0;
         }
-        if self.over >= 0.5 {
+        if self.over >= 0.5 || self.late >= 2.0 {
             self.over = 0.0;
+            self.late = 0.0;
             self.since_drop = 0.0;
             // Start the next judgement from the target, not the bad
             // average this step is answering.
             self.ema = self.target;
-            if self.scale > 0.55 {
-                self.scale = (self.scale - 0.1).max(0.5);
+            let floor = if self.step(-1).is_some() { TIER_FLOOR } else { 0.5 };
+            if self.scale > floor + 0.05 {
+                self.scale = (self.scale - 0.1).max(floor);
             } else if let Some(lower) = self.step(-1) {
                 self.tier = lower;
                 self.scale = 1.0;
+                // A tier it had climbed back to and lost again: wait
+                // twice as long before the next try.
+                if self.since_tier_drop.is_finite() {
+                    self.tier_hold = (self.tier_hold * 2.0).min(320.0);
+                }
+                self.since_tier_drop = 0.0;
             } else {
                 return false;
             }
@@ -314,10 +360,10 @@ impl AutoQuality {
                 self.settle = SETTLE_SECS;
                 return true;
             }
-            if self.tier < self.ceiling {
+            if self.tier < self.ceiling && self.since_tier_drop >= self.tier_hold {
                 if let Some(higher) = self.step(1) {
                     self.tier = higher;
-                    self.scale = 0.5;
+                    self.scale = TIER_FLOOR;
                     self.settle = SETTLE_SECS;
                     return true;
                 }
@@ -418,6 +464,79 @@ mod tests {
         run(&mut g, 1.0 / 30.0, 60.0);
         assert_eq!(g.quality().tier, Tier::Low);
         assert!(g.quality().render_scale >= Quality::tier(Tier::Low).render_scale * 0.5 - 1e-6);
+    }
+
+    #[test]
+    fn governor_steps_down_a_tier_before_the_scale_gets_blurry() {
+        let mut g = AutoQuality::new(Tier::High, 60.0);
+        let mut seen = Vec::new();
+        for _ in 0..400 {
+            g.update(1.0 / 30.0);
+            let q = g.quality();
+            if seen.last() != Some(&(q.tier, q.render_scale)) {
+                seen.push((q.tier, q.render_scale));
+            }
+            if q.tier == Tier::Medium {
+                break;
+            }
+        }
+        // High: 100 %, 90 %, 80 %, then Medium — never High under 80 %.
+        assert_eq!(seen.last().map(|s| s.0), Some(Tier::Medium));
+        for (tier, scale) in &seen {
+            if *tier == Tier::High {
+                assert!(*scale >= 0.8 - 1e-6, "High at {scale}");
+            }
+        }
+    }
+
+    /// Run `secs` seconds of frames whose interval depends on the
+    /// budget, as a GPU's does.
+    fn run_on(g: &mut AutoQuality, gpu: impl Fn(Quality) -> f32, secs: f32) {
+        let mut t = 0.0;
+        while t < secs {
+            let interval = gpu(g.quality());
+            g.update(interval);
+            t += interval;
+        }
+    }
+
+    /// A GPU that manages `high_fps` on High (at any scale) and 60 on
+    /// anything cheaper.
+    fn igpu(high_fps: f32) -> impl Fn(Quality) -> f32 {
+        move |q: Quality| if q.tier >= Tier::High { 1.0 / high_fps } else { 1.0 / 60.0 }
+    }
+
+    #[test]
+    fn frames_a_little_late_step_down_too() {
+        // 55 fps against a 60 fps target: never 1.2x late, but judder.
+        let mut g = AutoQuality::new(Tier::High, 60.0);
+        run_on(&mut g, igpu(55.0), 20.0);
+        assert_eq!(g.quality().tier, Tier::Medium);
+    }
+
+    #[test]
+    fn a_tier_that_keeps_failing_is_retried_less_often() {
+        let mut g = AutoQuality::new(Tier::High, 60.0);
+        // Too slow on High: down to Medium, and it stays put there.
+        run_on(&mut g, igpu(40.0), 8.0);
+        assert_eq!(g.quality().tier, Tier::Medium);
+        // It retries High after the first hold (10 s), fails, drops...
+        let mut changes = 0;
+        let mut last = g.quality().tier;
+        let mut t = 0.0;
+        while t < 120.0 {
+            let dt = igpu(40.0)(g.quality());
+            g.update(dt);
+            t += dt;
+            if g.quality().tier != last {
+                last = g.quality().tier;
+                changes += 1;
+            }
+        }
+        // ...and each retry waits twice as long (10, 20, 40, 80 s): a
+        // handful of tier changes in two minutes, not one every ten seconds.
+        assert!((1..=6).contains(&changes), "{changes} tier changes");
+        assert_eq!(g.quality().tier, Tier::Medium);
     }
 
     #[test]

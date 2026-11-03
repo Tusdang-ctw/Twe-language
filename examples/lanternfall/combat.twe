@@ -402,6 +402,21 @@ function shake_near(at, amount, duration):
     if k > 0.0:
         shake_screen(amount * k, duration)
 
+# The keeper (set by the main file), for what only it should feel.
+var keeper = nil
+
+# A beat of hit-stop. It freezes the whole game, so only for what the
+# keeper did (`yours`) or what lands within `reach` metres of it — never
+# for two rivals brawling across the island.
+function stop_if_yours(seconds, yours, at, reach):
+    var near = false
+    if keeper != nil and reach > 0.0:
+        let dx = at.x - keeper.pos.x
+        let dz = at.z - keeper.pos.z
+        near = dx * dx + dz * dz < reach * reach
+    if yours or near:
+        fx.hit_stop(seconds)
+
 # The screen shakes by the settings' amount (0 turns it off).
 var shake_scale = 1.0
 
@@ -473,6 +488,7 @@ function hitscan(shooter, origin, dir, range, damage, color, width):
 function swing(who, damage, yaw):
     let fx_dir = vec3(math.sin(yaw), 0.0, math.cos(yaw))
     var hit_any = false
+    var hit_you = false
     for a in actors:
         if a != who and a.alive:
             let to = a.pos - who.pos
@@ -483,10 +499,12 @@ function swing(who, damage, yaw):
                     hurt(a, damage, who, a.pos)
                     a.push = vec3(to.x / d, 0.0, to.z / d) * 9.0
                     hit_any = true
+                    if a.team == 1:
+                        hit_you = true
     if hit_any:
         spawn Sparks at who.pos + fx_dir * 1.2 + vec3(0, 1.0, 0)
         shake_near(who.pos, 4.0, 0.12)
-        fx.hit_stop(0.03)
+        stop_if_yours(0.03, who.team == 1 or hit_you, who.pos, 0.0)
 
 # A lobbed shell, on a ballistic arc that lands at `target`.
 entity Shell:
@@ -547,7 +565,7 @@ function explode(at, owner, radius, damage):
     ring.radius = radius
     flash(at + vec3(0, 1.5, 0), (3.0, 1.6, 0.7), radius * 4.0, 0.35)
     shake_near(at, 9.0, 0.3)
-    fx.hit_stop(0.04)
+    stop_if_yours(0.04, owner != nil and owner.team == 1, at, radius + 2.0)
 
 # ---------------------------------------------------------------
 # Starcall: a star falls where you point, 1.2 s after you call it.
@@ -573,7 +591,7 @@ entity Star:
         if age >= delay:
             explode(target, owner, 5.5, 95.0)
             shake_near(target, 14.0, 0.5)
-            fx.hit_stop(0.07)
+            stop_if_yours(0.07, owner != nil and owner.team == 1, target, 8.0)
             despawn self
 
 particles StarTrail:

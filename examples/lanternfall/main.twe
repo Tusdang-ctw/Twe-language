@@ -363,6 +363,8 @@ function open_gate():
     hud.banner("THE SIGNAL VAULT IS OPEN", (0.75, 0.55, 1.0))
     combat.flash(vec3(0, 3.0, 11.0), (2.0, 1.2, 3.0), 18.0, 0.8)
 
+combat.keeper = me
+
 # The keeper's own gun in hand, made once.
 let my_gun = spawn loot.HeldGun at me.pos
 my_gun.owner = me

@@ -1157,8 +1157,8 @@ print(graphics.tier())          # the tier in effect: "medium"
 - software rasterisers on `low`.
 
 How it moves:
-- **Down, fast.** When the frame interval stays above 1.2× the 60 fps target (or the monitor's refresh, if lower) for half a second, it lowers the render scale by 0.1. Below half the tier's own scale, it steps down a tier.
-- **Up, slowly.** After three seconds on target, it probes back up 0.05. It never probes within ten seconds of a step down, and never above the tier it started on.
+- **Down, fast.** When the frame interval stays above 1.2× the 60 fps target (or the monitor's refresh, if lower) for half a second, or above 1.08× for two seconds (the judder of a GPU that only just misses), it lowers the render scale by 0.1. Below 80 % of the tier's own scale it steps down a tier instead (on `low`, the scale may fall to 50 %): a cheaper tier at a sharp resolution looks better than a dearer one blurred, and every change stutters while the GPU's targets reallocate.
+- **Up, slowly.** After three seconds on target, it probes back up 0.05. It never probes within ten seconds of a step down, and never above the tier it started on. It retries a higher tier only after a hold (10 s at first) that doubles each time that tier fails again, so a scene that only just fits doesn't bounce between tiers.
 - **What it ignores.** Hitches over a quarter of a second, such as a tab switch or an asset load.
 
 Tests, benchmarks, `?capture` and headless renders don't run the governor and render on `ultra`. Any explicit choice switches the governor off: `graphics.quality(tier)`, `graphics.render_scale`, or `TWE_QUALITY`. The browser console logs each change as `twe: quality <tier> at <n>% scale`; natively, `TWE_QUALITY_LOG=1` prints them.
@@ -1167,8 +1167,8 @@ Tests, benchmarks, `?capture` and headless renders don't run the governor and re
 |---|---:|---:|---:|---|
 | `ultra` | 100 % | all | 4 | none |
 | `high` | 100 % | all | 4 | volumetric fog (falls back to closed-form fog) |
-| `medium` | 85 % | ½ | 2 | SSR, volumetric fog, TAA, motion blur; AO at quarter resolution |
-| `low` | 70 % | ¼ | 0 | AO, SSR, volumetric fog, TAA, depth of field, motion blur |
+| `medium` | 85 % | ½ | 2 | SSR, volumetric fog, TAA, motion blur; AO at quarter resolution; sun shadows hard-edged (4 taps, not PCSS) |
+| `low` | 70 % | ¼ | 0 | AO, SSR, volumetric fog, TAA, depth of field, motion blur; sun shadows hard-edged |
 
 How the tiers behave:
 - **A tier never adds effects.** `high` doesn't turn bloom on; it only allows it.

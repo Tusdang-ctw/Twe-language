@@ -4267,6 +4267,23 @@ fn find_method(class: &ClassDef, name: &str) -> Option<Rc<MethodDef>> {
     class.parent.as_ref().and_then(|p| find_method(p, name))
 }
 
+/// `Class.method` for a profiler scope: the receiver's class, and the
+/// name its method table (or a parent's) holds `method` under.
+fn method_label(recv: &Value, method: &MethodDef) -> String {
+    if !recv.is_instance() {
+        return "method".to_string();
+    }
+    let class = recv.as_instance().borrow().class.clone();
+    let mut c = Some(class.clone());
+    while let Some(k) = c {
+        if let Some((name, _)) = k.methods.iter().find(|(_, m)| std::ptr::eq(m.as_ref(), method)) {
+            return format!("{}.{name}", class.name);
+        }
+        c = k.parent.clone();
+    }
+    format!("{}.?", class.name)
+}
+
 fn call_method(
     env: &mut Env,
     recv: Value,
@@ -4276,7 +4293,13 @@ fn call_method(
     line: u32,
     col: u32,
 ) -> Result<Value, RuntimeError> {
-    let _profile = crate::profile::scope("method");
+    // Lanternfall G8: name the scope `Class.method` (looked up only
+    // while profiling, so the fast path pays nothing).
+    let _profile = if crate::profile::is_enabled() {
+        Some(crate::profile::Scope::new(method_label(&recv, method)))
+    } else {
+        None
+    };
     let bound = if kwargs.is_empty() {
         if args.len() != method.params.len() {
             return Err(RuntimeError {

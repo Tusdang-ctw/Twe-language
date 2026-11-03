@@ -736,3 +736,125 @@ fn the_menus_render() {
     g.run(150, &[], &[]);
     shot(&mut g, "results");
 }
+
+/// G8: where a tick and a frame's CPU time go, mid-round with everyone
+/// landed. `cargo test --release --test lanternfall -- --ignored perf --nocapture`.
+#[test]
+#[ignore]
+fn perf_breakdown() {
+    let mut g = Game::new();
+    // Everyone leaps and lands; the round runs a while.
+    g.run(60 * 50, &[], &["space"]);
+    eprintln!("frozen in the first 50 s: {:.0} of 3000 ticks", 3000.0 - g.env.sim_time / DT);
+    let n = 600;
+    let sim0 = g.env.sim_time;
+    let t = std::time::Instant::now();
+    g.run(n, &[], &[]);
+    let tick = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+    // Ticks the game stood frozen (hit-stop) out of the n.
+    let frozen = n as f64 - (g.env.sim_time - sim0) / DT;
+    eprintln!("frozen by hit-stop: {frozen:.0} of {n} ticks");
+    // The same ticks again under the profiler: inclusive time per
+    // function / method, per tick (the profiler adds its own overhead).
+    twec::profile::enable();
+    g.run(n, &[], &[]);
+    twec::profile::disable();
+    let trace = std::path::Path::new("target/lanternfall/perf_trace.json");
+    twec::profile::dump_to_path(trace).expect("trace");
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(trace).unwrap()).unwrap();
+    let mut by: std::collections::HashMap<String, (f64, u64)> = Default::default();
+    for e in doc["traceEvents"].as_array().unwrap() {
+        let name = e["name"].as_str().unwrap_or("?").to_string();
+        let d = e["dur"].as_f64().unwrap_or(0.0);
+        let slot = by.entry(name).or_default();
+        slot.0 += d;
+        slot.1 += 1;
+    }
+    let mut rows: Vec<_> = by.into_iter().collect();
+    rows.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap());
+    for (name, (us, count)) in rows.iter().take(30) {
+        eprintln!("  {:>8.3} ms/tick  {:>7} calls/tick  {name}", us / 1000.0 / n as f64, count / n as u64);
+    }
+    let frames = 300;
+    let t = std::time::Instant::now();
+    for _ in 0..frames {
+        twec::eval::render_frame3d(&mut g.env).expect("frame");
+    }
+    let frame = t.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+    let hud = g.env.top_on_render.take();
+    let t = std::time::Instant::now();
+    for _ in 0..frames {
+        twec::eval::render_frame3d(&mut g.env).expect("frame");
+    }
+    let looks = t.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+    g.env.top_on_render = hud;
+    let stage = g.probe("stage");
+    let alive = g.probe("alive_count()");
+    let cache = g.env.look_cache.as_ref().unwrap();
+    let shared: usize = cache.shared.iter().map(|s| s.1.len()).sum();
+    eprintln!(
+        "stage {} alive {} | tick {tick:.2} ms | frame cpu {frame:.2} ms (looks {looks:.2}, hud {:.2}) | entities {} tickable {} | looks own {} shared {} in {} classes | draws {}",
+        stage,
+        alive,
+        frame - looks,
+        g.env.active_entities.len(),
+        g.env.tickable_entities.len(),
+        cache.own.len(),
+        shared,
+        cache.shared.len(),
+        g.env.render_queue3d.len()
+    );
+}
+
+/// G8: a frame's renderer cost, mid-round. Run with `TWE_GPU_POWER=low`
+/// (the integrated GPU) and `TWE_GPU_PROFILE=1` for per-pass GPU times:
+/// `cargo test --release --test lanternfall -- --ignored perf_render --nocapture`.
+#[test]
+#[ignore]
+fn perf_render() {
+    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 720)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    let mut g = Game::new();
+    g.input.set_view(960, 720);
+    g.exec("graphics.quality(\"high\")");
+    g.run(60 * 50, &[], &["space"]);
+    // An experiment to apply first (a Twe snippet), e.g. "postfx.ao(0.0)".
+    if let Ok(src) = std::env::var("PERF_EXEC") {
+        g.exec(&src.replace("\\n", "\n"));
+    }
+    let mut assets = twec::play3d::NativeAssets::default();
+    for _ in 0..300 {
+        twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+        if assets.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Warm, then time frames with a tick between each (as when playing).
+    for _ in 0..30 {
+        g.run(1, &[], &[]);
+        twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+    }
+    let n = 120;
+    let mut script = 0.0;
+    let mut kernel = 0.0;
+    let t = std::time::Instant::now();
+    for _ in 0..n {
+        g.run(1, &[], &[]);
+        let times = twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+        script += times.script_ms;
+        kernel += times.kernel_ms;
+    }
+    let wall = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+    eprintln!(
+        "frame wall {wall:.2} ms (incl. tick) | script render {:.2} ms | kernel {:.2} ms | draws {}",
+        script / n as f64,
+        kernel / n as f64,
+        g.env.render_queue3d.len(),
+    );
+}
