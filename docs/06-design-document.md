@@ -1195,6 +1195,7 @@ light.cone(torch, vec3(0, -1, 0), 30)     # a spot light: direction, half-angle 
 light.remove(torch)
 light.clear()                             # remove every point light
 light.fog(0.05, 0.3, (0.7, 0.75, 0.8))    # height fog: density, falloff, colour; density 0 = off
+light.background((0.02, 0.03, 0.08))      # Lanternfall E6: the colour behind the scene (a night sky); plain fog fades toward it
 light.volumetric(true)                    # light the fog per point: shafts, halos
 light.environment("assets/sky.hdr", 1.0)  # image-based lighting from an HDR sky; intensity 0 = off
 ```
@@ -1319,7 +1320,18 @@ fx.ground_shockwave(at: pos, radius: 60.0)
 Determinism contract:
 - **Visual fx** (everything except `hit_stop` and `screen_shake`) decay on wall-clock `frame_dt` since they are render-only and never observed by scripts. Replay of the same input may render minor per-frame variations in their appearance but gameplay state is unchanged.
 - **`fx.hit_stop(duration)`** counts in physics ticks: `ceil(duration / time.physics_dt)`. Each scheduled tick is consumed inside the play loop's substep accumulator before `tick_frame` runs; the substep is skipped (`accumulator` still drains, so wall-clock doesn't accumulate a backlog). Replay sees the same number of skipped substeps regardless of host FPS.
-- **`fx.screen_shake(amount, duration)`** delegates to the same internal state as the older `camera.shake(...)`. `fx.screen_shake` is the new canonical surface (P2: one obvious way); `camera.shake` remains for backwards compatibility. Stacking semantics: max amplitude wins, max remaining duration wins.
+- **`fx.screen_shake(amount, duration)`** delegates to the same internal state as the older `camera.shake(...)`. `fx.screen_shake` is the new canonical surface (P2: one obvious way); `camera.shake` remains for backwards compatibility. Stacking semantics: max amplitude wins, max remaining duration wins. *(Lanternfall E2)* The shake's noise has its own stream: it no longer draws from `random.*`, which made a shaking game's random numbers depend on the display's frame rate.
+
+**In 3D games** *(Lanternfall E2)*:
+- **The same calls work,** with the same meanings.
+- **Positions.** Give an effect a `vec3` position and it is anchored to that world point: drawn on the HUD where the point projects each frame (and hidden while it is behind the camera), so a damage number stays over the enemy it was dealt to as the camera moves. A 2-tuple position is a HUD point, as in 2D.
+  ```twe
+  fx.damage_number(enemy.pos + vec3(0, 2, 0), 42, color.red)
+  ```
+- **Shake.** `fx.screen_shake` moves the camera along its right and up axes, scaled so `amount` is in HUD units at the target's distance. `camera.project` includes the frame's shake, since it is for drawing; `camera.ray` / `camera.ground_point` don't, so aim stays steady.
+- **Hit-stop.** `fx.hit_stop` freezes whole simulation ticks: no physics, no script, and no input taken (presses wait for the next real tick).
+- **Pause.** Physics also holds still while the game is paused, unless a persistent state keeps the world running.
+- **`fx.hit_flash`** draws a 2D rectangle. For a 3D model's flash, use the look's `glow:` (§4.9a).
 
 Reference example: `examples/fx_demo.twe`.
 

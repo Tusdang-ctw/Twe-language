@@ -162,6 +162,21 @@ pub fn clear_asset_caches() {
     clear_camera2d_state();
 }
 
+thread_local! {
+    /// Lanternfall E2: the screen-shake noise stream (splitmix64 state).
+    static SHAKE_RNG: std::cell::Cell<u64> = const { std::cell::Cell::new(0x5EED_5A4E_0F15_C0DE) };
+}
+
+fn shake_random_u64() -> u64 {
+    SHAKE_RNG.with(|c| {
+        let mut z = c.get().wrapping_add(0x9E37_79B9_7F4A_7C15);
+        c.set(z);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    })
+}
+
 /// Decay the camera-shake timer by `dt` seconds. The play loop calls
 /// this once per frame between `tick_frame` and `render_frame`.
 pub fn camera_tick(dt: f64) {
@@ -177,9 +192,14 @@ pub fn camera_tick(dt: f64) {
 }
 
 /// Sample a per-frame screen-shake offset in pixels. Returns `(0, 0)`
-/// when no shake is active. Uses the env's PRNG so the offset stream
-/// is reproducible across replays of the same seed.
-pub fn camera_shake_offset(env: &mut Env) -> (f64, f64) {
+/// when no shake is active.
+///
+/// Lanternfall E2: the offsets come from their own stream
+/// (`SHAKE_RNG`), not the script's `random.*` generator — drawing from
+/// that once per *rendered* frame made gameplay randomness depend on
+/// the display's frame rate during a shake, so a replay on another
+/// machine could diverge.
+pub fn camera_shake_offset() -> (f64, f64) {
     let amp = CAMERA_SHAKE.with(|c| {
         let s = c.borrow();
         if s.remaining > 0.0 {
@@ -192,8 +212,8 @@ pub fn camera_shake_offset(env: &mut Env) -> (f64, f64) {
         return (0.0, 0.0);
     }
     // Two 53-bit floats in [0, 1), remapped to [-amp, amp].
-    let a = (env.next_random_u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
-    let b = (env.next_random_u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
+    let a = (shake_random_u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
+    let b = (shake_random_u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
     let dx = (a * 2.0 - 1.0) * amp;
     let dy = (b * 2.0 - 1.0) * amp;
     (dx, dy)
@@ -343,6 +363,11 @@ pub fn install(env: &mut Env) {
             &["handle", "direction", "angle"],
             light_cone_impl,
         ),
+    );
+    // Lanternfall E6: the colour behind the scene (a night sky).
+    light_fields.insert(
+        "background".to_string(),
+        Value::from_builtin("light.background", &["color"], light_background_impl),
     );
     // web3d-M7: exponential height fog; density 0 turns it off.
     light_fields.insert(
@@ -1179,6 +1204,9 @@ thread_local! {
     static DOF: RefCell<(f32, f32)> = const { RefCell::new((0.0, 0.0)) };
     /// web3d-M7: height fog (density, falloff, sRGB colour), or none.
     static FOG: RefCell<Option<(f32, f32, [f32; 3])>> = const { RefCell::new(None) };
+    /// Lanternfall E6: what a 3D frame is drawn over where nothing covers
+    /// it (linear RGB; `light.background`).
+    static BACKGROUND: RefCell<[f32; 3]> = const { RefCell::new([0.06, 0.10, 0.16]) };
     static MOTION_BLUR: RefCell<f32> = const { RefCell::new(0.0) };
     /// web3d-M7 session 14: volumetric fog (`light.volumetric`) and
     /// screen-space reflections (`postfx.ssr`).
@@ -1289,6 +1317,11 @@ pub fn ao_settings() -> (f32, f32) {
         AO_INTENSITY.with(|s| *s.borrow()),
         AO_RADIUS.with(|s| *s.borrow()),
     )
+}
+
+/// Lanternfall E6: the 3D background colour (linear RGB).
+pub fn background_color() -> [f32; 3] {
+    BACKGROUND.with(|s| *s.borrow())
 }
 
 /// web3d-M7: height fog as (density, falloff, sRGB colour), if on.
@@ -4234,6 +4267,17 @@ fn install_fx(env: &mut Env) {
     );
 }
 
+/// Lanternfall E2: an fx position given as a vec3 is a world point the
+/// effect stays anchored to in a 3D game (it is drawn where that point
+/// projects each frame); a 2-tuple is a canvas point, as before.
+fn world_anchor(v: &Value) -> Option<[f32; 3]> {
+    if v.is_tuple() && v.as_tuple().len() == 3 {
+        xyz_of(v, "fx.at").ok()
+    } else {
+        None
+    }
+}
+
 fn fx_hit_flash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "fx.hit_flash")?;
     let (x, y) = xy_of(&args[0], "fx.hit_flash.at")?;
@@ -4250,6 +4294,7 @@ fn fx_hit_flash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             height: h as f32,
         },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: duration as f32,
     });
@@ -4301,6 +4346,7 @@ fn fx_damage_number(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
     crate::fx::spawn(crate::fx::ActiveFx {
         kind: crate::fx::FxKind::DamageNumber { value, color },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.8,
     });
@@ -4314,6 +4360,7 @@ fn fx_crit_text(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     crate::fx::spawn(crate::fx::ActiveFx {
         kind: crate::fx::FxKind::CritText { value },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 1.0,
     });
@@ -4341,6 +4388,7 @@ fn fx_death_burst(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
     crate::fx::spawn(crate::fx::ActiveFx {
         kind: crate::fx::FxKind::Burst { color, particles },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.7,
     });
@@ -4354,6 +4402,7 @@ fn fx_pickup_pop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     crate::fx::spawn(crate::fx::ActiveFx {
         kind: crate::fx::FxKind::Pop { color },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.35,
     });
@@ -4367,6 +4416,7 @@ fn fx_dash_trail(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> 
     crate::fx::spawn(crate::fx::ActiveFx {
         kind: crate::fx::FxKind::Trail { color },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.4,
     });
@@ -4384,6 +4434,7 @@ fn fx_level_up_ring(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
             radius_to: 64.0,
         },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.6,
     });
@@ -4401,6 +4452,7 @@ fn fx_blood_splat(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
             color,
         },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.5,
     });
@@ -4416,6 +4468,7 @@ fn fx_muzzle_flash(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError
             dir: (dx as f32, dy as f32),
         },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.08,
     });
@@ -4431,6 +4484,7 @@ fn fx_ground_shockwave(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeE
             radius: radius as f32,
         },
         pos: (x as f32, y as f32),
+        world: world_anchor(&args[0]),
         age: 0.0,
         lifetime: 0.5,
     });
@@ -10482,6 +10536,8 @@ fn camera_project_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
     arity(args, 1, "camera.project")?;
     let p = xyz_of(&args[0], "camera.project.point")?;
     let (cam, aspect, hud) = camera_frame(env);
+    // It is for drawing: where the point is in this frame, shake included.
+    let cam = crate::camera3d::shaken(&cam);
     Ok(match crate::camera3d::project(&cam, aspect, hud, p) {
         Some([x, y]) => Value::from_tuple(vec![
             Value::from_float(f64::from(x)),

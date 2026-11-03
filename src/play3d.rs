@@ -675,10 +675,11 @@ impl ApplicationHandler for App {
                     }
                 }
                 let render_start = Instant::now();
-                let rendered = crate::host3d::render_frame(
+                let rendered = crate::host3d::render_frame_dt(
                     &mut state.renderer,
                     &mut self.env,
                     &mut self.assets,
+                    f64::from(frame_dt),
                 );
                 let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
                 crate::profile::push_sample(crate::profile::FrameSample::from_env(

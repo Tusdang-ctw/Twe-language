@@ -209,6 +209,17 @@ pub(super) fn light_set_radius_impl(_env: &mut Env, args: &[Value]) -> Result<Va
     Ok(Value::NIL)
 }
 
+// Lanternfall E6: `light.background(color)` — what a 3D frame is drawn
+// over where nothing covers it (and what plain height fog fades
+// toward). An sRGB colour, as every script colour is.
+pub(super) fn light_background_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "light.background")?;
+    let (r, g, b, _) = rgba(&args[0], "light.background.color")?;
+    let linear = [srgb_to_linear(r) as f32, srgb_to_linear(g) as f32, srgb_to_linear(b) as f32];
+    BACKGROUND.with(|s| *s.borrow_mut() = linear);
+    Ok(Value::NIL)
+}
+
 pub(super) fn light_clear_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
     POINT_LIGHTS.with(|s| s.borrow_mut().clear());
     Ok(Value::NIL)

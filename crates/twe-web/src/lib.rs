@@ -427,7 +427,7 @@ fn frame(shell: &mut Shell) {
         assets,
         ..
     } = shell;
-    let times = match twec::host3d::render_frame(renderer, env, assets) {
+    let times = match twec::host3d::render_frame_dt(renderer, env, assets, dt) {
         Ok(t) => t,
         Err(e) => {
             web_sys::console::error_1(&format!("render: {e}").into());

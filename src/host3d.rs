@@ -31,7 +31,29 @@ pub fn render_frame(
     env: &mut Env,
     assets: &mut dyn AssetSource,
 ) -> Result<FrameTimes, String> {
+    render_frame_dt(renderer, env, assets, crate::eval::PHYSICS_DT)
+}
+
+/// [`render_frame`] for a frame `frame_dt` seconds after the last one.
+/// Lanternfall E2: the visual clocks (screen shake, `fx.*`) advance by
+/// it, as the 2D loop's do; `render_frame` advances one tick's worth, so
+/// captures and tests are deterministic.
+pub fn render_frame_dt(
+    renderer: &mut Renderer,
+    env: &mut Env,
+    assets: &mut dyn AssetSource,
+    frame_dt: f64,
+) -> Result<FrameTimes, String> {
     let start = crate::clock::now_secs();
+    crate::stdlib::camera_tick(frame_dt);
+    crate::fx::fx_tick(frame_dt);
+    // This frame's shake, as a world offset of the camera: the script's
+    // `camera.project` and the renderer both see it.
+    {
+        let (sx, sy) = crate::stdlib::camera_shake_offset();
+        let cam = crate::camera3d::read_camera(env);
+        crate::camera3d::set_shake(crate::camera3d::shake_offset(&cam, sx as f32, sy as f32));
+    }
     // web3d-M7: from here on, particles that can run on the GPU do.
     env.gpu_particles = true;
     // web3d-M7 follow-up: the looks the renderer already holds.
@@ -45,7 +67,17 @@ pub fn render_frame(
             e.line, e.col, e.message
         ));
     }
-    let camera = crate::camera3d::read_camera(env);
+    let camera = crate::camera3d::shaken(&crate::camera3d::read_camera(env));
+    // Lanternfall E2: `fx.*` effects over the HUD, world-anchored ones
+    // where their point projects this frame.
+    {
+        let (w, h) = crate::camera3d::viewport();
+        let hud = crate::camera3d::hud_size(w, h);
+        let aspect = crate::camera3d::aspect();
+        crate::fx::fx_draw_overlay_3d(&mut env.draw2d, &|p| {
+            crate::camera3d::project(&camera, aspect, hud, p)
+        });
+    }
     let draws = std::mem::take(&mut env.render_queue3d);
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let lut = crate::stdlib::color_lut();
@@ -76,7 +108,7 @@ pub fn render_frame(
             intensity: *intensity,
             backdrop: false,
         }),
-        background: [0.06, 0.10, 0.16],
+        background: crate::stdlib::background_color(),
         lights: crate::stdlib::lights_snapshot(),
         shadow: ShadowSettings {
             enabled: crate::stdlib::shadow_enabled(),
@@ -465,7 +497,17 @@ fn apply_view(env: &mut Env, width: u32, height: u32) {
 /// a near-instant no-op until a script spawns a body, so non-physics
 /// scenes pay nothing.
 pub fn sim_tick(env: &mut Env, input: &mut InputState, dt: f64) -> Result<(), RuntimeError> {
-    crate::physics3d::step(dt as f32);
+    // Lanternfall E2: `fx.hit_stop` freezes the game for whole ticks, as
+    // the 2D loop does: no physics, no input taken (presses wait for the
+    // next real tick), no script. Counted in ticks, so replays agree.
+    if crate::fx::consume_hit_stop_tick() {
+        return Ok(());
+    }
+    // Physics holds still while paused, unless a persistent state keeps
+    // the world running (what `eval::tick_frame` ticks then).
+    if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
+        crate::physics3d::step(dt as f32);
+    }
     let cmd = crate::replay::step(input.take_command());
     apply_command(env, &cmd);
     eval::tick_frame(env, dt)

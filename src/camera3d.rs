@@ -63,6 +63,47 @@ thread_local! {
     /// The view the host last reported (`InputCommand::view_w/h`), in
     /// pixels. 640×480 until a 3D host says otherwise.
     static VIEWPORT: Cell<(u32, u32)> = const { Cell::new((640, 480)) };
+    /// Lanternfall E2: this frame's screen shake as a world offset of
+    /// the eye and target (set by the host before the frame's
+    /// `on render():`; see [`shaken`]).
+    static SHAKE: Cell<[f32; 3]> = const { Cell::new([0.0; 3]) };
+}
+
+/// Lanternfall E2: a screen shake of `(sx, sy)` HUD units as a world
+/// offset of the camera: along its right and up axes, scaled so a unit
+/// at the target's distance moves one HUD unit on screen.
+pub fn shake_offset(cam: &Camera3d, sx: f32, sy: f32) -> [f32; 3] {
+    if sx == 0.0 && sy == 0.0 {
+        return [0.0; 3];
+    }
+    let to = sub(cam.target, cam.eye);
+    let dist = dot(to, to).sqrt();
+    let f = normalize(to);
+    let r = normalize(cross(f, cam.up));
+    let u = cross(r, f);
+    let per_unit = 2.0 * dist * (cam.fov_y * 0.5).tan() / HUD_H;
+    let (dx, dy) = (sx * per_unit, -sy * per_unit);
+    [
+        r[0] * dx + u[0] * dy,
+        r[1] * dx + u[1] * dy,
+        r[2] * dx + u[2] * dy,
+    ]
+}
+
+/// Set this frame's shake offset (the host, once per rendered frame).
+pub fn set_shake(offset: [f32; 3]) {
+    SHAKE.with(|s| s.set(offset));
+}
+
+/// `cam` as this frame draws it: moved by the screen shake.
+pub fn shaken(cam: &Camera3d) -> Camera3d {
+    let o = SHAKE.with(Cell::get);
+    let mut c = *cam;
+    for (i, d) in o.iter().enumerate() {
+        c.eye[i] += d;
+        c.target[i] += d;
+    }
+    c
 }
 
 /// Record the view size the simulation sees. Zeros (a command from a

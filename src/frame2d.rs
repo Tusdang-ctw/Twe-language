@@ -223,7 +223,7 @@ pub fn render(
     // centre. Left at the origin, with zoom 1 and no shake, the script
     // draws in canvas pixels (origin top-left, +y down).
     let ((px, py), zoom) = crate::stdlib::camera_view(env);
-    let (sx, sy) = crate::stdlib::camera_shake_offset(env);
+    let (sx, sy) = crate::stdlib::camera_shake_offset();
     let active = px != 0.0 || py != 0.0 || zoom != 1.0 || sx != 0.0 || sy != 0.0;
     let camera = active.then_some(Camera2d {
         center: [(px + sx) as f32, (py + sy) as f32],

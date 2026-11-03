@@ -27,6 +27,11 @@ pub struct ActiveFx {
     pub kind: FxKind,
     /// World-space position (the same coords sprites/rects use).
     pub pos: (f32, f32),
+    /// Lanternfall E2: in a 3D game, the world point the effect is
+    /// anchored to (`fx.damage_number(vec3(...), ...)`): each frame it
+    /// is drawn where that point projects. `None`: `pos` is a canvas
+    /// point, as in 2D.
+    pub world: Option<[f32; 3]>,
     /// Seconds since spawn. Drives the animation `t = age / lifetime`.
     pub age: f32,
     /// Total lifetime in seconds. Effect is dropped when `age >= lifetime`.
@@ -163,6 +168,30 @@ pub fn fx_draw_overlay(out: &mut Vec<crate::draw2d::Draw2d>) {
     });
 }
 
+/// Lanternfall E2: the 3D HUD's fx layer. World-anchored effects are
+/// drawn where `project` puts their point this frame (skipped behind
+/// the camera); the rest at their canvas point.
+pub fn fx_draw_overlay_3d(
+    out: &mut Vec<crate::draw2d::Draw2d>,
+    project: &dyn Fn([f32; 3]) -> Option<[f32; 2]>,
+) {
+    FX.with(|s| {
+        let st = s.borrow();
+        for fx in &st.active {
+            match fx.world {
+                None => draw_one(out, fx),
+                Some(p) => {
+                    if let Some([x, y]) = project(p) {
+                        let mut at = fx.clone();
+                        at.pos = (x, y);
+                        draw_one(out, &at);
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn draw_one(out: &mut Vec<crate::draw2d::Draw2d>, fx: &ActiveFx) {
     use crate::draw2d::{circle as draw_circle, circle_lines as draw_circle_lines, rect as draw_rectangle};
     use crate::draw2d::text as draw_text;
@@ -280,6 +309,7 @@ mod tests {
                 color: Color::new(1.0, 1.0, 0.0, 1.0),
             },
             pos: (10.0, 10.0),
+            world: None,
             age: 0.0,
             lifetime: 0.1,
         });
@@ -319,6 +349,7 @@ mod tests {
                 color: Color::new(1.0, 0.0, 0.0, 1.0),
             },
             pos: (0.0, 0.0),
+            world: None,
             age: 0.0,
             lifetime: 1.0,
         });

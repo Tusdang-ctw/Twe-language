@@ -2407,3 +2407,19 @@ fn entities_sharing_a_mesh_animate_apart() {
     assert!(left > 150, "the left hero should change pose: {left} pixels differ");
     assert!(right < 20, "the right hero should not: {right} pixels differ");
 }
+
+/// Lanternfall E6: `light.background` is what a 3D frame shows where
+/// nothing covers it.
+#[test]
+fn light_background_sets_the_sky() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let rgba = render_source(
+        &mut renderer,
+        "background",
+        "light.background((0.6, 0.1, 0.1))\non render():\n    cube(at: vec3(0, 0, 0), color: color.white, size: 0.5)\n",
+    );
+    let sky = pixel(&rgba, 2, 2);
+    assert!(sky[0] > sky[1] + 40 && sky[0] > sky[2] + 40, "a red sky: {sky:?}");
+}
