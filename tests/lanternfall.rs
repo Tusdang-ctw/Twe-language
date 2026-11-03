@@ -56,6 +56,23 @@ impl Game {
         out
     }
 
+    /// Run statements in the game's world (a test's setup).
+    fn exec(&mut self, src: &str) {
+        let src = format!("{src}
+");
+        let program = twec::parser::parse(&twec::lexer::lex(&src).expect("lex")).expect("parse");
+        twec::eval::run_top_level(&mut self.env, &program).expect("exec");
+    }
+
+    /// Clear the rivals off the island, for tests of the keeper alone.
+    fn no_rivals(&mut self) {
+        self.exec("for b in entities.of(bots.Bot):
+    if b.body >= 0:
+        physics.despawn(b.body)
+    despawn b");
+        self.run(1, &[], &[]);
+    }
+
     fn num(&mut self, expr: &str) -> f64 {
         let s = self.probe(expr);
         s.parse().unwrap_or_else(|_| panic!("{expr} = {s}"))
@@ -65,6 +82,7 @@ impl Game {
 #[test]
 fn the_island_loads_and_runs() {
     let mut g = Game::new();
+    g.no_rivals();
     // The island is populated: blocks, lanterns, props.
     assert!(g.num("entities.count(world.Block)") >= 30.0);
     assert!(g.num("entities.count(world.LanternPost)") >= 20.0);
@@ -79,6 +97,7 @@ fn the_island_loads_and_runs() {
 #[test]
 fn the_keeper_walks_and_walls_stop_it() {
     let mut g = Game::new();
+    g.no_rivals();
     g.run(30, &[], &[]);
     let z0 = g.num("me.pos.z");
     // W walks north (-z) at walking speed.
@@ -99,6 +118,7 @@ fn the_keeper_walks_and_walls_stop_it() {
 #[test]
 fn the_keeper_faces_the_cursor_and_rolls() {
     let mut g = Game::new();
+    g.no_rivals();
     g.run(20, &[], &[]);
     // The cursor is ahead (north, -z) of the keeper: it faces about pi.
     let h = g.num("me.heading");
@@ -128,6 +148,7 @@ impl Game {
 #[test]
 fn the_pistol_hits_a_dummy_and_runs_dry() {
     let mut g = Game::new();
+    g.no_rivals();
     // The dummies stand south of the keeper (+z, toward the camera): aim
     // straight down the screen at the middle one, which has no shield.
     g.point(0.5, 0.9);
@@ -153,6 +174,7 @@ fn the_pistol_hits_a_dummy_and_runs_dry() {
 #[test]
 fn shields_soak_first_and_crack() {
     let mut g = Game::new();
+    g.no_rivals();
     g.run(5, &[], &[]);
     g.probe("combat.hurt(entities.of(combat.Dummy)[0], 30.0, me, vec3(0, 0, 0))");
     assert_eq!(g.num("entities.of(combat.Dummy)[0].shield"), 20.0);
@@ -166,6 +188,7 @@ fn shields_soak_first_and_crack() {
 #[test]
 fn a_mortar_shell_lands_and_bursts() {
     let mut g = Game::new();
+    g.no_rivals();
     g.run(5, &[], &[]);
     // Lob one at the middle dummies from the keeper.
     g.probe("combat.lob(me, me.pos + vec3(0, 1, 0), vec3(0, 0, 34), 64.0)");
@@ -179,6 +202,7 @@ fn a_mortar_shell_lands_and_bursts() {
 #[test]
 fn starcall_falls_where_you_point() {
     let mut g = Game::new();
+    g.no_rivals();
     g.point(0.5, 0.9);
     g.run(10, &[], &[]);
     g.run(1, &[], &["q"]);
@@ -191,6 +215,7 @@ fn starcall_falls_where_you_point() {
 #[test]
 fn holding_f_turns_a_cell_into_shield() {
     let mut g = Game::new();
+    g.no_rivals();
     g.run(10, &[], &[]);
     g.run(170, &["f"], &[]);
     assert_eq!(g.num("me.shield"), 25.0);
@@ -212,6 +237,11 @@ fn firefight_renders() {
     g.input.set_view(960, 540);
     g.point(0.5, 0.92);
     g.run(30, &[], &[]);
+    // A rival beside the keeper, to see its name tag and health pips.
+    g.exec("let near = spawn bots.Bot at vec3(5, 0, 27)
+near.name = \"MossyWick42\"
+near.shield = 50.0
+near.model = \"assets/folk_ember.glb\"");
     g.probe("combat.lob(me, me.pos + vec3(0, 1, 0), vec3(4, 0, 34), 64.0)");
     g.run(40, &[], &[]);
     g.input.button_down("left");
@@ -229,4 +259,24 @@ fn firefight_renders() {
     let rgba = renderer.read_pixels().expect("pixels");
     std::fs::create_dir_all("target/lanternfall").unwrap();
     image::save_buffer("target/lanternfall/firefight.png", &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
+}
+
+#[test]
+fn the_rivals_fight_each_other() {
+    let mut g = Game::new();
+    let n = g.num("entities.count(bots.Bot)");
+    assert_eq!(n, 31.0, "31 rivals on the island");
+    let name = g.probe("entities.of(bots.Bot)[0].name");
+    assert!(name.len() > 6 && name.chars().last().unwrap().is_ascii_digit(), "a handle: {name}");
+    // Keep the keeper out of it: unhittable, out of the way.
+    g.exec("me.alive = false");
+    // Three simulated minutes: bots meet, fight and fall.
+    let start = std::time::Instant::now();
+    g.run(3 * 60 * 60, &[], &[]);
+    let per_tick = start.elapsed().as_secs_f64() * 1000.0 / (3.0 * 3600.0);
+    let alive = g.num("[b for b in entities.of(bots.Bot) if b.alive].length");
+    let feed = g.num("combat.feed.length");
+    eprintln!("after 3 min: {alive} bots alive, {feed} kills; {per_tick:.3} ms per tick (tick + render queue; debug builds are ~30x slower)");
+    assert!(feed >= 3.0, "the rivals killed each other: {feed} kills");
+    assert!(alive < 31.0, "some fell: {alive} alive");
 }

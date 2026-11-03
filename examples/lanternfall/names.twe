@@ -1,0 +1,25 @@
+# @task: Lanternfall names module
+# @inputs: none
+# @expected: generates island-folk handles like MossyWick42 from word lists
+# @category: 3d
+# @difficulty: trivial
+#
+# Lanternfall — what the island's folk call themselves.
+
+let FIRST = [
+    "Mossy", "Quiet", "Ember", "Dusk", "Tidal", "Copper", "Hollow", "Lucky",
+    "Rusty", "Velvet", "Pebble", "Misty", "Brisk", "Sooty", "Gentle", "Salty",
+    "Crooked", "Bramble", "Owlish", "Hazel", "Drowsy", "Clever", "Patchy", "Wily",
+]
+let SECOND = [
+    "Lantern", "Bolt", "Wick", "Moth", "Gull", "Fern", "Kettle", "Comet",
+    "Pike", "Wren", "Tinker", "Ferry", "Thimble", "Badger", "Cinder", "Marsh",
+    "Spindle", "Otter", "Bellows", "Quill", "Rook", "Puddle", "Sprocket", "Heron",
+]
+
+# A handle, from three draws of `random.float()`.
+function handle():
+    let a = FIRST[math.floor(random.float() * FIRST.length)]
+    let b = SECOND[math.floor(random.float() * SECOND.length)]
+    let n = math.floor(random.float() * 90) + 10
+    return "{a}{b}{n}"

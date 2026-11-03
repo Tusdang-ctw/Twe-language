@@ -38,3 +38,7 @@ let CAM_LEAN_MAX = 4.5           # metres, at most
 let STAR_COOLDOWN = 18.0         # seconds between Starcalls
 let CELL_TIME = 2.5              # seconds to channel a shield cell
 let CELL_SHIELD = 25             # shield one cell gives
+
+# --- the bots ---
+let BOT_COUNT = 31               # rivals; with the keeper, 32 on the island
+let BOT_SIGHT = 26.0             # metres they can see in the dark

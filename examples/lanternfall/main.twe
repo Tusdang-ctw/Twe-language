@@ -15,6 +15,8 @@ import "world"
 import "player"
 import "weapons"
 import "combat"
+import "bots"
+import "names"
 import "hud"
 
 random.seed(20261103)
@@ -118,10 +120,35 @@ for i in 0..<5:
     if i == 2:
         d.shield = 0.0
 
+# The rivals, scattered on clear ground away from the keeper, each in
+# its own colours, skill and starting weapon.
+let MODELS = ["assets/folk_moss.glb", "assets/folk_dusk.glb", "assets/folk_ember.glb", "assets/folk_tide.glb"]
+var spawned = 0
+var spawn_tries = 0
+while spawned < tuning.BOT_COUNT and spawn_tries < 4000:
+    spawn_tries += 1
+    let x = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 8)
+    let z = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 8)
+    let far_from_you = (x - me.pos.x) * (x - me.pos.x) + (z - me.pos.z) * (z - me.pos.z) > 30.0 * 30.0
+    if far_from_you and world.clear_ground(x, z, 2.0):
+        let b = spawn bots.Bot at vec3(x, 0, z)
+        b.model = MODELS[math.mod(spawned, 4)]
+        b.name = names.handle()
+        b.skill = 0.2 + random.float() * 0.7
+        b.team = 10 + spawned
+        b.gun = 1 + math.floor(random.float() * 5)
+        b.rarity = math.floor(random.float() * random.float() * 4)
+        b.mag = weapons.magazine_of(b.gun, b.rarity)
+        b.shield = math.floor(random.float() * 3) * 25.0
+        b.heading = random.float() * 6.28
+        spawned += 1
+
 on update(dt):
     mesh_anim.advance(dt)
     # Everyone who can be hurt this tick (see combat.twe).
-    var everyone = [a for a in entities.of(combat.Dummy)]
+    var everyone = [a for a in entities.of(bots.Bot)]
+    for d in entities.of(combat.Dummy):
+        everyone.append(d)
     everyone.append(me)
     combat.actors = everyone
     # Follow the keeper, leaning toward the cursor so you see where you
@@ -144,5 +171,17 @@ on update(dt):
     camera.eye = vec3(cam_x + kx, tuning.CAM_HEIGHT, cam_z + kz + tuning.CAM_BACK)
 
 on render():
+    hud.draw_tags(entities.of(bots.Bot), me)
     hud.draw_popups(entities.of(combat.Popup))
     hud.draw_playing(me, world.place_at(me.pos.x, me.pos.z))
+    hud.draw_match(alive_count(), me.kills, combat.feed, combat.time_now())
+
+# Everyone still standing, the keeper included.
+function alive_count():
+    var n = 0
+    for b in entities.of(bots.Bot):
+        if b.alive:
+            n += 1
+    if me.alive:
+        n += 1
+    return n

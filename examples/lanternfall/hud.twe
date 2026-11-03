@@ -71,7 +71,8 @@ function draw_playing(me, place):
         rect((cx + 4, 312), (152 * me.channel / tuning.CELL_TIME, 6), SHIELD)
         text("charging shield", (cx + 6, 309), 11, DIM)
     # Loadout, bottom-centre: melee, two guns, Starcall.
-    let x0 = w / 2 - 196
+    # (Clear of the vitals panel on a narrow window.)
+    let x0 = math.max(w / 2 - 196, 218)
     for s in 0..<3:
         let id = me.guns[s]
         if id >= 0:
@@ -106,3 +107,40 @@ function draw_popups(popups):
             let w = p.word.length * p.size * 0.5
             text(p.word, (at.x - w / 2 + 1, at.y + 1), p.size, (0.0, 0.0, 0.0, 0.6 * fade))
             text(p.word, (at.x - w / 2, at.y), p.size, (p.color[0], p.color[1], p.color[2], fade))
+
+# Name tags and health pips over the rivals near the keeper.
+function draw_tags(rivals, me):
+    for b in rivals:
+        if b.alive:
+            let dx = b.pos.x - me.pos.x
+            let dz = b.pos.z - me.pos.z
+            if dx * dx + dz * dz < 26.0 * 26.0:
+                let at = camera.project(b.pos + vec3(0, 2.05, 0))
+                if at != nil:
+                    let w = b.name.length * 6.0
+                    text(b.name, (at.x - w / 2 + 1, at.y + 1), 11, (0.0, 0.0, 0.0, 0.7))
+                    text(b.name, (at.x - w / 2, at.y), 11, (1.0, 1.0, 1.0, 0.9))
+                    rect((at.x - 18, at.y + 4), (36, 3), (0.0, 0.0, 0.0, 0.6))
+                    rect((at.x - 18, at.y + 4), (36 * b.hp / 100.0, 3), HP)
+                    if b.shield > 0.0:
+                        rect((at.x - 18, at.y + 8), (36 * b.shield / 100.0, 2), SHIELD)
+
+# Alive and kills, top-right; the kill feed, top-left.
+function draw_match(alive, kills, feed, now):
+    let w = screen.size.x
+    chip(w - 150, 12, 138, 26)
+    text("{alive} ALIVE", (w - 142, 30), 13, (1.0, 1.0, 1.0, 0.95))
+    text("{kills} KILLS", (w - 72, 30), 13, WARM)
+    var shown = 0
+    var i = feed.length - 1
+    while i >= 0 and shown < 5:
+        let e = feed[i]
+        let age = now - e[4]
+        if age < 7.0:
+            let fade = math.clamp((7.0 - age) / 1.5, 0.0, 1.0)
+            let line = "{e[0]}  >  {e[1]}"
+            let color = if e[2]: WARM else: (if e[3]: (1.0, 0.4, 0.4, 1.0) else: (0.85, 0.88, 0.95, 1.0))
+            chip(12, 12 + shown * 22, line.length * 6.6 + 16, 19)
+            text(line, (20, 26 + shown * 22), 11, (color[0], color[1], color[2], fade))
+            shown += 1
+        i -= 1

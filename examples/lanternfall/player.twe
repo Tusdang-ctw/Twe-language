@@ -37,6 +37,7 @@ entity Player:
     var alive = true
     var iframes = 0.0
     var team = 1
+    var name = "You"
     var kills = 0
     var died_at = 0.0
     var last_hit_by = nil

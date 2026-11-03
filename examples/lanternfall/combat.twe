@@ -21,6 +21,10 @@ import "weapons"
 # (`combat.actors = [...]`).
 var actors = []
 
+# Kills, newest last: (killer name, victim name, the killer is the
+# keeper, the victim is the keeper, when).
+var feed = []
+
 # ---------------------------------------------------------------
 # Effects.
 # ---------------------------------------------------------------
@@ -225,8 +229,13 @@ function hurt(t, amount, from, at):
         t.hp = 0.0
         t.alive = false
         t.died_at = time_now()
+        var killer = "the island"
+        var by_you = false
         if from != nil:
             from.kills = from.kills + 1
+            killer = from.name
+            by_you = from.team == 1
+        feed.append((killer, t.name, by_you, t.team == 1, time_now()))
     return true
 
 particles ShieldShards:
@@ -462,6 +471,7 @@ entity Dummy:
     var hurt = 0.0
     var iframes = 0.0
     var team = 2
+    var name = "Dummy"
     var kills = 0
     var died_at = 0.0
     var last_hit_by = nil

@@ -1,0 +1,253 @@
+# @task: Lanternfall bots module
+# @inputs: none
+# @expected: AI rivals that roam, spot enemies by line of sight, strafe at their weapon's range, aim with skill-based error, heal and get unstuck
+# @category: 3d
+# @difficulty: large
+#
+# Lanternfall — the other islanders.
+#
+# Every bot is its own small state machine, run from `update(dt)`:
+#   roam  — walk toward a goal (a place, the safe zone)
+#   fight — keep its weapon's range from a seen enemy, strafe, fire
+#   heal  — out of a fight and hurt: stand still and charge a cell
+# It looks around five times a second, not every tick (staggered across
+# bots), and only sees what a ray from its eyes reaches. Skill (0..1)
+# sets how well it aims, how fast it reacts and how often it strafes.
+
+import "tuning"
+import "weapons"
+import "combat"
+
+# The circle the bots roam inside: the island, then (G4) the safe zone.
+# The main file moves it (`bots.arena_center = ...`).
+var arena_center = vec3(0, 0, 0)
+var arena_radius = 100.0
+
+# Somewhere to walk to: often a random spot in the arena, sometimes one
+# nearby — so bots both wander and drift toward the middle.
+function roam_goal(from):
+    var x = 0.0
+    var z = 0.0
+    if random.float() < 0.6:
+        let a = random.float() * 6.283
+        let r = math.sqrt(random.float()) * arena_radius * 0.8
+        x = arena_center.x + math.cos(a) * r
+        z = arena_center.z + math.sin(a) * r
+    else:
+        x = from.x + (random.float() * 2.0 - 1.0) * 25.0
+        z = from.z + (random.float() * 2.0 - 1.0) * 25.0
+    let dx = x - arena_center.x
+    let dz = z - arena_center.z
+    let d = math.sqrt(dx * dx + dz * dz)
+    if d > arena_radius * 0.9:
+        x = arena_center.x + dx / d * arena_radius * 0.9
+        z = arena_center.z + dz / d * arena_radius * 0.9
+    let lim = tuning.ISLAND_HALF - 3.0
+    return vec3(math.clamp(x, -lim, lim), 0, math.clamp(z, -lim, lim))
+
+entity Bot:
+    var pos = vec3(0, 0, 0)
+    var body = -1
+    var vel = vec3(0, 0, 0)
+    var push = vec3(0, 0, 0)
+    var fall = 0.0
+    var heading = 0.0
+    var model = "assets/folk_moss.glb"
+    var name = "Bot"
+    var skill = 0.5
+    # --- the actor contract (see combat.twe) ---
+    var hp = 100.0
+    var shield = 0.0
+    var alive = true
+    var hurt = 0.0
+    var iframes = 0.0
+    var team = 10
+    var kills = 0
+    var died_at = 0.0
+    var last_hit_by = nil
+    # --- arms ---
+    var gun = 1
+    var rarity = 0
+    var mag = 12
+    var fire_cd = 0.0
+    var reload_t = 0.0
+    var cells = 1
+    var channel = 0.0
+    # --- mind ---
+    var mode = "roam"
+    var goal = vec3(0, 0, 0)
+    var foe = nil
+    var think_t = 0.0             # seconds until it looks around again
+    var react_t = 0.0             # seconds before it opens fire on a new foe
+    var strafe = 1.0              # which way it circles
+    var strafe_t = 0.0
+    var stuck_t = 0.0
+    var last_pos = vec3(0, 0, 0)
+    look:
+        mesh: model
+        facing: heading
+        glow: (1.0, 0.9, 0.8) * hurt * 2.5
+
+    function update(dt):
+        if body < 0:
+            body = physics.character(pos + vec3(0, tuning.BODY_HEIGHT / 2, 0), tuning.BODY_HEIGHT, tuning.BODY_RADIUS)
+            think_t = random.float() * 0.2
+            goal = pos
+        hurt = math.max(0.0, hurt - dt * 5.0)
+        if not alive:
+            mesh_anim.play(self, "death", false)
+            vel = vec3(0, 0, 0)
+            if combat.time_now() - died_at > 5.0:
+                physics.despawn(body)
+                despawn self
+            return
+        fire_cd = math.max(0.0, fire_cd - dt)
+        react_t = math.max(0.0, react_t - dt)
+        think_t -= dt
+        if think_t <= 0.0:
+            think_t = 0.2
+            look_around()
+        if reload_t > 0.0:
+            reload_t -= dt
+            if reload_t <= 0.0:
+                mag = weapons.magazine_of(gun, rarity)
+        if mode == "fight":
+            fight(dt)
+        elif mode == "heal":
+            heal(dt)
+        else:
+            roam(dt)
+        move(dt)
+        animate()
+
+    # Who can it see? The nearest enemy within sight that a ray from its
+    # eyes reaches; and if it can see none, whether it should heal.
+    function look_around():
+        var best = nil
+        var best_d = tuning.BOT_SIGHT
+        for a in combat.actors:
+            if a.alive and a.team != team:
+                let dx = a.pos.x - pos.x
+                let dz = a.pos.z - pos.z
+                let d = math.sqrt(dx * dx + dz * dz)
+                if d < best_d and sees(a, d):
+                    best = a
+                    best_d = d
+        if best != nil:
+            if foe == nil or mode != "fight":
+                react_t = 0.55 - skill * 0.4
+            foe = best
+            mode = "fight"
+            channel = 0.0
+        else:
+            foe = nil
+            if hp + shield < 90.0 and cells > 0 and shield < 100.0:
+                mode = "heal"
+            elif mode != "heal":
+                mode = "roam"
+
+    function sees(a, d):
+        let eye = pos + vec3(0, 1.3, 0)
+        let to = a.pos + vec3(0, 1.0, 0) - eye
+        let dir = to * (1.0 / math.max(0.01, math.length(to)))
+        let hit = physics.raycast(eye + dir * 0.5, dir, d)
+        return hit == nil or hit.distance > d - 1.4
+
+    # Walk toward the goal; pick a new one when it gets there or sticks.
+    function roam(dt):
+        let to = goal - pos
+        let d = math.sqrt(to.x * to.x + to.z * to.z)
+        if d < 2.0 or stuck_t > 1.2:
+            goal = roam_goal(pos)
+            stuck_t = 0.0
+        else:
+            steer_toward(vec3(to.x / d, 0, to.z / d) * tuning.WALK_SPEED * 0.8, dt)
+            heading = math.atan2(to.x, to.z)
+
+    # Keep the weapon's best range, circle, and fire once it has reacted.
+    function fight(dt):
+        if foe == nil or not foe.alive:
+            mode = "roam"
+            return
+        let to = foe.pos - pos
+        let d = math.sqrt(to.x * to.x + to.z * to.z)
+        if d < 0.01:
+            return
+        let fwd = vec3(to.x / d, 0, to.z / d)
+        heading = math.atan2(fwd.x, fwd.z)
+        let best = math.max(1.4, weapons.range_of(gun) * 0.45)
+        var want = fwd * math.clamp((d - best) * 0.8, -1.0, 1.0)
+        strafe_t -= dt
+        if strafe_t <= 0.0:
+            strafe_t = 0.8 + random.float() * 1.4
+            if random.float() < 0.35 + skill * 0.4:
+                strafe = -strafe
+        want = want + vec3(-fwd.z, 0, fwd.x) * strafe * (0.4 + skill * 0.5)
+        steer_toward(want * tuning.WALK_SPEED, dt)
+        # Out of rounds: reload.
+        let need = weapons.magazine_of(gun, rarity)
+        if need > 0 and mag <= 0 and reload_t <= 0.0:
+            reload_t = weapons.reload_of(gun)
+        if react_t <= 0.0 and fire_cd <= 0.0 and reload_t <= 0.0 and d < weapons.range_of(gun) * 1.05:
+            # Aim error shrinks with skill, grows with distance.
+            let miss = (1.0 - skill) * 0.16 + d * 0.002
+            let yaw = heading + (random.float() * 2.0 - 1.0) * miss
+            let target = foe.pos + vec3((random.float() - 0.5) * 2.0 * (1.0 - skill), 0, (random.float() - 0.5) * 2.0 * (1.0 - skill))
+            combat.fire(self, gun, rarity, muzzle(), yaw, target)
+            fire_cd = weapons.interval_of(gun) * (1.25 - skill * 0.25)
+            if need > 0:
+                mag -= 1
+            else:
+                mesh_anim.play(self, "melee", false)
+
+    # Stand still and charge a cell into shield.
+    function heal(dt):
+        steer_toward(vec3(0, 0, 0), dt)
+        channel += dt
+        if channel >= tuning.CELL_TIME:
+            shield = math.min(100.0, shield + tuning.CELL_SHIELD)
+            cells -= 1
+            channel = 0.0
+            mode = "roam"
+        if hurt > 0.0:
+            channel = 0.0
+            mode = "roam"
+
+    function steer_toward(want, dt):
+        let dv = want - vel
+        let dl = math.length(dv)
+        let step = tuning.ACCEL * dt
+        if dl <= step:
+            vel = want
+        else:
+            vel = vel + dv * (step / dl)
+
+    function move(dt):
+        fall = fall - tuning.GRAVITY * dt
+        push = push * math.max(0.0, 1.0 - dt * 8.0)
+        let moved = physics.character_move(body, vel + push + vec3(0, fall, 0), dt)
+        if moved.grounded:
+            fall = -1.0
+        let p = physics.position(body)
+        pos = vec3(p.x, p.y - tuning.BODY_HEIGHT / 2, p.z)
+        # Stuck: wanting to move but going nowhere.
+        let dx = pos.x - last_pos.x
+        let dz = pos.z - last_pos.z
+        if math.length(vel) > 1.0 and dx * dx + dz * dz < 0.0004:
+            stuck_t += dt
+        else:
+            stuck_t = math.max(0.0, stuck_t - dt)
+        last_pos = pos
+
+    function animate():
+        if mode == "heal":
+            mesh_anim.play(self, "channel", true)
+        elif mesh_anim.current(self).clip == "melee" and fire_cd > 0.15:
+            mesh_anim.play(self, "melee", false)
+        elif weapons.kind_of(gun) == weapons.MELEE:
+            mesh_anim.blend_space(self, ["idle", "run"], [0.0, tuning.WALK_SPEED], math.length(vel))
+        else:
+            mesh_anim.blend_space(self, ["idle_armed", "run_armed"], [0.0, tuning.WALK_SPEED], math.length(vel))
+
+    function muzzle():
+        return pos + vec3(math.sin(heading) * 0.62, 0.95, math.cos(heading) * 0.62)
