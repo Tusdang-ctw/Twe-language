@@ -719,6 +719,22 @@ fn write_expr(s: &mut String, expr: &Expr) {
             write_pos(s, *line, *col);
             s.push('}');
         }
+        Expr::Spawn {
+            class,
+            at,
+            line,
+            col,
+        } => {
+            s.push_str("{\"kind\":\"Spawn\",\"class\":");
+            write_str_value(s, class);
+            s.push_str(",\"at\":");
+            match at {
+                Some(e) => write_expr(s, e),
+                None => s.push_str("null"),
+            }
+            write_pos(s, *line, *col);
+            s.push('}');
+        }
         Expr::Call {
             callee,
             args,

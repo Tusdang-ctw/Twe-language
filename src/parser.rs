@@ -358,6 +358,19 @@ impl<'a> Parser<'a> {
 
     fn parse_spawn(&mut self) -> Result<Stmt, ParseError> {
         let kw = self.bump().clone();
+        let (class, at) = self.parse_spawn_rest()?;
+        self.expect_stmt_end()?;
+        Ok(Stmt::Spawn {
+            class,
+            at,
+            line: kw.line,
+            col: kw.col,
+        })
+    }
+
+    /// After `spawn`: the class (`Name` or `module.Name`) and the
+    /// optional `at <expr>`.
+    fn parse_spawn_rest(&mut self) -> Result<(String, Option<Expr>), ParseError> {
         let mut class = self.expect_ident("expected class name after `spawn`")?;
         // Lanternfall E5: `spawn bots.Bot` — a class from an imported
         // module, stored as the dotted path.
@@ -374,13 +387,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        self.expect_stmt_end()?;
-        Ok(Stmt::Spawn {
-            class,
-            at,
-            line: kw.line,
-            col: kw.col,
-        })
+        Ok((class, at))
     }
 
     fn parse_despawn(&mut self) -> Result<Stmt, ParseError> {
@@ -2201,6 +2208,16 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         let tok = self.bump().clone();
         match tok.kind {
+            // Lanternfall G0: `spawn` as a value — the new entity.
+            TokenKind::Spawn => {
+                let (class, at) = self.parse_spawn_rest()?;
+                Ok(Expr::Spawn {
+                    class,
+                    at: at.map(Box::new),
+                    line: tok.line,
+                    col: tok.col,
+                })
+            }
             TokenKind::Str(value) => Ok(Expr::Str {
                 value,
                 line: tok.line,
@@ -2543,6 +2560,12 @@ fn shift_expr(expr: Expr, line: u32, col: u32) -> Expr {
             col,
         },
         Expr::Int { value, .. } => Expr::Int { value, line, col },
+        Expr::Spawn { class, at, .. } => Expr::Spawn {
+            class,
+            at: at.map(|e| Box::new(shift_expr(*e, line, col))),
+            line,
+            col,
+        },
         Expr::Float { value, .. } => Expr::Float { value, line, col },
         Expr::Bool { value, .. } => Expr::Bool { value, line, col },
         Expr::Percent { value, .. } => Expr::Percent { value, line, col },

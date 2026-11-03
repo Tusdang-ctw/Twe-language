@@ -704,6 +704,8 @@ fn walk_holes_expr(e: &Expr, out: &mut Vec<VerifyDiagnostic>) {
                 fix: None,
             });
         }
+        Expr::Spawn { at: Some(at), .. } => walk_holes_expr(at, out),
+        Expr::Spawn { at: None, .. } => {}
         Expr::Call {
             callee,
             args,
@@ -876,6 +878,8 @@ fn walk_expr(
                 });
             }
         }
+        Expr::Spawn { at: Some(at), .. } => walk_expr(at, deprecated, out),
+        Expr::Spawn { at: None, .. } => {}
         Expr::Call {
             callee,
             args,

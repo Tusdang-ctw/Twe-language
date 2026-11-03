@@ -328,6 +328,8 @@ match_expr := "match" expr ":" INDENT (match_arm)+ DEDENT
 match_arm := pattern ":" block
 transition := "->" identifier        # state transition; only legal inside `state`
 spawn_stmt := "spawn" (identifier ".")? identifier ("at" expr)?   # module.Class: Lanternfall E5
+# Lanternfall G0: the same form is also an expression (a primary), whose
+# value is the new entity: `let shot = spawn Bullet at muzzle`.
 ```
 
 ### 3.7 Type expressions
@@ -1048,6 +1050,8 @@ Available buttons: `a b x y lb rb lt rt start select dup ddown dleft dright`. Ax
 ```twe
 spawn Slime at (100.0, 200.0)          # creates a new instance
 spawn bots.Bot at vec3(0, 0, 5)         # a class an imported module declares (§9.2)
+let shot = spawn Bullet at muzzle       # Lanternfall G0: spawn is also a value — the new entity
+shot.dir = aim_dir                      #   so its fields can be set right away
 despawn slime                           # removes it (fields still valid this frame)
 
 for s in entities.of(Slime):           # iterate live instances

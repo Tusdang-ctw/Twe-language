@@ -434,7 +434,16 @@ module.exports = grammar({
       $.list,
       $.tuple,
       $.parenthesized_expression,
+      $.spawn_expression,
     ),
+
+    // Lanternfall G0: `spawn` where a value is wanted — the new entity.
+    spawn_expression: $ => prec.right(seq(
+      'spawn',
+      optional(seq(field('module', $.identifier), '.')),
+      field('class', $.identifier),
+      optional(seq('at', field('at', $._expression))),
+    )),
 
     parenthesized_expression: $ => seq('(', $._expression, ')'),
 

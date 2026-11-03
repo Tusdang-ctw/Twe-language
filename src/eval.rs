@@ -2347,6 +2347,66 @@ fn lookup_name(env: &Env, name: &str) -> Option<Value> {
     env.get(name)
 }
 
+/// Spawn an entity of `class` (a name, or `module.Class`), at `at` when
+/// given: the `spawn` statement, and (Lanternfall G0) the `spawn`
+/// expression, whose value the new entity is.
+fn spawn_entity(
+    env: &mut Env,
+    class: &str,
+    at: Option<&Expr>,
+    line: u32,
+    col: u32,
+) -> Result<Value, RuntimeError> {
+    let class_val = lookup_spawn_class(env, class).ok_or_else(|| RuntimeError {
+        line,
+        col,
+        message: format!("class '{class}' is not defined"),
+        help: Some(match class.split_once('.') {
+            Some((module, member)) => format!(
+                "`{module}` must be an imported module that declares `entity {member}:`"
+            ),
+            None => format!("declare it with `entity {class}:` first"),
+        }),
+    })?;
+    let class_rc = if class_val.is_class() {
+        class_val.as_class()
+    } else {
+        let other = class_val;
+        return Err(RuntimeError {
+            line,
+            col,
+            message: format!(
+                "`spawn {class}` expects a class, but {class} is a {}",
+                other.type_name()
+            ),
+            help: None,
+        });
+    };
+    let at_value = match at {
+        Some(expr) => Some(eval_expr(env, expr)?),
+        None => None,
+    };
+    let inst_val = instantiate(class_rc.clone());
+    if let Some(av) = &at_value {
+        if inst_val.is_instance() {
+            let rc = inst_val.as_instance();
+            rc.borrow_mut().insert_field("pos", *av);
+        }
+    }
+    if inst_val.is_instance() {
+        let rc = inst_val.as_instance();
+        if class_rc.kind == "particles" {
+            seed_particle_emitter(env, &rc, at_value.as_ref(), line, col)?;
+        }
+        env.active_entities.push(rc.clone());
+        if class_rc.kind == "particles" || find_method(&class_rc, "update").is_some() {
+            env.tickable_entities.push(rc.clone());
+        }
+        crate::value::bump_look_epoch();
+    }
+    Ok(inst_val)
+}
+
 /// The class a `spawn` names: a bare name, or (Lanternfall E5)
 /// `module.Class` — a class an imported module declares.
 fn lookup_spawn_class(env: &Env, class: &str) -> Option<Value> {
@@ -2957,53 +3017,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             line,
             col,
         } => {
-            let class_val = lookup_spawn_class(env, class).ok_or_else(|| RuntimeError {
-                line: *line,
-                col: *col,
-                message: format!("class '{class}' is not defined"),
-                help: Some(match class.split_once('.') {
-                    Some((module, member)) => format!(
-                        "`{module}` must be an imported module that declares `entity {member}:`"
-                    ),
-                    None => format!("declare it with `entity {class}:` first"),
-                }),
-            })?;
-            let class_rc = if class_val.is_class() {
-                class_val.as_class()
-            } else {
-                let other = class_val;
-                return Err(RuntimeError {
-                    line: *line,
-                    col: *col,
-                    message: format!(
-                        "`spawn {class}` expects a class, but {class} is a {}",
-                        other.type_name()
-                    ),
-                    help: None,
-                });
-            };
-            let at_value = match at {
-                Some(expr) => Some(eval_expr(env, expr)?),
-                None => None,
-            };
-            let inst_val = instantiate(class_rc.clone());
-            if let Some(av) = &at_value {
-                if inst_val.is_instance() {
-                    let rc = inst_val.as_instance();
-                    rc.borrow_mut().insert_field("pos", *av);
-                }
-            }
-            if inst_val.is_instance() {
-                let rc = inst_val.as_instance();
-                if class_rc.kind == "particles" {
-                    seed_particle_emitter(env, &rc, at_value.as_ref(), *line, *col)?;
-                }
-                env.active_entities.push(rc.clone());
-                if class_rc.kind == "particles" || find_method(&class_rc, "update").is_some() {
-                    env.tickable_entities.push(rc.clone());
-                }
-                crate::value::bump_look_epoch();
-            }
+            spawn_entity(env, class, at.as_ref(), *line, *col)?;
             Ok(())
         }
         Stmt::Despawn { target, line, col } => {
@@ -3530,6 +3544,12 @@ fn eval_expr(env: &mut Env, expr: &Expr) -> Result<Value, RuntimeError> {
             let obj = eval_expr(env, object)?;
             field_get(&obj, name, *line, *col)
         }
+        Expr::Spawn {
+            class,
+            at,
+            line,
+            col,
+        } => spawn_entity(env, class, at.as_deref(), *line, *col),
         Expr::Call {
             callee,
             args,
@@ -4484,6 +4504,8 @@ fn look_reads_entity(e: &Expr, is_field: &dyn Fn(&str) -> bool) -> bool {
         Expr::Interp { exprs, .. } => any(exprs),
         Expr::Tuple { elems, .. } | Expr::List { elems, .. } => any(elems),
         Expr::Field { object, .. } => look_reads_entity(object, is_field),
+        // Spawning differs per call, like any call.
+        Expr::Spawn { .. } => true,
         Expr::Index { object, index, .. } => {
             look_reads_entity(object, is_field) || look_reads_entity(index, is_field)
         }

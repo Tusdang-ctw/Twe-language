@@ -36,7 +36,7 @@ is **not Python** — the rules below differ in ways that matter.
 - **Lists:** `.length` (a field, not a call), `.append(x)`, `.prepend(x)`, `.pop_back()`, `.pop_front()`, `.contains(x)`, `.set(i, x)`, and `x in list`. Nothing else.
 - **Integer division truncates:** `7 / 2` is `3`; write `7.0 / 2` (or keep a float) for `3.5`.
 - **One top-level `on update(dt):` and one `on render():`.** A second would replace the first (`verify` reports it). Each tick runs the top-level `on update` first, then every entity's `update(dt)` method; an entity spawned during the tick updates in that same tick.
-- **`spawn` is a statement and returns nothing.** To give a new instance more than its position, use field defaults, or set shared state the instance reads in its first `update`.
+- **`spawn` gives back the new entity.** `spawn Bullet at p` as a statement, or `let b = spawn Bullet at p` to set its fields right away (`b.dir = aim`). `spawn mod.Class` spawns a class an imported module declares; modules themselves may not spawn at their top level.
 
 ## The six core block keywords
 
@@ -150,7 +150,7 @@ entity Slime extends Enemy:         # single inheritance via `extends`
         pos = pos + vec3(speed * dt, 0, 0)
 
 # elsewhere:
-spawn Slime at vec3(1, 0, 2)        # sets `pos`; `spawn` is a statement and returns nothing
+spawn Slime at vec3(1, 0, 2)        # sets `pos`; `let s = spawn Slime at p` also gives back the new entity
 for s in entities.of(Slime):
     s.hurt(1)
     if s.hp <= 0:

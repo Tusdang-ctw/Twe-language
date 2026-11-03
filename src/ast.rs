@@ -626,6 +626,16 @@ pub enum Expr {
         line: u32,
         col: u32,
     },
+    /// Lanternfall G0: `spawn Class [at expr]` where a value is wanted
+    /// (`let shot = spawn Bullet at muzzle`) — it spawns as the
+    /// statement does and is the new entity. `class` may be
+    /// `module.Class`.
+    Spawn {
+        class: String,
+        at: Option<Box<Expr>>,
+        line: u32,
+        col: u32,
+    },
     Unary {
         op: UnOp,
         operand: Box<Expr>,
@@ -699,6 +709,7 @@ impl Expr {
             | Expr::Percent { line, .. }
             | Expr::Quantity { line, .. }
             | Expr::Ident { line, .. }
+            | Expr::Spawn { line, .. }
             | Expr::SelfRef { line, .. }
             | Expr::Tuple { line, .. }
             | Expr::List { line, .. }
@@ -724,6 +735,7 @@ impl Expr {
             | Expr::Percent { col, .. }
             | Expr::Quantity { col, .. }
             | Expr::Ident { col, .. }
+            | Expr::Spawn { col, .. }
             | Expr::SelfRef { col, .. }
             | Expr::Tuple { col, .. }
             | Expr::List { col, .. }

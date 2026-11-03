@@ -719,6 +719,11 @@ impl<'a> Resolver<'a> {
                 self.expr(index);
             }
             Expr::Field { object, .. } => self.expr(object),
+            Expr::Spawn { at, .. } => {
+                if let Some(at) = at {
+                    self.expr(at);
+                }
+            }
             Expr::Call {
                 callee,
                 args,

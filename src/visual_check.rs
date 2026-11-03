@@ -502,6 +502,12 @@ fn check_expr(expr: &Expr, errors: &mut Vec<VisualError>) {
             line: *line,
             col: *col,
         }),
+        Expr::Spawn { line, col, .. } => errors.push(VisualError {
+            message: "`spawn` isn't allowed inside a `visual` body".to_string(),
+            help: Some("a visual runs on the GPU per pixel; spawn from `update` or a handler".to_string()),
+            line: *line,
+            col: *col,
+        }),
         Expr::List { line, col, .. } => errors.push(VisualError {
             message: "list literals aren't allowed inside a `visual` body".to_string(),
             help: Some(

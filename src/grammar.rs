@@ -175,6 +175,11 @@ pub const RULES: &[Rule] = &[
         name: "spawn_stmt",
         body: "'spawn' IDENT ('.' IDENT)? ('at' expr)? NEWLINE",
     },
+    // Lanternfall G0: `spawn` as a value (the new entity).
+    Rule {
+        name: "spawn_expr",
+        body: "'spawn' IDENT ('.' IDENT)? ('at' expr)?",
+    },
     Rule {
         name: "despawn_stmt",
         body: "'despawn' expr NEWLINE",
@@ -307,7 +312,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         name: "primary_expr",
         body: "literal | IDENT | 'self' | tuple_expr | list_expr \
-                | range_expr | if_expr | '(' expr ')'",
+                | range_expr | if_expr | spawn_expr | '(' expr ')'",
     },
     Rule {
         name: "if_expr",

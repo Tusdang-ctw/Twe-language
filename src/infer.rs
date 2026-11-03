@@ -956,6 +956,18 @@ impl Inferer {
                     _ => Type::Unknown,
                 }
             }
+            // Lanternfall G0: `spawn Class` is an instance of the class
+            // (a module's class is not tracked here).
+            Expr::Spawn { class, at, .. } => {
+                if let Some(at) = at {
+                    self.expr_type(at);
+                }
+                if class.contains('.') {
+                    Type::Unknown
+                } else {
+                    Type::Instance(Rc::new(class.clone()))
+                }
+            }
             Expr::Call {
                 callee,
                 args,
