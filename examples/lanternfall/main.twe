@@ -1,0 +1,131 @@
+# @task: Lanternfall — a top-down 3D voxel battle royale on a night island lit by lanterns
+# @inputs: WASD move, mouse aim, Shift roll
+# @expected: the keeper walks the island at night between lanterns, the camera following and leaning toward the cursor
+# @category: 3d
+# @difficulty: large
+#
+# Run:   twec play3d examples/lanternfall/main.twe
+# Web:   twec build --target web examples/lanternfall   (then serve dist/web)
+#
+# The main file owns the world — it spawns everything, holds the match
+# state and the handlers; the modules hold classes, data and functions.
+
+import "tuning"
+import "world"
+import "player"
+import "hud"
+
+random.seed(20261103)
+auto_pause_on_blur(true)
+quit_on_escape(false)
+
+# ---------------------------------------------------------------
+# Night lighting.
+# ---------------------------------------------------------------
+light.clear()
+light.background((0.015, 0.02, 0.05))
+light.ambient((0.07, 0.08, 0.13, 1.0))
+sun.direction(vec3(-0.35, 0.8, 0.45))   # a low moon
+sun.intensity(0.28)
+sun.shadow(true)
+sun.shadow_extent(26.0)
+light.fog(0.012, 0.08, (0.05, 0.07, 0.12))
+postfx.tonemap("agx")
+postfx.bloom(0.45)
+postfx.ao(0.9)
+postfx.vignette(0.32)
+postfx.vignette_color((0.02, 0.02, 0.08))
+graphics.quality("auto")
+camera.fov = tuning.CAM_FOV
+camera.far = 400.0
+
+# ---------------------------------------------------------------
+# The island.
+# ---------------------------------------------------------------
+spawn world.Sea
+spawn world.Beach
+spawn world.Ground
+# The ground you stand on (the plateau and the beach, as one slab).
+physics.static_box(vec3(0, -1.0, 0), vec3(tuning.BEACH_HALF * 2, 2.0, tuning.BEACH_HALF * 2))
+
+for b in world.BLOCKS:
+    let block = spawn world.Block at vec3(b[1], b[6] + b[5] / 2, b[2])
+    block.size = vec3(b[3], b[5], b[4])
+    block.kind = b[0]
+    if b[0] == 4:
+        block.shade = (0.95, 0.95, 1.0)
+    else:
+        physics.static_box(block.pos, block.size)
+
+for l in world.LANTERNS:
+    let post = spawn world.LanternPost at vec3(l[0], 0, l[1])
+    post.turn = l[2]
+    # The lamp hangs 0.65 m out along the post's arm, 2.2 m up: a light,
+    # and a glowing pane so it reads as lit.
+    let lamp = vec3(l[0] + math.cos(l[2]) * 0.65, 2.2, l[1] - math.sin(l[2]) * 0.65)
+    light.add(lamp, (3.6, 2.0, 0.9, 1.0), 14.0)
+    spawn world.LampGlow at lamp
+    physics.static_box(vec3(l[0], 1.3, l[1]), vec3(0.3, 2.6, 0.3))
+
+# The beacon atop the vault lights the yard violet.
+light.add(vec3(0, 10.5, -2), (0.6, 0.35, 1.0, 1.0), 26.0)
+
+# Trees, rocks and crates on clear ground.
+var placed = 0
+var tries = 0
+while placed < 90 and tries < 2000:
+    tries += 1
+    let x = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 4)
+    let z = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 4)
+    if world.clear_ground(x, z, 3.0) and world.place_at(x, z) == "":
+        let pick = random.float()
+        if pick < 0.6:
+            let t = spawn world.Tree at vec3(x, 0, z)
+            t.turn = random.float() * 6.28
+            t.size = 0.85 + random.float() * 0.5
+            physics.static_box(vec3(x, 1.0, z), vec3(0.5, 2.0, 0.5))
+        elif pick < 0.85:
+            let r = spawn world.Rock at vec3(x, 0, z)
+            r.turn = random.float() * 6.28
+            r.size = 0.8 + random.float() * 0.9
+            physics.static_box(vec3(x, 0.4, z), vec3(1.2 * r.size, 0.8 * r.size, 1.0 * r.size))
+        else:
+            let c = spawn world.Crate at vec3(x, 0, z)
+            c.turn = random.float() * 1.57
+            physics.static_box(vec3(x, 0.45, z), vec3(0.9, 0.9, 0.9))
+        placed += 1
+
+# Keep the island's edge: invisible walls at the beach's rim.
+let rim = tuning.BEACH_HALF
+physics.static_box(vec3(0, 2, -rim), vec3(rim * 2, 4, 1))
+physics.static_box(vec3(0, 2, rim), vec3(rim * 2, 4, 1))
+physics.static_box(vec3(-rim, 2, 0), vec3(1, 4, rim * 2))
+physics.static_box(vec3(rim, 2, 0), vec3(1, 4, rim * 2))
+
+# ---------------------------------------------------------------
+# The keeper and the camera.
+# ---------------------------------------------------------------
+let me = spawn player.Player at vec3(0, 0, 24)
+var cam_x = me.pos.x
+var cam_z = me.pos.z
+
+on update(dt):
+    mesh_anim.advance(dt)
+    # Follow the keeper, leaning toward the cursor so you see where you
+    # aim — but never so far that the keeper leaves the screen.
+    var lean_x = (me.aim.x - me.pos.x) * tuning.CAM_LEAD
+    var lean_z = (me.aim.z - me.pos.z) * tuning.CAM_LEAD
+    let lean = math.sqrt(lean_x * lean_x + lean_z * lean_z)
+    if lean > tuning.CAM_LEAN_MAX:
+        lean_x = lean_x * tuning.CAM_LEAN_MAX / lean
+        lean_z = lean_z * tuning.CAM_LEAN_MAX / lean
+    let want_x = me.pos.x + lean_x
+    let want_z = me.pos.z + lean_z
+    let k = math.min(1.0, dt * tuning.CAM_SMOOTH)
+    cam_x = cam_x + (want_x - cam_x) * k
+    cam_z = cam_z + (want_z - cam_z) * k
+    camera.target = vec3(cam_x, 0.6, cam_z)
+    camera.eye = vec3(cam_x, tuning.CAM_HEIGHT, cam_z + tuning.CAM_BACK)
+
+on render():
+    hud.draw_playing(me, world.place_at(me.pos.x, me.pos.z))

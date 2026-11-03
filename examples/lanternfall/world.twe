@@ -1,0 +1,287 @@
+# @task: Lanternfall world module
+# @inputs: none
+# @expected: the island's procedural materials, building and prop classes, and its layout data
+# @category: 3d
+# @difficulty: medium
+#
+# Lanternfall — the island: its materials, its pieces, and where they go.
+#
+# The island is a grass plateau on a beach ring in a night sea. Its five
+# places are built from blocks (stretched cubes, `scale: vec3(...)`)
+# with procedural surfaces — no textures. The main file spawns every
+# piece from the lists below and gives the solid ones colliders.
+
+import "tuning"
+
+# ---------------------------------------------------------------
+# Materials. `pos` is world space, so patterns don't stretch with a
+# block's scale.
+# ---------------------------------------------------------------
+
+visual GrassMat:
+    surface(uv, time, pos) -> material:
+        let tuft = noise((pos.x, pos.z) * 0.9) * 0.5 + noise((pos.x, pos.z) * 3.1) * 0.25
+        let patch = smoothstep(0.1, 0.6, noise((pos.x, pos.z) * 0.07))
+        let lush = mix((0.16, 0.3, 0.17), (0.22, 0.38, 0.2), tuft)
+        return material(albedo: mix(lush, (0.28, 0.33, 0.18), patch * 0.5), roughness: 0.95)
+
+visual SandMat:
+    surface(uv, time, pos) -> material:
+        let ripple = math.sin(pos.x * 1.3 + noise((pos.x, pos.z) * 0.4) * 3) * 0.04
+        let grain = noise((pos.x, pos.z) * 6) * 0.05
+        return material(albedo: (0.74, 0.66, 0.5) + (ripple + grain, ripple + grain, ripple), roughness: 0.9)
+
+visual SeaMat:
+    surface(uv, time, pos) -> material:
+        let glint = smoothstep(0.55, 0.75, noise((pos.x * 0.6 + time * 0.3, pos.z * 0.6)))
+        return material(albedo: (0.03, 0.09, 0.16), roughness: 0.08, emission: (0.05, 0.12, 0.2) * glint * 0.6)
+
+    displace(uv, time, pos) -> vec3:
+        let swell = math.sin(pos.x * 0.21 + time * 0.9) * 0.18 + math.sin(pos.z * 0.17 - time * 1.1) * 0.14
+        return (0, swell + noise((pos.x, pos.z) * 0.3 + (time * 0.2, 0)) * 0.1, 0)
+
+visual CobbleMat:
+    surface(uv, time, pos) -> material:
+        let cell = (math.mod(pos.x * 1.6, 1), math.mod(pos.z * 1.6 + math.floor(pos.x * 1.6) * 0.5, 1))
+        let edge = math.min(math.min(cell.x, 1 - cell.x), math.min(cell.y, 1 - cell.y))
+        let grout = 1 - smoothstep(0.04, 0.12, edge)
+        let tone = noise((math.floor(pos.x * 1.6), math.floor(pos.z * 1.6))) * 0.06
+        return material(albedo: mix((0.42, 0.4, 0.42) + (tone, tone, tone), (0.2, 0.19, 0.2), grout), roughness: 0.85)
+
+visual StoneMat:
+    surface(uv, time, pos) -> material:
+        let row = math.floor(pos.y * 2.2)
+        let brick = (math.mod(pos.x * 1.1 + pos.z * 1.1 + row * 0.5, 1), math.mod(pos.y * 2.2, 1))
+        let edge = math.min(math.min(brick.x, 1 - brick.x), math.min(brick.y, 1 - brick.y))
+        let mortar = 1 - smoothstep(0.03, 0.08, edge)
+        let tone = noise((row, math.floor(pos.x * 1.1 + pos.z * 1.1))) * 0.07
+        return material(albedo: mix((0.56, 0.55, 0.58) + (tone, tone, tone), (0.3, 0.29, 0.31), mortar), roughness: 0.9)
+
+# Houses: stone with warm lit windows between 1.2 m and 2.2 m.
+visual HouseMat:
+    surface(uv, time, pos) -> material:
+        let row = math.floor(pos.y * 2.2)
+        let brick = (math.mod(pos.x * 1.1 + pos.z * 1.1 + row * 0.5, 1), math.mod(pos.y * 2.2, 1))
+        let edge = math.min(math.min(brick.x, 1 - brick.x), math.min(brick.y, 1 - brick.y))
+        let mortar = 1 - smoothstep(0.03, 0.08, edge)
+        let along = math.mod(pos.x + pos.z, 3.0)
+        let pane = smoothstep(1.15, 1.25, pos.y) * (1 - smoothstep(2.15, 2.25, pos.y))
+        let window = pane * smoothstep(1.0, 1.1, along) * (1 - smoothstep(1.9, 2.0, along))
+        let flicker = 0.85 + 0.15 * math.sin(time * 3 + pos.x)
+        let wall = mix((0.6, 0.56, 0.52), (0.32, 0.29, 0.28), mortar)
+        return material(albedo: mix(wall, (0.1, 0.08, 0.05), window), roughness: 0.9, emission: (1.0, 0.62, 0.28) * window * flicker * 1.6)
+
+visual PlankMat:
+    surface(uv, time, pos) -> material:
+        let board = math.mod(pos.x * 3 + pos.z * 0.2, 1)
+        let seam = 1 - smoothstep(0.0, 0.08, math.min(board, 1 - board))
+        let grain = noise((pos.x * 3, pos.z * 0.4)) * 0.08
+        return material(albedo: mix((0.46, 0.31, 0.19) + (grain, grain * 0.7, grain * 0.4), (0.2, 0.13, 0.08), seam), roughness: 0.8)
+
+visual MetalMat:
+    surface(uv, time, pos) -> material:
+        let rib = math.mod(pos.x * 1.5 + pos.z * 1.5, 1)
+        let ridge = smoothstep(0.4, 0.5, rib) * (1 - smoothstep(0.5, 0.6, rib))
+        let rust = smoothstep(0.2, 0.7, noise((pos.x, pos.z + pos.y) * 0.5))
+        let steel = mix((0.42, 0.45, 0.5), (0.45, 0.25, 0.14), rust)
+        return material(albedo: steel * (0.85 + ridge * 0.25), metalness: 0.7 - rust * 0.5, roughness: 0.45 + rust * 0.4)
+
+visual GlassMat:
+    surface(uv, time, pos) -> material:
+        let frame = math.min(math.mod(pos.x * 0.8 + pos.z * 0.8, 1), math.mod(pos.y * 0.8, 1))
+        let bar = 1 - smoothstep(0.04, 0.09, frame)
+        let starlight = 0.6 + 0.4 * math.sin(time * 0.7 + pos.y)
+        return material(albedo: mix((0.12, 0.2, 0.26), (0.18, 0.17, 0.2), bar), metalness: 0.2, roughness: 0.1, emission: (0.25, 0.55, 0.7) * (1 - bar) * starlight * 0.5)
+
+# The vault's signal: a beacon that pulses.
+visual BeaconMat:
+    surface(uv, time, pos) -> material:
+        let pulse = 0.5 + 0.5 * math.sin(time * 2.5)
+        return material(albedo: (0.2, 0.15, 0.3), roughness: 0.2, emission: (0.7, 0.4, 1.0) * (1.5 + pulse * 3))
+
+# ---------------------------------------------------------------
+# Pieces.
+# ---------------------------------------------------------------
+
+entity Ground:
+    var pos = vec3(0, -1.0, 0)
+    look:
+        mesh: "cube"
+        scale: vec3(tuning.ISLAND_HALF * 2, 2.0, tuning.ISLAND_HALF * 2)
+        material: GrassMat
+
+entity Beach:
+    var pos = vec3(0, -1.12, 0)
+    look:
+        mesh: "cube"
+        scale: vec3(tuning.BEACH_HALF * 2, 2.0, tuning.BEACH_HALF * 2)
+        material: SandMat
+
+entity Sea:
+    var pos = vec3(0, tuning.SEA_LEVEL, 0)
+    look:
+        mesh: "assets/grid_plane.glb"
+        scale: 900.0
+        material: SeaMat
+
+# A building piece: a stretched cube, a size, a tint over its material.
+entity Block:
+    var pos = vec3(0, 0, 0)
+    var size = vec3(1, 1, 1)
+    var shade = (1.0, 1.0, 1.0)
+    var kind = 0
+    look:
+        mesh: "cube"
+        scale: size
+        tint: shade
+        material: material_of(kind)
+
+# The material for block kind `k` (see BLOCKS).
+function material_of(k):
+    if k == 0:
+        return StoneMat
+    if k == 1:
+        return PlankMat
+    if k == 2:
+        return MetalMat
+    if k == 3:
+        return GlassMat
+    if k == 4:
+        return CobbleMat
+    if k == 5:
+        return HouseMat
+    return BeaconMat
+
+# Static props (no update: they cost nothing a tick).
+entity Tree:
+    var pos = vec3(0, 0, 0)
+    var turn = 0.0
+    var size = 1.0
+    look:
+        mesh: "assets/tree.glb"
+        facing: turn
+        scale: size
+
+entity Rock:
+    var pos = vec3(0, 0, 0)
+    var turn = 0.0
+    var size = 1.0
+    look:
+        mesh: "assets/rock.glb"
+        facing: turn
+        scale: size
+
+entity Crate:
+    var pos = vec3(0, 0, 0)
+    var turn = 0.0
+    look:
+        mesh: "assets/crate.glb"
+        facing: turn
+
+entity LanternPost:
+    var pos = vec3(0, 0, 0)
+    var turn = 0.0
+    look:
+        mesh: "assets/lantern_post.glb"
+        facing: turn
+
+# The lit pane of a lantern: a small block that glows and blooms.
+entity LampGlow:
+    var pos = vec3(0, 0, 0)
+    look:
+        mesh: "cube"
+        scale: vec3(0.22, 0.26, 0.22)
+        tint: (1.0, 0.8, 0.5)
+        glow: (2.6, 1.5, 0.6)
+
+# ---------------------------------------------------------------
+# The layout.
+# ---------------------------------------------------------------
+
+# Block kinds: 0 stone, 1 planks, 2 metal, 3 glass, 4 cobble path
+# (walk-through), 5 house wall (lit windows), 6 beacon.
+# (kind, x, z, width, depth, height, base y)
+let BLOCKS = [
+    # --- Signal Vault (centre): a walled yard with a gate to the south ---
+    (0, 0.0, -11.0, 23.0, 1.2, 3.6, 0.0),
+    (0, -11.0, 0.0, 1.2, 21.0, 3.6, 0.0),
+    (0, 11.0, 0.0, 1.2, 21.0, 3.6, 0.0),
+    (0, -7.0, 11.0, 9.0, 1.2, 3.6, 0.0),
+    (0, 7.0, 11.0, 9.0, 1.2, 3.6, 0.0),
+    (2, 0.0, 11.0, 5.0, 0.4, 0.4, 3.4),
+    (0, 0.0, -2.0, 3.0, 3.0, 9.0, 0.0),
+    (6, 0.0, -2.0, 2.0, 2.0, 1.6, 9.0),
+    # --- Lantern Docks (south): two piers and the harbour houses ---
+    (1, 8.0, 112.0, 6.0, 28.0, 0.5, -0.4),
+    (1, -16.0, 109.0, 4.0, 20.0, 0.5, -0.4),
+    (5, -4.0, 88.0, 11.0, 7.0, 4.0, 0.0),
+    (2, -4.0, 88.0, 12.0, 8.0, 0.5, 4.0),
+    (5, 18.0, 86.0, 8.0, 8.0, 3.4, 0.0),
+    (2, 18.0, 86.0, 9.0, 9.0, 0.5, 3.4),
+    (5, 34.0, 92.0, 7.0, 6.0, 3.0, 0.0),
+    (2, 34.0, 92.0, 8.0, 7.0, 0.5, 3.0),
+    # --- Glasshouse Observatory (north-west) ---
+    (0, -62.0, -58.0, 15.0, 15.0, 3.0, 0.0),
+    (3, -62.0, -58.0, 11.0, 11.0, 4.2, 3.0),
+    (3, -62.0, -58.0, 7.0, 7.0, 1.6, 7.2),
+    (0, -62.0, -58.0, 3.0, 3.0, 1.2, 8.8),
+    (0, -76.0, -50.0, 1.0, 8.0, 1.2, 0.0),
+    (0, -48.0, -66.0, 8.0, 1.0, 1.2, 0.0),
+    # --- Rust Hangars (east) ---
+    (2, 72.0, -24.0, 22.0, 12.0, 6.5, 0.0),
+    (2, 74.0, 2.0, 18.0, 10.0, 5.0, 0.0),
+    (2, 91.0, -8.0, 4.0, 4.0, 9.5, 0.0),
+    (3, 91.0, -8.0, 5.0, 5.0, 1.6, 9.5),
+    (1, 58.0, -6.0, 6.0, 3.0, 1.2, 0.0),
+    # --- Sunken Chapel (west) ---
+    (5, -74.0, 38.0, 10.0, 18.0, 5.0, 0.0),
+    (0, -74.0, 26.0, 5.0, 5.0, 11.0, 0.0),
+    (2, -74.0, 26.0, 6.0, 6.0, 0.6, 11.0),
+    (0, -62.0, 50.0, 1.2, 9.0, 2.2, 0.0),
+    (0, -86.0, 44.0, 1.2, 6.0, 1.6, 0.0),
+    # --- roads (walk-through cobble) from the vault to each place ---
+    (4, 0.0, 46.0, 5.0, 70.0, 0.06, 0.0),
+    (4, -32.0, -30.0, 5.0, 62.0, 0.06, 0.0),
+    (4, 40.0, -8.0, 56.0, 5.0, 0.06, 0.0),
+    (4, -40.0, 24.0, 58.0, 5.0, 0.06, 0.0),
+]
+
+# The five places: (name, x, z, radius, loot tier 1-3).
+let PLACES = [
+    ("Signal Vault", 0.0, 0.0, 16.0, 3),
+    ("Lantern Docks", 8.0, 92.0, 26.0, 2),
+    ("Glasshouse Observatory", -62.0, -58.0, 22.0, 2),
+    ("Rust Hangars", 76.0, -10.0, 26.0, 2),
+    ("Sunken Chapel", -72.0, 36.0, 22.0, 2),
+]
+
+# Lantern posts: (x, z, turn). Each gets a warm point light.
+let LANTERNS = [
+    (-4.0, 16.0, 0.0), (4.0, 30.0, 3.14), (-4.0, 46.0, 0.0), (4.0, 62.0, 3.14), (-4.0, 76.0, 0.0),
+    (6.0, 98.0, 3.14), (10.0, 108.0, 0.0), (10.0, 122.0, 0.0), (-14.0, 104.0, 3.14),
+    (-16.0, -14.0, 1.57), (-30.0, -26.0, 0.0), (-36.0, -44.0, 3.14), (-50.0, -50.0, 1.57), (-70.0, -66.0, 0.0),
+    (16.0, -4.0, 1.57), (32.0, -12.0, 0.0), (48.0, -4.0, 3.14), (62.0, -12.0, 0.0), (84.0, 8.0, 1.57),
+    (-16.0, 20.0, 1.57), (-32.0, 28.0, 0.0), (-50.0, 20.0, 3.14), (-64.0, 28.0, 0.0), (-80.0, 48.0, 1.57),
+    (14.0, 14.0, 1.57), (-14.0, -14.0, 1.57),
+]
+
+# Is (x, z) clear of every solid block and road, by `margin` metres —
+# where a tree, rock or crate may stand?
+function clear_ground(x, z, margin):
+    if math.abs(x) > tuning.ISLAND_HALF - 3 or math.abs(z) > tuning.ISLAND_HALF - 3:
+        return false
+    for b in BLOCKS:
+        let half_w = b[3] / 2 + margin
+        let half_d = b[4] / 2 + margin
+        if math.abs(x - b[1]) < half_w and math.abs(z - b[2]) < half_d:
+            return false
+    return true
+
+# The place (x, z) is in, or "" in the wilds.
+function place_at(x, z):
+    for p in PLACES:
+        let dx = x - p[1]
+        let dz = z - p[2]
+        if dx * dx + dz * dz < p[3] * p[3]:
+            return p[0]
+    return ""

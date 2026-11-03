@@ -587,6 +587,11 @@ pub fn entry_env_with(
     let order = topo_order(graph);
     let mut module_cache: std::collections::HashMap<String, crate::tagged_value::TaggedValue> =
         std::collections::HashMap::new();
+    // Lanternfall G0: what the modules' `visual` and `particles` blocks
+    // compiled to. A look or a spawn finds them by name in the env the
+    // game runs in, so they move into the entry env.
+    let mut visuals = std::collections::HashMap::new();
+    let mut particles = std::collections::HashMap::new();
 
     for key in &order {
         let module = graph.deps.get(key).expect("topo_order returns only deps");
@@ -606,6 +611,8 @@ pub fn entry_env_with(
         init(&mut sub_env);
         crate::eval::run_top_level(&mut sub_env, &module.program)?;
         refuse_module_world(&sub_env, module)?;
+        visuals.extend(sub_env.visual_materials.drain());
+        particles.extend(sub_env.particle_classes.drain());
         fill_module_value(&module_value, &sub_env, &stdlib_names);
         module_cache.insert(key.clone(), module_value);
     }
@@ -614,6 +621,8 @@ pub fn entry_env_with(
     crate::stdlib::install(&mut env);
     env.module_cache = module_cache;
     env.current_source = Some(graph.entry.canonical_path.clone());
+    env.visual_materials.extend(visuals);
+    env.particle_classes.extend(particles);
     init(&mut env);
     crate::eval::run_top_level(&mut env, &graph.entry.program)?;
     Ok(env)

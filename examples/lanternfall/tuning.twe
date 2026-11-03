@@ -1,0 +1,35 @@
+# @task: Lanternfall tuning module
+# @inputs: none
+# @expected: every tunable number of the battle royale, as constants
+# @category: 3d
+# @difficulty: trivial
+#
+# Lanternfall — every tunable number in one place.
+#
+# Modules hold constants, classes and functions; the main file owns the
+# world (see main.twe). Read these as `tuning.NAME`.
+
+# --- the island ---
+let ISLAND_HALF = 110.0          # the grass plateau spans ±ISLAND_HALF metres
+let BEACH_HALF = 122.0           # the sand ring around it
+let SEA_LEVEL = -0.45
+
+# --- the player ---
+let WALK_SPEED = 5.5             # m/s
+let ACCEL = 38.0                 # how fast the keeper reaches walking speed
+let FRICTION = 30.0              # how fast it stops when you let go
+let DODGE_SPEED = 15.0           # m/s during a roll
+let DODGE_TIME = 0.26            # seconds of roll (invulnerable)
+let DODGE_COOLDOWN = 1.6
+let GRAVITY = 22.0               # m/s² (a little heavy: snappy landings)
+let BODY_HEIGHT = 1.6            # the character capsule
+let BODY_RADIUS = 0.34
+let AIM_HEIGHT = 1.0             # the cursor aims at this height above the ground
+
+# --- the camera ---
+let CAM_FOV = 40.0               # degrees: a long lens flattens the view, top-down style
+let CAM_HEIGHT = 15.0
+let CAM_BACK = 10.5
+let CAM_SMOOTH = 7.0             # higher = tighter follow
+let CAM_LEAD = 0.22              # how far the camera leans toward the cursor (0..1)
+let CAM_LEAN_MAX = 4.5           # metres, at most

@@ -816,6 +816,8 @@ Conversion between compatible units is automatic at the type level (`30cm + 1m =
 
 **Lists** have exactly these members: the field `.length`, and the methods `.append(x)`, `.prepend(x)`, `.pop_back()`, `.pop_front()`, `.contains(x)` and `.set(i, x)`; `x in list` tests membership. Any other member is an error. `twec verify` reports it where the value is known to be a list (web3d-M5); before, `.len()` passed verify and failed when it ran.
 
+**Strings** have the field `.length`, the number of characters *(Lanternfall G0; before, strings had no length at all)*.
+
 ### 6.1 List comprehensions  *(Snake NP3)*
 
 An array can also be built with a comprehension — `[<element> for <var> in <iterable>]`, with an optional `if <condition>` filter:
@@ -1924,6 +1926,10 @@ spawn u.Bot at vec3(0, 0, 0) # spawn a class the module declares (Lanternfall E5
 `import "<path>" [as name]` binds the module as an object named after the path's last segment (or `name`); its top-level `let` / `var` / `function` / `entity` / `visual` / `particles` declarations are its fields. Modules are loaded, and their top levels run, before the importing file's, in dependency order; cycles are an error that names the chain. There is no dynamic import.
 
 **What a module may do at its top level.** A module's top level runs in its own environment, which nothing ticks or draws. So a module declares classes, functions and values; the main file owns the world. A module that spawns an entity, declares a `scene`, or registers a top-level `on update` / `on render` / `on X.death` handler is refused at load with an error saying so (Lanternfall E5; before, they silently never ran). `spawn module.Class` in the main file spawns a module's entity; its methods resolve free names in the module's globals (§9.1).
+
+A module's `visual` and `particles` blocks work as materials and emitters anywhere in the game, as if declared in the main file *(Lanternfall G0; before, a look using a module's visual failed with "not a visual block")*.
+
+**Don't reuse a stdlib name at a module's top level.** A module that defines its own `panel` (or any other builtin's name) doesn't export it, and calls to `panel` inside the module still reach the builtin. Pick another name (`twec verify` doesn't warn yet).
 
 *Not implemented:* the `import math` / `from inventory import Sword` forms sketched in earlier drafts.
 

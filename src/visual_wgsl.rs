@@ -211,9 +211,9 @@ fn method_fn(m: Method<'_>, ret: Ret) -> Result<String, WgslError> {
             .get(i)
             .map(|p| p.name.clone())
             .unwrap_or_else(|| format!("twe_{}", SURFACE_INPUTS[i]));
-        sig.push(format!("{name}: {}", wgsl_tys[i]));
+        sig.push(format!("{}: {}", wgsl_name(&name), wgsl_tys[i]));
         if i == 3 {
-            cx.normal_in = name.clone();
+            cx.normal_in = wgsl_name(&name);
         }
         cx.scope.push((name, input_tys[i]));
     }
@@ -416,7 +416,7 @@ impl Codegen {
                 }
                 self.push_indent(out);
                 out.push_str("let ");
-                out.push_str(name);
+                out.push_str(&wgsl_name(name));
                 out.push_str(" = ");
                 self.emit_expr(out, value)?;
                 out.push_str(";\n");
@@ -672,7 +672,7 @@ impl Codegen {
                 out.push_str(if *value { "true" } else { "false" });
             }
             Expr::Ident { name, .. } => {
-                out.push_str(name);
+                out.push_str(&wgsl_name(name));
             }
             Expr::Tuple { elems, .. } => {
                 let Ty::Vec(n) = self.ty_of(expr)? else {
@@ -985,6 +985,14 @@ fn unop_str(op: UnOp) -> &'static str {
         UnOp::Neg => "-",
         UnOp::Not => "!",
     }
+}
+
+/// Lanternfall G0: the WGSL name of a script-named value (a parameter or
+/// a `let`). Every one is prefixed, so no name a script picks can be a
+/// WGSL keyword or reserved word (`patch`, `filter`, `target`, …) or
+/// shadow a builtin the generated code calls (`length`, `mix`, …).
+fn wgsl_name(name: &str) -> String {
+    format!("v_{name}")
 }
 
 /// Resolve a Twe call's callee to a WGSL function name.

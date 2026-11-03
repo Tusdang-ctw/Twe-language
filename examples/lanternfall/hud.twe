@@ -1,0 +1,49 @@
+# @task: Lanternfall HUD module
+# @inputs: none
+# @expected: health and shield bars, the place name and a crosshair, laid out from screen.size
+# @category: 3d
+# @difficulty: small
+#
+# Lanternfall — the heads-up display.
+#
+# Drawn over the 3D scene in HUD units: 480 tall, `screen.size.x` wide
+# (wider than 640 on a widescreen window), so everything right- or
+# centre-aligned is placed from `screen.size`.
+
+let INK = (0.04, 0.05, 0.09, 0.78)
+let EDGE = (1.0, 1.0, 1.0, 0.12)
+let HP = (0.36, 0.86, 0.46, 1.0)
+let SHIELD = (0.36, 0.7, 1.0, 1.0)
+let WARM = (1.0, 0.78, 0.42, 1.0)
+
+# A rounded-looking chip: a dark panel with a faint edge.
+function chip(x, y, w, h):
+    rect((x, y), (w, h), INK)
+    rect_outline((x, y), (w, h), 1.0, EDGE)
+
+# A bar `frac` full, with its label and value.
+function bar(x, y, w, frac, fill, value):
+    rect((x, y), (w, 8), (0.0, 0.0, 0.0, 0.55))
+    rect((x, y), (w * math.clamp(frac, 0.0, 1.0), 8), fill)
+    text("{math.floor(value)}", (x + w + 6, y + 8), 12, (0.9, 0.92, 1.0, 0.9))
+
+# The cursor: a ring with a dot, in the HUD's warm colour.
+function crosshair():
+    circle_outline(mouse.pos, 9.0, 1.5, WARM)
+    circle(mouse.pos, 1.6, WARM)
+
+# Health and shield, bottom-left; the place you're in, top-centre.
+function draw_playing(me, place):
+    let w = screen.size.x
+    chip(12, 404, 196, 62)
+    text("HP", (22, 426), 12, (0.8, 0.85, 0.9, 0.8))
+    bar(48, 418, 120, me.hp / 100.0, HP, me.hp)
+    text("SH", (22, 446), 12, (0.8, 0.85, 0.9, 0.8))
+    bar(48, 438, 120, me.shield / 100.0, SHIELD, me.shield)
+    if me.dodge_cd > 0.0:
+        rect((48, 456), (120 * (1 - me.dodge_cd / 1.6), 3), WARM)
+    if place != "":
+        let tw = place.length * 8.0 + 24
+        chip(w / 2 - tw / 2, 12, tw, 26)
+        text(place, (w / 2 - tw / 2 + 12, 30), 14, WARM)
+    crosshair()

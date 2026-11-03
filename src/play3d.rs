@@ -254,6 +254,12 @@ fn run_capture(mut env: Env, at: u32, out: &str) -> i32 {
             eprintln!("[twec] capture render error: {e}");
             return 1;
         }
+        // The script's output, and an `on render():` error (which the
+        // frame survives), are shown as the live window shows them —
+        // a capture used to swallow them and save a blank frame.
+        if !env.out.is_empty() {
+            eprint!("{}", std::mem::take(&mut env.out));
+        }
     }
     // Meshes load on worker threads; keep drawing until they arrive.
     for _ in 0..200 {

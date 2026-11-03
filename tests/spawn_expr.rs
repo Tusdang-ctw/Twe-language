@@ -44,3 +44,10 @@ fn the_statement_form_is_unchanged_and_round_trips() {
     let again = twec::parser::parse(&twec::lexer::lex(&printed).unwrap()).unwrap();
     assert_eq!(twec::printer::print_program(&again), printed);
 }
+
+/// Lanternfall G0: strings have `.length` (characters), as lists do.
+#[test]
+fn strings_have_a_length() {
+    let env = run("let s = \"Lantern Docks\"\nprint(s.length)\nprint(\"é∑\".length)\n");
+    assert_eq!(env.out, "13\n2\n");
+}

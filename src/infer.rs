@@ -923,6 +923,8 @@ impl Inferer {
                     (Type::Tuple(elems), "y") if elems.len() >= 2 => elems[1].clone(),
                     (Type::Tuple(elems), "z") if elems.len() >= 3 => elems[2].clone(),
                     (Type::List(_), "length") => Type::Int,
+                    // Lanternfall G0: strings have a `.length` too.
+                    (Type::Str, "length") => Type::Int,
                     // web3d-M5: a list's members are fixed (`eval::list_method_call`
                     // plus `.length`), so any other name on a value known to be a
                     // list fails at run time. Report it here: the benchmark's pilot

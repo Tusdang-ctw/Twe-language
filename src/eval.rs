@@ -3686,6 +3686,18 @@ fn field_get(obj: &Value, name: &str, line: u32, col: u32) -> Result<Value, Runt
                 ),
             }),
         }
+    } else if obj.is_str() {
+        // Lanternfall G0: a string's `.length` (in characters), as a
+        // list's — HUDs centre and pad text by it.
+        match name {
+            "length" => Ok(Value::from_int(obj.as_string().chars().count() as i64)),
+            _ => Err(RuntimeError {
+                line,
+                col,
+                message: format!("string has no field '{name}'"),
+                help: Some("strings expose .length (the number of characters)".to_string()),
+            }),
+        }
     } else if obj.is_object() {
         let rc = obj.as_object();
         let result = rc.borrow().get_field(name).ok_or_else(|| RuntimeError {

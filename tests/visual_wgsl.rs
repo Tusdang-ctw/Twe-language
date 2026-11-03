@@ -57,7 +57,7 @@ fn integer_literals_emit_as_floats() {
     let modules = compile(src).expect("should compile");
     let wgsl = &modules[0].1;
     assert!(
-        wgsl.contains("4.0 * (uv).x") || wgsl.contains("(4.0 * (uv).x)"),
+        wgsl.contains("4.0 * (v_uv).x") || wgsl.contains("(4.0 * (v_uv).x)"),
         "expected integer 4 to emit as 4.0. got:\n{wgsl}"
     );
 }
@@ -81,7 +81,7 @@ fn math_dot_sin_calls_through() {
         \x20       return color.red\n";
     let modules = compile(src).expect("should compile");
     let wgsl = &modules[0].1;
-    assert!(wgsl.contains("sin(time)"), "got:\n{wgsl}");
+    assert!(wgsl.contains("sin(v_time)"), "got:\n{wgsl}");
 }
 
 #[test]
@@ -205,7 +205,7 @@ fn material_outputs_are_coerced_and_defaulted() {
     // four-component emission drops its alpha.
     assert!(
         wgsl.contains(
-            "TweSurface(vec4<f32>(vec3<f32>(1.0, 0.0, 0.0), 1.0), twe_normal, 0.5, 0.0, (vec4<f32>(1.0, 0.0, 0.0, 1.0)).rgb)"
+            "TweSurface(vec4<f32>(vec3<f32>(1.0, 0.0, 0.0), 1.0), v_twe_normal, 0.5, 0.0, (vec4<f32>(1.0, 0.0, 0.0, 1.0)).rgb)"
         ),
         "got:\n{wgsl}"
     );
@@ -218,5 +218,27 @@ fn math_mod_matches_rem_euclid() {
          \x20   surface(uv, time) -> material:\n\
          \x20       return material(roughness: math.mod(time, 2))\n",
     );
-    assert!(wgsl.contains("(time - abs(2.0) * floor(time / abs(2.0)))"), "got:\n{wgsl}");
+    assert!(wgsl.contains("(v_time - abs(2.0) * floor(v_time / abs(2.0)))"), "got:\n{wgsl}");
+}
+
+/// Lanternfall G0: a visual may name a value anything — a WGSL keyword or
+/// reserved word (`patch`, `filter`, `target`) or a builtin the generated
+/// code calls (`length`, `mix`) — and still compile and validate.
+#[test]
+fn any_local_name_compiles() {
+    let wgsl = material(
+        "visual Foo:\n\
+         \x20   surface(uv, time, pos) -> material:\n\
+         \x20       let patch = smoothstep(0.1, 0.6, noise((pos.x, pos.z) * 0.07))\n\
+         \x20       let filter = patch * 0.5\n\
+         \x20       let target = (filter, filter, 0.2)\n\
+         \x20       let length = math.length(target)\n\
+         \x20       return material(albedo: mix(target, (1, 1, 1), length * 0.1))\n",
+    );
+    assert!(wgsl.contains("let v_patch"), "got:\n{wgsl}");
+    let module = naga::front::wgsl::parse_str(&twec::kernel::render::material_shader_source(&wgsl))
+        .unwrap_or_else(|e| panic!("WGSL parse: {e}"));
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .expect("validates");
 }

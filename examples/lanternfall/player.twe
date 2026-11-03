@@ -1,0 +1,133 @@
+# @task: Lanternfall player module
+# @inputs: WASD move, mouse aim, Shift roll
+# @expected: the keeper entity: character-controller movement, cursor facing, rolling, per-entity animation
+# @category: 3d
+# @difficulty: medium
+#
+# Lanternfall — the keeper you play.
+#
+# Moves with WASD on a kinematic capsule (`physics.character`, so walls
+# stop it and steps don't), faces the cursor (`camera.ground_point`),
+# and rolls with Shift. It animates on its own clock
+# (`mesh_anim.*(self, ...)`), squashes when it lands a roll, and flashes
+# when it is hurt.
+
+import "tuning"
+
+entity Player:
+    var pos = vec3(0, 0, 0)
+    var body = -1                 # its physics capsule
+    var vel = vec3(0, 0, 0)       # ground velocity (m/s)
+    var fall = 0.0                # vertical speed (m/s)
+    var heading = 0.0             # where it faces (radians about +Y)
+    var aim = vec3(0, 0, 1)       # the world point under the cursor
+    var dodge_t = 0.0             # seconds left in a roll
+    var dodge_cd = 0.0            # seconds until it may roll again
+    var dodge_dir = vec3(0, 0, 1)
+    var squash = 0.0              # 1 just after landing a roll, easing to 0
+    var hurt = 0.0                # 1 just after a hit, easing to 0
+    var hp = 100.0
+    var shield = 0.0
+    var alive = true
+    var armed = false             # holding a gun: arms forward
+    var control = true            # false while a menu or the drop owns it
+    look:
+        mesh: "assets/keeper.glb"
+        facing: heading
+        scale: vec3(1.0 + squash * 0.22, 1.0 - squash * 0.28, 1.0 + squash * 0.22)
+        glow: (1.0, 0.85, 0.7) * hurt * 2.5
+
+    function update(dt):
+        if body < 0:
+            body = physics.character(pos + vec3(0, tuning.BODY_HEIGHT / 2, 0), tuning.BODY_HEIGHT, tuning.BODY_RADIUS)
+        squash = math.max(0.0, squash - dt * 4.0)
+        hurt = math.max(0.0, hurt - dt * 5.0)
+        dodge_cd = math.max(0.0, dodge_cd - dt)
+        if alive and control:
+            steer(dt)
+        else:
+            vel = vel * math.max(0.0, 1.0 - tuning.FRICTION * dt / tuning.WALK_SPEED)
+        move(dt)
+        animate()
+
+    # WASD (or the left stick) to a ground velocity, the cursor to a
+    # heading, Shift (or B) to a roll.
+    function steer(dt):
+        var mx = 0.0
+        var mz = 0.0
+        if key.a or key.left:
+            mx -= 1.0
+        if key.d or key.right:
+            mx += 1.0
+        if key.w or key.up:
+            mz -= 1.0
+        if key.s or key.down:
+            mz += 1.0
+        if math.abs(gamepad_axis.lx) > 0.2:
+            mx += gamepad_axis.lx
+        if math.abs(gamepad_axis.ly) > 0.2:
+            mz -= gamepad_axis.ly
+        let m = math.sqrt(mx * mx + mz * mz)
+        if m > 1.0:
+            mx = mx / m
+            mz = mz / m
+        let ground = camera.ground_point(mouse.pos, pos.y + tuning.AIM_HEIGHT)
+        if ground != nil:
+            aim = ground
+        let ax = aim.x - pos.x
+        let az = aim.z - pos.z
+        if ax * ax + az * az > 0.04:
+            heading = math.atan2(ax, az)
+        if dodge_t > 0.0:
+            dodge_t -= dt
+            vel = dodge_dir * tuning.DODGE_SPEED
+            if dodge_t <= 0.0:
+                squash = 1.0
+            return
+        if (key_press.shift or gamepad_press.b) and dodge_cd <= 0.0:
+            dodge_t = tuning.DODGE_TIME
+            dodge_cd = tuning.DODGE_COOLDOWN
+            if m > 0.1:
+                dodge_dir = vec3(mx, 0, mz) * (1.0 / math.max(1.0, m))
+            else:
+                dodge_dir = vec3(math.sin(heading), 0, math.cos(heading))
+            dodge_dir = math.normalize(dodge_dir)
+            return
+        let want = vec3(mx, 0, mz) * tuning.WALK_SPEED
+        let rate = if m > 0.05: tuning.ACCEL else: tuning.FRICTION
+        let dv = want - vel
+        let dl = math.length(dv)
+        let step = rate * dt
+        if dl <= step:
+            vel = want
+        else:
+            vel = vel + dv * (step / dl)
+
+    # Slide the capsule along the ground and walls; fall under gravity.
+    function move(dt):
+        fall = fall - tuning.GRAVITY * dt
+        let moved = physics.character_move(body, vel + vec3(0, fall, 0), dt)
+        if moved.grounded:
+            fall = -1.0
+        let p = physics.position(body)
+        pos = vec3(p.x, p.y - tuning.BODY_HEIGHT / 2, p.z)
+
+    function animate():
+        if not alive:
+            mesh_anim.play(self, "death", false)
+        elif dodge_t > 0.0:
+            mesh_anim.play(self, "run", true)
+        else:
+            let speed = math.length(vel)
+            if armed:
+                mesh_anim.blend_space(self, ["idle_armed", "run_armed"], [0.0, tuning.WALK_SPEED], speed)
+            else:
+                mesh_anim.blend_space(self, ["idle", "run"], [0.0, tuning.WALK_SPEED], speed)
+
+    # Rolling makes you untouchable.
+    function invulnerable():
+        return dodge_t > 0.0
+
+    # The point the keeper's hands are at, for muzzle flashes and shots.
+    function muzzle():
+        return pos + vec3(math.sin(heading) * 0.55, 0.95, math.cos(heading) * 0.55)
