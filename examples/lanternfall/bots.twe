@@ -218,10 +218,12 @@ entity Bot:
                 if d < best_d and sees(a, d):
                     best = a
                     best_d = d
-        # Unarmed bots only fight up close, and not someone with a gun:
-        # they'd rather find one.
-        if best != nil and gun == 0 and (best_d > 5.0 or best.slot_is_gun()):
-            best = nil
+        # Unarmed, a bot would rather find a gun than brawl: it only
+        # swings at someone close who hit it first, and never at a gun.
+        if best != nil and gun == 0:
+            let provoked = last_hit_by == best and hurt > 0.0
+            if best_d > 5.0 or best.slot_is_gun() or not provoked:
+                best = nil
         if best != nil:
             if foe == nil or mode != "fight":
                 react_t = tuning.BOT_REACT * (1.0 - skill * 0.6)

@@ -12,6 +12,7 @@
 
 import "tuning"
 import "weapons"
+import "world"
 
 let INK = (0.04, 0.05, 0.09, 0.78)
 let EDGE = (1.0, 1.0, 1.0, 0.12)
@@ -247,10 +248,17 @@ function draw_map(me, h, b, places):
     let cy = y0 + size / 2
     rect((cx - beach, cy - beach), (beach * 2, beach * 2), (0.55, 0.5, 0.38, 0.9))
     rect((cx - grass, cy - grass), (grass * 2, grass * 2), (0.16, 0.3, 0.18, 0.95))
+    # Roads and buildings.
+    for b in world.BLOCKS:
+        let bw = math.max(1.0, b[3] * scale)
+        let bd = math.max(1.0, b[4] * scale)
+        let tone = if b[0] == 4: (0.4, 0.38, 0.36, 0.9) else: (0.12, 0.11, 0.14, 0.95)
+        rect((cx + b[1] * scale - bw / 2, cy + b[2] * scale - bd / 2), (bw, bd), tone)
     for p in places:
         circle((cx + p[1] * scale, cy + p[2] * scale), 2.5, (0.9, 0.8, 0.55, 0.9))
+        text(p[5], (cx + p[1] * scale + 4, cy + p[2] * scale + 3), 9, (1.0, 0.92, 0.7, 0.85))
     if h.running:
-        if h.radius * scale < size * 0.7:
+        if h.radius * scale < size * 0.5:
             circle_outline((cx + h.pos.x * scale, cy + h.pos.z * scale), math.max(1.0, h.radius * scale), 1.5, (0.75, 0.5, 1.0, 0.95))
         circle_outline((cx + h.next_center.x * scale, cy + h.next_center.z * scale), math.max(1.0, h.next_radius * scale), 1.0, (1.0, 1.0, 1.0, 0.7))
     if b != nil:

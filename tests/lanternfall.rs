@@ -86,6 +86,9 @@ impl Game {
 ",
             "me.phase = \"ground\"
 me.pos = vec3(0, 0, 24)
+cam_x = 0.0
+cam_z = 24.0
+cam_h = tuning.CAM_HEIGHT
 ",
             "me.guns = [0, 1, -1]
 me.mag = [0, 12, 0]
@@ -267,6 +270,7 @@ fn firefight_renders() {
         }
     };
     let mut g = Game::new();
+    g.practice();
     g.input.set_view(960, 540);
     g.point(0.5, 0.92);
     g.run(30, &[], &[]);

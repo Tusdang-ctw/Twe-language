@@ -29,12 +29,23 @@ visual SandMat:
     surface(uv, time, pos) -> material:
         let ripple = math.sin(pos.x * 1.3 + noise((pos.x, pos.z) * 0.4) * 3) * 0.04
         let grain = noise((pos.x, pos.z) * 6) * 0.05
-        return material(albedo: (0.74, 0.66, 0.5) + (ripple + grain, ripple + grain, ripple), roughness: 0.9)
+        let edge = 122.0 - math.max(math.abs(pos.x), math.abs(pos.z))
+        let wet = 1 - smoothstep(0.0, 3.0, edge)
+        let sand = (0.74, 0.66, 0.5) + (ripple + grain, ripple + grain, ripple)
+        return material(albedo: mix(sand, (0.42, 0.38, 0.32), wet), roughness: mix(0.9, 0.35, wet))
 
+# The sea: dark water with moonlit glints, and foam breaking along the
+# beach (the beach's edge is 122 m out on each axis — BEACH_HALF).
 visual SeaMat:
     surface(uv, time, pos) -> material:
         let glint = smoothstep(0.55, 0.75, noise((pos.x * 0.6 + time * 0.3, pos.z * 0.6)))
-        return material(albedo: (0.03, 0.09, 0.16), roughness: 0.08, emission: (0.05, 0.12, 0.2) * glint * 0.6)
+        let shore = math.max(math.abs(pos.x), math.abs(pos.z)) - 122.0
+        let surge = 0.5 + 0.5 * math.sin(time * 1.3 - shore * 0.9)
+        let band = (1 - smoothstep(0.0, 2.5 + surge * 1.5, shore)) * smoothstep(-0.5, 0.2, shore)
+        let lace = smoothstep(0.2, 0.75, noise((pos.x * 0.35 + time * 0.12, pos.z * 0.35 - time * 0.1)) * 0.5 + 0.5)
+        let foam = band * (0.35 + 0.4 * lace)
+        let water = mix((0.03, 0.09, 0.16), (0.06, 0.16, 0.22), 1 - smoothstep(0.0, 14.0, shore))
+        return material(albedo: mix(water, (0.75, 0.82, 0.88), foam), roughness: mix(0.08, 0.7, foam), emission: (0.05, 0.12, 0.2) * glint * 0.6 + (0.08, 0.1, 0.14) * foam)
 
     displace(uv, time, pos) -> vec3:
         let swell = math.sin(pos.x * 0.21 + time * 0.9) * 0.18 + math.sin(pos.z * 0.17 - time * 1.1) * 0.14
@@ -185,6 +196,19 @@ entity LanternPost:
         mesh: "assets/lantern_post.glb"
         facing: turn
 
+# A dressing prop: any of the props, turned, sized, maybe glowing.
+entity Prop:
+    var pos = vec3(0, 0, 0)
+    var model = "assets/barrel.glb"
+    var turn = 0.0
+    var size = 1.0
+    var shine = (0.0, 0.0, 0.0)
+    look:
+        mesh: model
+        facing: turn
+        scale: size
+        glow: shine
+
 # The lit pane of a lantern: a small block that glows and blooms.
 entity LampGlow:
     var pos = vec3(0, 0, 0)
@@ -246,13 +270,13 @@ let BLOCKS = [
     (4, -40.0, 24.0, 58.0, 5.0, 0.06, 0.0),
 ]
 
-# The five places: (name, x, z, radius, loot tier 1-3).
+# The five places: (name, x, z, radius, loot tier 1-3, map label).
 let PLACES = [
-    ("Signal Vault", 0.0, 0.0, 16.0, 3),
-    ("Lantern Docks", 8.0, 92.0, 26.0, 2),
-    ("Glasshouse Observatory", -62.0, -58.0, 22.0, 2),
-    ("Rust Hangars", 76.0, -10.0, 26.0, 2),
-    ("Sunken Chapel", -72.0, 36.0, 22.0, 2),
+    ("Signal Vault", 0.0, 0.0, 16.0, 3, "SV"),
+    ("Lantern Docks", 8.0, 92.0, 26.0, 2, "LD"),
+    ("Glasshouse Observatory", -62.0, -58.0, 22.0, 2, "GO"),
+    ("Rust Hangars", 76.0, -10.0, 26.0, 2, "RH"),
+    ("Sunken Chapel", -72.0, 36.0, 22.0, 2, "SC"),
 ]
 
 # Lantern posts: (x, z, turn). Each gets a warm point light.
@@ -263,6 +287,70 @@ let LANTERNS = [
     (16.0, -4.0, 1.57), (32.0, -12.0, 0.0), (48.0, -4.0, 3.14), (62.0, -12.0, 0.0), (84.0, 8.0, 1.57),
     (-16.0, 20.0, 1.57), (-32.0, 28.0, 0.0), (-50.0, 20.0, 3.14), (-64.0, 28.0, 0.0), (-80.0, 48.0, 1.57),
     (14.0, 14.0, 1.57), (-14.0, -14.0, 1.57),
+]
+
+# Each place's props: (model, x, z, turn, solid half-size or 0, glow
+# (r, g, b), light radius or 0).
+let NONE = (0.0, 0.0, 0.0)
+let CANDLE = (2.4, 1.6, 0.6)
+let DRESSING = [
+    # Lantern Docks: boats on the water, barrels by the houses, mooring posts.
+    ("assets/boat.glb", 18.0, 104.0, 0.3, 0.0, NONE, 0.0),
+    ("assets/boat.glb", -25.0, 113.0, -0.4, 0.0, NONE, 0.0),
+    ("assets/boat.glb", 1.0, 124.0, 1.2, 0.0, NONE, 0.0),
+    ("assets/barrel.glb", -11.0, 84.0, 0.0, 0.35, NONE, 0.0),
+    ("assets/barrel.glb", -9.6, 84.6, 0.7, 0.35, NONE, 0.0),
+    ("assets/barrel.glb", 24.0, 81.5, 0.2, 0.35, NONE, 0.0),
+    ("assets/barrel.glb", 25.3, 82.2, 1.1, 0.35, NONE, 0.0),
+    ("assets/barrel.glb", 30.0, 97.0, 0.4, 0.35, NONE, 0.0),
+    ("assets/post.glb", 4.6, 100.0, 0.0, 0.0, NONE, 0.0),
+    ("assets/post.glb", 11.4, 100.0, 0.0, 0.0, NONE, 0.0),
+    ("assets/post.glb", 4.6, 112.0, 0.0, 0.0, NONE, 0.0),
+    ("assets/post.glb", 11.4, 112.0, 0.0, 0.0, NONE, 0.0),
+    ("assets/post.glb", 4.6, 124.0, 0.0, 0.0, NONE, 0.0),
+    ("assets/post.glb", 11.4, 124.0, 0.0, 0.0, NONE, 0.0),
+    # Glasshouse Observatory: telescopes on the lawn, glowing mushrooms.
+    ("assets/telescope.glb", -50.0, -48.0, 2.4, 0.5, NONE, 0.0),
+    ("assets/telescope.glb", -74.0, -68.0, -0.8, 0.5, NONE, 0.0),
+    ("assets/telescope.glb", -48.0, -70.0, 0.9, 0.5, NONE, 0.0),
+    ("assets/mushrooms.glb", -53.0, -62.0, 0.0, 0.0, (0.3, 0.9, 1.2), 4.0),
+    ("assets/mushrooms.glb", -70.0, -47.0, 1.3, 0.0, (0.3, 0.9, 1.2), 4.0),
+    # Rust Hangars: fuel drums, tyres.
+    ("assets/drum.glb", 60.0, -14.0, 0.0, 0.32, NONE, 0.0),
+    ("assets/drum.glb", 61.0, -12.8, 0.9, 0.32, NONE, 0.0),
+    ("assets/drum.glb", 59.8, -12.4, 2.1, 0.32, NONE, 0.0),
+    ("assets/drum.glb", 84.0, -31.0, 0.4, 0.32, NONE, 0.0),
+    ("assets/drum.glb", 85.3, -30.4, 1.4, 0.32, NONE, 0.0),
+    ("assets/drum.glb", 66.0, 9.0, 0.2, 0.32, NONE, 0.0),
+    ("assets/tyres.glb", 62.0, 3.0, 0.0, 0.45, NONE, 0.0),
+    ("assets/tyres.glb", 86.0, -17.0, 0.6, 0.45, NONE, 0.0),
+    # Sunken Chapel: the graveyard, broken pillars, candles.
+    ("assets/grave.glb", -60.0, 30.0, 0.0, 0.3, NONE, 0.0),
+    ("assets/grave.glb", -56.0, 30.0, 0.1, 0.3, NONE, 0.0),
+    ("assets/grave.glb", -60.0, 34.5, -0.1, 0.3, NONE, 0.0),
+    ("assets/grave.glb", -56.0, 34.5, 0.2, 0.3, NONE, 0.0),
+    ("assets/grave.glb", -60.0, 39.0, 0.0, 0.3, NONE, 0.0),
+    ("assets/grave.glb", -56.0, 39.0, -0.2, 0.3, NONE, 0.0),
+    ("assets/pillar.glb", -66.0, 50.0, 0.0, 0.4, NONE, 0.0),
+    ("assets/pillar.glb", -83.0, 28.0, 0.8, 0.4, NONE, 0.0),
+    ("assets/pillar.glb", -85.0, 48.0, 1.9, 0.4, NONE, 0.0),
+    ("assets/candle.glb", -58.0, 32.2, 0.0, 0.0, CANDLE, 5.0),
+    ("assets/candle.glb", -58.0, 36.8, 0.0, 0.0, CANDLE, 5.0),
+    ("assets/candle.glb", -68.5, 37.0, 0.0, 0.0, CANDLE, 5.0),
+    ("assets/candle.glb", -68.5, 40.0, 0.0, 0.0, CANDLE, 5.0),
+    # Signal Vault: standards in the yard's corners.
+    ("assets/banner.glb", -9.0, 9.0, 0.0, 0.0, NONE, 0.0),
+    ("assets/banner.glb", 9.0, 9.0, 3.14, 0.0, NONE, 0.0),
+    ("assets/banner.glb", -9.0, -9.0, 0.0, 0.0, NONE, 0.0),
+    ("assets/banner.glb", 9.0, -9.0, 3.14, 0.0, NONE, 0.0),
+]
+
+# The island's night growth, scattered on clear ground:
+# (model, share, glow).
+let GROWTH = [
+    ("assets/bush.glb", 0.45, NONE),
+    ("assets/flowers.glb", 0.3, NONE),
+    ("assets/mushrooms.glb", 0.25, (0.3, 0.9, 1.2)),
 ]
 
 # Is (x, z) clear of every solid block and road, by `margin` metres —
@@ -285,3 +373,22 @@ function place_at(x, z):
         if dx * dx + dz * dz < p[3] * p[3]:
             return p[0]
     return ""
+
+# Fireflies: a swarm drifting low over the grass, blinking.
+particles Fireflies:
+    count: 40
+    lifetime: 7.0
+    spread: 14.0
+    on_spawn(p):
+        let a = random.float() * 6.283
+        let r = math.sqrt(random.float()) * spread
+        p.pos += (math.cos(a) * r, 0.4 + random.float() * 1.8, math.sin(a) * r)
+        p.velocity = ((random.float() - 0.5) * 0.6, (random.float() - 0.5) * 0.2, (random.float() - 0.5) * 0.6)
+        p.color = (0.85, 1.0, 0.45, 0.0)
+        p.size = 0.045
+    on_update(p, dt):
+        p.velocity += (math.sin(p.age * 1.7 + p.pos.z) * 0.4, math.cos(p.age * 1.3 + p.pos.x) * 0.15, math.cos(p.age * 1.9 + p.pos.x) * 0.4) * dt
+        p.pos += p.velocity * dt
+        let blink = 0.5 + 0.5 * math.sin(p.age * 5.0 + p.pos.x * 3.0)
+        let life = math.min(1.0, p.age * 2.0) * (1.0 - p.age_ratio)
+        p.color = (0.85, 1.0, 0.45, blink * blink * life)

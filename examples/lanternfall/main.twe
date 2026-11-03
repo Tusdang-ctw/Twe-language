@@ -29,10 +29,11 @@ quit_on_escape(false)
 # Night lighting.
 # ---------------------------------------------------------------
 light.clear()
-light.background((0.015, 0.02, 0.05))
-light.ambient((0.07, 0.08, 0.13, 1.0))
+light.background((0.012, 0.016, 0.04))
+light.environment("assets/night.hdr", 0.9)  # the night sky lights everything softly
+light.ambient((0.03, 0.035, 0.06, 1.0))
 sun.direction(vec3(-0.35, 0.8, 0.45))   # a low moon
-sun.intensity(0.28)
+sun.intensity(0.34)
 sun.shadow(true)
 sun.shadow_extent(26.0)
 light.fog(0.012, 0.08, (0.05, 0.07, 0.12))
@@ -100,6 +101,37 @@ while placed < 90 and tries < 2000:
             c.turn = random.float() * 1.57
             physics.static_box(vec3(x, 0.45, z), vec3(0.9, 0.9, 0.9))
         placed += 1
+
+# Each place's props, and their candles' and mushrooms' light.
+for d in world.DRESSING:
+    let p = spawn world.Prop at vec3(d[1], 0, d[2])
+    p.model = d[0]
+    p.turn = d[3]
+    p.shine = d[5]
+    if d[4] > 0.0:
+        physics.static_box(vec3(d[1], 0.6, d[2]), vec3(d[4] * 2, 1.2, d[4] * 2))
+    if d[6] > 0.0:
+        light.add(vec3(d[1], 0.6, d[2]), (d[5][0] * 0.8, d[5][1] * 0.8, d[5][2] * 0.8, 1.0), d[6])
+
+# Night growth on clear ground: bushes, flowers, glowing mushrooms.
+var grown = 0
+var grow_tries = 0
+while grown < 170 and grow_tries < 3000:
+    grow_tries += 1
+    let x = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 3)
+    let z = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 3)
+    if world.clear_ground(x, z, 1.0):
+        var pick = random.float()
+        for g in world.GROWTH:
+            if pick >= 0.0:
+                pick -= g[1]
+                if pick < 0.0:
+                    let p = spawn world.Prop at vec3(x, 0, z)
+                    p.model = g[0]
+                    p.turn = random.float() * 6.283
+                    p.size = 0.8 + random.float() * 0.6
+                    p.shine = g[2]
+        grown += 1
 
 # Keep the island's edge: invisible walls at the beach's rim.
 let rim = tuning.BEACH_HALF
@@ -280,8 +312,16 @@ function anyone_aboard():
             return true
     return false
 
+# Fireflies keep rising around wherever the keeper is.
+var firefly_t = 0.0
+
 on update(dt):
     mesh_anim.advance(dt)
+    firefly_t -= dt
+    if firefly_t <= 0.0:
+        firefly_t = 3.0
+        let a = random.float() * 6.283
+        spawn world.Fireflies at vec3(me.pos.x + math.cos(a) * 8.0, 0, me.pos.z + math.sin(a) * 8.0)
     # Everyone who can be hurt this tick (see combat.twe).
     var everyone = [a for a in entities.of(bots.Bot)]
     for d in entities.of(combat.Dummy):
