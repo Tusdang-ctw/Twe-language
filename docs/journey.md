@@ -178,6 +178,17 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
 - **2026-10-08: compressed textures load without unpacking them.** Game textures are often shipped in a GPU-friendly compressed form (the "BC" family) inside a `.ktx2` file — the graphics card can read that form directly, which saves four to eight times the memory. Until today Twe always unpacked such textures to plain pixels first, throwing that saving away. Now, on a desktop graphics card that supports it, a BC `.ktx2` goes straight to the card still compressed, no unpacking. It was checked on this machine's real GPU: a compressed texture was uploaded and the driver accepted it with no complaint. Where the hardware can't do it (most browsers today), the engine says so and points at the build-time converter instead of failing. The parser that reads the file is tiny and pure, so it still builds for every target.
 
+- **2026-11-03: getting the engine ready for a battle royale.** The next goal is a real game, not a demo: *Lanternfall*, an original top-down 3D voxel battle royale for the browser, with an airship drop, looting, guns, a shrinking zone, and forty AI rivals on a night island lit by lanterns. Planning it against the engine turned up six things such a game needs that Twe couldn't do yet, so the first day went into adding them, one tested piece at a time:
+  - **The camera can answer "where is this on screen?" and "what is the mouse pointing at?"** That is what you need for name tags over heads, damage numbers and mouse aiming. The answer comes from the exact maths the renderer draws with, so a tag lands on the pixel the character is drawn at. The on-screen interface also stopped stretching on widescreen windows.
+  - **Multi-file games now ship.** A game split across several files used to run on the author's machine and then break once built for the browser or as an `.exe`. Now every file goes into the build.
+  - **Shapes can tilt, stretch and glow.** That gives thin glowing bullet tracers pointed along the shot, tumbling debris, and a white flash when a character is hit.
+  - **Every character animates on its own.** Before, forty bots sharing one model all moved in perfect lockstep, which is what makes a crowd look fake. Now each has its own clip and clock, and the graphics card still draws them all in one go, for about a quarter of a millisecond per frame.
+  - **Game feel works in 3D.** Floating damage numbers, screen shake, and the tiny freeze on a big hit had only ever worked in 2D games. Two hidden bugs turned up along the way and were fixed: the screen shake was quietly changing the game's random numbers depending on the monitor's refresh rate, and 3D physics kept running while the game was paused.
+  - **A night sky.** The background colour can finally be set.
+
+  Each piece was checked in a real headless Chrome, not just in tests: two heroes sharing one model, one mid-swing and one idle, with a glowing tracer between them and their names floating overhead.
+
+
 ## Themes worth telling
 
 - **The examples are the spec.** Features ship only when a real program needs them. `look:` exists because the 5,000-enemy benchmark showed per-entity drawing code was the single biggest browser cost.
