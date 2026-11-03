@@ -770,6 +770,7 @@ fn dispatch_key_press(env: &mut Env, scene: &Rc<RefCell<Instance>>) -> Result<()
 /// session (d).
 pub fn render_frame3d(env: &mut Env) -> Result<(), RuntimeError> {
     env.render_queue3d.clear();
+    env.instance_anims.clear();
     env.draw2d.clear();
     let prev_render = env.in_render;
     env.in_render = true;
@@ -887,7 +888,9 @@ fn gather_looks(env: &mut Env) -> Result<crate::value::LookCache, RuntimeError> 
         if inst.despawned {
             continue;
         }
-        if look_has_own_keys(look) {
+        // Lanternfall E4: an entity with its own animation is drawn on
+        // its own too (its pose is its own).
+        if look_has_own_keys(look) || inst.anim.is_some() {
             cache.own.push(entity.clone());
             continue;
         }
@@ -993,6 +996,7 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
             rotation: values.rotation,
             scale: values.scale,
             glow: values.glow,
+            anim: 0,
         }));
     }
     for entity in &cache.own {
@@ -1003,6 +1007,13 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
         let look = entity.borrow().class.look.clone().expect("gathered with a look");
         let values = look_values(env, entity, &look, true, base)?;
         let at = look_pos(&entity.borrow())?;
+        let anim = match entity.borrow().anim.as_deref() {
+            Some(a) => {
+                env.instance_anims.push(a.snapshot());
+                env.instance_anims.len() as u32
+            }
+            None => 0,
+        };
         env.render_queue3d.push(crate::value::DrawCall3d {
             primitive: values.primitive,
             at,
@@ -1014,6 +1025,7 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
             rotation: values.rotation,
             scale: values.scale,
             glow: values.glow,
+            anim,
         });
     }
     Ok(())
@@ -4200,6 +4212,7 @@ fn instantiate(class: Rc<ClassDef>) -> Value {
         despawned: false,
         death_fired: false,
         fiber_frames: Vec::new(),
+        anim: None,
         entry_wait_remaining: 0.0,
         predicate_last_values: Vec::new(),
         cached_value: None,

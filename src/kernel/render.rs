@@ -197,6 +197,9 @@ pub struct RenderSnapshot<'a> {
     pub hud: &'a [crate::draw2d::Draw2d],
     /// Animation state for a skinned mesh id.
     pub anim: &'a dyn Fn(u32) -> AnimSnapshot,
+    /// Lanternfall E4: entities' own animations; a draw with `anim = n`
+    /// (n > 0) is posed by `instance_anims[n - 1]`.
+    pub instance_anims: &'a [AnimSnapshot],
 }
 
 /// Which kind of asset a request is for.
@@ -340,7 +343,8 @@ struct Instance {
     /// instance's GPU-cull group (web3d-M7).
     scale: [f32; 4],
     /// rgb = linear emission added to the lit colour (a look's `glow`);
-    /// w = 1 for a skinned mesh (only those blend joints).
+    /// w = 0 unskinned, else 1 + the instance's first matrix in the
+    /// frame's joint palette (Lanternfall E4).
     glow: [f32; 4],
 }
 
@@ -755,10 +759,9 @@ fn apply_fog(c: vec3<f32>, p: vec3<f32>) -> vec3<f32> {
 // through unchanged. Skinned meshes upload computed joint
 // matrices each frame (driven by `mesh_anim.advance` + glTF
 // animation channels).
-struct Joints {
-    matrices: array<mat4x4<f32>, 128>,
-};
-@group(2) @binding(0) var<uniform> joints_u: Joints;
+// Lanternfall E4: every skinned instance's joint matrices, back to
+// back; an instance reads its own from `glow.w - 1`.
+@group(2) @binding(0) var<storage, read> joints_u: array<mat4x4<f32>>;
 
 // Phase 28 session 2: cascaded shadow maps. `light_space_matrices`
 // holds one mat4 per cascade; `split_distances` xyz are the
@@ -849,7 +852,8 @@ fn vertex_out(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     // four mat4 from the joint UBO, weighted by `weights`. For
     // unskinned meshes joint 0 is identity and weights = (1,0,0,0),
     // so skin_mat collapses to identity.
-    // web3d-M7: only skinned meshes (glow.w = 1, Lanternfall E3) blend joints.
+    // web3d-M7: only skinned meshes blend joints (Lanternfall E4: glow.w =
+    // 1 + the instance's first joint in the palette).
     var skin_mat = mat4x4<f32>(
         vec4<f32>(1.0, 0.0, 0.0, 0.0),
         vec4<f32>(0.0, 1.0, 0.0, 0.0),
@@ -857,10 +861,11 @@ fn vertex_out(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
         vec4<f32>(0.0, 0.0, 0.0, 1.0),
     );
     if (inst.inst_glow.w > 0.5) {
-        skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
-            + vert.weights.y * joints_u.matrices[vert.joints.y]
-            + vert.weights.z * joints_u.matrices[vert.joints.z]
-            + vert.weights.w * joints_u.matrices[vert.joints.w];
+        let jb = u32(inst.inst_glow.w + 0.5) - 1u;
+        skin_mat = vert.weights.x * joints_u[jb + vert.joints.x]
+            + vert.weights.y * joints_u[jb + vert.joints.y]
+            + vert.weights.z * joints_u[jb + vert.joints.z]
+            + vert.weights.w * joints_u[jb + vert.joints.w];
     }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
@@ -2126,10 +2131,8 @@ struct ShadowPass {
 };
 @group(0) @binding(0) var<uniform> shadow_u: ShadowPass;
 
-struct Joints {
-    matrices: array<mat4x4<f32>, 128>,
-};
-@group(1) @binding(0) var<uniform> joints_u: Joints;
+// Lanternfall E4: the joint palette (see the main shader).
+@group(1) @binding(0) var<storage, read> joints_u: array<mat4x4<f32>>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -2170,7 +2173,8 @@ fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<
 }
 
 fn world_vertex(vert: VertexInput, inst: InstanceInput) -> WorldVertex {
-    // web3d-M7: only skinned meshes (glow.w = 1, Lanternfall E3) blend joints.
+    // web3d-M7: only skinned meshes blend joints (Lanternfall E4: glow.w =
+    // 1 + the instance's first joint in the palette).
     var skin_mat = mat4x4<f32>(
         vec4<f32>(1.0, 0.0, 0.0, 0.0),
         vec4<f32>(0.0, 1.0, 0.0, 0.0),
@@ -2178,10 +2182,11 @@ fn world_vertex(vert: VertexInput, inst: InstanceInput) -> WorldVertex {
         vec4<f32>(0.0, 0.0, 0.0, 1.0),
     );
     if (inst.inst_glow.w > 0.5) {
-        skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
-            + vert.weights.y * joints_u.matrices[vert.joints.y]
-            + vert.weights.z * joints_u.matrices[vert.joints.z]
-            + vert.weights.w * joints_u.matrices[vert.joints.w];
+        let jb = u32(inst.inst_glow.w + 0.5) - 1u;
+        skin_mat = vert.weights.x * joints_u[jb + vert.joints.x]
+            + vert.weights.y * joints_u[jb + vert.joints.y]
+            + vert.weights.z * joints_u[jb + vert.joints.z]
+            + vert.weights.w * joints_u[jb + vert.joints.w];
     }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
@@ -2201,10 +2206,8 @@ struct Pass {
 };
 @group(0) @binding(0) var<uniform> pass_u: Pass;
 
-struct Joints {
-    matrices: array<mat4x4<f32>, 128>,
-};
-@group(1) @binding(0) var<uniform> joints_u: Joints;
+// Lanternfall E4: the joint palette (see the main shader).
+@group(1) @binding(0) var<storage, read> joints_u: array<mat4x4<f32>>;
 
 struct Material {
     base_color: vec4<f32>,
@@ -2246,7 +2249,8 @@ fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_mask(vert: VertexInput, inst: InstanceInput) -> MaskOut {
-    // web3d-M7: only skinned meshes (glow.w = 1, Lanternfall E3) blend joints.
+    // web3d-M7: only skinned meshes blend joints (Lanternfall E4: glow.w =
+    // 1 + the instance's first joint in the palette).
     var skin_mat = mat4x4<f32>(
         vec4<f32>(1.0, 0.0, 0.0, 0.0),
         vec4<f32>(0.0, 1.0, 0.0, 0.0),
@@ -2254,10 +2258,11 @@ fn vs_mask(vert: VertexInput, inst: InstanceInput) -> MaskOut {
         vec4<f32>(0.0, 0.0, 0.0, 1.0),
     );
     if (inst.inst_glow.w > 0.5) {
-        skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
-            + vert.weights.y * joints_u.matrices[vert.joints.y]
-            + vert.weights.z * joints_u.matrices[vert.joints.z]
-            + vert.weights.w * joints_u.matrices[vert.joints.w];
+        let jb = u32(inst.inst_glow.w + 0.5) - 1u;
+        skin_mat = vert.weights.x * joints_u[jb + vert.joints.x]
+            + vert.weights.y * joints_u[jb + vert.joints.y]
+            + vert.weights.z * joints_u[jb + vert.joints.z]
+            + vert.weights.w * joints_u[jb + vert.joints.w];
     }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let model_pos = quat_rotate(inst.inst_rot, skinned_pos * inst.inst_scale.xyz)
@@ -2948,7 +2953,12 @@ pub struct Renderer {
     /// the identity matrix; combined with the unskinned vertex
     /// defaults (joints=0, weights=[1,0,0,0]) the skin matrix is
     /// identity and the vertex passes through unchanged.
-    identity_joints_bind_group: wgpu::BindGroup,
+    /// Lanternfall E4: the frame's joint palette and its bind group,
+    /// bound at the joints slot for every draw.
+    joints_bind_group: wgpu::BindGroup,
+    joints_buffer: wgpu::Buffer,
+    /// The palette buffer's size, in matrices.
+    joints_capacity: u64,
     /// Phase 25: depth-only render pipeline used for the shadow
     /// pass. Reuses the same vertex + instance layouts as the
     /// main pipeline so vertex buffers are shared between passes.
@@ -3049,7 +3059,7 @@ struct GpuMesh {
     /// weights bound, the per-mesh joint UBO + bind group below
     /// are populated, and the render flow updates the UBO each
     /// frame from the active animation clip. When `None`, the
-    /// shared `identity_joints_bind_group` is used at slot 3.
+    /// frame's joint palette (`joints_bind_group`) is bound at the joints slot.
     skin: Option<MeshSkin>,
     /// web3d-M9 session 2: CPU morph data. When `Some`, the mesh's
     /// vertex buffer is `COPY_DST` and the per-frame update re-blends
@@ -3106,10 +3116,6 @@ struct MeshSkin {
     /// Animation clips by name. A script-driven `mesh_anim.play(h,
     /// "walk")` selects the clip whose `name` matches.
     clips: HashMap<String, AnimClip>,
-    /// Per-mesh joint matrix UBO, written once per frame when an
-    /// animation is active. Bound at @group(3) for skinned draws.
-    joint_buffer: wgpu::Buffer,
-    joint_bind_group: wgpu::BindGroup,
 }
 
 /// Phase 24: a single glTF node's rest-pose TRS + children. Stored
@@ -3707,32 +3713,25 @@ async fn init_renderer(
     // identity-only UBO bound for unskinned draws (cube, sphere,
     // glb without a skin). Skinned meshes own a per-mesh UBO of
     // the same layout written each frame from `mesh_anim`.
+    // Lanternfall E4: one read-only storage buffer holds every skinned
+    // instance's joint matrices for the frame (the palette); it is
+    // bound for every draw, and only skinned instances read it.
     let joints_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("twec-play3d joints bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::VERTEX,
             ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
                 min_binding_size: None,
             },
             count: None,
         }],
     });
-    let identity_joints_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("twec-play3d identity joints"),
-        contents: bytemuck::bytes_of(&JointsUniform::identity()),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let identity_joints_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("twec-play3d identity joints bg"),
-        layout: &joints_bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: identity_joints_buffer.as_entire_binding(),
-        }],
-    });
+    let joints_capacity = MAX_JOINTS as u64;
+    let joints_buffer = joint_palette_buffer(&device, joints_capacity);
+    let joints_bind_group = joint_palette_bind_group(&device, &joints_bgl, &joints_buffer);
 
     // web3d-M7: materials (kernel/material.rs) at group 1.
     let mut materials = MaterialKit::new(&device, &queue);
@@ -4174,7 +4173,9 @@ async fn init_renderer(
         point_shadows,
         lights_buffer,
         joints_bgl,
-        identity_joints_bind_group,
+        joints_bind_group,
+        joints_buffer,
+        joints_capacity,
         shadow_pipeline,
         shadow_buffer,
         shadow_pass_buffers,
@@ -4789,6 +4790,66 @@ fn sample_channel(channel: &AnimChannel, t: f32) -> SampledValue {
         (AnimProperty::Translation | AnimProperty::Scale, _) => SampledValue::Vec3([0.0; 3]),
         (AnimProperty::Rotation, _) => SampledValue::Vec4([0.0, 0.0, 0.0, 1.0]),
     }
+}
+
+/// Lanternfall E4: the frame's joint palette — each pose (a mesh at the
+/// mesh's shared animation, or at one entity's own) once, its skin's
+/// joint matrices back to back. A skinned instance's `glow.w` is 1 + the
+/// index of its pose's first matrix.
+#[derive(Default)]
+struct JointPalette {
+    matrices: Vec<[[f32; 4]; 4]>,
+    /// (mesh id, animation: 0 = the mesh's own, else 1 + an index into
+    /// `RenderSnapshot::instance_anims`, first matrix).
+    slots: Vec<(u32, u32, u32)>,
+}
+
+impl JointPalette {
+    /// The pose's first matrix, adding the pose the first time.
+    fn base(&mut self, skin: &MeshSkin, mesh: u32, anim: u32, snap: &RenderSnapshot) -> u32 {
+        if let Some(&(_, _, b)) = self.slots.iter().find(|(m, a, _)| *m == mesh && *a == anim) {
+            return b;
+        }
+        let pose = match anim {
+            0 => (snap.anim)(mesh),
+            n => snap
+                .instance_anims
+                .get(n as usize - 1)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        let joints = compute_skinned_joint_matrices(skin, &pose);
+        let n = skin.joint_node_indices.len().clamp(1, MAX_JOINTS);
+        let base = self.matrices.len() as u32;
+        self.matrices.extend_from_slice(&joints.matrices[..n]);
+        self.slots.push((mesh, anim, base));
+        base
+    }
+}
+
+/// Lanternfall E4: a joint-palette buffer for `capacity` matrices.
+fn joint_palette_buffer(device: &wgpu::Device, capacity: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("twec-play3d joint palette"),
+        size: capacity.max(1) * std::mem::size_of::<[[f32; 4]; 4]>() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn joint_palette_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("twec-play3d joint palette bg"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    })
 }
 
 /// Phase 24: compute per-joint skin matrices at the current
@@ -5414,7 +5475,6 @@ fn upload_loaded_glb(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     kit: &mut MaterialKit,
-    joints_bgl: &wgpu::BindGroupLayout,
     loaded: LoadedGlb,
 ) -> GpuMesh {
     let GlbData {
@@ -5494,40 +5554,14 @@ fn upload_loaded_glb(
             transmissive: materials[sub.material].ext.transmission > 0.0,
         })
         .collect();
-    // Phase 24: build per-mesh skin GPU resources when the glb
-    // has a skinned mesh. Each skinned mesh owns its joint UBO,
-    // updated each frame from the script-driven `mesh_anim`.
-    let skin = skin_data.map(|sd| {
-        let joint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("twec-play3d mesh joints"),
-            size: std::mem::size_of::<JointsUniform>() as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // Initialize to identity so the first frame (before
-        // animation runs) draws the rest pose correctly.
-        queue.write_buffer(
-            &joint_buffer,
-            0,
-            bytemuck::bytes_of(&JointsUniform::identity()),
-        );
-        let joint_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("twec-play3d mesh joints bg"),
-            layout: joints_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: joint_buffer.as_entire_binding(),
-            }],
-        });
-        MeshSkin {
-            joint_node_indices: sd.joint_node_indices,
-            inverse_bind_matrices: sd.inverse_bind_matrices,
-            nodes: sd.nodes,
-            scene_roots: sd.scene_roots,
-            clips: sd.clips,
-            joint_buffer,
-            joint_bind_group,
-        }
+    // Phase 24: the skin's rig and clips. Lanternfall E4: its joint
+    // matrices go into the frame's shared palette, per pose.
+    let skin = skin_data.map(|sd| MeshSkin {
+        joint_node_indices: sd.joint_node_indices,
+        inverse_bind_matrices: sd.inverse_bind_matrices,
+        nodes: sd.nodes,
+        scene_roots: sd.scene_roots,
+        clips: sd.clips,
     });
     // Phase 26: bound radius for frustum culling. For skinned
     // meshes, multiply by 1.5 to leave headroom for the joints
@@ -5789,6 +5823,8 @@ impl Renderer {
         };
         let mut instances: Vec<Instance> = Vec::new();
         let cap = usize::MAX;
+        // Lanternfall E4: the poses skinned instances are drawn in.
+        let mut palette = JointPalette::default();
 
         // Asset requests: first sight of a mesh / texture id asks the
         // host's `AssetSource` to load it; finished loads are uploaded
@@ -5838,7 +5874,6 @@ impl Renderer {
                                 &state.device,
                                 &state.queue,
                                 &mut state.materials,
-                                &state.joints_bgl,
                                 loaded,
                             );
                             state.mesh_cache.insert(id, gpu_mesh);
@@ -6078,16 +6113,18 @@ impl Renderer {
                     indices: 0..state.sphere_index_count,
                 });
             }
-            for ((id, tex, mat), range) in &mesh_ranges {
+            for (mi, ((id, tex, mat), range)) in mesh_ranges.iter().enumerate() {
                 let Some(mesh) = state.mesh_cache.get(id) else {
                     continue;
                 };
                 let group = add_group(*range, mesh.bound_radius, &mut instances);
-                // Skinned meshes' instances blend joints (glow.w); nothing
-                // else pays for it.
-                if mesh.skin.is_some() {
-                    for inst in &mut instances[range.0 as usize..range.1 as usize] {
-                        inst.glow[3] = 1.0;
+                // Skinned meshes' instances blend joints, each from its
+                // pose in the palette (glow.w); nothing else pays for it.
+                if let Some(skin) = &mesh.skin {
+                    let draws = &mesh_groups[mi].1;
+                    let slice = &mut instances[range.0 as usize..range.1 as usize];
+                    for (inst, d) in slice.iter_mut().zip(draws.iter()) {
+                        inst.glow[3] = (palette.base(skin, *id, d.anim, snap) + 1) as f32;
                     }
                 }
                 if *tex != 0 || *mat != 0 {
@@ -6199,8 +6236,9 @@ impl Renderer {
                     continue;
                 }
                 if let Primitive::Mesh(id) = d.primitive {
-                    if state.mesh_cache.get(&id).is_some_and(|m| m.skin.is_some()) {
-                        instances[start as usize].glow[3] = 1.0;
+                    if let Some(skin) = state.mesh_cache.get(&id).and_then(|m| m.skin.as_ref()) {
+                        instances[start as usize].glow[3] =
+                            (palette.base(skin, id, d.anim, snap) + 1) as f32;
                     }
                 }
                 let inst = instances[start as usize];
@@ -6382,6 +6420,20 @@ impl Renderer {
                 .queue
                 .write_buffer(&state.instance_buffer, 0, bytemuck::cast_slice(&instances));
         }
+        // Lanternfall E4: kept instances hold the palette bases they were
+        // built with. Kept frames draw only meshes' shared animations, so
+        // laying those out again in build order puts each pose back at
+        // its base.
+        if reuse.is_some() {
+            for ((id, _, _), range) in &mesh_ranges {
+                if range.1 <= range.0 {
+                    continue;
+                }
+                if let Some(skin) = state.mesh_cache.get(id).and_then(|m| m.skin.as_ref()) {
+                    palette.base(skin, *id, 0, snap);
+                }
+            }
+        }
         // web3d-M7 follow-up: keep what was built for a generation the
         // host will repeat (not with transparent draws: they sort by the
         // camera each frame).
@@ -6416,6 +6468,23 @@ impl Renderer {
             _ => None,
         };
 
+        // Lanternfall E4: upload the frame's joint palette, growing the
+        // buffer (and freeing the old one: the browser backend frees
+        // nothing on drop) when the poses outgrow it.
+        if !palette.matrices.is_empty() {
+            let need = palette.matrices.len() as u64;
+            if need > state.joints_capacity {
+                let capacity = need.next_power_of_two();
+                state.joints_buffer.destroy();
+                state.joints_buffer = joint_palette_buffer(&state.device, capacity);
+                state.joints_bind_group =
+                    joint_palette_bind_group(&state.device, &state.joints_bgl, &state.joints_buffer);
+                state.joints_capacity = capacity;
+            }
+            state
+                .queue
+                .write_buffer(&state.joints_buffer, 0, bytemuck::cast_slice(&palette.matrices));
+        }
         // 4d. Phase 24: update each skinned mesh's joint UBO from
         //     the script-driven animation state. Walks every mesh
         //     referenced this frame; for each that has a skin, looks
@@ -6431,13 +6500,6 @@ impl Renderer {
                 None => continue,
             };
             let anim_state = (snap.anim)(mesh_id);
-            // Skinned meshes: rebuild the joint UBO from the active clip.
-            if let Some(skin) = &gpu_mesh.skin {
-                let joints_uniform = compute_skinned_joint_matrices(skin, &anim_state);
-                state
-                    .queue
-                    .write_buffer(&skin.joint_buffer, 0, bytemuck::bytes_of(&joints_uniform));
-            }
             // web3d-M9 session 2: morphing meshes re-blend on the CPU
             // and re-upload the vertex buffer when the weights change.
             // The morph applies before skinning (glTF order), so a mesh
@@ -7219,7 +7281,7 @@ impl Renderer {
                         multiview_mask: None,
                     });
                     rpass.set_bind_group(0, &state.frame_bind_group, &[]);
-                    rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+                    rpass.set_bind_group(2, &state.joints_bind_group, &[]);
                     rpass.set_bind_group(3, &state.shadow_combined_bg, &[]);
                     draw_opaque(
                         &mut rpass,
@@ -7421,7 +7483,7 @@ impl Renderer {
                         multiview_mask: None,
                     });
                     spass.set_bind_group(0, &state.shadow_pass_bgs[cascade], &[]);
-                    spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+                    spass.set_bind_group(1, &state.joints_bind_group, &[]);
                     spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
                     let ranges = (&cube_ranges[..], &sphere_ranges[..], &mesh_ranges[..]);
                     draw_depth(
@@ -7449,7 +7511,7 @@ impl Renderer {
                         multiview_mask: None,
                     });
                     spass.set_bind_group(0, &state.point_shadows.pass_bgs[layer], &[]);
-                    spass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+                    spass.set_bind_group(1, &state.joints_bind_group, &[]);
                     spass.set_vertex_buffer(1, state.instance_buffer.slice(..));
                     let ranges = (&cube_ranges[..], &sphere_ranges[..], &mesh_ranges[..]);
                     draw_depth(&mut spass, state, ranges, snap.materials, DepthPass::Point);
@@ -7517,7 +7579,7 @@ impl Renderer {
                             // default for unskinned draws (cube, sphere, glb
                             // without a skin). Skinned mesh draws override slot 3
                             // with their per-mesh joint bind group below.
-                            rpass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+                            rpass.set_bind_group(2, &state.joints_bind_group, &[]);
                             // Phase 25: shadow combined bind group at slot 4 —
                             // shadow uniform + texture + comparison sampler. The
                             // shader short-circuits when flags.w == 0.
@@ -7963,14 +8025,14 @@ fn draw_depth(
             continue;
         };
         pass.set_pipeline(pipeline(*mat));
-        if let Some(skin) = &gpu_mesh.skin {
-            pass.set_bind_group(1, &skin.joint_bind_group, &[]);
+        if gpu_mesh.skin.is_some() {
+            pass.set_bind_group(1, &state.joints_bind_group, &[]);
         }
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
         pass.draw_indexed(0..gpu_mesh.index_count, 0, range.0..range.1);
         if gpu_mesh.skin.is_some() {
-            pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+            pass.set_bind_group(1, &state.joints_bind_group, &[]);
         }
     }
 }
@@ -8297,8 +8359,8 @@ fn draw_opaque(
                 };
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
-                if let Some(skin) = &mesh.skin {
-                    pass.set_bind_group(2, &skin.joint_bind_group, &[]);
+                if mesh.skin.is_some() {
+                    pass.set_bind_group(2, &state.joints_bind_group, &[]);
                 }
                 Some(mesh)
             }
@@ -8338,7 +8400,7 @@ fn draw_opaque(
             }
         }
         if skin.is_some_and(|m| m.skin.is_some()) {
-            pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+            pass.set_bind_group(2, &state.joints_bind_group, &[]);
         }
     }
 }
@@ -8426,7 +8488,7 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
             .unwrap_or(&state.plain_material)
     };
     pass.set_bind_group(0, &state.frame_bind_group, &[]);
-    pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+    pass.set_bind_group(2, &state.joints_bind_group, &[]);
     pass.set_bind_group(3, &state.shadow_combined_bg, &[]);
     pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
     for d in draws {
@@ -8451,8 +8513,8 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
                 let Some(mesh) = state.mesh_cache.get(&id) else {
                     continue;
                 };
-                if let Some(skin) = &mesh.skin {
-                    pass.set_bind_group(2, &skin.joint_bind_group, &[]);
+                if mesh.skin.is_some() {
+                    pass.set_bind_group(2, &state.joints_bind_group, &[]);
                 }
                 pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
@@ -8485,7 +8547,7 @@ fn draw_transparent(pass: &mut wgpu::RenderPass<'_>, state: &Renderer, draws: &[
             pass.draw_indexed(range, 0, instances);
         }
         if skinned {
-            pass.set_bind_group(2, &state.identity_joints_bind_group, &[]);
+            pass.set_bind_group(2, &state.joints_bind_group, &[]);
         }
     }
 }
@@ -8501,7 +8563,7 @@ fn draw_prepass(
     let pp = &state.prepass;
     let pipeline = |mat: u32| state.depth_pipeline(materials, mat, DepthPass::Prepass);
     pass.set_bind_group(0, &pp.bg, &[]);
-    pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+    pass.set_bind_group(1, &state.joints_bind_group, &[]);
     pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
     for (buffers, ranges) in [
         (
@@ -8537,8 +8599,8 @@ fn draw_prepass(
         let Some(gpu_mesh) = state.mesh_cache.get(mesh_id) else {
             continue;
         };
-        if let Some(skin) = &gpu_mesh.skin {
-            pass.set_bind_group(1, &skin.joint_bind_group, &[]);
+        if gpu_mesh.skin.is_some() {
+            pass.set_bind_group(1, &state.joints_bind_group, &[]);
         }
         pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
         pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), gpu_mesh.index_format);
@@ -8559,7 +8621,7 @@ fn draw_prepass(
             }
         }
         if gpu_mesh.skin.is_some() {
-            pass.set_bind_group(1, &state.identity_joints_bind_group, &[]);
+            pass.set_bind_group(1, &state.joints_bind_group, &[]);
         }
     }
 }

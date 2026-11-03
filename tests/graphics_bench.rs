@@ -121,6 +121,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
         rotation: twec::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     }];
     let mesh_paths = vec!["model.glb".to_string()];
     let anim = |_: u32| Default::default();
@@ -167,6 +168,7 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
             materials: &[],
             hud: &[],
             anim: &anim,
+            instance_anims: &[],
         };
         renderer.render(&snap, &mut assets)?;
         // Draw until the model has loaded, then let TAA's history fill

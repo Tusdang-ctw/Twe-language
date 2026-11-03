@@ -637,6 +637,7 @@ fn environment_lights_and_backs_the_scene() {
         rotation: twec::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     }];
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
@@ -676,6 +677,7 @@ fn environment_lights_and_backs_the_scene() {
             materials: &[],
             hud: &[],
             anim: &anim,
+            instance_anims: &[],
         };
         renderer.render(&snap, &mut assets).expect("render");
     }
@@ -925,6 +927,7 @@ fn backdrop_pixel(
             materials: &[],
             hud: &[],
             anim: &anim,
+            instance_anims: &[],
         };
         renderer.render(&snap, &mut assets).expect("render");
     }
@@ -1582,6 +1585,7 @@ fn gpu_culling_is_invisible_and_culls() {
         rotation: twec::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     };
     let mut draws = Vec::new();
     for i in 0..80 {
@@ -1629,6 +1633,7 @@ fn gpu_culling_is_invisible_and_culls() {
                 materials: &[],
                 hud: &[],
                 anim: &anim,
+                instance_anims: &[],
             };
             renderer.render(&snap, &mut assets).expect("render");
         }
@@ -1667,6 +1672,7 @@ fn floor_with_lights(lights: &[twec::kernel::render::PointLightU]) -> (Vec<u8>, 
         rotation: twec::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     }];
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
@@ -1695,6 +1701,7 @@ fn floor_with_lights(lights: &[twec::kernel::render::PointLightU]) -> (Vec<u8>, 
         materials: &[],
         hud: &[],
         anim: &anim,
+        instance_anims: &[],
     };
     renderer.render(&snap, &mut assets).expect("render");
     let rgba = renderer.read_pixels().expect("pixels");
@@ -2360,4 +2367,43 @@ fn look_glow_lights_up_a_dark_mesh() {
     let on = pixel(&lit, cx, cy);
     assert!(on[0] > off[0] + 80, "glow should light the cube: {off:?} -> {on:?}");
     assert!(on[0] > on[2] + 40, "an orange glow stays orange: {on:?}");
+}
+
+/// Lanternfall E4: two entities drawing the same skinned `.glb` animate
+/// apart — `mesh_anim.play(entity, ...)` poses that entity only. With
+/// the right hero idle both times, its half of the frame is the same
+/// whatever the left hero plays; the left half changes with its clip.
+#[test]
+fn entities_sharing_a_mesh_animate_apart() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    twec::bundle::set_asset_root(Some("examples/action3d".into()));
+    let scene = |left_clip: &str| {
+        format!(
+            "camera.eye = vec3(0, 1.1, 4.2)\ncamera.target = vec3(0, 0.9, 0)\n\
+             entity Hero:\n    var pos = vec3(0, 0, 0)\n    look:\n        mesh: \"assets/hero.glb\"\n\
+             spawn Hero at vec3(-1.0, 0, 0)\nspawn Hero at vec3(1.0, 0, 0)\n\
+             for h in entities.of(Hero):\n    if h.pos.x < 0.0:\n        mesh_anim.play(h, \"{left_clip}\", true)\n\
+             \x20   else:\n        mesh_anim.play(h, \"idle\", true)\n\
+             mesh_anim.advance(0.35)\n"
+        )
+    };
+    let both_idle = render_source(&mut renderer, "anim_both_idle", &scene("idle"));
+    let left_attacks = render_source(&mut renderer, "anim_left_attack", &scene("attack"));
+    save_png("anim_left_attack", &left_attacks);
+    let differing = |a: &[u8], b: &[u8], xs: std::ops::Range<u32>| {
+        (0..H)
+            .flat_map(|y| xs.clone().map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let (p, q) = (pixel(a, x, y), pixel(b, x, y));
+                p.iter().zip(&q).any(|(u, v)| u.abs_diff(*v) > 8)
+            })
+            .count()
+    };
+    let left = differing(&both_idle, &left_attacks, 0..W / 2);
+    let right = differing(&both_idle, &left_attacks, W / 2..W);
+    assert!(left > 150, "the left hero should change pose: {left} pixels differ");
+    assert!(right < 20, "the right hero should not: {right} pixels differ");
 }

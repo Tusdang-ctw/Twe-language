@@ -627,7 +627,7 @@ A visual that fails the checks (`twec verify`) is an error when a look first use
     - `KHR_materials_transmission` with `KHR_materials_volume` (glass and liquids: what's behind refracts through, blurs with roughness and is absorbed by coloured volumes).
   - **Not read yet:** `KHR_materials_anisotropy` (drawn as an isotropic surface), KTX2 / Basis Universal textures and meshopt-compressed geometry.
   - **Extension texture limit:** a material can use up to four distinct textures across the layered extensions. More is reported and the rest ignored; no Khronos sample needs more.
-- **Animated meshes** *(web3d-M4)*. A skinned `.glb` plays the clip `mesh_anim` selects for that mesh path; every entity drawing the mesh shares it. `survive3d`'s hero:
+- **Animated meshes** *(web3d-M4)*. A skinned `.glb` plays the clip `mesh_anim` selects for that mesh path; every entity drawing the mesh shares it, unless it has its own (Lanternfall E4, below). `survive3d`'s hero:
 
   ```twe
   mesh_anim.play("assets/hero.glb", "walk", true)   # clip by name, looping; changing the clip crossfades (web3d-M11)
@@ -651,7 +651,28 @@ A visual that fails the checks (`twec verify`) is an error when a look first use
   so the gaits stay foot-synced. It reduces to the 2-clip `blend`, so it costs
   the renderer nothing extra. Call it each tick with the current `value`.
 
-  Clips advance only through `mesh_anim.advance`, so a paused game's models hold still and replays match. Per-entity clips (each slime on its own frame) are not in M4.
+  Clips advance only through `mesh_anim.advance`, so a paused game's models hold still and replays match.
+
+  **Per-entity animation** *(Lanternfall E4)*. Every `mesh_anim.*` call also takes an **entity** in place of the mesh path. The entity then has its own animation, its own clip, clock, crossfade and blend, and its look is posed by it, apart from every other entity drawing the same mesh:
+
+  ```twe
+  entity Bot:
+      var pos = vec3(0, 0, 0)
+      var speed = 0.0
+      look:
+          mesh: "assets/bot.glb"
+      function update(dt):
+          mesh_anim.blend_space(self, ["idle", "run"], [0.0, 5.0], speed)
+
+  on update(dt):
+      mesh_anim.advance(dt)       # moves every mesh's and every entity's animation
+  ```
+
+  - An entity's animation lives on the entity and goes away with it. `mesh_anim.stop(entity)` returns it to the mesh's shared animation.
+  - Entities without one keep sharing the mesh's: the mesh-path form is unchanged.
+  - An animated entity is drawn on the per-entity path, so its other look keys are evaluated per entity too.
+  - **Rendering:** each pose's joint matrices go into one storage buffer per frame (the joint palette). Every skinned instance reads its own pose from it, so 40 bots in 40 poses are still one draw. 40 skinned heroes cost about 0.25 ms of CPU per frame natively (`tests/render_bench.rs::render_animated_crowd`).
+  - Morph targets still follow the mesh's shared animation.
 - **In the 2D player** (`twec play`), a program that declares a look is refused at startup with an error pointing at `twec play3d` / `twec build --target web`, until the 2D player moves onto the kernel (web3d-M6).
 
 ### 4.10 Particles

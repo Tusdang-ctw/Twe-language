@@ -365,6 +365,10 @@ pub struct Instance {
     /// state-entry's path runs to completion. v0.2 sessions 2a
     /// (path) + 2b (frame stack).
     pub fiber_frames: Vec<Frame>,
+    /// Lanternfall E4: this entity's own animation
+    /// (`mesh_anim.play(self, ...)`), posing its look's mesh apart from
+    /// every other entity drawing it. `None`: the mesh's shared one.
+    pub anim: Option<Box<crate::render3d_types::AnimEntry>>,
     /// Seconds left on the active `wait`. Decremented by `dt` each
     /// frame the instance ticks.
     pub entry_wait_remaining: f64,
@@ -624,6 +628,9 @@ pub struct Env {
     /// `play3d` render loop drains and consumes after the body
     /// finishes. Cleared at the start of each frame.
     pub render_queue3d: Vec<DrawCall3d>,
+    /// Lanternfall E4: this frame's entity animations; a queued draw with
+    /// `anim = n` is posed by entry `n - 1`.
+    pub instance_anims: Vec<crate::render3d_types::AnimSnapshot>,
     /// web3d-M7 session 16: the looks gathered at `look_epoch()`
     /// (`eval::draw_looks`).
     pub look_cache: Option<LookCache>,
@@ -763,6 +770,7 @@ impl Env {
             particle_seed: 0,
             current_module: None,
             render_queue3d: Vec::new(),
+            instance_anims: Vec::new(),
             look_cache: None,
             despawned_since_prune: false,
             retained_looks: None,

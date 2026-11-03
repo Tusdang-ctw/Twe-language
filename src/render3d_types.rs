@@ -70,6 +70,65 @@ impl Default for LightsUniform {
     }
 }
 
+/// web3d-M4 / M11: one animation's playback — a mesh's shared one
+/// (`mesh_anim.play("hero.glb", ...)`) or, Lanternfall E4, one entity's
+/// own (`mesh_anim.play(self, ...)`, stored on the entity).
+#[derive(Clone, Default, Debug)]
+pub struct AnimEntry {
+    /// Active clip name; empty string = stopped.
+    pub clip: String,
+    /// Time elapsed since clip started, in seconds.
+    pub time: f32,
+    /// Whether the clip loops at the end (vs holding the last frame).
+    pub looping: bool,
+    /// Optional blend target — when present, the renderer interpolates
+    /// joints between `clip` and `blend_clip` by `blend_t` ∈ [0, 1].
+    pub blend_clip: Option<String>,
+    pub blend_t: f32,
+    /// web3d-M11 session 1: the blend target's own playback time, so a
+    /// crossfade's outgoing clip (or an explicit `blend` partner)
+    /// animates independently of the primary clip.
+    pub blend_time: f32,
+    /// Seconds left in an auto-crossfade started by `play()` (0 = none).
+    pub crossfade_remaining: f32,
+    /// The crossfade's total duration, for computing `blend_t`.
+    pub crossfade_duration: f32,
+    /// Crossfade length (`None` → the default), set by
+    /// `mesh_anim.set_crossfade`. 0 means hard clip switches.
+    pub crossfade_config: Option<f32>,
+}
+
+impl AnimEntry {
+    /// Advance playback by `dt` seconds, ramping an auto-crossfade out.
+    pub fn advance(&mut self, dt: f32) {
+        self.time += dt;
+        self.blend_time += dt;
+        if self.crossfade_remaining > 0.0 {
+            self.crossfade_remaining = (self.crossfade_remaining - dt).max(0.0);
+            self.blend_t = if self.crossfade_duration > 0.0 {
+                (self.crossfade_remaining / self.crossfade_duration).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            if self.crossfade_remaining <= 0.0 {
+                self.blend_clip = None;
+                self.blend_t = 0.0;
+            }
+        }
+    }
+
+    /// What the renderer needs to pose a skin.
+    pub fn snapshot(&self) -> AnimSnapshot {
+        AnimSnapshot {
+            clip: self.clip.clone(),
+            time: self.time,
+            blend_clip: self.blend_clip.clone(),
+            blend_t: self.blend_t,
+            blend_time: self.blend_time,
+        }
+    }
+}
+
 /// Phase 24: minimal animation snapshot read from the script-side
 /// `mesh_anim` state. The render path passes this to
 /// `compute_skinned_joint_matrices`, which samples the named clip
@@ -114,6 +173,10 @@ pub struct DrawCall3d {
     /// `emission:` convention (sRGB up to 1, HDR above) — a look's
     /// `glow:`; `[0.0; 3]` otherwise.
     pub glow: [f32; 3],
+    /// Lanternfall E4: 0 = a mesh draw posed by the mesh's shared
+    /// animation; n > 0 = posed by `RenderSnapshot::instance_anims[n - 1]`
+    /// (an entity's own, from `mesh_anim.play(self, ...)`).
+    pub anim: u32,
 }
 
 /// The identity quaternion: a draw that isn't tilted.

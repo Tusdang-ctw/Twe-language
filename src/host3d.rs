@@ -107,6 +107,7 @@ pub fn render_frame(
         materials: &env.material_sources,
         hud: &env.draw2d,
         anim: &anim,
+        instance_anims: &env.instance_anims,
     };
     let scripted = crate::clock::now_secs();
     renderer.set_quality(crate::stdlib::graphics_quality());

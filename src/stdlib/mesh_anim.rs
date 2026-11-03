@@ -5,65 +5,77 @@
 
 use super::*;
 
-#[derive(Clone, Default)]
-pub(super) struct MeshAnimEntry {
-    /// Active clip name; empty string = stopped.
-    clip: String,
-    /// Time elapsed since clip started, in seconds.
-    time: f32,
-    /// Whether the clip loops at the end (vs holding the last frame).
-    looping: bool,
-    /// Optional blend target — when present, the renderer (or the
-    /// script's own logic) interpolates joints between `clip` and
-    /// `blend_clip` by `blend_t` ∈ [0, 1].
-    blend_clip: Option<String>,
-    blend_t: f32,
-    /// web3d-M11 session 1: the blend target's own playback time, so a
-    /// crossfade's outgoing clip (or an explicit `blend` partner)
-    /// animates independently of the primary clip.
-    blend_time: f32,
-    /// Seconds left in an auto-crossfade started by `play()` (0 = none).
-    crossfade_remaining: f32,
-    /// The crossfade's total duration, for computing `blend_t`.
-    crossfade_duration: f32,
-    /// Per-mesh crossfade length (`None` → `DEFAULT_CROSSFADE`), set by
-    /// `mesh_anim.set_crossfade`. 0 means hard clip switches.
-    crossfade_config: Option<f32>,
-}
+use crate::render3d_types::AnimEntry;
 
 /// web3d-M11 session 1: default auto-crossfade when `play()` changes the
 /// clip — smooths walk↔idle↔attack transitions instead of popping.
 const DEFAULT_CROSSFADE: f32 = 0.15;
 
-/// web3d-M4: `mesh_anim.*` names a mesh by the path its draws use
-/// (`look: mesh: "hero.glb"` / `mesh("hero.glb", ...)`), which is the
-/// renderer's mesh id. Every instance of that mesh shares the clip.
-/// (An integer handle is still accepted; ids were never exposed to
-/// scripts, so the path is the only practical form.)
-pub(super) fn anim_handle(env: &mut Env, v: &Value, what: &str) -> Result<u32, RuntimeError> {
-    if v.is_str() {
-        return Ok(env.intern_mesh_path(&v.as_string()));
+/// What a `mesh_anim.*` call animates.
+pub(super) enum AnimTarget {
+    /// web3d-M4: a mesh, named by the path its draws use (`look: mesh:
+    /// "hero.glb"` / `mesh("hero.glb", ...)`), which is the renderer's
+    /// mesh id. Every entity drawing it without an animation of its own
+    /// shares it. (An integer handle is still accepted.)
+    Mesh(u32),
+    /// Lanternfall E4: one entity (`mesh_anim.play(self, ...)`): its look
+    /// is posed by its own animation, apart from every other entity.
+    Entity(Rc<RefCell<crate::value::Instance>>),
+}
+
+pub(super) fn anim_handle(env: &mut Env, v: &Value, what: &str) -> Result<AnimTarget, RuntimeError> {
+    if v.is_instance() {
+        return Ok(AnimTarget::Entity(v.as_instance()));
     }
-    handle_int(v, what).map_err(|mut e| {
+    if v.is_str() {
+        return Ok(AnimTarget::Mesh(env.intern_mesh_path(&v.as_string())));
+    }
+    handle_int(v, what).map(AnimTarget::Mesh).map_err(|mut e| {
         e.help = Some(format!(
-            "pass the mesh's path, e.g. `{what}(\"assets/hero.glb\", ...)`"
+            "pass an entity (`{what}(self, ...)`) or the mesh's path (`{what}(\"assets/hero.glb\", ...)`)"
         ));
         e
     })
 }
 
+/// Run `f` on the target's animation, creating it the first time. An
+/// entity's first animation moves its look onto the per-entity path, so
+/// the gathered looks are refreshed (`bump_look_epoch`).
+fn with_entry<R>(target: &AnimTarget, f: impl FnOnce(&mut AnimEntry) -> R) -> R {
+    match target {
+        AnimTarget::Mesh(handle) => {
+            MESH_ANIM_STATE.with(|s| f(s.borrow_mut().entry(*handle).or_default()))
+        }
+        AnimTarget::Entity(inst) => {
+            let mut inst = inst.borrow_mut();
+            if inst.anim.is_none() {
+                crate::value::bump_look_epoch();
+            }
+            f(inst.anim.get_or_insert_with(Box::default))
+        }
+    }
+}
+
+/// The target's animation as it stands (stopped when it has none).
+fn current_entry(target: &AnimTarget) -> AnimEntry {
+    match target {
+        AnimTarget::Mesh(handle) => {
+            MESH_ANIM_STATE.with(|s| s.borrow().get(handle).cloned().unwrap_or_default())
+        }
+        AnimTarget::Entity(inst) => inst.borrow().anim.as_deref().cloned().unwrap_or_default(),
+    }
+}
+
 pub(super) fn mesh_play_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "mesh.play")?;
-    let handle = anim_handle(env, &args[0], "mesh_anim.play")?;
+    let target = anim_handle(env, &args[0], "mesh_anim.play")?;
     let clip = string_arg(&args[1], "mesh.play", "clip")?;
     let looping = if args[2].is_bool() {
         args[2].as_bool()
     } else {
         false
     };
-    MESH_ANIM_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        let entry = st.entry(handle).or_default();
+    with_entry(&target, |entry| {
         let switching = entry.clip != clip;
         if switching {
             let cf = entry.crossfade_config.unwrap_or(DEFAULT_CROSSFADE);
@@ -92,22 +104,27 @@ pub(super) fn mesh_play_impl(env: &mut Env, args: &[Value]) -> Result<Value, Run
 
 pub(super) fn mesh_stop_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "mesh.stop")?;
-    let handle = anim_handle(env, &args[0], "mesh_anim.stop")?;
-    MESH_ANIM_STATE.with(|s| {
-        s.borrow_mut().remove(&handle);
-    });
+    match anim_handle(env, &args[0], "mesh_anim.stop")? {
+        AnimTarget::Mesh(handle) => MESH_ANIM_STATE.with(|s| {
+            s.borrow_mut().remove(&handle);
+        }),
+        // The entity goes back to the mesh's shared animation.
+        AnimTarget::Entity(inst) => {
+            if inst.borrow_mut().anim.take().is_some() {
+                crate::value::bump_look_epoch();
+            }
+        }
+    }
     Ok(Value::NIL)
 }
 
 pub(super) fn mesh_blend_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "mesh.blend")?;
-    let handle = anim_handle(env, &args[0], "mesh_anim.blend")?;
+    let target = anim_handle(env, &args[0], "mesh_anim.blend")?;
     let clip_a = string_arg(&args[1], "mesh.blend", "clip_a")?;
     let clip_b = string_arg(&args[2], "mesh.blend", "clip_b")?;
     let t = (number(&args[3], "mesh.blend.t")? as f32).clamp(0.0, 1.0);
-    MESH_ANIM_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        let entry = st.entry(handle).or_default();
+    with_entry(&target, |entry| {
         if entry.clip != clip_a {
             entry.clip = clip_a;
             entry.time = 0.0;
@@ -180,7 +197,7 @@ pub(super) fn anim_f32_list(v: &Value, what: &str, field: &str) -> Result<Vec<f3
 /// the renderer is unchanged.
 pub(super) fn mesh_blend_space_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 4, "mesh.blend_space")?;
-    let handle = anim_handle(env, &args[0], "mesh_anim.blend_space")?;
+    let target = anim_handle(env, &args[0], "mesh_anim.blend_space")?;
     let clips = anim_string_list(&args[1], "mesh_anim.blend_space", "clips")?;
     let stops = anim_f32_list(&args[2], "mesh_anim.blend_space", "stops")?;
     let value = number(&args[3], "mesh.blend_space.value")? as f32;
@@ -219,9 +236,7 @@ pub(super) fn mesh_blend_space_impl(env: &mut Env, args: &[Value]) -> Result<Val
         let t = if span > 0.0 { (value - stops[i]) / span } else { 0.0 };
         (i, i + 1, t.clamp(0.0, 1.0))
     };
-    MESH_ANIM_STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        let entry = st.entry(handle).or_default();
+    with_entry(&target, |entry| {
         entry.clip = clips[lo_i].clone();
         entry.looping = true;
         if lo_i == hi_i {
@@ -244,53 +259,41 @@ pub(super) fn mesh_blend_space_impl(env: &mut Env, args: &[Value]) -> Result<Val
 /// uses when it changes this mesh's clip. 0 = hard switch.
 pub(super) fn mesh_set_crossfade_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 2, "mesh.set_crossfade")?;
-    let handle = anim_handle(env, &args[0], "mesh_anim.set_crossfade")?;
+    let target = anim_handle(env, &args[0], "mesh_anim.set_crossfade")?;
     let secs = (number(&args[1], "mesh.set_crossfade.seconds")? as f32).max(0.0);
-    MESH_ANIM_STATE.with(|s| {
-        s.borrow_mut().entry(handle).or_default().crossfade_config = Some(secs);
-    });
+    with_entry(&target, |entry| entry.crossfade_config = Some(secs));
     Ok(Value::NIL)
 }
 
 pub(super) fn mesh_current_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "mesh.current")?;
-    let handle = anim_handle(env, &args[0], "mesh_anim.current")?;
-    MESH_ANIM_STATE.with(|s| {
-        let st = s.borrow();
-        let entry = st.get(&handle).cloned().unwrap_or_default();
-        let mut fields = HashMap::new();
-        fields.insert("clip".to_string(), Value::from_string(entry.clip.clone()));
-        fields.insert("time".to_string(), Value::from_float(entry.time as f64));
-        fields.insert("looping".to_string(), Value::from_bool(entry.looping));
-        Ok(Value::from_object(Rc::new(RefCell::new(Object {
-            fields,
-            kind: "anim_state",
-        }))))
-    })
+    let target = anim_handle(env, &args[0], "mesh_anim.current")?;
+    let entry = current_entry(&target);
+    let mut fields = HashMap::new();
+    fields.insert("clip".to_string(), Value::from_string(entry.clip.clone()));
+    fields.insert("time".to_string(), Value::from_float(entry.time as f64));
+    fields.insert("looping".to_string(), Value::from_bool(entry.looping));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "anim_state",
+    }))))
 }
 
-pub(super) fn mesh_advance_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+/// Advance every animation by `dt`: each mesh's shared one and
+/// (Lanternfall E4) each live entity's own.
+pub(super) fn mesh_advance_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "mesh.advance")?;
     let dt = number(&args[0], "mesh.advance.dt")? as f32;
     MESH_ANIM_STATE.with(|s| {
         for entry in s.borrow_mut().values_mut() {
-            entry.time += dt;
-            entry.blend_time += dt;
-            // web3d-M11 s1: ramp an active auto-crossfade out.
-            if entry.crossfade_remaining > 0.0 {
-                entry.crossfade_remaining = (entry.crossfade_remaining - dt).max(0.0);
-                entry.blend_t = if entry.crossfade_duration > 0.0 {
-                    (entry.crossfade_remaining / entry.crossfade_duration).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                if entry.crossfade_remaining <= 0.0 {
-                    entry.blend_clip = None;
-                    entry.blend_t = 0.0;
-                }
-            }
+            entry.advance(dt);
         }
     });
+    for entity in &env.active_entities {
+        if let Some(entry) = entity.borrow_mut().anim.as_deref_mut() {
+            entry.advance(dt);
+        }
+    }
     Ok(Value::NIL)
 }
 
@@ -301,17 +304,10 @@ pub(super) fn mesh_advance_impl(_env: &mut Env, args: &[Value]) -> Result<Value,
 /// for this handle.
 pub(crate) fn mesh_anim_state(handle: u32) -> crate::render3d_types::AnimSnapshot {
     MESH_ANIM_STATE.with(|s| {
-        let st = s.borrow();
-        match st.get(&handle) {
-            Some(e) => crate::render3d_types::AnimSnapshot {
-                clip: e.clip.clone(),
-                time: e.time,
-                blend_clip: e.blend_clip.clone(),
-                blend_t: e.blend_t,
-                blend_time: e.blend_time,
-            },
-            None => crate::render3d_types::AnimSnapshot::default(),
-        }
+        s.borrow()
+            .get(&handle)
+            .map(AnimEntry::snapshot)
+            .unwrap_or_default()
     })
 }
 

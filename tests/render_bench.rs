@@ -33,6 +33,7 @@ fn cube(x: f32, y: f32, z: f32, size: f32, color: [f32; 4]) -> DrawCall3d {
         rotation: twec::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     }
 }
 
@@ -126,6 +127,7 @@ fn measure_materials(
         materials,
         hud: &[],
         anim: &anim,
+        instance_anims: &[],
     };
     // Warm up (pipelines, buffer growth).
     for _ in 0..5 {
@@ -279,6 +281,7 @@ fn render_particles() {
             materials: &[],
             hud: &[],
             anim: &anim,
+            instance_anims: &[],
         };
         for f in 0..30 {
             renderer.render(&snap(f), &mut assets).expect("render");
@@ -484,4 +487,53 @@ fn render_stress_scene() {
         kernel / n,
         start.elapsed().as_secs_f64() * 1e3 / n
     );
+}
+
+/// Lanternfall E4: the cost of per-entity animation — 40 skinned heroes
+/// (the battle royale's crowd), each posed by its own animation, against
+/// the same 40 sharing the mesh's one. Run through the real script →
+/// snapshot → kernel path (`host3d::render_frame`); prints kernel ms per
+/// frame (CPU: posing, palette, instance upload, encoding).
+#[test]
+#[ignore = "benchmark: run with --release -- --ignored --nocapture"]
+fn render_animated_crowd() {
+    twec::bundle::set_asset_root(Some("examples/action3d".into()));
+    let crowd = |own: bool| {
+        format!(
+            "camera.eye = vec3(0, 14, 14)\ncamera.target = vec3(0, 0, 0)\n\
+             entity Hero:\n    var pos = vec3(0, 0, 0)\n    look:\n        mesh: \"assets/hero.glb\"\n\
+             for i in 0..<40:\n    spawn Hero at vec3(math.mod(i, 8) * 2.0 - 7.0, 0, math.floor(i / 8) * 2.0 - 4.0)\n\
+             var k = 0\nfor h in entities.of(Hero):\n    k += 1\n\
+             \x20   if {own}:\n        mesh_anim.play(h, \"run\", true)\n        mesh_anim.advance(0.013)\n\
+             mesh_anim.play(\"assets/hero.glb\", \"walk\", true)\n\
+             on update(dt):\n    mesh_anim.advance(dt)\n"
+        )
+    };
+    for own in [false, true] {
+        let src = crowd(own);
+        let program = twec::parser::parse(&twec::lexer::lex(&src).unwrap()).unwrap();
+        let mut env = twec::value::Env::new();
+        twec::stdlib::install(&mut env);
+        twec::eval::run_top_level(&mut env, &program).unwrap();
+        let mut renderer = pollster::block_on(Renderer::new_headless(W, H)).expect("gpu");
+        let mut assets = twec::play3d::NativeAssets::default();
+        for _ in 0..200 {
+            twec::eval::tick_frame(&mut env, 1.0 / 60.0).unwrap();
+            twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).unwrap();
+            if assets.pending() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut kernel = 0.0;
+        for _ in 0..FRAMES {
+            twec::eval::tick_frame(&mut env, 1.0 / 60.0).unwrap();
+            kernel += twec::host3d::render_frame(&mut renderer, &mut env, &mut assets)
+                .unwrap()
+                .kernel_ms;
+        }
+        renderer.read_pixels().expect("sync");
+        let label = if own { "own animation each" } else { "one shared animation" };
+        eprintln!("40 skinned heroes, {label:<22}: kernel {:6.3} ms/frame", kernel / f64::from(FRAMES));
+    }
 }

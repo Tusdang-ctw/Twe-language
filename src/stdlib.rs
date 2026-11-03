@@ -1131,7 +1131,7 @@ thread_local! {
     /// for animation; a future revision could split them). Stores
     /// active clip name, current time, looping flag, and optional
     /// blend target for cross-fades.
-    static MESH_ANIM_STATE: RefCell<HashMap<u32, MeshAnimEntry>> =
+    static MESH_ANIM_STATE: RefCell<HashMap<u32, crate::render3d_types::AnimEntry>> =
         RefCell::new(HashMap::new());
     /// Phase 20: script-controlled lighting state. The play3d loop
     /// reads this once per frame and uploads to the GPU lights
@@ -10935,6 +10935,7 @@ fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         rotation: crate::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     });
     Ok(Value::NIL)
 }
@@ -10956,6 +10957,7 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         rotation: crate::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     });
     Ok(Value::NIL)
 }
@@ -10993,6 +10995,7 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         rotation: crate::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     });
     Ok(Value::NIL)
 }
@@ -11039,6 +11042,7 @@ fn mesh_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         rotation: crate::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     });
     Ok(Value::NIL)
 }
@@ -11062,6 +11066,7 @@ fn cube_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         rotation: crate::render3d_types::NO_ROTATION,
         scale: [1.0; 3],
         glow: [0.0; 3],
+        anim: 0,
     });
     Ok(Value::NIL)
 }
