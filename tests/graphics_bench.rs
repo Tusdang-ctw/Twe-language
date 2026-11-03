@@ -118,6 +118,9 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: twec::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     }];
     let mesh_paths = vec!["model.glb".to_string()];
     let anim = |_: u32| Default::default();

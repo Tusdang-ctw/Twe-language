@@ -74,6 +74,10 @@ pub struct LookDef {
     pub scale: Option<LookSlot>,
     pub facing: Option<LookSlot>,
     pub material: Option<LookSlot>,
+    /// Lanternfall E3: a `quat` applied after `facing`.
+    pub rotation: Option<LookSlot>,
+    /// Lanternfall E3: emission added to the lit colour (hit flashes).
+    pub glow: Option<LookSlot>,
 }
 
 /// web3d-M7 session 16: a class whose look reads nothing of the

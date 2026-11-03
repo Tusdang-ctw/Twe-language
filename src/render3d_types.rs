@@ -104,7 +104,20 @@ pub struct DrawCall3d {
     /// web3d-M3: material id (`Env::intern_material`) from a look's
     /// `material:`, or 0 for the plain lit surface.
     pub material: u32,
+    /// Lanternfall E3: orientation after `yaw`, an (x, y, z, w)
+    /// quaternion from a look's `rotation:` ([`NO_ROTATION`] otherwise).
+    pub rotation: [f32; 4],
+    /// Lanternfall E3: per-axis scale, multiplied by `size` (a look's
+    /// vec3 `scale:`; `[1.0; 3]` otherwise).
+    pub scale: [f32; 3],
+    /// Lanternfall E3: emission added to the lit colour, in the
+    /// `emission:` convention (sRGB up to 1, HDR above) — a look's
+    /// `glow:`; `[0.0; 3]` otherwise.
+    pub glow: [f32; 3],
 }
+
+/// The identity quaternion: a draw that isn't tilted.
+pub const NO_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 /// The mesh shape behind a `DrawCall3d`. Each variant has its own
 /// vertex/index buffer in `play3d`; a frame's queue is partitioned

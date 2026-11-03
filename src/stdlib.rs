@@ -14,6 +14,7 @@ mod mesh_anim;
 use mesh_anim::*;
 pub(crate) use mesh_anim::mesh_anim_state;
 mod quat;
+pub(crate) use quat::quat_from_value;
 use quat::*;
 mod lighting;
 use lighting::*;
@@ -5972,6 +5973,19 @@ fn install_math(env: &mut Env) {
         "mul".to_string(),
         Value::from_builtin("quat.mul", &["a", "b"], quat_mul_impl),
     );
+    // Lanternfall E3: the two ways a game builds a look's `rotation:`.
+    quat.insert(
+        "from_euler".to_string(),
+        Value::from_builtin(
+            "quat.from_euler",
+            &["pitch", "yaw", "roll"],
+            quat_from_euler_impl,
+        ),
+    );
+    quat.insert(
+        "look_along".to_string(),
+        Value::from_builtin("quat.look_along", &["dir"], quat_look_along_impl),
+    );
     env.set(
         "quat".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -10918,6 +10932,9 @@ fn cube_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: crate::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     });
     Ok(Value::NIL)
 }
@@ -10936,6 +10953,9 @@ fn sphere_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: crate::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     });
     Ok(Value::NIL)
 }
@@ -10970,6 +10990,9 @@ fn mesh_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: crate::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     });
     Ok(Value::NIL)
 }
@@ -11013,6 +11036,9 @@ fn mesh_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         texture: tex_id,
         yaw: 0.0,
         material: 0,
+        rotation: crate::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     });
     Ok(Value::NIL)
 }
@@ -11033,6 +11059,9 @@ fn cube_textured_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         texture: tex_id,
         yaw: 0.0,
         material: 0,
+        rotation: crate::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     });
     Ok(Value::NIL)
 }

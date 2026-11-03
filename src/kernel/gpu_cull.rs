@@ -30,9 +30,10 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-/// Bytes per instance (`render.rs` `Instance`: position + size, colour,
-/// rotation with the draw group in `rot.z`).
-pub(crate) const INSTANCE_BYTES: u64 = 48;
+/// Bytes per instance (`render.rs` `Instance`: position + bounding
+/// scale, colour, orientation, per-axis scale with the draw group in
+/// `scale.w`, glow — Lanternfall E3).
+pub(crate) const INSTANCE_BYTES: u64 = 80;
 
 /// One draw group's culling data: every instance of the group shares
 /// its geometry's bounding radius (scaled by the instance's size) and
@@ -89,6 +90,8 @@ struct Instance {
     pos_size: vec4<f32>,
     color: vec4<f32>,
     rot: vec4<f32>,
+    scale: vec4<f32>,
+    glow: vec4<f32>,
 };
 struct Group {
     radius: f32,
@@ -124,7 +127,7 @@ struct Args {
 
 fn sphere(i: u32) -> vec4<f32> {
     let inst = instances[i];
-    let g = u32(inst.rot.z);
+    let g = u32(inst.scale.w);
     return vec4<f32>(inst.pos_size.xyz, groups[g].radius * inst.pos_size.w);
 }
 
@@ -140,7 +143,7 @@ fn in_frustum(s: vec4<f32>) -> bool {
 
 fn append(i: u32) {
     let inst = instances[i];
-    let g = u32(inst.rot.z);
+    let g = u32(inst.scale.w);
     let slot = atomicAdd(&counts[g], 1u);
     out_instances[groups[g].base + slot] = inst;
 }

@@ -408,7 +408,9 @@ pub struct LookKey {
 }
 
 /// The keys a `look:` block may set.
-pub const LOOK_KEYS: &[&str] = &["mesh", "tint", "scale", "facing", "material"];
+pub const LOOK_KEYS: &[&str] = &[
+    "mesh", "tint", "scale", "facing", "material", "rotation", "glow",
+];
 
 /// The problem with a `look:` key, if any, as `(message, help)`. Shared
 /// by `twec verify` and the runtime so both say the same thing.

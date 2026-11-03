@@ -634,6 +634,9 @@ fn environment_lights_and_backs_the_scene() {
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: twec::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     }];
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
@@ -1576,6 +1579,9 @@ fn gpu_culling_is_invisible_and_culls() {
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: twec::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     };
     let mut draws = Vec::new();
     for i in 0..80 {
@@ -1658,6 +1664,9 @@ fn floor_with_lights(lights: &[twec::kernel::render::PointLightU]) -> (Vec<u8>, 
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: twec::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     }];
     let anim = |_: u32| Default::default();
     let mut assets = twec::play3d::NativeAssets::default();
@@ -2282,4 +2291,73 @@ fn camera_project_lands_on_the_drawn_pixel() {
     );
     // Off to the side by the sphere's on-screen size, it's sky again.
     assert!(at((px + 40.0) as u32, py.round() as u32) < sky + 30);
+}
+
+/// Lanternfall E3: a look's vec3 `scale:` stretches per axis and its
+/// `rotation:` (a quat) turns the mesh; a quarter turn by `rotation`
+/// draws what a quarter turn by `facing` draws.
+#[test]
+fn look_rotation_and_per_axis_scale() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let scene = |extra: &str| {
+        format!(
+            "camera.eye = vec3(0, 10, 0.001)\ncamera.target = vec3(0, 0, 0)\n\
+             entity Bar:\n    var pos = vec3(0, 0, 0)\n    look:\n        mesh: \"cube\"\n\
+             \x20       tint: color.yellow\n        scale: vec3(6.0, 0.4, 0.4)\n{extra}spawn Bar\n"
+        )
+    };
+    let flat = render_source(&mut renderer, "bar_flat", &scene(""));
+    let turned = render_source(
+        &mut renderer,
+        "bar_rotation",
+        &scene("        rotation: quat.from_axis_angle(vec3(0, 1, 0), 1.5707964)\n"),
+    );
+    let faced = render_source(&mut renderer, "bar_facing", &scene("        facing: 1.5707964\n"));
+    save_png("bar_rotation", &turned);
+    let lum = |rgba: &[u8], x: u32, y: u32| {
+        let p = pixel(rgba, x, y);
+        u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
+    };
+    let sky = lum(&flat, 2, 2);
+    let (cx, cy) = (W / 2, H / 2);
+    // Unturned: a long bar across, thin up and down.
+    assert!(lum(&flat, cx + 50, cy) > sky + 60, "bar along x");
+    assert!(lum(&flat, cx, cy + 50) < sky + 20, "bar is thin in z");
+    // Turned a quarter: along z instead.
+    assert!(lum(&turned, cx, cy + 50) > sky + 60, "turned bar along z");
+    assert!(lum(&turned, cx + 50, cy) < sky + 20, "turned bar is thin in x");
+    // `rotation` and `facing` agree.
+    let differing = turned
+        .chunks(4)
+        .zip(faced.chunks(4))
+        .filter(|(p, q)| p[..3].iter().zip(&q[..3]).any(|(a, b)| a.abs_diff(*b) > 8))
+        .count();
+    assert!(differing < (W * H / 500) as usize, "{differing} pixels differ");
+}
+
+/// Lanternfall E3: a look's `glow:` adds emission — a dark cube in a dark
+/// scene lights up (hit flashes).
+#[test]
+fn look_glow_lights_up_a_dark_mesh() {
+    let Some(mut renderer) = headless() else {
+        return;
+    };
+    let scene = |glow: &str| {
+        format!(
+            "camera.eye = vec3(0, 6, 0.001)\ncamera.target = vec3(0, 0, 0)\n\
+             light.ambient((0.0, 0.0, 0.0, 1.0))\nsun.intensity(0.0)\n\
+             entity Box:\n    var pos = vec3(0, 0, 0)\n    look:\n        mesh: \"cube\"\n\
+             \x20       tint: (0.05, 0.05, 0.05)\n        scale: 2.0\n        glow: {glow}\nspawn Box\n"
+        )
+    };
+    let dark = render_source(&mut renderer, "glow_off", &scene("0.0"));
+    let lit = render_source(&mut renderer, "glow_on", &scene("(1.0, 0.3, 0.1)"));
+    save_png("glow_on", &lit);
+    let (cx, cy) = (W / 2, H / 2);
+    let off = pixel(&dark, cx, cy);
+    let on = pixel(&lit, cx, cy);
+    assert!(on[0] > off[0] + 80, "glow should light the cube: {off:?} -> {on:?}");
+    assert!(on[0] > on[2] + 40, "an orange glow stays orange: {on:?}");
 }

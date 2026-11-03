@@ -125,7 +125,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         name: "look_key",
-        body: "('mesh' | 'tint' | 'scale' | 'facing' | 'material') ':' expr NEWLINE",
+        body: "('mesh' | 'tint' | 'scale' | 'facing' | 'material' | 'rotation' | 'glow') ':' expr NEWLINE",
     },
     Rule {
         name: "field_decl",

@@ -561,9 +561,32 @@ entity Enemy:
 |---|---|---|
 | `mesh` | `"cube"`, `"sphere"`, or a `.glb` path | `"cube"` |
 | `tint` | color `(r, g, b)` or `(r, g, b, a)` | white |
-| `scale` | number (uniform size) | `1.0` |
+| `scale` | number (uniform size), or *(Lanternfall E3)* a `vec3` per-axis scale | `1.0` |
 | `facing` | number: yaw in radians about +Y; `0` faces +Z, and `math.atan2(dx, dz)` faces the direction `(dx, dz)` | `0` |
 | `material` | a `visual` block (§4.9) | none (the plain lit surface) |
+| `rotation` *(Lanternfall E3)* | a `quat` (§7.2 `quat.*`): a full orientation, applied after `facing` | none |
+| `glow` *(Lanternfall E3)* | number (white) or colour `(r, g, b)`: emission added to the lit surface, in the `emission:` convention — above 1 it is HDR and blooms | `0` |
+
+**Tilt, stretch, flash** *(Lanternfall E3)*. The draw's transform is `position + facing_yaw * rotation * (scale * vertex)`, the same in every pass (main, shadows, ambient occlusion, culling, transparency sorting), and normals stay perpendicular under a non-uniform scale:
+
+```twe
+entity Tracer:
+    var pos = vec3(0, 0, 0)
+    var dir = vec3(0, 0, 1)
+    var age = 0.0
+    look:
+        mesh: "cube"
+        scale: vec3(0.05, 0.05, 3.0)          # a thin beam, 3 m long
+        rotation: quat.look_along(dir)        # pointing where it was fired
+        glow: (4.0, 3.0, 1.0) * (1.0 - age * 10.0)   # bright, fading
+
+entity Bot:
+    var pos = vec3(0, 0, 0)
+    var hurt = 0.0                            # set to 1 on a hit, decays in update
+    look:
+        mesh: "assets/bot.glb"
+        glow: hurt * 3.0                      # a white hit flash
+```
 
 **Materials.** With `material: Fire`, the visual (§4.9) is the mesh's surface, evaluated on the GPU for every pixel the mesh covers:
 - **`pixel`:** the colour is the surface's albedo, on the plain surface (roughness 0.5, not metal).
@@ -856,6 +879,18 @@ math.smoothstep(0.0, 1.0, t)  # smooth 0→1 curve
 math.mix(a, b, t)      # linear interpolation; works on numbers or same-shape tuples
 math.clamp(v, lo, hi)  # clamp v to [lo, hi]
 math.pi                # 3.14159…
+```
+
+**Quaternions** (`quat.*`, Phase 21; for a look's `rotation:`, §4.9a). A quat is an object holding `(x, y, z, w)`:
+
+```twe
+quat.identity()                          # no rotation
+quat.from_axis_angle(vec3(0, 1, 0), a)   # `a` radians about an axis
+quat.from_euler(pitch, yaw, roll)        # Lanternfall E3: radians; yaw about +Y (as `facing`), then pitch about the turned +X, then roll about the resulting +Z
+quat.look_along(dir)                     # Lanternfall E3: turns +Z (a mesh's front) to point along `dir`, keeping +Y up
+quat.mul(a, b)                           # Hamilton product a·b: rotates by b, then by a
+quat.slerp(a, b, t)                      # shortest-path blend
+quat.to_mat4(q)
 ```
 
 ### 7.3 Random

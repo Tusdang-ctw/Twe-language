@@ -826,6 +826,10 @@ struct LookValues {
     size: f32,
     yaw: f32,
     material: u32,
+    /// Lanternfall E3: `rotation:`, per-axis `scale:`, `glow:`.
+    rotation: [f32; 4],
+    scale: [f32; 3],
+    glow: [f32; 3],
 }
 
 /// web3d-M3: queue a draw for every live entity whose class has a
@@ -901,8 +905,16 @@ fn gather_looks(env: &mut Env) -> Result<crate::value::LookCache, RuntimeError> 
 }
 
 fn look_has_own_keys(look: &crate::value::LookDef) -> bool {
-    [&look.mesh, &look.tint, &look.scale, &look.facing, &look.material]
-        .iter()
+    [
+        &look.mesh,
+        &look.tint,
+        &look.scale,
+        &look.facing,
+        &look.material,
+        &look.rotation,
+        &look.glow,
+    ]
+    .iter()
         .any(|s| s.as_ref().is_some_and(|s| s.per_entity))
 }
 
@@ -946,6 +958,9 @@ fn looks_fingerprint(env: &mut Env, cache: &crate::value::LookCache) -> Result<u
             x.to_bits().hash(&mut h);
         }
         (v.size.to_bits(), v.yaw.to_bits(), v.material, positions.len()).hash(&mut h);
+        for x in v.rotation.iter().chain(&v.scale).chain(&v.glow) {
+            x.to_bits().hash(&mut h);
+        }
     }
     Ok(h.finish())
 }
@@ -975,6 +990,9 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
             texture: 0,
             yaw: values.yaw,
             material: values.material,
+            rotation: values.rotation,
+            scale: values.scale,
+            glow: values.glow,
         }));
     }
     for entity in &cache.own {
@@ -993,6 +1011,9 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
             texture: 0,
             yaw: values.yaw,
             material: values.material,
+            rotation: values.rotation,
+            scale: values.scale,
+            glow: values.glow,
         });
     }
     Ok(())
@@ -1006,6 +1027,9 @@ impl LookValues {
             size: 1.0,
             yaw: 0.0,
             material: 0,
+            rotation: crate::render3d_types::NO_ROTATION,
+            scale: [1.0; 3],
+            glow: [0.0; 3],
         }
     }
 }
@@ -1036,7 +1060,15 @@ fn look_values(
     }
     if let Some(slot) = wanted(&look.scale, per_entity) {
         let val = eval_look_slot(env, entity, slot)?;
-        v.size = crate::stdlib::number(&val, "look scale").map_err(|e| at_slot(e, slot))? as f32;
+        (v.size, v.scale) = look_scale(val, slot)?;
+    }
+    if let Some(slot) = wanted(&look.rotation, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.rotation = look_rotation(val, slot)?;
+    }
+    if let Some(slot) = wanted(&look.glow, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.glow = look_glow(val, slot)?;
     }
     if let Some(slot) = wanted(&look.facing, per_entity) {
         let val = eval_look_slot(env, entity, slot)?;
@@ -1124,6 +1156,62 @@ fn look_material(
             "a material's methods must pass the visual-block checks (`twec verify`)",
         )
     })
+}
+
+/// A look's `scale:` — a number (uniform, as before) or a vec3 (per axis,
+/// Lanternfall E3). Returns `(size, per-axis scale)`.
+fn look_scale(v: Value, slot: &crate::value::LookSlot) -> Result<(f32, [f32; 3]), RuntimeError> {
+    if v.is_tuple() {
+        let s = crate::stdlib::xyz_of(&v, "look scale").map_err(|e| RuntimeError {
+            help: Some("a per-axis scale is a vec3, e.g. `scale: vec3(0.1, 0.1, 4.0)`".to_string()),
+            ..at_slot(e, slot)
+        })?;
+        return Ok((1.0, s));
+    }
+    let n = crate::stdlib::number(&v, "look scale").map_err(|e| RuntimeError {
+        help: Some("`scale:` is a number (uniform) or a vec3 (per axis)".to_string()),
+        ..at_slot(e, slot)
+    })?;
+    Ok((n as f32, [1.0; 3]))
+}
+
+/// A look's `rotation:` — a `quat` (Lanternfall E3), normalized.
+fn look_rotation(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 4], RuntimeError> {
+    let q = crate::stdlib::quat_from_value(&v, "look rotation").map_err(|e| RuntimeError {
+        help: Some(
+            "make one with quat.from_euler(pitch, yaw, roll), quat.look_along(dir) or quat.from_axis_angle(axis, angle)"
+                .to_string(),
+        ),
+        ..at_slot(e, slot)
+    })?;
+    let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if n.is_nan() || n <= 1e-6 {
+        return Ok(crate::render3d_types::NO_ROTATION);
+    }
+    Ok([q[0] / n, q[1] / n, q[2] / n, q[3] / n])
+}
+
+/// A look's `glow:` — a number (white) or an `(r, g, b)` colour, added
+/// as emission (Lanternfall E3). Above 1 it is HDR and blooms.
+fn look_glow(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 3], RuntimeError> {
+    let help = || {
+        Some("`glow:` is a number (white) or an (r, g, b) colour, e.g. `glow: hurt * 4.0`".to_string())
+    };
+    if v.is_tuple() {
+        let e = v.as_tuple();
+        if e.len() == 3 || e.len() == 4 {
+            let c = |x: &Value| {
+                crate::stdlib::number(x, "look glow")
+                    .map(|n| n.max(0.0) as f32)
+                    .map_err(|e| RuntimeError { help: help(), ..at_slot(e, slot) })
+            };
+            return Ok([c(&e[0])?, c(&e[1])?, c(&e[2])?]);
+        }
+    }
+    let n = crate::stdlib::number(&v, "look glow")
+        .map_err(|e| RuntimeError { help: help(), ..at_slot(e, slot) })?
+        .max(0.0) as f32;
+    Ok([n; 3])
 }
 
 fn look_tint(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 4], RuntimeError> {
@@ -4358,6 +4446,8 @@ fn build_look(
             "scale" => look.scale = Some(slot),
             "facing" => look.facing = Some(slot),
             "material" => look.material = Some(slot),
+            "rotation" => look.rotation = Some(slot),
+            "glow" => look.glow = Some(slot),
             other => unreachable!("look_key_problem accepted `{other}`"),
         }
     }

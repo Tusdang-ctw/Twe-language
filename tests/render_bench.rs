@@ -30,6 +30,9 @@ fn cube(x: f32, y: f32, z: f32, size: f32, color: [f32; 4]) -> DrawCall3d {
         texture: 0,
         yaw: 0.0,
         material: 0,
+        rotation: twec::render3d_types::NO_ROTATION,
+        scale: [1.0; 3],
+        glow: [0.0; 3],
     }
 }
 

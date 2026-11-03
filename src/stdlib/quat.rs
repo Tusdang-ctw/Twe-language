@@ -16,7 +16,7 @@ pub(super) fn quat_to_value(q: [f32; 4]) -> Value {
     })))
 }
 
-pub(super) fn quat_from_value(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
+pub(crate) fn quat_from_value(v: &Value, what: &str) -> Result<[f32; 4], RuntimeError> {
     if !v.is_object() {
         let other = *v;
         return Err(RuntimeError {
@@ -67,6 +67,78 @@ pub(super) fn quat_from_value(v: &Value, what: &str) -> Result<[f32; 4], Runtime
         out[i] = number(e, what)? as f32;
     }
     Ok(out)
+}
+
+/// Lanternfall E3: `quat.from_euler(pitch, yaw, roll)` — radians; yaw
+/// about +Y (as a look's `facing`), then pitch about the turned +X, then
+/// roll about the resulting +Z: `q = yaw * pitch * roll`.
+pub(super) fn quat_from_euler_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 3, "quat.from_euler")?;
+    let pitch = number(&args[0], "quat.from_euler.pitch")? as f32;
+    let yaw = number(&args[1], "quat.from_euler.yaw")? as f32;
+    let roll = number(&args[2], "quat.from_euler.roll")? as f32;
+    let axis = |a: [f32; 3], angle: f32| {
+        let (s, c) = (angle * 0.5).sin_cos();
+        [a[0] * s, a[1] * s, a[2] * s, c]
+    };
+    let q = mul(
+        mul(axis([0.0, 1.0, 0.0], yaw), axis([1.0, 0.0, 0.0], pitch)),
+        axis([0.0, 0.0, 1.0], roll),
+    );
+    Ok(quat_to_value(q))
+}
+
+/// Lanternfall E3: `quat.look_along(dir)` — the rotation that turns
+/// local +Z (a mesh's front) to point along `dir`, keeping +Y as up
+/// where it can (pointing straight up or down, it turns about +X).
+pub(super) fn quat_look_along_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "quat.look_along")?;
+    let d = xyz_of(&args[0], "quat.look_along.dir")?;
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if len < 1e-6 {
+        return Ok(quat_to_value([0.0, 0.0, 0.0, 1.0]));
+    }
+    let f = [d[0] / len, d[1] / len, d[2] / len];
+    // r = up × f, unless f is (anti)parallel to up.
+    let mut r = [f[2], 0.0, -f[0]];
+    let rl = (r[0] * r[0] + r[2] * r[2]).sqrt();
+    if rl < 1e-6 {
+        r = [1.0, 0.0, 0.0];
+    } else {
+        r = [r[0] / rl, 0.0, r[2] / rl];
+    }
+    let u = [
+        f[1] * r[2] - f[2] * r[1],
+        f[2] * r[0] - f[0] * r[2],
+        f[0] * r[1] - f[1] * r[0],
+    ];
+    // The rotation matrix with columns (r, u, f), as a quaternion.
+    let (m00, m11, m22) = (r[0], u[1], f[2]);
+    let trace = m00 + m11 + m22;
+    let q = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [(u[2] - f[1]) / s, (f[0] - r[2]) / s, (r[1] - u[0]) / s, 0.25 * s]
+    } else if m00 > m11 && m00 > m22 {
+        let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
+        [0.25 * s, (u[0] + r[1]) / s, (f[0] + r[2]) / s, (u[2] - f[1]) / s]
+    } else if m11 > m22 {
+        let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
+        [(u[0] + r[1]) / s, 0.25 * s, (f[1] + u[2]) / s, (f[0] - r[2]) / s]
+    } else {
+        let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
+        [(f[0] + r[2]) / s, (f[1] + u[2]) / s, 0.25 * s, (r[1] - u[0]) / s]
+    };
+    Ok(quat_to_value(q))
+}
+
+/// Hamilton product `a * b` of (x, y, z, w) quaternions.
+fn mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
 }
 
 pub(super) fn quat_identity_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
@@ -137,12 +209,7 @@ pub(super) fn quat_mul_impl(_env: &mut Env, args: &[Value]) -> Result<Value, Run
     arity(args, 2, "quat.mul")?;
     let a = quat_from_value(&args[0], "quat.mul.a")?;
     let b = quat_from_value(&args[1], "quat.mul.b")?;
-    Ok(quat_to_value([
-        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
-        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
-        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
-        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
-    ]))
+    Ok(quat_to_value(mul(a, b)))
 }
 
 pub(super) fn quat_to_mat4_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {

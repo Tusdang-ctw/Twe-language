@@ -322,24 +322,102 @@ impl Vertex {
 }
 
 /// Per-instance data — written once per frame from `env.render_queue3d`.
+/// Lanternfall E3: 80 bytes — a full orientation, a per-axis scale and
+/// an emission, so looks can tilt, stretch and flash.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Instance {
     position: [f32; 3],
+    /// The bounding scale: the largest axis of `scale`. Culling spheres,
+    /// back-to-front sorting and volume thickness use it.
     size: f32,
     /// sRGB (the vertex shader decodes it), alpha for translucency.
     color: [f32; 4],
-    /// web3d-M3: (sin yaw, cos yaw) — rotation about +Y, applied by the
-    /// vertex shaders. web3d-M7: z = the instance's GPU-cull group, w = 1
-    /// for a skinned mesh (only those blend joints).
+    /// Orientation quaternion (x, y, z, w): a look's `facing` yaw
+    /// composed with its `rotation`.
     rot: [f32; 4],
+    /// xyz = the per-axis scale (the draw's size folded in); w = the
+    /// instance's GPU-cull group (web3d-M7).
+    scale: [f32; 4],
+    /// rgb = linear emission added to the lit colour (a look's `glow`);
+    /// w = 1 for a skinned mesh (only those blend joints).
+    glow: [f32; 4],
+}
+
+// `Instance`'s size; the GPU cull and every shader's `InstanceInput`
+// depend on it.
+const _: () = assert!(
+    std::mem::size_of::<Instance>() as u64 == crate::kernel::gpu_cull::INSTANCE_BYTES
+);
+
+/// Lanternfall E3: the GPU instance for a draw — position, colour, the
+/// orientation (`yaw` about +Y, then `rotation`), the per-axis scale
+/// with `size` folded in, and the glow, decoded to linear.
+fn instance_of(d: &DrawCall3d) -> Instance {
+    let (s, c) = (d.yaw * 0.5).sin_cos();
+    let yaw = [0.0, s, 0.0, c];
+    let scale = [
+        d.scale[0] * d.size,
+        d.scale[1] * d.size,
+        d.scale[2] * d.size,
+    ];
+    let bound = scale[0].abs().max(scale[1].abs()).max(scale[2].abs());
+    Instance {
+        position: d.at,
+        size: bound,
+        color: d.color,
+        rot: quat_mul(yaw, d.rotation),
+        scale: [scale[0], scale[1], scale[2], 0.0],
+        glow: [
+            srgb_intensity_to_linear(d.glow[0]),
+            srgb_intensity_to_linear(d.glow[1]),
+            srgb_intensity_to_linear(d.glow[2]),
+            0.0,
+        ],
+    }
+}
+
+/// One glow channel, decoded like a material's `emission:` (sRGB below
+/// 1, linear above it, so values over 1 stay HDR and bloom).
+fn srgb_intensity_to_linear(c: f32) -> f32 {
+    let c = c.max(0.0);
+    if c <= 1.0 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    } else {
+        c
+    }
+}
+
+/// Hamilton product `a * b` of (x, y, z, w) quaternions.
+fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+/// `v` rotated by quaternion `q` (x, y, z, w).
+fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let u = [q[0], q[1], q[2]];
+    let t = cross(u, v);
+    let t = [t[0] + q[3] * v[0], t[1] + q[3] * v[1], t[2] + q[3] * v[2]];
+    let c = cross(u, t);
+    [v[0] + 2.0 * c[0], v[1] + 2.0 * c[1], v[2] + 2.0 * c[2]]
 }
 
 impl Instance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-        2 => Float32x4, // packed (position.xyz, size)
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        2 => Float32x4, // packed (position.xyz, bounding scale)
         3 => Float32x4,
-        7 => Float32x4, // rotation (sin yaw, cos yaw, _, _)
+        7 => Float32x4, // orientation quaternion
+        11 => Float32x4, // per-axis scale, cull group
+        12 => Float32x4, // glow (rgb), skinned flag
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -713,14 +791,23 @@ struct VertexInput {
 };
 
 struct InstanceInput {
-    @location(2) inst_pos_size: vec4<f32>, // xyz = position, w = uniform scale
+    @location(2) inst_pos_size: vec4<f32>, // xyz = position, w = bounding scale
     @location(3) inst_color: vec4<f32>,
-    @location(7) inst_rot: vec4<f32>,      // (sin yaw, cos yaw, _, _)
+    @location(7) inst_rot: vec4<f32>,      // orientation quaternion
+    @location(11) inst_scale: vec4<f32>,   // per-axis scale, cull group
+    @location(12) inst_glow: vec4<f32>,    // linear emission, skinned flag
 };
 
-// web3d-M3: rotate about +Y by the instance's yaw (0 faces +Z).
-fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
-    return vec3<f32>(rot.y * v.x + rot.x * v.z, v.y, -rot.x * v.x + rot.y * v.z);
+// Lanternfall E3: rotate by the instance's orientation quaternion.
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+// A normal under the instance's scale: divide by it, so a stretched
+// surface keeps perpendicular normals.
+fn scale_normal(n: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    let safe = select(s, vec3<f32>(1e-6), abs(s) < vec3<f32>(1e-6));
+    return n / safe;
 }
 
 struct VertexOutput {
@@ -742,6 +829,8 @@ struct VertexOutput {
     @location(7) vertex_color: vec4<f32>,
     // web3d-M7: the instance's scale (volume thickness is in mesh units).
     @location(8) model_scale: f32,
+    // Lanternfall E3: the instance's glow (linear emission).
+    @location(9) glow: vec3<f32>,
 };
 
 fn srgb_to_linear3(c: vec3<f32>) -> vec3<f32> {
@@ -760,14 +849,14 @@ fn vertex_out(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     // four mat4 from the joint UBO, weighted by `weights`. For
     // unskinned meshes joint 0 is identity and weights = (1,0,0,0),
     // so skin_mat collapses to identity.
-    // web3d-M7: only skinned meshes (rot.w = 1) blend joints.
+    // web3d-M7: only skinned meshes (glow.w = 1, Lanternfall E3) blend joints.
     var skin_mat = mat4x4<f32>(
         vec4<f32>(1.0, 0.0, 0.0, 0.0),
         vec4<f32>(0.0, 1.0, 0.0, 0.0),
         vec4<f32>(0.0, 0.0, 1.0, 0.0),
         vec4<f32>(0.0, 0.0, 0.0, 1.0),
     );
-    if (inst.inst_rot.w > 0.5) {
+    if (inst.inst_glow.w > 0.5) {
         skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
             + vert.weights.y * joints_u.matrices[vert.joints.y]
             + vert.weights.z * joints_u.matrices[vert.joints.z]
@@ -776,14 +865,15 @@ fn vertex_out(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
     let skinned_tangent = (skin_mat * vec4<f32>(vert.tangent.xyz, 0.0)).xyz;
-    let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
-        + inst.inst_pos_size.xyz;
+    let scale = inst.inst_scale.xyz;
+    let model_pos = quat_rotate(inst.inst_rot, skinned_pos * scale) + inst.inst_pos_size.xyz;
     var out: VertexOutput;
     out.tex_coord1 = vert.uv1;
-    out.world_tangent = vec4<f32>(yaw_rotate(skinned_tangent, inst.inst_rot), vert.tangent.w);
+    out.world_tangent = vec4<f32>(quat_rotate(inst.inst_rot, skinned_tangent * scale), vert.tangent.w);
     out.vertex_color = vert.color;
     out.clip_position = camera.view_proj * vec4<f32>(model_pos, 1.0);
-    out.world_normal = yaw_rotate(skinned_normal, inst.inst_rot);
+    out.world_normal = quat_rotate(inst.inst_rot, scale_normal(skinned_normal, scale));
+    out.glow = inst.inst_glow.rgb;
     // web3d-M7: instance colours arrive sRGB (as scripts write them) and
     // are decoded here, per vertex, rather than per instance on the CPU.
     out.base_color = vec4<f32>(srgb_to_linear3(inst.inst_color.rgb), inst.inst_color.a);
@@ -1432,7 +1522,7 @@ fn shade(in: VertexOutput, s: Surface) -> vec3<f32> {
             color = color + surface_light(p, l, pl.color_radius.rgb * (t * t * visible * spot));
         }
     }
-    return apply_fog(color + s.emissive * p.cc_atten, in.world_pos);
+    return apply_fog(color + (s.emissive + in.glow) * p.cc_atten, in.world_pos);
 }
 
 // A material texture slot's UV: the chosen UV set through the slot's
@@ -2053,11 +2143,18 @@ struct InstanceInput {
     @location(2) inst_pos_size: vec4<f32>,
     @location(3) inst_color: vec4<f32>,
     @location(7) inst_rot: vec4<f32>,
+    @location(11) inst_scale: vec4<f32>,
+    @location(12) inst_glow: vec4<f32>,
 };
 
-// Same rotation as the main shader's, so shadows match the geometry.
-fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
-    return vec3<f32>(rot.y * v.x + rot.x * v.z, v.y, -rot.x * v.x + rot.y * v.z);
+// Same transform as the main shader's, so shadows match the geometry.
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+fn scale_normal(n: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    let safe = select(s, vec3<f32>(1e-6), abs(s) < vec3<f32>(1e-6));
+    return n / safe;
 }
 
 // web3d-M7: a vertex in world space, with its normal (for displacing
@@ -2073,14 +2170,14 @@ fn vs_shadow(vert: VertexInput, inst: InstanceInput) -> @builtin(position) vec4<
 }
 
 fn world_vertex(vert: VertexInput, inst: InstanceInput) -> WorldVertex {
-    // web3d-M7: only skinned meshes (rot.w = 1) blend joints.
+    // web3d-M7: only skinned meshes (glow.w = 1, Lanternfall E3) blend joints.
     var skin_mat = mat4x4<f32>(
         vec4<f32>(1.0, 0.0, 0.0, 0.0),
         vec4<f32>(0.0, 1.0, 0.0, 0.0),
         vec4<f32>(0.0, 0.0, 1.0, 0.0),
         vec4<f32>(0.0, 0.0, 0.0, 1.0),
     );
-    if (inst.inst_rot.w > 0.5) {
+    if (inst.inst_glow.w > 0.5) {
         skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
             + vert.weights.y * joints_u.matrices[vert.joints.y]
             + vert.weights.z * joints_u.matrices[vert.joints.z]
@@ -2088,9 +2185,9 @@ fn world_vertex(vert: VertexInput, inst: InstanceInput) -> WorldVertex {
     }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
     let skinned_normal = (skin_mat * vec4<f32>(vert.normal, 0.0)).xyz;
-    let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
-        + inst.inst_pos_size.xyz;
-    return WorldVertex(model_pos, yaw_rotate(skinned_normal, inst.inst_rot));
+    let scale = inst.inst_scale.xyz;
+    let model_pos = quat_rotate(inst.inst_rot, skinned_pos * scale) + inst.inst_pos_size.xyz;
+    return WorldVertex(model_pos, quat_rotate(inst.inst_rot, scale_normal(skinned_normal, scale)));
 }
 "#;
 
@@ -2132,6 +2229,8 @@ struct VertexInput {
 struct InstanceInput {
     @location(2) inst_pos_size: vec4<f32>,
     @location(7) inst_rot: vec4<f32>,
+    @location(11) inst_scale: vec4<f32>,
+    @location(12) inst_glow: vec4<f32>,
 };
 
 struct MaskOut {
@@ -2141,27 +2240,27 @@ struct MaskOut {
     @location(2) alpha: f32,
 };
 
-fn yaw_rotate(v: vec3<f32>, rot: vec4<f32>) -> vec3<f32> {
-    return vec3<f32>(rot.y * v.x + rot.x * v.z, v.y, -rot.x * v.x + rot.y * v.z);
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
 }
 
 @vertex
 fn vs_mask(vert: VertexInput, inst: InstanceInput) -> MaskOut {
-    // web3d-M7: only skinned meshes (rot.w = 1) blend joints.
+    // web3d-M7: only skinned meshes (glow.w = 1, Lanternfall E3) blend joints.
     var skin_mat = mat4x4<f32>(
         vec4<f32>(1.0, 0.0, 0.0, 0.0),
         vec4<f32>(0.0, 1.0, 0.0, 0.0),
         vec4<f32>(0.0, 0.0, 1.0, 0.0),
         vec4<f32>(0.0, 0.0, 0.0, 1.0),
     );
-    if (inst.inst_rot.w > 0.5) {
+    if (inst.inst_glow.w > 0.5) {
         skin_mat = vert.weights.x * joints_u.matrices[vert.joints.x]
             + vert.weights.y * joints_u.matrices[vert.joints.y]
             + vert.weights.z * joints_u.matrices[vert.joints.z]
             + vert.weights.w * joints_u.matrices[vert.joints.w];
     }
     let skinned_pos = (skin_mat * vec4<f32>(vert.position, 1.0)).xyz;
-    let model_pos = yaw_rotate(skinned_pos, inst.inst_rot) * inst.inst_pos_size.w
+    let model_pos = quat_rotate(inst.inst_rot, skinned_pos * inst.inst_scale.xyz)
         + inst.inst_pos_size.xyz;
     var out: MaskOut;
     out.pos = pass_u.view_proj * vec4<f32>(model_pos, 1.0);
@@ -5906,13 +6005,7 @@ impl Renderer {
                         if out.len() >= cap {
                             break;
                         }
-                        let (s, c) = d.yaw.sin_cos();
-                        out.push(Instance {
-                            position: d.at,
-                            size: d.size,
-                            color: d.color,
-                            rot: [s, c, 0.0, 0.0],
-                        });
+                        out.push(instance_of(d));
                     }
                     let end = out.len() as u32;
                     (start, end)
@@ -5950,7 +6043,7 @@ impl Renderer {
                 |range: InstanceRange, radius: f32, instances: &mut [Instance]| -> u32 {
                     let g = cull_groups.len() as u32;
                     for inst in &mut instances[range.0 as usize..range.1 as usize] {
-                        inst.rot[2] = g as f32;
+                        inst.scale[3] = g as f32;
                     }
                     cull_groups.push(CullGroup {
                         radius,
@@ -5990,11 +6083,11 @@ impl Renderer {
                     continue;
                 };
                 let group = add_group(*range, mesh.bound_radius, &mut instances);
-                // Skinned meshes' instances blend joints (rot.w); nothing
+                // Skinned meshes' instances blend joints (glow.w); nothing
                 // else pays for it.
                 if mesh.skin.is_some() {
                     for inst in &mut instances[range.0 as usize..range.1 as usize] {
-                        inst.rot[3] = 1.0;
+                        inst.glow[3] = 1.0;
                     }
                 }
                 if *tex != 0 || *mat != 0 {
@@ -6045,11 +6138,16 @@ impl Renderer {
                 dot(v, v)
             };
             let world_point = |inst: &Instance, local: [f32; 3]| {
-                let (s, c) = (inst.rot[0], inst.rot[1]);
+                let scaled = [
+                    local[0] * inst.scale[0],
+                    local[1] * inst.scale[1],
+                    local[2] * inst.scale[2],
+                ];
+                let r = quat_rotate(inst.rot, scaled);
                 [
-                    inst.position[0] + (c * local[0] + s * local[2]) * inst.size,
-                    inst.position[1] + local[1] * inst.size,
-                    inst.position[2] + (-s * local[0] + c * local[2]) * inst.size,
+                    inst.position[0] + r[0],
+                    inst.position[1] + r[1],
+                    inst.position[2] + r[2],
                 ]
             };
             for ((id, tex, mat), range) in &mesh_ranges {
@@ -6102,7 +6200,7 @@ impl Renderer {
                 }
                 if let Primitive::Mesh(id) = d.primitive {
                     if state.mesh_cache.get(&id).is_some_and(|m| m.skin.is_some()) {
-                        instances[start as usize].rot[3] = 1.0;
+                        instances[start as usize].glow[3] = 1.0;
                     }
                 }
                 let inst = instances[start as usize];
