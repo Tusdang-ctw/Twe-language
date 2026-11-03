@@ -6,31 +6,25 @@
 //   wasm-bindgen --target nodejs --no-typescript --out-dir target/web-bench \
 //       target/wasm32-unknown-unknown/release/twe_web.wasm
 //   twec build --target web --out target/s3web examples/survive3d
-//   node web/soak.mjs target/s3web [minutes=10] [runs=10] [--stress]
+//   node web/soak.mjs target/s3web [minutes=10] [runs=10] [--stress] [--pilot survive3d|lanternfall]
 //
 // Each run is a fresh game played for `minutes` of simulated time. Exits
 // non-zero on the first runtime error.
 import { createRequire } from "node:module";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const pkg = process.env.TWE_BENCH_PKG ?? resolve("target/web-bench/twe_web.js");
-
-// The same `env` stubs the page maps with an import map (see bench.mjs).
-const envDir = join(dirname(pkg), "node_modules", "env");
-mkdirSync(envDir, { recursive: true });
-const stubs = readFileSync(new URL("./env.js", import.meta.url), "utf8").replace(
-  /^export function (\w+)/gm,
-  "exports.$1 = function $1",
-);
-writeFileSync(join(envDir, "index.js"), stubs);
 
 const { soak } = require(pkg);
 
 const args = process.argv.slice(2);
 const stress = args.includes("--stress");
-const [dir, minutesArg, runsArg] = args.filter((a) => a !== "--stress");
+// Lanternfall G8: which scripted player (see src/soak.rs).
+const pilotAt = args.indexOf("--pilot");
+const pilot = pilotAt >= 0 ? args[pilotAt + 1] : "survive3d";
+const [dir, minutesArg, runsArg] = args.filter((a, i) => a !== "--stress" && i !== pilotAt && i !== pilotAt + 1);
 if (!dir) {
   console.error("usage: node web/soak.mjs <web-build-dir> [minutes] [runs] [--stress]");
   process.exit(2);
@@ -49,7 +43,7 @@ for (let i = 1; i <= runs; i++) {
   const t0 = performance.now();
   let report;
   try {
-    report = JSON.parse(soak(bundle, ticks, i, stress));
+    report = JSON.parse(soak(bundle, ticks, i, stress, pilot));
   } catch (e) {
     console.error(`run ${i}: FAILED: ${e}`);
     process.exit(1);

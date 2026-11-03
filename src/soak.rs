@@ -16,6 +16,13 @@
 //! spans many runs. Every 90 s of play it pauses for a second.
 //! `variant` changes its path (segment length, heading, sidesteps), so
 //! consecutive soaks of a deterministic game are different sessions.
+//!
+//! Lanternfall G8: a second pilot, [`Pilot::Lanternfall`], plays the
+//! battle royale — Play on the title, leap from the barge, roam, aim
+//! around and fire, open and take with E, Starcall, pause every 90 s,
+//! Play again when a round ends — reading its `stage` / `menu` globals.
+//! [`run_env`] takes an env the caller loaded, so a multi-file game
+//! (modules from disk natively, from its bundle in wasm) soaks too.
 
 use crate::host3d::{sim_tick, InputState};
 use crate::value::Env;
@@ -34,6 +41,28 @@ pub struct SoakReport {
     /// collection: flat means no leak across runs.
     pub heap_at_restart: Vec<usize>,
     pub peak_heap: usize,
+    /// Lanternfall: rounds finished, and how many the pilot won.
+    pub rounds: u32,
+    pub wins: u32,
+}
+
+/// Which scripted player drives the game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pilot {
+    /// `examples/survive3d`'s scene states (the M4 soak).
+    Survive3d,
+    /// `examples/lanternfall`'s stages and menus (G8).
+    Lanternfall,
+}
+
+impl Pilot {
+    pub fn parse(name: &str) -> Option<Pilot> {
+        match name {
+            "survive3d" => Some(Pilot::Survive3d),
+            "lanternfall" => Some(Pilot::Lanternfall),
+            _ => None,
+        }
+    }
 }
 
 impl SoakReport {
@@ -41,11 +70,13 @@ impl SoakReport {
     pub fn to_json(&self) -> String {
         let heaps: Vec<String> = self.heap_at_restart.iter().map(|b| b.to_string()).collect();
         format!(
-            r#"{{"ticks":{},"deaths":{},"level_ups":{},"pauses":{},"peak_entities":{},"peak_heap":{},"heap_at_restart":[{}]}}"#,
+            r#"{{"ticks":{},"deaths":{},"level_ups":{},"pauses":{},"rounds":{},"wins":{},"peak_entities":{},"peak_heap":{},"heap_at_restart":[{}]}}"#,
             self.ticks,
             self.deaths,
             self.level_ups,
             self.pauses,
+            self.rounds,
+            self.wins,
             self.peak_entities,
             self.peak_heap,
             heaps.join(",")
@@ -70,7 +101,18 @@ pub fn run(source: &str, ticks: u64, variant: u64) -> Result<SoakReport, String>
     let mut env = Env::new();
     crate::stdlib::install(&mut env);
     crate::eval::run_top_level(&mut env, &program).map_err(|e| format!("top level: {e}"))?;
+    run_env(env, ticks, variant, Pilot::Survive3d)
+}
 
+/// Play `ticks` fixed ticks of an already-loaded game with `pilot`.
+pub fn run_env(env: Env, ticks: u64, variant: u64, pilot: Pilot) -> Result<SoakReport, String> {
+    match pilot {
+        Pilot::Survive3d => run_survive3d(env, ticks, variant),
+        Pilot::Lanternfall => run_lanternfall(env, ticks, variant),
+    }
+}
+
+fn run_survive3d(mut env: Env, ticks: u64, variant: u64) -> Result<SoakReport, String> {
     let mut input = InputState::default();
     let mut report = SoakReport::default();
     let dirs = ["w", "d", "s", "a"];
@@ -139,6 +181,132 @@ pub fn run(source: &str, ticks: u64, variant: u64) -> Result<SoakReport, String>
             report.deaths += 1;
         }
         if st == "game_over" && now == "playing" {
+            report.heap_at_restart.push(full_collect(&env));
+        }
+        report.peak_entities = report.peak_entities.max(env.active_entities.len());
+        report.peak_heap = report.peak_heap.max(crate::heap::gc_bytes_alive());
+        report.ticks = tick + 1;
+    }
+    Ok(report)
+}
+
+/// A global string (`""` if it isn't one).
+fn global_str(env: &Env, name: &str) -> String {
+    match env.get(name) {
+        Some(v) if v.is_str() => v.as_string().to_string(),
+        _ => String::new(),
+    }
+}
+
+fn global_bool(env: &Env, name: &str) -> bool {
+    matches!(env.get(name), Some(v) if v.is_bool() && v.as_bool())
+}
+
+/// The keeper's `phase` in Lanternfall ("aboard", "glide", "ground").
+fn keeper_phase(env: &Env) -> String {
+    env.get("me")
+        .filter(|v| v.is_instance())
+        .and_then(|v| v.as_instance().borrow().get_field("phase"))
+        .filter(|v| v.is_str())
+        .map(|v| v.as_string().to_string())
+        .unwrap_or_default()
+}
+
+/// Lanternfall's pilot. Menus: Enter on the title and the results, Esc
+/// out of a pause. Aboard: Space after a variant-dependent wait. On the
+/// island: a weaving walk, the cursor circling the keeper, the trigger
+/// held in bursts, E often (chests, guns), R and Q now and then, and a
+/// pause every 90 s.
+fn run_lanternfall(mut env: Env, ticks: u64, variant: u64) -> Result<SoakReport, String> {
+    let mut input = InputState::default();
+    input.set_view(1280, 720);
+    let mut report = SoakReport::default();
+    let dirs = ["w", "d", "s", "a"];
+    let mut held: Option<&'static str> = None;
+    let mut firing = false;
+    let mut played: u64 = 0;
+    let mut aboard: u64 = 0;
+    for tick in 0..ticks {
+        let stage = global_str(&env, "stage");
+        let menu = global_str(&env, "menu");
+        let mut taps: Vec<&'static str> = Vec::new();
+        let mut want: Option<&'static str> = None;
+        let mut fire = false;
+        if menu == "pause" {
+            if tick.is_multiple_of(60) {
+                taps.push("escape");
+            }
+        } else if stage == "title" || stage == "over" {
+            if tick.is_multiple_of(30) {
+                taps.push("enter");
+            }
+        } else if stage == "barge" || stage == "playing" {
+            played += 1;
+            if keeper_phase(&env) == "aboard" {
+                aboard += 1;
+                if aboard == 60 + 41 * (variant % 7) {
+                    taps.push("space");
+                }
+            } else {
+                aboard = 0;
+                let seg = (played / (70 + 11 * (variant % 5))) as usize + variant as usize;
+                want = Some(dirs[seg % 4]);
+                let a = played as f64 * 0.02 + variant as f64;
+                input.pointer(0.5 + 0.25 * a.cos(), 0.5 + 0.3 * a.sin());
+                fire = played % 180 < 110;
+                if played.is_multiple_of(15) {
+                    taps.push("e");
+                }
+                if played.is_multiple_of(301) {
+                    taps.push("r");
+                }
+                if played.is_multiple_of(911) {
+                    taps.push("q");
+                }
+                if played.is_multiple_of(90 * 60) {
+                    taps.push("escape");
+                    report.pauses += 1;
+                }
+            }
+        }
+        if held != want {
+            if let Some(k) = held {
+                input.key_up(k);
+            }
+            if let Some(k) = want {
+                input.key_down(k);
+            }
+            held = want;
+        }
+        if fire != firing {
+            if fire {
+                input.button_down("left");
+            } else {
+                input.button_up("left");
+            }
+            firing = fire;
+        }
+        for k in &taps {
+            input.key_down(k);
+        }
+        sim_tick(&mut env, &mut input, crate::eval::PHYSICS_DT)
+            .map_err(|e| format!("tick {tick} ({stage}): {e}"))?;
+        crate::eval::render_frame3d(&mut env).map_err(|e| format!("render at tick {tick}: {e}"))?;
+        env.out.clear();
+        for k in &taps {
+            input.key_up(k);
+        }
+
+        let now = global_str(&env, "stage");
+        if stage == "playing" && now == "over" {
+            report.rounds += 1;
+            if global_bool(&env, "won") {
+                report.wins += 1;
+            } else {
+                report.deaths += 1;
+            }
+        }
+        if stage == "over" && now == "barge" {
             report.heap_at_restart.push(full_collect(&env));
         }
         report.peak_entities = report.peak_entities.max(env.active_entities.len());

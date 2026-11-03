@@ -82,11 +82,13 @@ pub fn bench_ticks(source: &str, ticks: u32) -> Result<Vec<f64>, String> {
 
 /// web3d-M4: the soak harness under Node (`web/soak.mjs`): mount a
 /// built game bundle, play `ticks` fixed ticks with `twec::soak`'s
-/// scripted player (optionally with the GC collecting at every
-/// safepoint), and return its report as JSON. Saves go to an in-memory
-/// store, since Node has no localStorage.
+/// scripted player `pilot` ("survive3d" or "lanternfall"; optionally
+/// with the GC collecting at every safepoint), and return its report as
+/// JSON. Saves go to an in-memory store, since Node has no
+/// localStorage. A multi-file game loads its modules from the bundle.
 #[wasm_bindgen]
-pub fn soak(bundle: &[u8], ticks: u32, variant: u32, gc_stress: bool) -> Result<String, String> {
+pub fn soak(bundle: &[u8], ticks: u32, variant: u32, gc_stress: bool, pilot: String) -> Result<String, String> {
+    let pilot = twec::soak::Pilot::parse(&pilot).ok_or_else(|| format!("unknown pilot `{pilot}`"))?;
     let reader = twec::bundle::BundleReader::from_bytes(bundle.to_vec())
         .map_err(|e| format!("bundle: {e}"))?;
     twec::bundle::set_active_bundle(reader);
@@ -95,7 +97,8 @@ pub fn soak(bundle: &[u8], ticks: u32, variant: u32, gc_stress: bool) -> Result<
     let source = String::from_utf8(source).map_err(|_| "main.twe is not UTF-8")?;
     twec::save::install_web_storage(memory_get, memory_set);
     twec::heap::gc_set_stress(gc_stress);
-    let report = twec::soak::run(&source, u64::from(ticks), u64::from(variant));
+    let report = twec::frame2d::load_source_any(&source, "main.twe")
+        .and_then(|env| twec::soak::run_env(env, u64::from(ticks), u64::from(variant), pilot));
     twec::heap::gc_set_stress(false);
     report.map(|r| r.to_json())
 }
