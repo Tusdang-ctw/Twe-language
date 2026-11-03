@@ -13,6 +13,8 @@
 import "tuning"
 import "weapons"
 import "world"
+import "controls"
+import "sounds"
 
 let INK = (0.04, 0.05, 0.09, 0.78)
 let EDGE = (1.0, 1.0, 1.0, 0.12)
@@ -185,6 +187,7 @@ var banners = []
 
 function banner(words, color):
     banners.append((words, color, sound.now()))
+    sounds.sfx(sounds.BANNER, 0.6)
 
 function draw_banners(now):
     if banners.length == 0:
@@ -214,7 +217,7 @@ function prompt(key_label, words, y):
 function draw_aboard(b, below):
     if b == nil:
         return
-    prompt("SPACE", "Leap from the barge", 330)
+    prompt(controls.cap_of(controls.LEAP), "Leap from the barge", 330)
     var where = "the wilds"
     if below != "":
         where = below
@@ -230,7 +233,8 @@ function draw_glide(me, below):
     text("{math.ceil(me.pos.y)} m", (w / 2 - 60, 348), 14, WARM)
     if below != "":
         text(below, (w / 2 - 5, 348), 12, DIM)
-    text("WASD to steer", (w / 2 - 44, 376), 11, DIM)
+    let keys = "{controls.cap_of(controls.UP)}{controls.cap_of(controls.LEFT)}{controls.cap_of(controls.DOWN)}{controls.cap_of(controls.RIGHT)}"
+    text("{keys} to steer", (w / 2 - 44, 376), 11, DIM)
 
 # The Hush: when it moves next, and a violet edge when you're outside.
 function draw_hush(h, me, stage):
@@ -296,18 +300,36 @@ function draw_map(me, h, b, places):
     line((px, py), (px + math.sin(me.heading) * 7.0, py + math.cos(me.heading) * 7.0), 1.5, (1.0, 1.0, 1.0, 1.0))
 
 # The round's end: win or placement, kills, damage, time; play again.
-function draw_results(won, placement, kills, damage, secs):
+# The end of the round: how you placed, what you did, your best. The
+# menu under it (Play again / Back to the title) is the menus module's.
+function draw_results(won, placement, kills, damage, secs, best, new_best):
     let w = screen.size.x
     rect((0, 0), (w, 480), (0.0, 0.0, 0.03, 0.55))
-    chip(w / 2 - 170, 150, 340, 180)
+    let x = w / 2 - 190
+    chip(x, 120, 380, 212)
+    var accent = (0.85, 0.42, 0.4, 1.0)
+    var headline = "YOUR LANTERN WENT OUT"
     if won:
-        rect((w / 2 - 170, 150), (340, 4), WARM)
-        text("LAST LANTERN STANDING", (w / 2 - 150, 192), 24, WARM)
-    else:
-        rect((w / 2 - 170, 150), (340, 4), (0.8, 0.4, 0.4, 1.0))
-        text("YOUR LANTERN WENT OUT", (w / 2 - 150, 192), 24, (1.0, 0.6, 0.55, 1.0))
-    text("#{placement}", (w / 2 - 140, 238), 30, (1.0, 1.0, 1.0, 1.0))
-    text("{kills} kills", (w / 2 - 30, 228), 14, DIM)
-    text("{math.floor(damage)} damage", (w / 2 - 30, 248), 14, DIM)
-    text("{math.floor(secs / 60)}m {math.mod(math.floor(secs), 60)}s", (w / 2 + 80, 228), 14, DIM)
-    prompt("R", "Play again", 290)
+        accent = WARM
+        headline = "LAST LANTERN STANDING"
+    rect((x, 120), (380, 4), accent)
+    text(headline, (w / 2 - headline.length * 22 * 0.26, 162), 22, accent)
+    text("#{placement}", (x + 34, 238), 54, (1.0, 1.0, 1.0, 1.0))
+    text("of {tuning.BOT_COUNT + 1}", (x + 38, 262), 12, DIM)
+    let sx = x + 190
+    let secs_part = math.mod(math.floor(secs), 60)
+    let pad = if secs_part < 10: "0" else: ""
+    let rows = [
+        ("Eliminations", "{kills}"),
+        ("Damage", "{math.floor(damage)}"),
+        ("Survived", "{math.floor(secs / 60)}:{pad}{secs_part}"),
+    ]
+    for i in 0..<rows.length:
+        let y = 200 + i * 26
+        text(rows[i][0], (sx, y), 13, DIM)
+        text(rows[i][1], (sx + 120, y), 15, (1.0, 1.0, 1.0, 0.95))
+    if new_best:
+        rect((x + 34, 288), (92, 22), accent)
+        text("NEW BEST", (x + 44, 304), 13, (0.05, 0.05, 0.08, 1.0))
+    elif best > 0:
+        text("Best  #{best}", (x + 38, 304), 13, DIM)

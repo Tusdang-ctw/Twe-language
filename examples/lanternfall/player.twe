@@ -18,6 +18,8 @@ import "weapons"
 import "combat"
 import "loot"
 import "world"
+import "controls"
+import "sounds"
 
 entity Player:
     var pos = vec3(0, 0, 0)
@@ -37,6 +39,9 @@ entity Player:
     var hit_from = vec3(0, 0, 0)  # where the last hit on you came from
     var hit_from_t = 0.0          # 1 just after, easing to 0
     var step_t = 0.0              # until the next puff of footstep dust
+    var calm = 0.0                # seconds the trigger ignores the mouse (after a menu)
+    var fought_at = -99.0         # when it last fired or was hit (the music listens)
+    var charging = false          # the charge hum is playing
     # --- the actor contract (see combat.twe) ---
     var hp = 100.0
     var shield = 0.0
@@ -87,6 +92,7 @@ entity Player:
         dodge_cd = math.max(0.0, dodge_cd - dt)
         fire_cd = math.max(0.0, fire_cd - dt)
         star_cd = math.max(0.0, star_cd - dt)
+        calm = math.max(0.0, calm - dt)
         iframes = if dodge_t > 0.0: 1.0 else: 0.0
         if alive and control:
             steer(dt)
@@ -114,13 +120,13 @@ entity Player:
     function steer(dt):
         var mx = 0.0
         var mz = 0.0
-        if key.a or key.left:
+        if controls.held(controls.LEFT) or key.left:
             mx -= 1.0
-        if key.d or key.right:
+        if controls.held(controls.RIGHT) or key.right:
             mx += 1.0
-        if key.w or key.up:
+        if controls.held(controls.UP) or key.up:
             mz -= 1.0
-        if key.s or key.down:
+        if controls.held(controls.DOWN) or key.down:
             mz += 1.0
         if math.abs(gamepad_axis.lx) > 0.2:
             mx += gamepad_axis.lx
@@ -143,7 +149,8 @@ entity Player:
             if dodge_t <= 0.0:
                 squash = 1.0
             return
-        if (key_press.shift or gamepad_press.b) and dodge_cd <= 0.0:
+        if (controls.pressed(controls.ROLL) or gamepad_press.b) and dodge_cd <= 0.0:
+            sounds.sfx(sounds.ROLL, 0.6)
             dodge_t = tuning.DODGE_TIME
             dodge_cd = tuning.DODGE_COOLDOWN
             channel = 0.0
@@ -173,10 +180,11 @@ entity Player:
         pos = barge.pos + vec3(0, 1.4, 0)
         heading = math.atan2(barge.dir.x, barge.dir.z)
         mesh_anim.play(self, "idle", true)
-        if (key_press.space or gamepad_press.a) or barge.time_left() <= 0.0:
+        if (controls.pressed(controls.LEAP) or gamepad_press.a) or barge.time_left() <= 0.0:
             leap()
 
     function leap():
+        sounds.sfx(sounds.LEAP, 0.8)
         phase = "glide"
         vel = barge.dir * barge.speed * 0.5
         pos = pos + vec3(0, -2.0, 0)
@@ -185,13 +193,13 @@ entity Player:
     function glide(dt):
         var mx = 0.0
         var mz = 0.0
-        if key.a or key.left:
+        if controls.held(controls.LEFT) or key.left:
             mx -= 1.0
-        if key.d or key.right:
+        if controls.held(controls.RIGHT) or key.right:
             mx += 1.0
-        if key.w or key.up:
+        if controls.held(controls.UP) or key.up:
             mz -= 1.0
-        if key.s or key.down:
+        if controls.held(controls.DOWN) or key.down:
             mz += 1.0
         let want = vec3(mx, 0, mz) * tuning.GLIDE_SPEED
         vel = vel + (want - vel) * math.min(1.0, dt * 2.5)
@@ -214,6 +222,7 @@ entity Player:
         phase = "ground"
         vel = vel * 0.3
         squash = 1.0
+        sounds.sfx(sounds.LAND, 0.8)
         spawn combat.LandDust at pos
         combat.shake_near(pos, 3.0, 0.15)
 
@@ -225,23 +234,25 @@ entity Player:
         if l != nil:
             if l.kind == loot.AMMO:
                 reserve += l.amount
+                sounds.sfx(sounds.PICKUP, 0.7)
                 combat.popup(pos + vec3(0, 2.0, 0), "+{l.amount} ammo", (1.0, 0.85, 0.45), 14.0)
                 loot.take(l)
                 return
             if l.kind == loot.CELL and cells < 6:
                 cells += 1
+                sounds.sfx(sounds.PICKUP, 0.7)
                 combat.popup(pos + vec3(0, 2.0, 0), "+1 cell", (0.45, 0.75, 1.0), 14.0)
                 loot.take(l)
                 return
             if l.kind == loot.WEAPON:
-                prompt = "E  take {weapons.RARITY_NAMES[l.rarity]} {weapons.name_of(l.gun)}"
-                if key_press.e or gamepad_press.x:
+                prompt = "{controls.cap_of(controls.INTERACT)}  take {weapons.RARITY_NAMES[l.rarity]} {weapons.name_of(l.gun)}"
+                if controls.pressed(controls.INTERACT) or gamepad_press.x:
                     pick_up(l)
                 return
         let c = loot.nearest_chest(pos, 2.4)
         if c != nil:
-            prompt = "E  open chest"
-            if key_press.e or gamepad_press.x:
+            prompt = "{controls.cap_of(controls.INTERACT)}  open chest"
+            if controls.pressed(controls.INTERACT) or gamepad_press.x:
                 loot.open_chest(c)
 
     # Into an empty gun slot, else in place of the gun in hand (dropping it).
@@ -262,6 +273,7 @@ entity Player:
         mag.set(s, weapons.magazine_of(l.gun, l.rarity))
         slot = s
         reload_t = 0.0
+        sounds.sfx(sounds.GUN, 0.8)
         combat.popup(pos + vec3(0, 2.0, 0), weapons.name_of(l.gun), weapons.RARITY_COLORS[l.rarity], 15.0)
         loot.take(l)
 
@@ -285,26 +297,33 @@ entity Player:
         if id < 0:
             return
         let need = weapons.magazine_of(id, rarity[slot])
-        if (key_press.r or gamepad_press.x) and reload_t <= 0.0 and need > 0 and mag[slot] < need and reserve > 0:
-            reload_t = weapons.reload_of(id)
-        if (mouse_held.left or gamepad.rt) and fire_cd <= 0.0 and reload_t <= 0.0:
+        if (controls.pressed(controls.RELOAD) or gamepad_press.x) and reload_t <= 0.0 and need > 0 and mag[slot] < need and reserve > 0:
+            start_reload(id)
+        if (mouse_held.left or gamepad.rt) and fire_cd <= 0.0 and reload_t <= 0.0 and calm <= 0.0:
             if need == 0 or mag[slot] > 0:
                 combat.fire(self, id, rarity[slot], muzzle(), heading, aim)
                 fire_cd = weapons.interval_of(id)
+                fought_at = combat.time_now()
                 channel = 0.0
                 if need > 0:
                     mag.set(slot, mag[slot] - 1)
                     kick = 1.0
-                    fx.screen_shake(1.2, 0.05)
+                    combat.shake_screen(1.2, 0.05)
                     if weapons.kind_of(id) == weapons.HITSCAN:
                         spawn combat.Casings at muzzle()
                 else:
                     mesh_anim.play(self, "melee", false)
             elif reserve > 0:
-                reload_t = weapons.reload_of(id)
-        if (key_press.q or gamepad_press.y) and star_cd <= 0.0:
+                start_reload(id)
+            elif mouse_press.left or gamepad_press.rt:
+                sounds.sfx(sounds.EMPTY, 0.6)
+        if (controls.pressed(controls.ABILITY) or gamepad_press.y) and star_cd <= 0.0:
             combat.starcall(self, aim)
             star_cd = tuning.STAR_COOLDOWN
+
+    function start_reload(id):
+        reload_t = weapons.reload_of(id)
+        sounds.sfx(sounds.RELOAD, 0.7)
 
     function pick(s):
         if guns[s] >= 0 and s != slot:
@@ -321,7 +340,10 @@ entity Player:
 
     # Hold F (or LB), standing nearly still, to turn a cell into shield.
     function channel_cell(dt):
-        if (key.f or gamepad.lb) and cells > 0 and shield < 100.0 and hurt <= 0.0:
+        if (controls.held(controls.SHIELD) or gamepad.lb) and cells > 0 and shield < 100.0 and hurt <= 0.0:
+            if not charging:
+                charging = true
+                sounds.sfx(sounds.CHARGE, 0.6)
             channel += dt
             if math.mod(math.floor(channel * 10), 3) == 0:
                 spawn combat.HealMotes at pos + vec3(0, 0.3, 0)
@@ -329,9 +351,15 @@ entity Player:
                 shield = math.min(100.0, shield + tuning.CELL_SHIELD)
                 cells = cells - 1
                 channel = 0.0
+                charging = false
+                sound.stop(sounds.CHARGE)
+                sounds.sfx(sounds.SHIELD_UP, 0.8)
                 combat.popup(pos + vec3(0, 2.0, 0), "+{tuning.CELL_SHIELD} SHIELD", (0.45, 0.75, 1.0), 16.0)
         else:
             channel = 0.0
+            if charging:
+                charging = false
+                sound.stop(sounds.CHARGE)
 
     # Slide the capsule along the ground and walls; fall under gravity.
     function move(dt):

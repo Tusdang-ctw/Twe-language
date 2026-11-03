@@ -16,7 +16,15 @@ struct Game {
 }
 
 impl Game {
-    fn new() -> Self {
+    /// The game as it boots: on the title screen.
+    fn title() -> Self {
+        // Each game saves its settings and record into its own fresh
+        // folder, never the player's real one.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let data = std::path::PathBuf::from(format!("target/lanternfall/data/{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::env::set_var("TWE_DATA_DIR", &data);
         twec::bundle::set_asset_root(Some("examples/lanternfall".into()));
         let src = std::fs::read_to_string(MAIN).expect("read main.twe");
         let env = twec::module::prepare_entry(std::path::Path::new(MAIN), &src).expect("load the game");
@@ -25,6 +33,13 @@ impl Game {
         // The cursor straight ahead of the keeper's starting spot.
         input.pointer(0.5, 0.35);
         Game { env, input }
+    }
+
+    /// A round, just started (Play chosen on the title).
+    fn new() -> Self {
+        let mut g = Game::title();
+        g.exec("act_on(\"play\")");
+        g
     }
 
     /// `frames` frames with `held` keys down and `pressed` keys pressed
@@ -411,7 +426,15 @@ fn a_round_plays_out_to_one_left_standing() {
 fn play_again_starts_a_fresh_round() {
     let mut g = Game::new();
     g.run(30, &[], &[]);
-    g.exec("me.alive = false\nstage = \"over\"");
+    // The keeper falls mid-round: the round ends and the results menu
+    // comes up (ignoring input for a moment, so a held click can't skip it).
+    g.exec("stage = \"playing\"\nme.alive = false");
+    g.run(2, &[], &[]);
+    assert_eq!(g.probe("stage"), "over");
+    assert_eq!(g.probe("menu"), "over");
+    g.run(1, &[], &["r"]);
+    assert_eq!(g.probe("stage"), "over", "too soon");
+    g.run(60, &[], &[]);
     g.run(1, &[], &["r"]);
     assert_eq!(g.probe("stage"), "barge");
     assert_eq!(g.probe("me.phase"), "aboard");
@@ -510,4 +533,206 @@ fn the_last_moment_plays_in_slow_motion() {
     // And a fresh round never starts slowed.
     g.exec("time.set_scale(0.5)\nstart_round()");
     assert_eq!(g.num("time.scale"), 1.0);
+}
+
+/// Press `key` for one tick, then let go for one.
+fn tap(g: &mut Game, key: &str) {
+    g.run(1, &[], &[key]);
+    g.run(1, &[], &[]);
+}
+
+#[test]
+fn the_game_opens_on_the_title_and_plays_from_it() {
+    let mut g = Game::title();
+    g.run(20, &[], &[]);
+    assert_eq!(g.probe("stage"), "title");
+    assert_eq!(g.probe("menu"), "title");
+    assert_eq!(g.num("entities.count(bots.Bot)"), 0.0, "an empty island behind the title");
+    assert_eq!(g.probe("me.control"), "false");
+    // The camera drifts round the island.
+    let x0 = g.num("camera.eye.x");
+    g.run(60, &[], &[]);
+    assert!((g.num("camera.eye.x") - x0).abs() > 0.5);
+    // Down, up, then Enter on Play.
+    tap(&mut g, "down");
+    assert_eq!(g.num("menus.focus"), 1.0);
+    tap(&mut g, "up");
+    assert_eq!(g.num("menus.focus"), 0.0);
+    tap(&mut g, "enter");
+    assert_eq!(g.probe("stage"), "barge");
+    assert_eq!(g.probe("menu"), "");
+    assert_eq!(g.num("entities.count(bots.Bot)"), 31.0);
+}
+
+#[test]
+fn the_mouse_works_the_menus() {
+    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(640, 360)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    let mut g = Game::title();
+    g.input.set_view(640, 360);
+    g.run(20, &[], &[]);
+    // A frame lays the menu out; then hover Settings and click it.
+    let mut assets = twec::play3d::NativeAssets::default();
+    twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+    let x = g.num("menus.rects[1][0] + menus.rects[1][2] / 2");
+    let y = g.num("menus.rects[1][1] + menus.rects[1][3] / 2");
+    let w = g.num("screen.size.x");
+    g.input.pointer(x / w, y / 480.0);
+    g.run(2, &[], &[]);
+    assert_eq!(g.num("menus.focus"), 1.0, "hovering picks the row");
+    g.input.button_down("left");
+    g.run(1, &[], &[]);
+    g.input.button_up("left");
+    g.run(1, &[], &[]);
+    assert_eq!(g.probe("menu"), "settings");
+}
+
+#[test]
+fn escape_pauses_the_round_and_freezes_the_world() {
+    let mut g = Game::new();
+    g.run(20, &[], &[]);
+    tap(&mut g, "escape");
+    assert_eq!(g.probe("menu"), "pause");
+    assert_eq!(g.probe("is_paused()"), "true");
+    // Nothing moves while paused.
+    let at = g.probe("barge.pos");
+    g.run(60, &[], &[]);
+    assert_eq!(g.probe("barge.pos"), at);
+    // Esc again resumes, and the trigger ignores the mouse a moment.
+    tap(&mut g, "escape");
+    assert_eq!(g.probe("menu"), "");
+    assert_eq!(g.probe("is_paused()"), "false");
+    assert!(g.num("me.calm") > 0.0);
+    g.run(5, &[], &[]);
+    assert_ne!(g.probe("barge.pos"), at, "the barge sails on");
+    // Pause, then leave the round from the menu (down twice, Enter).
+    tap(&mut g, "escape");
+    g.run(8, &[], &[]);
+    tap(&mut g, "down");
+    tap(&mut g, "down");
+    tap(&mut g, "enter");
+    assert_eq!(g.probe("stage"), "title");
+    assert_eq!(g.probe("is_paused()"), "false");
+    assert_eq!(g.num("entities.count(bots.Bot)"), 0.0);
+}
+
+#[test]
+fn keys_rebind_from_settings_and_stick() {
+    let mut g = Game::title();
+    g.run(12, &[], &[]);
+    tap(&mut g, "down");
+    tap(&mut g, "enter");
+    assert_eq!(g.probe("menu"), "settings");
+    g.run(8, &[], &[]);
+    // Row 5 is "Move up" (after three volumes, graphics, shake).
+    for _ in 0..5 {
+        tap(&mut g, "down");
+    }
+    assert_eq!(g.probe("menus.items[menus.focus][0]"), "key.up");
+    tap(&mut g, "enter");
+    assert_eq!(g.num("menus.listening"), 5.0);
+    tap(&mut g, "i");
+    assert_eq!(g.probe("controls.keys[controls.UP]"), "i");
+    assert_eq!(g.num("menus.listening"), -1.0);
+    // Turn the music down one step (row 1).
+    for _ in 0..4 {
+        tap(&mut g, "up");
+    }
+    tap(&mut g, "left");
+    assert!((g.num("sounds.music_volume") - 0.5).abs() < 1e-9);
+    // Esc closes settings and saves them.
+    tap(&mut g, "escape");
+    assert_eq!(g.probe("menu"), "title");
+    let path = g.probe("SETTINGS_PATH");
+    let saved = std::fs::read_to_string(&path).expect("settings saved");
+    assert!(saved.contains("\"i\""), "{saved}");
+    // In a round the new key walks the keeper north, and W doesn't.
+    g.exec("act_on(\"play\")");
+    g.practice();
+    let z0 = g.num("me.pos.z");
+    g.run(30, &["w"], &[]);
+    assert!((g.num("me.pos.z") - z0).abs() < 0.05, "W is no longer bound");
+    g.run(30, &["i"], &[]);
+    assert!(g.num("me.pos.z") < z0 - 1.0, "I walks north");
+}
+
+#[test]
+fn a_finished_round_is_remembered() {
+    let mut g = Game::new();
+    g.practice();
+    g.exec("for d in entities.of(combat.Dummy):\n    despawn d\nme.kills = 3\nstage = \"playing\"");
+    g.run(2, &[], &[]);
+    assert_eq!(g.probe("won"), "true");
+    assert_eq!(g.num("best_place"), 1.0);
+    assert_eq!(g.probe("new_best"), "true");
+    let path = g.probe("RECORD_PATH");
+    assert!(std::path::Path::new(&path).exists(), "{path}");
+    // Play again and lose: the best stays.
+    g.run(60, &[], &[]);
+    tap(&mut g, "enter");
+    assert_eq!(g.probe("stage"), "barge");
+    g.exec("stage = \"playing\"\nme.alive = false");
+    g.run(2, &[], &[]);
+    assert_eq!(g.probe("new_best"), "false");
+    assert_eq!(g.num("best_place"), 1.0);
+    // What's on disk is what a fresh boot reads.
+    g.exec("save.clear()\nsave.try_read(RECORD_PATH)");
+    assert_eq!(g.num("save.get_int(\"best_place\")"), 1.0);
+    assert_eq!(g.num("save.get_int(\"rounds\")"), 2.0);
+    assert_eq!(g.num("save.get_int(\"best_kills\")"), 3.0);
+}
+
+/// The menus, rendered for eyes-on review: `target/lanternfall/menu_*.png`.
+#[test]
+fn the_menus_render() {
+    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    let mut g = Game::title();
+    g.input.set_view(960, 540);
+    g.run(90, &[], &[]);
+    let mut assets = twec::play3d::NativeAssets::default();
+    let mut shot = |g: &mut Game, name: &str| {
+        for _ in 0..200 {
+            twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+            if assets.pending() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+        let rgba = renderer.read_pixels().expect("pixels");
+        std::fs::create_dir_all("target/lanternfall").unwrap();
+        image::save_buffer(format!("target/lanternfall/menu_{name}.png"), &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
+    };
+    shot(&mut g, "title");
+    tap(&mut g, "down");
+    tap(&mut g, "enter");
+    g.run(8, &[], &[]);
+    tap(&mut g, "down");
+    tap(&mut g, "down");
+    tap(&mut g, "down");
+    shot(&mut g, "settings");
+    tap(&mut g, "escape");
+    g.run(8, &[], &[]);
+    tap(&mut g, "up");
+    tap(&mut g, "enter");
+    assert_eq!(g.probe("stage"), "barge");
+    g.run(400, &[], &[]);
+    tap(&mut g, "escape");
+    shot(&mut g, "pause");
+    tap(&mut g, "escape");
+    g.practice();
+    g.exec("me.kills = 4\nme.damage = 412.0\nround_time = 263.0\nfor d in entities.of(combat.Dummy):\n    despawn d\nstage = \"playing\"");
+    g.run(150, &[], &[]);
+    shot(&mut g, "results");
 }

@@ -1,0 +1,98 @@
+# @task: Lanternfall sounds module
+# @inputs: none
+# @expected: every sound effect and the two music layers, mixed by the settings' volumes and by distance from the keeper
+# @category: 3d
+# @difficulty: small
+#
+# Lanternfall — what you hear.
+#
+# The sounds are synthesised by tests/gen_lanternfall_sounds.rs. `sfx`
+# plays one at the effects volume; `sfx_at` fades it with distance from
+# the keeper (the listener, set by the main file each tick), so a far
+# firefight is a murmur. Pools cap how many of one sound overlap, so 31
+# rivals firing at once is a crackle, not a wall. The music is two
+# layers of one loop — calm and tension — blended by `score`.
+
+let PISTOL = sound.load("assets/sfx/pistol.wav")
+let SMG = sound.load("assets/sfx/smg.wav")
+let SCATTER = sound.load("assets/sfx/scatter.wav")
+let RIFLE = sound.load("assets/sfx/rifle.wav")
+let MORTAR = sound.load("assets/sfx/mortar.wav")
+let SWING = sound.load("assets/sfx/swing.wav")
+let HIT = sound.load("assets/sfx/hit.wav")
+let SHIELD_HIT = sound.load("assets/sfx/shield_hit.wav")
+let CRACK = sound.load("assets/sfx/crack.wav")
+let BOOM = sound.load("assets/sfx/boom.wav")
+let STARCALL = sound.load("assets/sfx/starcall.wav")
+let KILL = sound.load("assets/sfx/kill.wav")
+let DOWN = sound.load("assets/sfx/down.wav")
+let CHEST = sound.load("assets/sfx/chest.wav")
+let PICKUP = sound.load("assets/sfx/pickup.wav")
+let GUN = sound.load("assets/sfx/gun.wav")
+let RELOAD = sound.load("assets/sfx/reload.wav")
+let EMPTY = sound.load("assets/sfx/empty.wav")
+let LEAP = sound.load("assets/sfx/leap.wav")
+let ROLL = sound.load("assets/sfx/roll.wav")
+let LAND = sound.load("assets/sfx/land.wav")
+let CHARGE = sound.load("assets/sfx/charge.wav")
+let SHIELD_UP = sound.load("assets/sfx/shield_up.wav")
+let BANNER = sound.load("assets/sfx/banner.wav")
+let VICTORY = sound.load("assets/sfx/victory.wav")
+let DEFEAT = sound.load("assets/sfx/defeat.wav")
+let HEARTBEAT = sound.load("assets/sfx/heartbeat.wav")
+let HUSH = sound.load("assets/sfx/hush.wav")
+let CLICK = sound.load("assets/sfx/click.wav")
+let TICK = sound.load("assets/sfx/tick.wav")
+let CALM = sound.load("assets/sfx/music_calm.wav")
+let TENSION = sound.load("assets/sfx/music_tension.wav")
+
+sound.pool(PISTOL, 5)
+sound.pool(SMG, 6)
+sound.pool(SCATTER, 3)
+sound.pool(RIFLE, 3)
+sound.pool(MORTAR, 3)
+sound.pool(SWING, 4)
+sound.pool(HIT, 6)
+sound.pool(SHIELD_HIT, 4)
+sound.pool(BOOM, 3)
+sound.pool(DOWN, 4)
+sound.pool(CHEST, 3)
+sound.pool(TICK, 4)
+
+# Weapon id -> the sound it makes (see weapons.twe).
+let GUNSHOTS = [SWING, PISTOL, SMG, SCATTER, RIFLE, MORTAR]
+
+# Volumes, 0..1, from the settings.
+var master_volume = 0.8
+var music_volume = 0.6
+var effects_volume = 0.8
+
+# Where the ears are: the keeper.
+var listener = vec3(0, 0, 0)
+
+# Past this many metres from the keeper a sound is silent.
+let HEARING = 48.0
+
+function sfx(h, volume):
+    let v = volume * effects_volume * master_volume
+    if v > 0.005:
+        sound.play_at(h, math.min(1.0, v))
+
+# A sound at a place, quieter the further it is from the keeper.
+function sfx_at(h, at, volume):
+    let dx = at.x - listener.x
+    let dz = at.z - listener.z
+    let k = math.clamp(1.0 - math.sqrt(dx * dx + dz * dz) / HEARING, 0.0, 1.0)
+    if k > 0.0:
+        sfx(h, volume * k * k)
+
+function gunshot(id, at):
+    sfx_at(GUNSHOTS[id], at, 0.75)
+
+# Blend the music: `calm` and `tension` are 0..1 before the music
+# volume. Both layers keep playing (a whisper when silent) so they stay
+# in step with each other.
+function score(calm, tension):
+    let v = music_volume * master_volume
+    music.layer(CALM, math.max(0.001, calm * v))
+    music.layer(TENSION, math.max(0.001, tension * v))

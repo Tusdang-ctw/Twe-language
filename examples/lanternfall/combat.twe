@@ -16,6 +16,7 @@
 
 import "tuning"
 import "weapons"
+import "sounds"
 
 # Everyone who can be hurt, refreshed by the main file each tick
 # (`combat.actors = [...]`).
@@ -259,6 +260,7 @@ function hurt(t, amount, from, at):
         t.shield = t.shield - to_shield
         left = left - to_shield
         if t.shield <= 0.0:
+            sounds.sfx_at(sounds.CRACK, t.pos, 0.9)
             popup(at + vec3(0, 1.0, 0), "CRACKED", (0.45, 0.75, 1.0), 20.0)
             spawn ShieldShards at t.pos + vec3(0, 1.0, 0)
             flash(t.pos + vec3(0, 1.0, 0), (0.4, 0.7, 1.0), 6.0, 0.15)
@@ -271,12 +273,20 @@ function hurt(t, amount, from, at):
         # being hit kicks the camera and points an arrow at the shooter.
         if from.team == 1:
             from.hit_marker = 1.0
+            from.fought_at = time_now()
         if t.team == 1:
             t.hit_from = from.pos
             t.hit_from_t = 1.0
+            t.fought_at = time_now()
     if t.team == 1:
         shake_near(t.pos, 3.0 + amount * 0.08, 0.14)
     let tint = if to_shield > 0.0 and left <= 0.0: (0.5, 0.8, 1.0) else: (1.0, 0.92, 0.55)
+    let near_you = t.team == 1 or (from != nil and from.team == 1)
+    let loud = if near_you: 0.9 else: 0.55
+    if to_shield > 0.0 and left <= 0.0:
+        sounds.sfx_at(sounds.SHIELD_HIT, t.pos, loud)
+    else:
+        sounds.sfx_at(sounds.HIT, t.pos, loud)
     fx.damage_number(at + vec3(0, 1.4, 0), math.floor(amount), tint)
     if t.hp <= 0.0:
         t.hp = 0.0
@@ -291,12 +301,14 @@ function hurt(t, amount, from, at):
         feed.append((killer, t.name, by_you, t.team == 1, time_now()))
         fall_apart(t)
         if by_you:
+            sounds.sfx(sounds.KILL, 0.9)
             popup(t.pos + vec3(0, 2.4, 0), "ELIMINATED {t.name}", (1.0, 0.78, 0.4), 18.0)
             fx.hit_stop(0.06)
     return true
 
 # A fighter going down: shards and embers burst off them, a flash, a ring.
 function fall_apart(t):
+    sounds.sfx_at(sounds.DOWN, t.pos, 0.7)
     spawn DeathShards at t.pos + vec3(0, 1.0, 0)
     spawn BlastFire at t.pos + vec3(0, 0.6, 0)
     flash(t.pos + vec3(0, 1.2, 0), (2.2, 1.4, 0.8), 8.0, 0.25)
@@ -339,6 +351,8 @@ function storm_hurt(t, amount):
         return
     t.hp = t.hp - amount
     t.hurt = math.max(t.hurt, 0.5)
+    if t.team == 1:
+        sounds.sfx(sounds.HUSH, 0.5)
     fx.damage_number(t.pos + vec3(0, 1.6, 0), math.ceil(amount), (0.75, 0.5, 1.0))
     if t.hp <= 0.0:
         t.hp = 0.0
@@ -386,7 +400,14 @@ function shake_near(at, amount, duration):
     let d = math.sqrt(dx * dx + dz * dz)
     let k = math.clamp(1.0 - d / 30.0, 0.0, 1.0)
     if k > 0.0:
-        fx.screen_shake(amount * k, duration)
+        shake_screen(amount * k, duration)
+
+# The screen shakes by the settings' amount (0 turns it off).
+var shake_scale = 1.0
+
+function shake_screen(amount, duration):
+    if shake_scale > 0.0:
+        fx.screen_shake(amount * shake_scale, duration)
 
 # ---------------------------------------------------------------
 # Firing.
@@ -395,6 +416,7 @@ function shake_near(at, amount, duration):
 # `shooter` fires weapon `id` (of `rarity`) from `origin` toward
 # heading `yaw`, at `target` (the aimed ground point, for lobbed shells).
 function fire(shooter, id, rarity, origin, yaw, target):
+    sounds.gunshot(id, origin)
     let kind = weapons.kind_of(id)
     let damage = weapons.damage_of(id, rarity)
     if kind == weapons.MELEE:
@@ -509,6 +531,7 @@ function warn(at, radius, seconds):
 # A blast at `at`: damage falling off to `radius`, fire, debris, a
 # shockwave, a flash of light, a shake and a beat of hit-stop.
 function explode(at, owner, radius, damage):
+    sounds.sfx_at(sounds.BOOM, at, 1.0)
     for a in actors:
         if a.alive:
             let dx = a.pos.x - at.x
@@ -566,6 +589,7 @@ particles StarTrail:
         p.size = 0.35 * (1.0 - p.age_ratio)
 
 function starcall(owner, target):
+    sounds.sfx_at(sounds.STARCALL, target, 0.8)
     let s = spawn Star at target + vec3(14, 42, -6)
     s.target = vec3(target.x, 0.05, target.z)
     s.owner = owner

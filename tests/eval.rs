@@ -3526,3 +3526,9 @@ fn graphics_quality_and_render_scale() {
     assert!(err.contains("0.25"), "{err}");
     run_program_str("graphics.render_scale(0.5)\n").expect("in range");
 }
+
+#[test]
+fn an_entity_starts_in_its_initial_state_so_persistent_survives_pause() {
+    let out = run_program_frames("tests/programs/entity_persistent_pause.twe", 5, 1.0 / 60.0).expect("runs");
+    assert_eq!(out, "shell 3, crate 0\n");
+}

@@ -14,6 +14,7 @@
 
 import "weapons"
 import "combat"
+import "sounds"
 
 let WEAPON = 0
 let AMMO = 1
@@ -142,6 +143,7 @@ function open_chest(c):
     if c.opened:
         return
     c.opened = true
+    sounds.sfx_at(sounds.CHEST, c.pos, 0.8)
     mesh_anim.play(c, "open", false)
     combat.flash(c.pos + vec3(0, 1.0, 0), (2.6, 1.9, 0.8), 7.0, 0.35)
     spawn combat.Sparks at c.pos + vec3(0, 0.7, 0)

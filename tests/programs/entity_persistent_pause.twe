@@ -1,0 +1,25 @@
+# Lanternfall G7: an entity is in its `initial:` state from spawn, so a
+# persistent initial state keeps its `update` running under pause(true)
+# while the rest of the world (an entity with no states) stays frozen.
+
+entity Shell:
+    var n = 0
+    initial: running
+
+    state running:
+        persistent
+
+    function update(dt):
+        n += 1
+        if n == 3:
+            print("shell {n}, crate {entities.of(Crate)[0].n}")
+
+entity Crate:
+    var n = 0
+
+    function update(dt):
+        n += 1
+
+spawn Shell at (0, 0)
+spawn Crate at (0, 0)
+pause(true)

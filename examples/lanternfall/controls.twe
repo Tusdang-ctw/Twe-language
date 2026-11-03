@@ -1,0 +1,78 @@
+# @task: Lanternfall controls module
+# @inputs: none
+# @expected: the rebindable keys — which key does each action, asked by index; labels for keycaps
+# @category: 3d
+# @difficulty: small
+#
+# Lanternfall — the keys, rebindable from the settings menu.
+#
+# Every action the keeper takes from the keyboard has a slot here;
+# `held` / `pressed` ask whether its key is down, so the player module
+# never names a key. The main file loads the bindings from settings and
+# the menu rebinds them. The arrow keys always move too, the number keys
+# always pick a slot, and the mouse always aims and fires.
+
+let UP = 0
+let DOWN = 1
+let LEFT = 2
+let RIGHT = 3
+let ROLL = 4
+let LEAP = 5
+let INTERACT = 6
+let RELOAD = 7
+let SHIELD = 8
+let ABILITY = 9
+
+# (settings key, menu label, default key) per action, in index order.
+let ACTIONS = [
+    ("key.up", "Move up", "w"),
+    ("key.down", "Move down", "s"),
+    ("key.left", "Move left", "a"),
+    ("key.right", "Move right", "d"),
+    ("key.roll", "Roll", "shift"),
+    ("key.leap", "Leap from the barge", "space"),
+    ("key.interact", "Open / take", "e"),
+    ("key.reload", "Reload", "r"),
+    ("key.shield", "Charge shield (hold)", "f"),
+    ("key.ability", "Starcall", "q"),
+]
+
+# The key bound to each action now.
+var keys = [a[2] for a in ACTIONS]
+
+function held(action):
+    return key_held(keys[action])
+
+function pressed(action):
+    return key_pressed(keys[action])
+
+# Every key a binding can take, and its keycap label.
+let BINDABLE = [
+    ("a", "A"), ("b", "B"), ("c", "C"), ("d", "D"), ("e", "E"), ("f", "F"),
+    ("g", "G"), ("h", "H"), ("i", "I"), ("j", "J"), ("k", "K"), ("l", "L"),
+    ("m", "M"), ("n", "N"), ("o", "O"), ("p", "P"), ("q", "Q"), ("r", "R"),
+    ("s", "S"), ("t", "T"), ("u", "U"), ("v", "V"), ("w", "W"), ("x", "X"),
+    ("y", "Y"), ("z", "Z"), ("0", "0"), ("4", "4"), ("5", "5"), ("6", "6"),
+    ("7", "7"), ("8", "8"), ("9", "9"), ("space", "SPACE"), ("shift", "SHIFT"),
+    ("ctrl", "CTRL"), ("alt", "ALT"), ("tab", "TAB"), ("enter", "ENTER"),
+    ("backspace", "BKSP"), ("up", "UP"), ("down", "DOWN"), ("left", "LEFT"),
+    ("right", "RIGHT"),
+]
+
+# The keycap label for a key name.
+function cap(name):
+    for b in BINDABLE:
+        if b[0] == name:
+            return b[1]
+    return name
+
+# The keycap label of an action's key.
+function cap_of(action):
+    return cap(keys[action])
+
+# Whichever bindable key was pressed this tick ("" if none).
+function any_pressed():
+    for b in BINDABLE:
+        if key_pressed(b[0]):
+            return b[0]
+    return ""

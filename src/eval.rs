@@ -2398,6 +2398,13 @@ fn spawn_entity(
         if class_rc.kind == "particles" {
             seed_particle_emitter(env, &rc, at_value.as_ref(), line, col)?;
         }
+        // Lanternfall G7: an entity starts in its `initial:` state, so a
+        // `persistent` state keeps its `update` running under `pause(true)`
+        // (only scenes entered theirs before; entity state bodies still
+        // don't run).
+        if let Some(start) = &class_rc.initial_state {
+            rc.borrow_mut().current_state = Some(start.clone());
+        }
         env.active_entities.push(rc.clone());
         if class_rc.kind == "particles" || find_method(&class_rc, "update").is_some() {
             env.tickable_entities.push(rc.clone());

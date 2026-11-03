@@ -1647,6 +1647,18 @@ clear_persistent_states()            # remove all
 
 When the global pause is set, `eval::tick_frame` skips the top-level `on update()` plus any entity / scene whose current state is NOT persistent. The render path is unaffected; persistent states still see their `on render():` fire.
 
+An entity is in its `initial:` state from the moment it is spawned (fixed in Lanternfall G7 — before, only scenes entered theirs, so an entity's persistent state never applied). So a menu that must keep working while the world is frozen is an entity whose initial state is persistent, with an `update` method:
+
+```twe
+entity Shell:
+    initial: running
+    state running:
+        persistent
+    function update(dt):
+        if key_press.escape:
+            pause(not is_paused())   # still runs while paused
+```
+
 **Honest scope reduction:** the plan's canonical surface is parser-sugar on the `state` block —
 
 ```twe

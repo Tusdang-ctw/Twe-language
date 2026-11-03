@@ -1,0 +1,282 @@
+# @task: Lanternfall menus module
+# @inputs: mouse hover / click, Up / Down (or W / S, the d-pad) to move, Enter / Space / A to choose, Left / Right to change a value
+# @expected: the title, pause, settings and end-of-round menus: drawn over the island, worked by mouse, keyboard or gamepad, settings written straight into `settings`
+# @category: 3d
+# @difficulty: medium
+#
+# Lanternfall — the menus.
+#
+# A menu is a list of items: (id, label, kind, action). Kinds:
+#   button — choosing it hands its id back to the main file
+#   slider — a 0..1 setting (id is its settings key)
+#   choice — the graphics quality (cycles through QUALITIES)
+#   toggle — a true/false setting
+#   key    — a key binding (action is its controls index)
+#
+# `step` runs once a tick from the main file's Shell entity — that is
+# where input is read, so a press counts once however fast the screen
+# draws — and returns what was chosen ("" for nothing, "changed" when a
+# setting moved). The draw functions run in `on render()` and record
+# where each item landed, for the mouse.
+
+import "controls"
+import "sounds"
+
+let INK = (0.04, 0.05, 0.09, 0.82)
+let EDGE = (1.0, 1.0, 1.0, 0.12)
+let WARM = (1.0, 0.78, 0.42, 1.0)
+let DIM = (0.8, 0.85, 0.9, 0.75)
+let BRIGHT = (1.0, 1.0, 1.0, 1.0)
+
+let QUALITIES = ["auto", "low", "medium", "high", "ultra"]
+
+let PAUSE_ITEMS = [
+    ("resume", "Resume", "button", 0),
+    ("settings", "Settings", "button", 0),
+    ("leave", "Leave the round", "button", 0),
+]
+
+let OVER_ITEMS = [
+    ("again", "Play again", "button", 0),
+    ("title", "Back to the title", "button", 0),
+]
+
+function title_items():
+    var list = [("play", "Play", "button", 0), ("settings", "Settings", "button", 0)]
+    if not assets.is_browser():
+        list.append(("quit", "Quit", "button", 0))
+    return list
+
+function settings_items():
+    var list = [
+        ("vol.master", "Master volume", "slider", 0),
+        ("vol.music", "Music", "slider", 0),
+        ("vol.sfx", "Effects", "slider", 0),
+        ("gfx.quality", "Graphics", "choice", 0),
+        ("fx.shake", "Screen shake", "toggle", 0),
+    ]
+    for i in 0..<controls.ACTIONS.length:
+        list.append((controls.ACTIONS[i][0], controls.ACTIONS[i][1], "key", i))
+    list.append(("back", "Back", "button", 0))
+    return list
+
+# The menu up now.
+var items = []
+var rects = []        # (x, y, w, h) of each item, from the last draw
+var focus = 0         # the highlighted item
+var listening = -1    # the key item waiting for a key, or -1
+var hold = 0          # ticks before input counts (so a click doesn't carry over)
+var last_x = -1.0
+var last_y = -1.0
+
+# Put up `list`, ignoring input for `ticks` ticks.
+function open(list, ticks):
+    items = list
+    rects = []
+    focus = 0
+    listening = -1
+    hold = ticks
+
+# One tick of input. Returns a button's id, "changed", or "".
+function step():
+    if items.length == 0:
+        return ""
+    if hold > 0:
+        hold -= 1
+        return ""
+    if listening >= 0:
+        return listen()
+    let m = mouse.pos
+    let over = under(m.x, m.y)
+    if over >= 0 and (m.x != last_x or m.y != last_y):
+        move_to(over)
+    last_x = m.x
+    last_y = m.y
+    if key_press.up or key_press.w or gamepad_press.dup:
+        move_to(math.mod(focus + items.length - 1, items.length))
+    if key_press.down or key_press.s or gamepad_press.ddown:
+        move_to(math.mod(focus + 1, items.length))
+    if key_press.left or key_press.a or gamepad_press.dleft:
+        return adjust(focus, -1)
+    if key_press.right or key_press.d or gamepad_press.dright:
+        return adjust(focus, 1)
+    if key_press.enter or key_press.space or gamepad_press.a:
+        return activate(focus, -1.0)
+    if mouse_press.left and over >= 0:
+        return activate(over, m.x)
+    if mouse_held.left and over >= 0 and items[over][2] == "slider":
+        return slide(over, m.x)
+    return ""
+
+# Waiting for the key to bind: Esc (or B) gives up.
+function listen():
+    if key_press.escape or gamepad_press.b:
+        listening = -1
+        return ""
+    let k = controls.any_pressed()
+    if k == "":
+        return ""
+    let it = items[listening]
+    settings.set(it[0], k)
+    controls.keys.set(it[3], k)
+    listening = -1
+    sounds.sfx(sounds.CLICK, 0.8)
+    return "changed"
+
+function move_to(i):
+    if i != focus:
+        focus = i
+        sounds.sfx(sounds.TICK, 0.6)
+
+# The item under a HUD point, or -1.
+function under(x, y):
+    for i in 0..<rects.length:
+        let r = rects[i]
+        if x >= r[0] and x <= r[0] + r[2] and y >= r[1] and y <= r[1] + r[3]:
+            return i
+    return -1
+
+# Choose item `i` (clicked at HUD x `mx`, or -1 from the keyboard).
+function activate(i, mx):
+    focus = i
+    let it = items[i]
+    let kind = it[2]
+    if kind == "button":
+        sounds.sfx(sounds.CLICK, 0.8)
+        return it[0]
+    if kind == "slider":
+        if mx >= 0.0:
+            return slide(i, mx)
+        return ""
+    if kind == "key":
+        sounds.sfx(sounds.CLICK, 0.8)
+        listening = i
+        return ""
+    return adjust(i, 1)
+
+# Nudge item `i`'s value one step (`d` is -1 or +1).
+function adjust(i, d):
+    let it = items[i]
+    let kind = it[2]
+    if kind == "slider":
+        let v = math.clamp(math.floor(settings.get(it[0]) * 10.0 + 0.5 + d) / 10.0, 0.0, 1.0)
+        settings.set(it[0], v)
+    elif kind == "choice":
+        var at = 0
+        for q in 0..<QUALITIES.length:
+            if QUALITIES[q] == settings.get(it[0]):
+                at = q
+        let n = QUALITIES.length
+        settings.set(it[0], QUALITIES[math.mod(at + d + n, n)])
+    elif kind == "toggle":
+        settings.set(it[0], not settings.get(it[0]))
+    else:
+        return ""
+    sounds.sfx(sounds.TICK, 0.8)
+    return "changed"
+
+# A slider set from where the mouse is along its bar.
+function slide(i, mx):
+    if i >= rects.length:
+        return ""
+    let r = rects[i]
+    let bx = r[0] + r[2] - 170
+    let v = math.clamp((mx - bx) / 130.0, 0.0, 1.0)
+    let it = items[i]
+    let was = settings.get(it[0])
+    let now = math.floor(v * 100.0 + 0.5) / 100.0
+    if now == was:
+        return ""
+    settings.set(it[0], now)
+    return "changed"
+
+# ---------------------------------------------------------------
+# Drawing (in `on render()`).
+# ---------------------------------------------------------------
+
+function chip(x, y, w, h):
+    rect((x, y), (w, h), INK)
+    rect_outline((x, y), (w, h), 1.0, EDGE)
+
+function centered(words, y, size, color):
+    text(words, (screen.size.x / 2 - words.length * size * 0.26, y), size, color)
+
+# The items as a column `width` wide centred on the screen, from `top`,
+# rows `h` tall with `gap` between.
+function draw_items(top, width, h, gap):
+    let x = screen.size.x / 2 - width / 2
+    var placed = []
+    for i in 0..<items.length:
+        let it = items[i]
+        let y = top + i * (h + gap)
+        placed.append((x, y, width, h))
+        let lit = i == focus
+        chip(x, y, width, h)
+        if lit:
+            rect((x, y), (width, h), (1.0, 0.78, 0.42, 0.1))
+            rect((x, y), (3, h), WARM)
+        let ink = if lit: BRIGHT else: DIM
+        let size = if h >= 28: 15 else: 12
+        let ty = y + h / 2 + size * 0.36
+        let kind = it[2]
+        if kind == "button":
+            text(it[1], (x + width / 2 - it[1].length * size * 0.26, ty), size, ink)
+        else:
+            text(it[1], (x + 14, ty), size, ink)
+            let vx = x + width - 170
+            let hot = if lit: WARM else: DIM
+            if kind == "slider":
+                let v = settings.get(it[0])
+                rect((vx, y + h / 2 - 2), (130, 4), (0.0, 0.0, 0.0, 0.6))
+                rect((vx, y + h / 2 - 2), (130 * v, 4), hot)
+                circle((vx + 130 * v, y + h / 2), 5.0, ink)
+                text("{math.floor(v * 100.0 + 0.5)}", (vx + 140, ty), size, ink)
+            elif kind == "choice":
+                text("<  {settings.get(it[0])}  >", (vx, ty), size, hot)
+            elif kind == "toggle":
+                let word = if settings.get(it[0]): "On" else: "Off"
+                text("<  {word}  >", (vx, ty), size, hot)
+            elif kind == "key":
+                if listening == i:
+                    text("press a key  (Esc: keep)", (vx - 40, ty), size, WARM)
+                else:
+                    let cap = controls.cap(controls.keys[it[3]])
+                    let cw = cap.length * size * 0.55 + 16
+                    rect((vx, y + 3), (cw, h - 6), (0.9, 0.9, 0.95, 0.9))
+                    text(cap, (vx + 8, ty), size, (0.05, 0.05, 0.08, 1.0))
+    rects = placed
+
+# The title over the island: the name, a line, your record, the menu.
+function draw_title(best, kills, rounds, wins, now):
+    let w = screen.size.x
+    rect((0, 0), (w, 480), (0.0, 0.0, 0.03, 0.3))
+    let name = "LANTERNFALL"
+    let flicker = 0.9 + 0.1 * math.sin(now * 3.1) * math.sin(now * 1.7 + 0.4)
+    centered(name, 124, 56, (0.0, 0.0, 0.0, 0.55))
+    centered(name, 120, 56, (1.0, 0.78 * flicker, 0.42 * flicker, 1.0))
+    centered("Thirty-two lanterns fall on the island. One stays lit.", 152, 13, DIM)
+    var record = "No rounds played yet"
+    if rounds > 0:
+        record = "Best  #{best}     Most kills  {kills}     Wins  {wins} of {rounds}"
+    centered(record, 184, 12, (1.0, 0.85, 0.6, 0.85))
+    draw_items(212, 240, 34, 8)
+    let help = "{controls.cap_of(controls.UP)}{controls.cap_of(controls.LEFT)}{controls.cap_of(controls.DOWN)}{controls.cap_of(controls.RIGHT)} move    mouse aim    click fire    {controls.cap_of(controls.INTERACT)} open    {controls.cap_of(controls.RELOAD)} reload    {controls.cap_of(controls.ROLL)} roll    {controls.cap_of(controls.ABILITY)} Starcall    hold {controls.cap_of(controls.SHIELD)} shield"
+    centered(help, 452, 11, DIM)
+
+function draw_pause():
+    let w = screen.size.x
+    rect((0, 0), (w, 480), (0.0, 0.0, 0.03, 0.6))
+    centered("PAUSED", 170, 30, BRIGHT)
+    draw_items(196, 240, 34, 8)
+    centered("Esc to resume", 360, 11, DIM)
+
+function draw_settings():
+    let w = screen.size.x
+    rect((0, 0), (w, 480), (0.0, 0.0, 0.03, 0.82))
+    centered("SETTINGS", 52, 22, BRIGHT)
+    draw_items(68, 420, 20, 4)
+    centered("Left / Right change a value   ·   Enter rebinds a key   ·   Esc goes back", 466, 11, DIM)
+
+# Under the end-of-round card.
+function draw_over():
+    draw_items(346, 240, 30, 6)

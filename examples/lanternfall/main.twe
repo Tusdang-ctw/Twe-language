@@ -1,6 +1,6 @@
 # @task: Lanternfall — a top-down 3D voxel battle royale on a night island lit by lanterns
-# @inputs: Space leap, WASD move / steer, mouse aim, left click fire, E open / pick up, R reload / play again, 1-3 / wheel switch, Shift roll, Q Starcall, hold F shield cell
-# @expected: a full round: leap from the lantern barge, glide down, loot chests, fight 31 rivals as the Hush closes in over five phases, until one is left
+# @inputs: menus by mouse, arrows / Enter or gamepad; Space leap, WASD move / steer, mouse aim, left click fire, E open / pick up, R reload / play again, 1-3 / wheel switch, Shift roll, Q Starcall, hold F shield cell, Esc pause (keys rebindable in Settings)
+# @expected: a title screen, then a full round: leap from the lantern barge, glide down, loot chests, fight 31 rivals as the Hush closes in over five phases, until one is left
 # @category: 3d
 # @difficulty: large
 #
@@ -20,6 +20,9 @@ import "names"
 import "loot"
 import "round"
 import "hud"
+import "controls"
+import "sounds"
+import "menus"
 
 random.seed(20261103)
 auto_pause_on_blur(true)
@@ -42,9 +45,66 @@ postfx.bloom(0.45)
 postfx.ao(0.9)
 postfx.vignette(0.32)
 postfx.vignette_color((0.02, 0.02, 0.08))
-graphics.quality("auto")
 camera.fov = tuning.CAM_FOV
 camera.far = 400.0
+
+# ---------------------------------------------------------------
+# Settings and the record: in the player's data folder (localStorage
+# in the browser), so they survive restarts.
+# ---------------------------------------------------------------
+let DATA = os.data_dir("lanternfall")
+let SETTINGS_PATH = DATA + "/settings.json"
+let RECORD_PATH = DATA + "/record.json"
+settings.set_default("vol.master", 0.8)
+settings.set_default("vol.music", 0.6)
+settings.set_default("vol.sfx", 0.8)
+settings.set_default("gfx.quality", "auto")
+settings.set_default("fx.shake", true)
+for a in controls.ACTIONS:
+    settings.set_default(a[0], a[2])
+settings.try_load(SETTINGS_PATH)
+
+var quality_now = ""
+
+# Push the settings into the game: volumes, quality, shake, the keys.
+function apply_settings():
+    sounds.master_volume = settings.get("vol.master")
+    sounds.music_volume = settings.get("vol.music")
+    sounds.effects_volume = settings.get("vol.sfx")
+    combat.shake_scale = if settings.get("fx.shake"): 1.0 else: 0.0
+    for i in 0..<controls.ACTIONS.length:
+        controls.keys.set(i, settings.get(controls.ACTIONS[i][0]))
+    # Changing tier rebuilds GPU targets: only when it really changed.
+    if settings.get("gfx.quality") != quality_now:
+        quality_now = settings.get("gfx.quality")
+        graphics.quality(quality_now)
+
+apply_settings()
+
+var best_place = 0        # 0 until a round is finished
+var best_kills = 0
+var rounds_played = 0
+var rounds_won = 0
+var new_best = false
+if save.try_read(RECORD_PATH):
+    best_place = save.get_int("best_place")
+    best_kills = save.get_int("best_kills")
+    rounds_played = save.get_int("rounds")
+    rounds_won = save.get_int("wins")
+
+function record_round():
+    rounds_played += 1
+    if won:
+        rounds_won += 1
+    new_best = best_place == 0 or placement < best_place
+    if new_best:
+        best_place = placement
+    best_kills = math.max(best_kills, me.kills)
+    save.int("best_place", best_place)
+    save.int("best_kills", best_kills)
+    save.int("rounds", rounds_played)
+    save.int("wins", rounds_won)
+    save.write(RECORD_PATH)
 
 # ---------------------------------------------------------------
 # The island.
@@ -277,6 +337,9 @@ function start_round():
     combat.feed = []
     hud.banners = []
     stage = "barge"
+    menu = ""
+    pause(false)
+    new_best = false
     round_time = 0.0
     time.set_scale(1.0)
     slow_t = 0.0
@@ -307,7 +370,140 @@ my_gun.owner = me
 # Seconds of slow motion left (the round's last moment).
 var slow_t = 0.0
 
-start_round()
+# ---------------------------------------------------------------
+# The shell: the title, the pause menu, settings, the end of a round.
+# ---------------------------------------------------------------
+var menu = ""             # the menu up: "title", "pause", "settings", "over" or ""
+var settings_from = ""    # the menu Settings was opened from
+var title_t = 0.0
+
+# The title: an empty island at night, the camera drifting round it.
+function go_title():
+    clear_round()
+    pause(false)
+    time.set_scale(1.0)
+    slow_t = 0.0
+    stage = "title"
+    hush.running = false
+    combat.feed = []
+    hud.banners = []
+    barge = nil
+    if me.body >= 0:
+        physics.despawn(me.body)
+    me.body = -1
+    me.barge = nil
+    me.phase = "ground"
+    me.alive = true
+    me.control = false
+    me.hp = 100.0
+    me.shield = 0.0
+    me.guns = [0, -1, -1]
+    me.slot = 0
+    me.vel = vec3(0, 0, 0)
+    me.pos = vec3(0, 0, 20)
+    me.heading = 0.0
+    title_t = 0.0
+    menu = "title"
+    menus.open(menus.title_items(), 10)
+
+function open_pause():
+    menu = "pause"
+    pause(true)
+    menus.open(menus.PAUSE_ITEMS, 6)
+    sounds.sfx(sounds.CLICK, 0.8)
+
+function resume():
+    menu = ""
+    pause(false)
+    me.calm = 0.3
+
+function close_settings():
+    settings.save(SETTINGS_PATH)
+    menu = settings_from
+    if menu == "pause":
+        menus.open(menus.PAUSE_ITEMS, 4)
+    else:
+        menus.open(menus.title_items(), 4)
+    menus.focus = 1
+
+# What a menu choice does.
+function act_on(act):
+    if act == "play" or act == "again":
+        start_round()
+    elif act == "settings":
+        settings_from = menu
+        menu = "settings"
+        menus.open(menus.settings_items(), 6)
+    elif act == "back":
+        close_settings()
+    elif act == "resume":
+        resume()
+    elif act == "leave" or act == "title":
+        go_title()
+    elif act == "quit":
+        quit()
+    elif act == "changed":
+        apply_settings()
+
+# One tick of the shell — run by the Shell entity, so it still runs
+# while the world is paused under a menu.
+function shell_step():
+    sounds.listener = me.pos
+    var esc = key_press.escape or gamepad_press.start
+    let in_round = stage == "barge" or stage == "playing"
+    if menu == "settings":
+        if esc and menus.listening < 0:
+            close_settings()
+            esc = false
+    elif menu == "pause":
+        if esc:
+            resume()
+            esc = false
+    elif menu == "" and in_round and (esc or is_paused()):
+        # Esc, or the window losing focus (auto_pause_on_blur).
+        open_pause()
+    # A menu over a round keeps the world still, even when the window's
+    # focus coming back lifts the pause the blur set.
+    if (menu == "pause" or (menu == "settings" and settings_from == "pause")) and not is_paused():
+        pause(true)
+    if menu != "":
+        let act = menus.step()
+        if act != "":
+            act_on(act)
+    if menu == "over" and key_press.r and menus.hold <= 0:
+        act_on("again")
+    score_music()
+
+# Calm under the night; tension as the Hush closes, the field thins or
+# a fight starts; quieter under a menu.
+function score_music():
+    var calm = 1.0
+    var tension = 0.0
+    if stage == "playing":
+        tension = math.clamp(0.22 * hush.phase, 0.0, 1.0)
+        if alive_count() <= 5:
+            tension = 1.0
+        if combat.time_now() - me.fought_at < 5.0:
+            tension = math.max(tension, 0.7)
+        calm = 1.0 - 0.55 * tension
+    elif stage == "over":
+        calm = 0.5
+    if menu == "pause" or (menu == "settings" and settings_from == "pause"):
+        calm = calm * 0.5
+        tension = tension * 0.4
+    sounds.score(calm, tension)
+
+entity Shell:
+    initial: running
+
+    state running:
+        persistent
+
+    function update(dt):
+        shell_step()
+
+spawn Shell
+go_title()
 
 # Everyone still standing, the keeper included.
 function alive_count():
@@ -359,15 +555,31 @@ on update(dt):
         if not gate_open and round_time >= tuning.VAULT_OPENS:
             open_gate()
         watch_the_round()
-    if stage == "over" and (key_press.r or gamepad_press.start):
-        start_round()
+    # The keeper's heart, when it's nearly out.
+    if stage == "playing" and me.alive and me.hp < 35.0:
+        heartbeat_t -= dt
+        if heartbeat_t <= 0.0:
+            heartbeat_t = 0.55 + me.hp / 35.0 * 0.45
+            sounds.sfx(sounds.HEARTBEAT, 0.7)
     # Slow motion fades back to speed in real seconds.
     if slow_t > 0.0:
         slow_t -= dt / time.scale
         if slow_t <= 0.0:
             time.set_scale(1.0)
     mood()
-    follow_camera(dt)
+    if stage == "title":
+        title_camera(dt)
+    else:
+        follow_camera(dt)
+
+var heartbeat_t = 0.0
+
+# Round and round the island, slowly, over the vault.
+function title_camera(dt):
+    title_t += dt
+    let a = 0.6 + title_t * 0.04
+    camera.target = vec3(0, 2.0, 4.0)
+    camera.eye = vec3(math.sin(a) * 46.0, 26.0, 4.0 + math.cos(a) * 46.0)
 
 # The screen's edge: red and pulsing when hurt, violet in the Hush.
 function mood():
@@ -402,6 +614,8 @@ function watch_the_round():
         me.control = false
         time.set_scale(0.35)
         slow_t = 1.4
+        sounds.sfx(sounds.DEFEAT, 0.9)
+        end_round()
     elif alive == 1:
         stage = "over"
         won = true
@@ -411,6 +625,13 @@ function watch_the_round():
         fx.hit_stop(0.2)
         time.set_scale(0.3)
         slow_t = 1.8
+        sounds.sfx(sounds.VICTORY, 0.9)
+        end_round()
+
+function end_round():
+    record_round()
+    menu = "over"
+    menus.open(menus.OVER_ITEMS, 45)
 
 function follow_camera(dt):
     # High above while aboard, lower while gliding, so you can pick
@@ -445,18 +666,39 @@ function follow_camera(dt):
     camera.eye = vec3(cam_x + kx, ground_y + cam_h, cam_z + kz + cam_h * tuning.CAM_BACK / tuning.CAM_HEIGHT)
 
 on render():
+    if stage == "title":
+        if menu == "settings":
+            menus.draw_settings()
+        else:
+            menus.draw_title(best_place, best_kills, rounds_played, rounds_won, combat.time_now())
+    else:
+        draw_round()
+        if menu == "pause":
+            menus.draw_pause()
+        elif menu == "settings":
+            menus.draw_settings()
+
+function draw_round():
     if stage != "barge" or me.phase == "ground":
         hud.draw_tags(entities.of(bots.Bot), me)
     hud.draw_popups(entities.of(combat.Popup))
-    if me.phase == "aboard":
-        hud.draw_aboard(barge, world.place_at(me.pos.x, me.pos.z))
-    elif me.phase == "glide":
-        hud.draw_glide(me, world.place_at(me.pos.x, me.pos.z))
+    if stage == "over" or menu != "":
+        # A menu or the results take the screen: no crosshair, prompts,
+        # loadout or banners.
+        hud.draw_match(alive_count(), me.kills, combat.feed, combat.time_now())
+        hud.draw_map(me, hush, barge, world.PLACES)
     else:
-        hud.draw_playing(me, world.place_at(me.pos.x, me.pos.z))
-    hud.draw_match(alive_count(), me.kills, combat.feed, combat.time_now())
-    hud.draw_hush(hush, me, stage)
-    hud.draw_map(me, hush, barge, world.PLACES)
-    hud.draw_banners(combat.time_now())
+        if me.phase == "aboard":
+            hud.draw_aboard(barge, world.place_at(me.pos.x, me.pos.z))
+        elif me.phase == "glide":
+            hud.draw_glide(me, world.place_at(me.pos.x, me.pos.z))
+        else:
+            hud.draw_playing(me, world.place_at(me.pos.x, me.pos.z))
+        hud.draw_match(alive_count(), me.kills, combat.feed, combat.time_now())
+        hud.draw_hush(hush, me, stage)
+        hud.draw_map(me, hush, barge, world.PLACES)
+        hud.draw_banners(combat.time_now())
     if stage == "over":
-        hud.draw_results(won, placement, me.kills, me.damage, round_time)
+        hud.draw_results(won, placement, me.kills, me.damage, round_time, best_place, new_best)
+        if menu == "over":
+            menus.draw_over()
