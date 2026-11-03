@@ -1,8 +1,8 @@
 # @task: Lanternfall HUD module
 # @inputs: none
-# @expected: health and shield bars, the place name and a crosshair, laid out from screen.size
+# @expected: health and shield, the loadout cards with ammo and cooldowns, shield cells, the place name, floating words and a crosshair, laid out from screen.size
 # @category: 3d
-# @difficulty: small
+# @difficulty: medium
 #
 # Lanternfall — the heads-up display.
 #
@@ -10,40 +10,99 @@
 # (wider than 640 on a widescreen window), so everything right- or
 # centre-aligned is placed from `screen.size`.
 
+import "tuning"
+import "weapons"
+
 let INK = (0.04, 0.05, 0.09, 0.78)
 let EDGE = (1.0, 1.0, 1.0, 0.12)
 let HP = (0.36, 0.86, 0.46, 1.0)
 let SHIELD = (0.36, 0.7, 1.0, 1.0)
 let WARM = (1.0, 0.78, 0.42, 1.0)
+let DIM = (0.8, 0.85, 0.9, 0.75)
 
-# A rounded-looking chip: a dark panel with a faint edge.
+# A dark panel with a faint edge.
 function chip(x, y, w, h):
     rect((x, y), (w, h), INK)
     rect_outline((x, y), (w, h), 1.0, EDGE)
 
-# A bar `frac` full, with its label and value.
+# A bar `frac` full, with its value.
 function bar(x, y, w, frac, fill, value):
     rect((x, y), (w, 8), (0.0, 0.0, 0.0, 0.55))
     rect((x, y), (w * math.clamp(frac, 0.0, 1.0), 8), fill)
     text("{math.floor(value)}", (x + w + 6, y + 8), 12, (0.9, 0.92, 1.0, 0.9))
 
-# The cursor: a ring with a dot, in the HUD's warm colour.
-function crosshair():
-    circle_outline(mouse.pos, 9.0, 1.5, WARM)
+# The cursor: a ring (wider while the gun kicks) with a dot.
+function crosshair(spread):
+    circle_outline(mouse.pos, 9.0 + spread * 6.0, 1.5, WARM)
     circle(mouse.pos, 1.6, WARM)
 
-# Health and shield, bottom-left; the place you're in, top-centre.
+# One loadout card: the slot's key, its weapon and its rounds.
+function card(x, y, key_label, title, detail, accent, selected, cooldown):
+    let w = 92
+    if selected:
+        rect((x - 2, y - 2), (w + 4, 52), accent)
+    chip(x, y, w, 48)
+    rect((x, y), (w, 3), accent)
+    text(key_label, (x + 6, y + 15), 11, DIM)
+    text(title, (x + 6, y + 31), 12, (1.0, 1.0, 1.0, 0.95))
+    text(detail, (x + 6, y + 44), 11, accent)
+    if cooldown > 0.0:
+        rect((x, y), (w, 48 * cooldown), (0.0, 0.0, 0.0, 0.55))
+
+# Health and shield; cells; the loadout; the place; the cursor.
 function draw_playing(me, place):
     let w = screen.size.x
+    # Vitals, bottom-left.
     chip(12, 404, 196, 62)
-    text("HP", (22, 426), 12, (0.8, 0.85, 0.9, 0.8))
+    text("HP", (22, 426), 12, DIM)
     bar(48, 418, 120, me.hp / 100.0, HP, me.hp)
-    text("SH", (22, 446), 12, (0.8, 0.85, 0.9, 0.8))
+    text("SH", (22, 446), 12, DIM)
     bar(48, 438, 120, me.shield / 100.0, SHIELD, me.shield)
     if me.dodge_cd > 0.0:
-        rect((48, 456), (120 * (1 - me.dodge_cd / 1.6), 3), WARM)
+        rect((48, 456), (120 * (1 - me.dodge_cd / tuning.DODGE_COOLDOWN), 3), WARM)
+    # Shield cells, above the vitals.
+    chip(12, 376, 96, 24)
+    for i in 0..<me.cells:
+        rect((20 + i * 14, 383), (10, 10), SHIELD)
+    text("F", (88, 393), 11, DIM)
+    if me.channel > 0.0:
+        let cx = w / 2 - 80
+        chip(cx, 300, 160, 22)
+        rect((cx + 4, 312), (152 * me.channel / tuning.CELL_TIME, 6), SHIELD)
+        text("charging shield", (cx + 6, 309), 11, DIM)
+    # Loadout, bottom-centre: melee, two guns, Starcall.
+    let x0 = w / 2 - 196
+    for s in 0..<3:
+        let id = me.guns[s]
+        if id >= 0:
+            let accent = weapons.RARITY_COLORS[me.rarity[s]]
+            var detail = "melee"
+            if weapons.magazine_of(id, me.rarity[s]) > 0:
+                detail = "{me.mag[s]} / {me.reserve}"
+            card(x0 + s * 98, 414, "{s + 1}", weapons.name_of(id), detail, accent, s == me.slot, 0.0)
+        else:
+            card(x0 + s * 98, 414, "{s + 1}", "empty", "", (0.4, 0.4, 0.45, 1.0), false, 0.0)
+    let star_ready = me.star_cd <= 0.0
+    let star_detail = if star_ready: "READY" else: "{math.ceil(me.star_cd)}s"
+    card(x0 + 294, 414, "Q", "Starcall", star_detail, (0.75, 0.6, 1.0, 1.0), false, me.star_cd / tuning.STAR_COOLDOWN)
+    if me.reload_t > 0.0:
+        chip(w / 2 - 60, 388, 120, 18)
+        let id = me.guns[me.slot]
+        rect((w / 2 - 56, 397), (112 * (1 - me.reload_t / weapons.reload_of(id)), 5), WARM)
+        text("reloading", (w / 2 - 54, 396), 11, DIM)
+    # Where you are, top-centre.
     if place != "":
         let tw = place.length * 8.0 + 24
         chip(w / 2 - tw / 2, 12, tw, 26)
         text(place, (w / 2 - tw / 2 + 12, 30), 14, WARM)
-    crosshair()
+    crosshair(me.kick)
+
+# Floating words over the world ("CRACKED"), where their point projects.
+function draw_popups(popups):
+    for p in popups:
+        let at = camera.project(p.pos)
+        if at != nil:
+            let fade = math.clamp(1.0 - p.age / 0.9, 0.0, 1.0)
+            let w = p.word.length * p.size * 0.5
+            text(p.word, (at.x - w / 2 + 1, at.y + 1), p.size, (0.0, 0.0, 0.0, 0.6 * fade))
+            text(p.word, (at.x - w / 2, at.y), p.size, (p.color[0], p.color[1], p.color[2], fade))

@@ -27,9 +27,14 @@ let BODY_RADIUS = 0.34
 let AIM_HEIGHT = 1.0             # the cursor aims at this height above the ground
 
 # --- the camera ---
-let CAM_FOV = 40.0               # degrees: a long lens flattens the view, top-down style
-let CAM_HEIGHT = 15.0
-let CAM_BACK = 10.5
+let CAM_FOV = 44.0               # degrees
+let CAM_HEIGHT = 24.0
+let CAM_BACK = 9.0
 let CAM_SMOOTH = 7.0             # higher = tighter follow
 let CAM_LEAD = 0.22              # how far the camera leans toward the cursor (0..1)
 let CAM_LEAN_MAX = 4.5           # metres, at most
+
+# --- combat ---
+let STAR_COOLDOWN = 18.0         # seconds between Starcalls
+let CELL_TIME = 2.5              # seconds to channel a shield cell
+let CELL_SHIELD = 25             # shield one cell gives

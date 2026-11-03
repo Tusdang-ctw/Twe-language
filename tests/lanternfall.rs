@@ -111,3 +111,122 @@ fn the_keeper_faces_the_cursor_and_rolls() {
     assert!(z0 - z1 > 3.0, "rolled {} m in a quarter second", z0 - z1);
     assert!(g.num("me.dodge_cd") > 0.5, "the roll cools down");
 }
+
+impl Game {
+    /// Put the cursor at fraction (fx, fy) of the view.
+    fn point(&mut self, fx: f64, fy: f64) {
+        self.input.pointer(fx, fy);
+    }
+
+    fn click_frames(&mut self, frames: u32) {
+        self.input.button_down("left");
+        self.run(frames, &[], &[]);
+        self.input.button_up("left");
+    }
+}
+
+#[test]
+fn the_pistol_hits_a_dummy_and_runs_dry() {
+    let mut g = Game::new();
+    // The dummies stand south of the keeper (+z, toward the camera): aim
+    // straight down the screen at the middle one, which has no shield.
+    g.point(0.5, 0.9);
+    g.run(20, &[], &[]);
+    let mag0 = g.num("me.mag[1]");
+    g.click_frames(70);
+    let hp = g.num("entities.of(combat.Dummy)[2].hp");
+    let mag1 = g.num("me.mag[1]");
+    assert!(hp < 100.0, "the middle dummy was hit: hp {hp}");
+    assert!(mag1 < mag0, "rounds spent: {mag0} -> {mag1}");
+    // Empty the magazine: firing on empty starts a reload.
+    g.click_frames(200);
+    g.run(90, &[], &[]);
+    // R tops it up from the reserve.
+    g.run(1, &[], &["r"]);
+    g.run(90, &[], &[]);
+    assert_eq!(g.num("me.mag[1]"), 12.0, "reloaded");
+    assert!(g.num("me.reserve") < 60.0, "from the reserve");
+    // The dummy went down at some point and got back up within seconds.
+    assert!(g.num("me.kills") >= 1.0, "a kill counted");
+}
+
+#[test]
+fn shields_soak_first_and_crack() {
+    let mut g = Game::new();
+    g.run(5, &[], &[]);
+    g.probe("combat.hurt(entities.of(combat.Dummy)[0], 30.0, me, vec3(0, 0, 0))");
+    assert_eq!(g.num("entities.of(combat.Dummy)[0].shield"), 20.0);
+    assert_eq!(g.num("entities.of(combat.Dummy)[0].hp"), 100.0);
+    g.probe("combat.hurt(entities.of(combat.Dummy)[0], 30.0, me, vec3(0, 0, 0))");
+    assert_eq!(g.num("entities.of(combat.Dummy)[0].shield"), 0.0);
+    assert_eq!(g.num("entities.of(combat.Dummy)[0].hp"), 90.0);
+    assert!(g.num("entities.count(combat.Popup)") >= 1.0, "CRACKED pops up");
+}
+
+#[test]
+fn a_mortar_shell_lands_and_bursts() {
+    let mut g = Game::new();
+    g.run(5, &[], &[]);
+    // Lob one at the middle dummies from the keeper.
+    g.probe("combat.lob(me, me.pos + vec3(0, 1, 0), vec3(0, 0, 34), 64.0)");
+    assert_eq!(g.num("entities.count(combat.Shell)"), 1.0);
+    g.run(90, &[], &[]);
+    assert_eq!(g.num("entities.count(combat.Shell)"), 0.0, "the shell landed");
+    let hp = g.num("entities.of(combat.Dummy)[2].hp");
+    assert!(hp < 100.0, "the burst hurt the dummy under it: hp {hp}");
+}
+
+#[test]
+fn starcall_falls_where_you_point() {
+    let mut g = Game::new();
+    g.point(0.5, 0.9);
+    g.run(10, &[], &[]);
+    g.run(1, &[], &["q"]);
+    assert_eq!(g.num("entities.count(combat.Star)"), 1.0);
+    assert!(g.num("me.star_cd") > 17.0, "on cooldown");
+    g.run(90, &[], &[]);
+    assert_eq!(g.num("entities.count(combat.Star)"), 0.0, "the star landed");
+}
+
+#[test]
+fn holding_f_turns_a_cell_into_shield() {
+    let mut g = Game::new();
+    g.run(10, &[], &[]);
+    g.run(170, &["f"], &[]);
+    assert_eq!(g.num("me.shield"), 25.0);
+    assert_eq!(g.num("me.cells"), 1.0);
+}
+
+/// Render a firefight headless and save it, for eyes-on review
+/// (`target/lanternfall/firefight.png`). Skips without a GPU.
+#[test]
+fn firefight_renders() {
+    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    let mut g = Game::new();
+    g.input.set_view(960, 540);
+    g.point(0.5, 0.92);
+    g.run(30, &[], &[]);
+    g.probe("combat.lob(me, me.pos + vec3(0, 1, 0), vec3(4, 0, 34), 64.0)");
+    g.run(40, &[], &[]);
+    g.input.button_down("left");
+    g.run(3, &[], &[]);
+    let mut assets = twec::play3d::NativeAssets::default();
+    for _ in 0..200 {
+        twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+        if assets.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    g.run(1, &[], &[]);
+    twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+    let rgba = renderer.read_pixels().expect("pixels");
+    std::fs::create_dir_all("target/lanternfall").unwrap();
+    image::save_buffer("target/lanternfall/firefight.png", &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
+}

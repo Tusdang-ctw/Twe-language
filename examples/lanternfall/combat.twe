@@ -1,0 +1,487 @@
+# @task: Lanternfall combat module
+# @inputs: none
+# @expected: damage, shields, hitscan tracers, melee swings, mortar shells, explosions, the Starcall ability, and training dummies, each with layered feedback
+# @category: 3d
+# @difficulty: large
+#
+# Lanternfall — fighting, and how it feels.
+#
+# Everything that can be hurt is an "actor": it has `pos`, `hp`,
+# `shield`, `alive`, `hurt` (a 0..1 flash), `team` and `iframes`. The
+# main file keeps the live ones in `actors`, below, each tick.
+#
+# Every hit is layered: the target flashes (`glow:`), a damage number
+# floats up from it (`fx.damage_number` at a world point), sparks fly
+# (GPU particles), a light flickers at the muzzle, and the camera kicks.
+
+import "tuning"
+import "weapons"
+
+# Everyone who can be hurt, refreshed by the main file each tick
+# (`combat.actors = [...]`).
+var actors = []
+
+# ---------------------------------------------------------------
+# Effects.
+# ---------------------------------------------------------------
+
+# A shot's trail: a thin glowing beam from muzzle to hit, fading fast.
+entity Tracer:
+    var pos = vec3(0, 0, 0)
+    var dir = vec3(0, 0, 1)
+    var len = 1.0
+    var width = 0.04
+    var color = (1.0, 1.0, 1.0)
+    var age = 0.0
+    look:
+        mesh: "cube"
+        scale: vec3(width * (1.0 - age * 8.0), width * (1.0 - age * 8.0), len)
+        rotation: quat.look_along(dir)
+        tint: color
+        glow: color * (4.0 * (1.0 - age * 8.0))
+
+    function update(dt):
+        age += dt
+        if age > 0.12:
+            despawn self
+
+# A brief light where something flared: a muzzle, an impact, a blast.
+entity Flash:
+    var pos = vec3(0, 0, 0)
+    var color = (1.0, 0.8, 0.5)
+    var radius = 6.0
+    var life = 0.08
+    var age = 0.0
+    var handle = -1
+
+    function update(dt):
+        if handle < 0:
+            handle = light.add(pos, (color[0], color[1], color[2], 1.0), radius)
+        age += dt
+        let k = math.max(0.0, 1.0 - age / life)
+        light.set(handle, pos, (color[0] * k, color[1] * k, color[2] * k, 1.0), radius)
+        if age >= life:
+            light.remove(handle)
+            despawn self
+
+# The muzzle's flare: a bright cube for two frames.
+entity MuzzleGlow:
+    var pos = vec3(0, 0, 0)
+    var color = (1.0, 0.9, 0.6)
+    var age = 0.0
+    look:
+        mesh: "cube"
+        scale: 0.18 * (1.0 - age * 12.0)
+        tint: color
+        glow: color * 6.0
+
+    function update(dt):
+        age += dt
+        if age > 0.06:
+            despawn self
+
+particles Sparks:
+    count: 14
+    lifetime: 0.35
+    collide: true
+    on_spawn(p):
+        let a = random.float() * 6.283
+        let up = 1.0 + random.float() * 3.0
+        let out = 2.0 + random.float() * 4.0
+        p.velocity = (math.cos(a) * out, up, math.sin(a) * out)
+        p.color = (1.0, 0.85, 0.5, 1.0)
+        p.size = 0.03 + random.float() * 0.03
+    on_update(p, dt):
+        p.velocity -= (0.0, 12.0, 0.0) * dt
+        p.pos += p.velocity * dt
+        p.color = (1.0, 0.85 - p.age_ratio * 0.5, 0.5 - p.age_ratio * 0.4, 1.0 - p.age_ratio)
+
+particles BlastFire:
+    count: 90
+    lifetime: 0.6
+    on_spawn(p):
+        let a = random.float() * 6.283
+        let r = random.float()
+        let out = 3.0 + r * 7.0
+        p.velocity = (math.cos(a) * out, 2.0 + random.float() * 6.0, math.sin(a) * out)
+        p.color = (1.0, 0.6 + r * 0.3, 0.25, 1.0)
+        p.size = 0.12 + random.float() * 0.18
+    on_update(p, dt):
+        p.velocity *= 1.0 - dt * 3.0
+        p.velocity -= (0.0, 3.0, 0.0) * dt
+        p.pos += p.velocity * dt
+        let t = p.age_ratio
+        p.color = (1.0 - t * 0.6, 0.6 - t * 0.45, 0.25 - t * 0.2, 1.0 - t)
+        p.size = (0.12 + t * 0.3) * (1.0 - t * 0.5)
+
+particles BlastDebris:
+    count: 36
+    lifetime: 1.1
+    collide: true
+    on_spawn(p):
+        let a = random.float() * 6.283
+        let out = 4.0 + random.float() * 6.0
+        p.velocity = (math.cos(a) * out, 5.0 + random.float() * 7.0, math.sin(a) * out)
+        p.color = (0.35, 0.3, 0.28, 1.0)
+        p.size = 0.05 + random.float() * 0.06
+    on_update(p, dt):
+        p.velocity -= (0.0, 18.0, 0.0) * dt
+        p.pos += p.velocity * dt
+        p.color = (0.35, 0.3, 0.28, 1.0 - p.age_ratio * p.age_ratio)
+
+particles HealMotes:
+    count: 4
+    lifetime: 0.9
+    on_spawn(p):
+        let a = random.float() * 6.283
+        p.pos += (math.cos(a) * 0.6, random.float() * 0.4, math.sin(a) * 0.6)
+        p.velocity = (0.0, 1.2 + random.float(), 0.0)
+        p.color = (0.4, 0.75, 1.0, 1.0)
+        p.size = 0.05
+    on_update(p, dt):
+        p.pos += p.velocity * dt
+        p.color = (0.4, 0.75, 1.0, 1.0 - p.age_ratio)
+
+# Rings drawn on the ground: a band near the plane's edge, cut out
+# inside and outside (albedo alpha below 0.5 is cut away).
+visual WarnRingMat:
+    surface(uv, time) -> material:
+        let d = math.length(uv - (0.5, 0.5))
+        let band = smoothstep(0.43, 0.46, d) * (1 - smoothstep(0.485, 0.5, d))
+        let fill = (1 - smoothstep(0.0, 0.47, d)) * 0.0
+        let pulse = 0.7 + 0.3 * math.sin(time * 14)
+        let ticks = smoothstep(0.3, 0.32, d) * (1 - smoothstep(0.32, 0.34, d)) * smoothstep(0.6, 0.9, math.sin(math.atan2(uv.y - 0.5, uv.x - 0.5) * 12))
+        let a = math.max(band, ticks) + fill
+        return material(albedo: (1.0, 0.25, 0.2, a), emission: (2.5, 0.5, 0.35) * a * pulse)
+
+visual BlastRingMat:
+    surface(uv, time) -> material:
+        let d = math.length(uv - (0.5, 0.5))
+        let band = smoothstep(0.38, 0.46, d) * (1 - smoothstep(0.47, 0.5, d))
+        return material(albedo: (1.0, 0.7, 0.4, band), emission: (3.0, 1.6, 0.6) * band)
+
+# A ring on the ground: a blast's expanding shockwave, or a warning
+# where something will land.
+entity Ring:
+    var pos = vec3(0, 0, 0)
+    var radius = 3.0
+    var life = 0.45
+    var age = 0.0
+    var grow = true               # a shockwave grows; a warning holds
+    var span = 0.0                # the ring's diameter now
+    look:
+        mesh: "assets/grid_plane.glb"
+        scale: vec3(span, 1.0, span)
+        material: if grow: BlastRingMat else: WarnRingMat
+
+    function update(dt):
+        age += dt
+        if grow:
+            span = radius * 2.0 * (0.3 + 0.7 * math.min(1.0, age / (life * 0.5)))
+        else:
+            span = radius * 2.0
+        if age >= life:
+            despawn self
+
+# A word that floats up from a world point: "CRACKED", "HEADSHOT".
+entity Popup:
+    var pos = vec3(0, 0, 0)
+    var word = ""
+    var color = (1.0, 1.0, 1.0)
+    var size = 18.0
+    var age = 0.0
+
+    function update(dt):
+        age += dt
+        pos = pos + vec3(0, dt * 1.2, 0)
+        if age > 0.9:
+            despawn self
+
+# ---------------------------------------------------------------
+# Damage.
+# ---------------------------------------------------------------
+
+# Hurt actor `t` by `amount` from `from` (an actor, or nil), the hit
+# landing at `at`. Shields soak damage first; breaking one says so.
+function hurt(t, amount, from, at):
+    if not t.alive or t.iframes > 0.0:
+        return false
+    var left = amount
+    var to_shield = 0.0
+    if t.shield > 0.0:
+        to_shield = math.min(t.shield, left)
+        t.shield = t.shield - to_shield
+        left = left - to_shield
+        if t.shield <= 0.0:
+            popup(at + vec3(0, 1.0, 0), "CRACKED", (0.45, 0.75, 1.0), 20.0)
+            spawn ShieldShards at t.pos + vec3(0, 1.0, 0)
+            flash(t.pos + vec3(0, 1.0, 0), (0.4, 0.7, 1.0), 6.0, 0.15)
+    t.hp = t.hp - left
+    t.hurt = 1.0
+    t.last_hit_by = from
+    let tint = if to_shield > 0.0 and left <= 0.0: (0.5, 0.8, 1.0) else: (1.0, 0.92, 0.55)
+    fx.damage_number(at + vec3(0, 1.4, 0), math.floor(amount), tint)
+    if t.hp <= 0.0:
+        t.hp = 0.0
+        t.alive = false
+        t.died_at = time_now()
+        if from != nil:
+            from.kills = from.kills + 1
+    return true
+
+particles ShieldShards:
+    count: 18
+    lifetime: 0.5
+    on_spawn(p):
+        let a = random.float() * 6.283
+        p.velocity = (math.cos(a) * 4.0, 1.5 + random.float() * 2.5, math.sin(a) * 4.0)
+        p.color = (0.45, 0.8, 1.0, 1.0)
+        p.size = 0.06
+    on_update(p, dt):
+        p.velocity -= (0.0, 9.0, 0.0) * dt
+        p.pos += p.velocity * dt
+        p.color = (0.45, 0.8, 1.0, 1.0 - p.age_ratio)
+
+# The simulation clock, for "when did this die".
+function time_now():
+    return sound.now()
+
+function popup(at, word, color, size):
+    let p = spawn Popup at at
+    p.word = word
+    p.color = color
+    p.size = size
+
+function flash(at, color, radius, life):
+    let f = spawn Flash at at
+    f.color = color
+    f.radius = radius
+    f.life = life
+
+# Shake the camera, more when it happens near the middle of the screen.
+function shake_near(at, amount, duration):
+    let dx = at.x - camera.target.x
+    let dz = at.z - camera.target.z
+    let d = math.sqrt(dx * dx + dz * dz)
+    let k = math.clamp(1.0 - d / 30.0, 0.0, 1.0)
+    if k > 0.0:
+        fx.screen_shake(amount * k, duration)
+
+# ---------------------------------------------------------------
+# Firing.
+# ---------------------------------------------------------------
+
+# `shooter` fires weapon `id` (of `rarity`) from `origin` toward
+# heading `yaw`, at `target` (the aimed ground point, for lobbed shells).
+function fire(shooter, id, rarity, origin, yaw, target):
+    let kind = weapons.kind_of(id)
+    let damage = weapons.damage_of(id, rarity)
+    if kind == weapons.MELEE:
+        swing(shooter, damage, yaw)
+        return
+    if kind == weapons.LOBBED:
+        lob(shooter, origin, target, damage)
+        muzzle(origin, weapons.tracer_color_of(id))
+        return
+    let spread = weapons.spread_of(id)
+    for i in 0..<weapons.pellets_of(id):
+        let a = yaw + (random.float() * 2.0 - 1.0) * spread
+        let dir = vec3(math.sin(a), 0.0, math.cos(a))
+        hitscan(shooter, origin, dir, weapons.range_of(id), damage, weapons.tracer_color_of(id), weapons.tracer_width_of(id))
+    muzzle(origin, weapons.tracer_color_of(id))
+
+function muzzle(at, color):
+    let g = spawn MuzzleGlow at at
+    g.color = mix(color, (1.0, 1.0, 1.0), 0.5)
+    flash(at, color, 7.0, 0.07)
+
+# An instant shot: the first actor along the ray, or the first wall.
+function hitscan(shooter, origin, dir, range, damage, color, width):
+    var reach = range
+    let wall = physics.raycast(origin, dir, range)
+    if wall != nil:
+        reach = wall.distance
+    var best = nil
+    var best_t = reach + 0.4
+    for a in actors:
+        if a != shooter and a.alive:
+            let to = a.pos + vec3(0, 0.9, 0) - origin
+            let t = math.dot(to, dir)
+            if t > 0.0 and t < best_t:
+                let off = to - dir * t
+                if off.x * off.x + off.z * off.z < 0.3 and math.abs(off.y) < 0.95:
+                    best = a
+                    best_t = t
+    let hit_t = if best != nil: best_t else: reach
+    let end = origin + dir * hit_t
+    let tr = spawn Tracer at origin + dir * (hit_t * 0.5)
+    tr.dir = dir
+    tr.len = hit_t
+    tr.width = width
+    tr.color = color
+    if best != nil:
+        hurt(best, damage, shooter, end)
+        spawn Sparks at end
+    elif wall != nil:
+        spawn Sparks at end
+        flash(end, color, 3.0, 0.05)
+
+# A melee swing: everyone alive within reach in front of `who`.
+function swing(who, damage, yaw):
+    let fx_dir = vec3(math.sin(yaw), 0.0, math.cos(yaw))
+    var hit_any = false
+    for a in actors:
+        if a != who and a.alive:
+            let to = a.pos - who.pos
+            let d = math.sqrt(to.x * to.x + to.z * to.z)
+            if d < 2.1 and d > 0.01:
+                let facing = (to.x * fx_dir.x + to.z * fx_dir.z) / d
+                if facing > 0.35:
+                    hurt(a, damage, who, a.pos)
+                    a.push = vec3(to.x / d, 0.0, to.z / d) * 9.0
+                    hit_any = true
+    if hit_any:
+        spawn Sparks at who.pos + fx_dir * 1.2 + vec3(0, 1.0, 0)
+        shake_near(who.pos, 4.0, 0.12)
+        fx.hit_stop(0.03)
+
+# A lobbed shell, on a ballistic arc that lands at `target`.
+entity Shell:
+    var pos = vec3(0, 0, 0)
+    var vel = vec3(0, 0, 0)
+    var owner = nil
+    var damage = 60.0
+    var spin = 0.0
+    look:
+        mesh: "sphere"
+        scale: 0.32
+        tint: (1.0, 0.5, 0.75)
+        glow: (2.0, 0.6, 1.2)
+        rotation: quat.from_euler(spin, spin * 0.7, 0.0)
+
+    function update(dt):
+        vel = vel - vec3(0, 24.0, 0) * dt
+        pos = pos + vel * dt
+        spin += dt * 9.0
+        if pos.y <= 0.05:
+            explode(vec3(pos.x, 0.05, pos.z), owner, 3.6, damage)
+            despawn self
+
+function lob(owner, origin, target, damage):
+    let dx = target.x - origin.x
+    let dz = target.z - origin.z
+    let d = math.sqrt(dx * dx + dz * dz)
+    let flight = 0.45 + d / 20.0
+    let s = spawn Shell at origin
+    s.vel = vec3(dx / flight, 0.5 * 24.0 * flight - origin.y / flight, dz / flight)
+    s.owner = owner
+    s.damage = damage
+    warn(vec3(target.x, 0.05, target.z), 3.6, flight)
+
+# A warning ring where something will land in `seconds`.
+function warn(at, radius, seconds):
+    let r = spawn Ring at at
+    r.radius = radius
+    r.life = seconds
+    r.grow = false
+
+# A blast at `at`: damage falling off to `radius`, fire, debris, a
+# shockwave, a flash of light, a shake and a beat of hit-stop.
+function explode(at, owner, radius, damage):
+    for a in actors:
+        if a.alive:
+            let dx = a.pos.x - at.x
+            let dz = a.pos.z - at.z
+            let d = math.sqrt(dx * dx + dz * dz)
+            if d < radius:
+                hurt(a, damage * (1.0 - 0.6 * d / radius), owner, a.pos)
+                if d > 0.01:
+                    a.push = vec3(dx / d, 0.0, dz / d) * 12.0
+    spawn BlastFire at at + vec3(0, 0.3, 0)
+    spawn BlastDebris at at + vec3(0, 0.2, 0)
+    let ring = spawn Ring at at + vec3(0, 0.02, 0)
+    ring.radius = radius
+    flash(at + vec3(0, 1.5, 0), (3.0, 1.6, 0.7), radius * 4.0, 0.35)
+    shake_near(at, 9.0, 0.3)
+    fx.hit_stop(0.04)
+
+# ---------------------------------------------------------------
+# Starcall: a star falls where you point, 1.2 s after you call it.
+# ---------------------------------------------------------------
+
+entity Star:
+    var pos = vec3(0, 40, 0)
+    var target = vec3(0, 0, 0)
+    var owner = nil
+    var delay = 1.2
+    var age = 0.0
+    look:
+        mesh: "sphere"
+        scale: 0.9
+        tint: (0.8, 0.7, 1.0)
+        glow: (3.0, 2.2, 5.0)
+
+    function update(dt):
+        age += dt
+        let t = math.clamp(age / delay, 0.0, 1.0)
+        let fall = t * t
+        pos = vec3(target.x + 14.0 * (1.0 - fall), target.y + 42.0 * (1.0 - fall), target.z - 6.0 * (1.0 - fall))
+        if age >= delay:
+            explode(target, owner, 5.5, 95.0)
+            shake_near(target, 14.0, 0.5)
+            fx.hit_stop(0.07)
+            despawn self
+
+particles StarTrail:
+    count: 3
+    lifetime: 0.5
+    on_spawn(p):
+        p.velocity = (random.float() - 0.5, random.float() - 0.5, random.float() - 0.5)
+        p.color = (0.8, 0.7, 1.0, 1.0)
+        p.size = 0.35
+    on_update(p, dt):
+        p.pos += p.velocity * dt
+        p.color = (0.7, 0.6, 1.0, 1.0 - p.age_ratio)
+        p.size = 0.35 * (1.0 - p.age_ratio)
+
+function starcall(owner, target):
+    let s = spawn Star at target + vec3(14, 42, -6)
+    s.target = vec3(target.x, 0.05, target.z)
+    s.owner = owner
+    warn(s.target, 5.5, 1.2)
+
+# ---------------------------------------------------------------
+# Training dummies: they stand, take hits, fall over and get back up.
+# ---------------------------------------------------------------
+
+entity Dummy:
+    var pos = vec3(0, 0, 0)
+    var hp = 100.0
+    var shield = 50.0
+    var alive = true
+    var hurt = 0.0
+    var iframes = 0.0
+    var team = 2
+    var kills = 0
+    var died_at = 0.0
+    var last_hit_by = nil
+    var push = vec3(0, 0, 0)
+    var turn = 0.0
+    look:
+        mesh: "assets/folk_moss.glb"
+        facing: turn
+        glow: (1.0, 0.9, 0.8) * hurt * 2.5
+
+    function update(dt):
+        hurt = math.max(0.0, hurt - dt * 5.0)
+        pos = pos + push * dt
+        push = push * math.max(0.0, 1.0 - dt * 8.0)
+        if alive:
+            mesh_anim.play(self, "idle_armed", true)
+        else:
+            mesh_anim.play(self, "death", false)
+            if time_now() - died_at > 3.0:
+                alive = true
+                hp = 100.0
+                shield = 50.0
+                mesh_anim.play(self, "idle_armed", true)

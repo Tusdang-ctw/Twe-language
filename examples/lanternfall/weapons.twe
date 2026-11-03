@@ -1,0 +1,66 @@
+# @task: Lanternfall weapons module
+# @inputs: none
+# @expected: the weapon table and its rarities
+# @category: 3d
+# @difficulty: small
+#
+# Lanternfall — what each weapon does.
+#
+# A weapon is a row of WEAPONS, looked up by its id:
+#   (name, kind, damage, interval, magazine, reload, spread°, pellets,
+#    range, tracer colour, tracer width)
+# kind: 0 melee (a swing in front), 1 hitscan (instant tracers),
+#       2 lobbed (a shell that bursts where it lands).
+
+let MELEE = 0
+let HITSCAN = 1
+let LOBBED = 2
+
+let WEAPONS = [
+    ("Rivet Wrench", 0, 34.0, 0.5, 0, 0.0, 0.0, 1, 2.0, (1.0, 1.0, 1.0), 0.0),
+    ("Coil Pistol", 1, 15.0, 0.26, 12, 1.1, 2.0, 1, 42.0, (0.75, 0.95, 1.0), 0.045),
+    ("Tack SMG", 1, 9.0, 0.085, 30, 1.6, 5.5, 1, 32.0, (0.35, 0.95, 1.0), 0.035),
+    ("Scatterhorn", 1, 8.0, 0.8, 5, 2.0, 13.0, 8, 15.0, (1.0, 0.62, 0.25), 0.04),
+    ("Longwick Rifle", 1, 52.0, 0.95, 4, 2.2, 0.4, 1, 75.0, (1.0, 0.82, 0.32), 0.09),
+    ("Petal Mortar", 2, 64.0, 1.3, 3, 2.4, 0.0, 1, 24.0, (1.0, 0.45, 0.75), 0.0),
+]
+
+# Rarity (0 common … 3 epic) scales damage and magazine.
+let RARITY_NAMES = ["Common", "Uncommon", "Rare", "Epic"]
+let RARITY_COLORS = [(0.72, 0.74, 0.78), (0.42, 0.88, 0.48), (0.38, 0.62, 1.0), (0.78, 0.45, 1.0)]
+
+function name_of(id):
+    return WEAPONS[id][0]
+
+function kind_of(id):
+    return WEAPONS[id][1]
+
+function damage_of(id, rarity):
+    return WEAPONS[id][2] * (1.0 + rarity * 0.12)
+
+function interval_of(id):
+    return WEAPONS[id][3]
+
+function magazine_of(id, rarity):
+    let base = WEAPONS[id][4]
+    if base == 0:
+        return 0
+    return base + math.floor(base * rarity * 0.15)
+
+function reload_of(id):
+    return WEAPONS[id][5]
+
+function spread_of(id):
+    return WEAPONS[id][6] * math.pi / 180.0
+
+function pellets_of(id):
+    return WEAPONS[id][7]
+
+function range_of(id):
+    return WEAPONS[id][8]
+
+function tracer_color_of(id):
+    return WEAPONS[id][9]
+
+function tracer_width_of(id):
+    return WEAPONS[id][10]

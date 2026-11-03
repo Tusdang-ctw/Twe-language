@@ -1,6 +1,6 @@
 # @task: Lanternfall — a top-down 3D voxel battle royale on a night island lit by lanterns
-# @inputs: WASD move, mouse aim, Shift roll
-# @expected: the keeper walks the island at night between lanterns, the camera following and leaning toward the cursor
+# @inputs: WASD move, mouse aim, left click fire, R reload, 1-3 / wheel switch, Shift roll, Q Starcall, hold F shield cell
+# @expected: the keeper walks the island at night, shooting training dummies with tracers, damage numbers, explosions and screen shake
 # @category: 3d
 # @difficulty: large
 #
@@ -13,6 +13,8 @@
 import "tuning"
 import "world"
 import "player"
+import "weapons"
+import "combat"
 import "hud"
 
 random.seed(20261103)
@@ -109,8 +111,19 @@ let me = spawn player.Player at vec3(0, 0, 24)
 var cam_x = me.pos.x
 var cam_z = me.pos.z
 
+# A training yard on the road south of the vault.
+for i in 0..<5:
+    let d = spawn combat.Dummy at vec3(-8.0 + i * 4.0, 0, 34.0)
+    d.turn = 3.14
+    if i == 2:
+        d.shield = 0.0
+
 on update(dt):
     mesh_anim.advance(dt)
+    # Everyone who can be hurt this tick (see combat.twe).
+    var everyone = [a for a in entities.of(combat.Dummy)]
+    everyone.append(me)
+    combat.actors = everyone
     # Follow the keeper, leaning toward the cursor so you see where you
     # aim — but never so far that the keeper leaves the screen.
     var lean_x = (me.aim.x - me.pos.x) * tuning.CAM_LEAD
@@ -124,8 +137,12 @@ on update(dt):
     let k = math.min(1.0, dt * tuning.CAM_SMOOTH)
     cam_x = cam_x + (want_x - cam_x) * k
     cam_z = cam_z + (want_z - cam_z) * k
-    camera.target = vec3(cam_x, 0.6, cam_z)
-    camera.eye = vec3(cam_x, tuning.CAM_HEIGHT, cam_z + tuning.CAM_BACK)
+    # Recoil nudges the view back along the aim.
+    let kx = -math.sin(me.heading) * me.kick * 0.12
+    let kz = -math.cos(me.heading) * me.kick * 0.12
+    camera.target = vec3(cam_x + kx, 0.6, cam_z + kz)
+    camera.eye = vec3(cam_x + kx, tuning.CAM_HEIGHT, cam_z + kz + tuning.CAM_BACK)
 
 on render():
+    hud.draw_popups(entities.of(combat.Popup))
     hud.draw_playing(me, world.place_at(me.pos.x, me.pos.z))

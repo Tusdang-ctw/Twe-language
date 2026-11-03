@@ -1,23 +1,27 @@
 # @task: Lanternfall player module
-# @inputs: WASD move, mouse aim, Shift roll
-# @expected: the keeper entity: character-controller movement, cursor facing, rolling, per-entity animation
+# @inputs: WASD move, mouse aim, left click fire, R reload, 1-4 / wheel switch, Shift roll, Q Starcall, hold F shield cell
+# @expected: the keeper entity: movement, cursor facing, rolling, weapons, the Starcall ability and shield cells, animating on its own clock
 # @category: 3d
-# @difficulty: medium
+# @difficulty: large
 #
 # Lanternfall — the keeper you play.
 #
 # Moves with WASD on a kinematic capsule (`physics.character`, so walls
-# stop it and steps don't), faces the cursor (`camera.ground_point`),
-# and rolls with Shift. It animates on its own clock
-# (`mesh_anim.*(self, ...)`), squashes when it lands a roll, and flashes
-# when it is hurt.
+# stop it), faces the cursor (`camera.ground_point`), and rolls with
+# Shift. Carries four slots — melee, two guns, and Starcall — fires with
+# the left button, reloads with R, and channels a shield cell by holding
+# F. It animates on its own clock (`mesh_anim.*(self, ...)`), squashes
+# when it lands a roll, and flashes when it is hurt.
 
 import "tuning"
+import "weapons"
+import "combat"
 
 entity Player:
     var pos = vec3(0, 0, 0)
     var body = -1                 # its physics capsule
     var vel = vec3(0, 0, 0)       # ground velocity (m/s)
+    var push = vec3(0, 0, 0)      # knockback, decaying
     var fall = 0.0                # vertical speed (m/s)
     var heading = 0.0             # where it faces (radians about +Y)
     var aim = vec3(0, 0, 1)       # the world point under the cursor
@@ -26,10 +30,27 @@ entity Player:
     var dodge_dir = vec3(0, 0, 1)
     var squash = 0.0              # 1 just after landing a roll, easing to 0
     var hurt = 0.0                # 1 just after a hit, easing to 0
+    var kick = 0.0                # recoil, easing to 0 (the camera reads it)
+    # --- the actor contract (see combat.twe) ---
     var hp = 100.0
     var shield = 0.0
     var alive = true
-    var armed = false             # holding a gun: arms forward
+    var iframes = 0.0
+    var team = 1
+    var kills = 0
+    var died_at = 0.0
+    var last_hit_by = nil
+    # --- the loadout: slot 0 melee, 1-2 guns, 3 Starcall ---
+    var guns = [0, 1, -1]         # weapon id per slot 0..2 (-1 empty)
+    var rarity = [0, 0, 0]
+    var mag = [0, 12, 0]          # rounds in each slot's magazine
+    var reserve = 60              # spare rounds
+    var slot = 1
+    var fire_cd = 0.0
+    var reload_t = 0.0            # seconds left reloading (0 = not)
+    var star_cd = 0.0             # Starcall cooldown
+    var cells = 2                 # shield cells carried
+    var channel = 0.0             # seconds spent channelling a cell
     var control = true            # false while a menu or the drop owns it
     look:
         mesh: "assets/keeper.glb"
@@ -42,9 +63,15 @@ entity Player:
             body = physics.character(pos + vec3(0, tuning.BODY_HEIGHT / 2, 0), tuning.BODY_HEIGHT, tuning.BODY_RADIUS)
         squash = math.max(0.0, squash - dt * 4.0)
         hurt = math.max(0.0, hurt - dt * 5.0)
+        kick = math.max(0.0, kick - dt * 9.0)
         dodge_cd = math.max(0.0, dodge_cd - dt)
+        fire_cd = math.max(0.0, fire_cd - dt)
+        star_cd = math.max(0.0, star_cd - dt)
+        iframes = if dodge_t > 0.0: 1.0 else: 0.0
         if alive and control:
             steer(dt)
+            arms(dt)
+            channel_cell(dt)
         else:
             vel = vel * math.max(0.0, 1.0 - tuning.FRICTION * dt / tuning.WALK_SPEED)
         move(dt)
@@ -87,13 +114,16 @@ entity Player:
         if (key_press.shift or gamepad_press.b) and dodge_cd <= 0.0:
             dodge_t = tuning.DODGE_TIME
             dodge_cd = tuning.DODGE_COOLDOWN
+            channel = 0.0
             if m > 0.1:
-                dodge_dir = vec3(mx, 0, mz) * (1.0 / math.max(1.0, m))
+                dodge_dir = math.normalize(vec3(mx, 0, mz))
             else:
                 dodge_dir = vec3(math.sin(heading), 0, math.cos(heading))
-            dodge_dir = math.normalize(dodge_dir)
             return
-        let want = vec3(mx, 0, mz) * tuning.WALK_SPEED
+        var speed = tuning.WALK_SPEED
+        if channel > 0.0:
+            speed = tuning.WALK_SPEED * 0.35
+        let want = vec3(mx, 0, mz) * speed
         let rate = if m > 0.05: tuning.ACCEL else: tuning.FRICTION
         let dv = want - vel
         let dl = math.length(dv)
@@ -103,10 +133,77 @@ entity Player:
         else:
             vel = vel + dv * (step / dl)
 
+    # Slots, firing, reloading, Starcall.
+    function arms(dt):
+        if key_pressed("1"):
+            pick(0)
+        if key_pressed("2"):
+            pick(1)
+        if key_pressed("3"):
+            pick(2)
+        if mouse.wheel > 0.0:
+            pick(math.mod(slot + 2, 3))
+        if mouse.wheel < 0.0:
+            pick(math.mod(slot + 1, 3))
+        if reload_t > 0.0:
+            reload_t -= dt
+            if reload_t <= 0.0:
+                finish_reload()
+        let id = guns[slot]
+        if id < 0:
+            return
+        let need = weapons.magazine_of(id, rarity[slot])
+        if (key_press.r or gamepad_press.x) and reload_t <= 0.0 and need > 0 and mag[slot] < need and reserve > 0:
+            reload_t = weapons.reload_of(id)
+        if (mouse_held.left or gamepad.rt) and fire_cd <= 0.0 and reload_t <= 0.0:
+            if need == 0 or mag[slot] > 0:
+                combat.fire(self, id, rarity[slot], muzzle(), heading, aim)
+                fire_cd = weapons.interval_of(id)
+                channel = 0.0
+                if need > 0:
+                    mag.set(slot, mag[slot] - 1)
+                    kick = 1.0
+                    fx.screen_shake(1.2, 0.05)
+                else:
+                    mesh_anim.play(self, "melee", false)
+            elif reserve > 0:
+                reload_t = weapons.reload_of(id)
+        if (key_press.q or gamepad_press.y) and star_cd <= 0.0:
+            combat.starcall(self, aim)
+            star_cd = tuning.STAR_COOLDOWN
+
+    function pick(s):
+        if guns[s] >= 0 and s != slot:
+            slot = s
+            reload_t = 0.0
+            fire_cd = math.max(fire_cd, 0.2)
+
+    function finish_reload():
+        let id = guns[slot]
+        let need = weapons.magazine_of(id, rarity[slot]) - mag[slot]
+        let take = math.min(need, reserve)
+        mag.set(slot, mag[slot] + take)
+        reserve = reserve - take
+
+    # Hold F (or LB), standing nearly still, to turn a cell into shield.
+    function channel_cell(dt):
+        if (key.f or gamepad.lb) and cells > 0 and shield < 100.0 and hurt <= 0.0:
+            channel += dt
+            if math.mod(math.floor(channel * 10), 3) == 0:
+                spawn combat.HealMotes at pos + vec3(0, 0.3, 0)
+            if channel >= tuning.CELL_TIME:
+                shield = math.min(100.0, shield + tuning.CELL_SHIELD)
+                cells = cells - 1
+                channel = 0.0
+                combat.popup(pos + vec3(0, 2.0, 0), "+{tuning.CELL_SHIELD} SHIELD", (0.45, 0.75, 1.0), 16.0)
+        else:
+            channel = 0.0
+
     # Slide the capsule along the ground and walls; fall under gravity.
     function move(dt):
         fall = fall - tuning.GRAVITY * dt
-        let moved = physics.character_move(body, vel + vec3(0, fall, 0), dt)
+        push = push * math.max(0.0, 1.0 - dt * 8.0)
+        let moved = physics.character_move(body, vel + push + vec3(0, fall, 0), dt)
         if moved.grounded:
             fall = -1.0
         let p = physics.position(body)
@@ -117,17 +214,17 @@ entity Player:
             mesh_anim.play(self, "death", false)
         elif dodge_t > 0.0:
             mesh_anim.play(self, "run", true)
+        elif channel > 0.0:
+            mesh_anim.play(self, "channel", true)
+        elif mesh_anim.current(self).clip == "melee" and fire_cd > 0.15:
+            mesh_anim.play(self, "melee", false)
         else:
             let speed = math.length(vel)
-            if armed:
+            if slot > 0:
                 mesh_anim.blend_space(self, ["idle_armed", "run_armed"], [0.0, tuning.WALK_SPEED], speed)
             else:
                 mesh_anim.blend_space(self, ["idle", "run"], [0.0, tuning.WALK_SPEED], speed)
 
-    # Rolling makes you untouchable.
-    function invulnerable():
-        return dodge_t > 0.0
-
     # The point the keeper's hands are at, for muzzle flashes and shots.
     function muzzle():
-        return pos + vec3(math.sin(heading) * 0.55, 0.95, math.cos(heading) * 0.55)
+        return pos + vec3(math.sin(heading) * 0.62, 0.95, math.cos(heading) * 0.62)
