@@ -42,6 +42,7 @@ entity Player:
     var calm = 0.0                # seconds the trigger ignores the mouse (after a menu)
     var fought_at = -99.0         # when it last fired or was hit (the music listens)
     var charging = false          # the charge hum is playing
+    var landed_at = -99.0         # when it last touched down (the hint reads it)
     # --- the actor contract (see combat.twe) ---
     var hp = 100.0
     var shield = 0.0
@@ -222,15 +223,17 @@ entity Player:
         phase = "ground"
         vel = vel * 0.3
         squash = 1.0
+        landed_at = combat.time_now()
         sounds.sfx(sounds.LAND, 0.8)
         spawn combat.LandDust at pos
         combat.shake_near(pos, 3.0, 0.15)
 
-    # What's within reach: E opens a chest or picks up a weapon; ammo and
-    # cells are picked up by walking over them.
+    # What's within reach. Walking over ammo, cells, or a gun while a gun
+    # slot is free picks it up; E opens a chest or swaps the gun in hand
+    # for one on the ground.
     function interact():
         prompt = ""
-        let l = loot.nearest_loot(pos, 1.7)
+        let l = loot.nearest_loot(pos, 2.0)
         if l != nil:
             if l.kind == loot.AMMO:
                 reserve += l.amount
@@ -245,7 +248,10 @@ entity Player:
                 loot.take(l)
                 return
             if l.kind == loot.WEAPON:
-                prompt = "{controls.cap_of(controls.INTERACT)}  take {weapons.RARITY_NAMES[l.rarity]} {weapons.name_of(l.gun)}"
+                if guns[1] < 0 or guns[2] < 0:
+                    pick_up(l)
+                    return
+                prompt = "{controls.cap_of(controls.INTERACT)}  swap for {weapons.RARITY_NAMES[l.rarity]} {weapons.name_of(l.gun)}"
                 if controls.pressed(controls.INTERACT) or gamepad_press.x:
                     pick_up(l)
                 return

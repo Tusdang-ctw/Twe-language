@@ -484,18 +484,22 @@ function hitscan(shooter, origin, dir, range, damage, color, width):
         spawn Sparks at end
         flash(end, color, 3.0, 0.05)
 
-# A melee swing: everyone alive within reach in front of `who`.
+# A melee swing: everyone alive within reach in front of `who`. The
+# keeper's reach is longer and its arc wider than a rival's — aiming a
+# wrench with a mouse from high above is harder than a bot's.
 function swing(who, damage, yaw):
     let fx_dir = vec3(math.sin(yaw), 0.0, math.cos(yaw))
+    let reach = if who.team == 1: 2.7 else: 2.1
+    let arc = if who.team == 1: 0.05 else: 0.35
     var hit_any = false
     var hit_you = false
     for a in actors:
         if a != who and a.alive:
             let to = a.pos - who.pos
             let d = math.sqrt(to.x * to.x + to.z * to.z)
-            if d < 2.1 and d > 0.01:
+            if d < reach and d > 0.01:
                 let facing = (to.x * fx_dir.x + to.z * fx_dir.z) / d
-                if facing > 0.35:
+                if facing > arc:
                     hurt(a, damage, who, a.pos)
                     a.push = vec3(to.x / d, 0.0, to.z / d) * 9.0
                     hit_any = true

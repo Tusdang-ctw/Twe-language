@@ -858,3 +858,52 @@ fn perf_render() {
         g.env.render_queue3d.len(),
     );
 }
+
+/// From the title, as a player does it: Play, leap, land, punch, take a gun.
+#[test]
+fn from_the_title_the_keeper_can_punch_and_take_guns() {
+    let mut g = Game::title();
+    g.run(20, &[], &[]);
+    tap(&mut g, "enter");
+    assert_eq!(g.probe("stage"), "barge");
+    g.run(90, &[], &[]);
+    tap(&mut g, "space");
+    let mut landed = false;
+    for _ in 0..60 * 40 {
+        g.run(1, &[], &[]);
+        if g.probe("me.phase") == "ground" {
+            landed = true;
+            break;
+        }
+    }
+    assert!(landed, "landed");
+    // Just landed: the hint says how to fight and loot.
+    let hint = g.probe("sound.now() - me.landed_at < 8.0 and me.guns[1] < 0");
+    assert_eq!(hint, "true");
+    g.run(30, &[], &[]);
+    // A target a couple of metres off, a little to one side of where the
+    // cursor points (up the screen, north): a click swings the wrench
+    // and it connects.
+    g.exec("let d = spawn combat.Dummy at me.pos + vec3(0.9, 0, -2.2)\nd.shield = 0.0");
+    g.run(2, &[], &[]);
+    let hp0 = g.num("entities.of(combat.Dummy)[0].hp");
+    g.input.button_down("left");
+    g.run(3, &[], &[]);
+    g.input.button_up("left");
+    assert_eq!(g.probe("mesh_anim.current(me).clip"), "melee", "the wrench swung");
+    assert!(g.num("entities.of(combat.Dummy)[0].hp") < hp0, "and hit");
+    // A gun at the keeper's feet with a free slot: walking onto it takes it.
+    g.exec("loot.spill(me.pos, loot.WEAPON, 1, 1, 0)");
+    g.run(60, &[], &[]);
+    g.exec("for l in entities.of(loot.Loot):\n    l.pos = me.pos");
+    g.run(2, &[], &[]);
+    assert!(g.num("me.guns[1]") > 0.0, "took the gun without a key: {}", g.probe("me.guns"));
+    // Both slots full: a gun on the ground needs E, to swap.
+    g.exec("me.guns = [0, 1, 2]\nme.slot = 1\nloot.spill(me.pos, loot.WEAPON, 4, 2, 0)");
+    g.run(60, &[], &[]);
+    g.exec("for l in entities.of(loot.Loot):\n    l.pos = me.pos");
+    g.run(2, &[], &[]);
+    assert!(g.probe("me.prompt").starts_with("E  swap for"), "{}", g.probe("me.prompt"));
+    tap(&mut g, "e");
+    assert_eq!(g.num("me.guns[1]"), 4.0, "swapped: {}", g.probe("me.guns"));
+}

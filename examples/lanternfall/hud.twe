@@ -99,6 +99,12 @@ function draw_playing(me, place):
         let pw = me.prompt.length * 7.5 + 24
         chip(w / 2 - pw / 2, 350, pw, 24)
         text(me.prompt, (w / 2 - pw / 2 + 12, 367), 12, (1.0, 1.0, 1.0, 0.95))
+    elif sound.now() - me.landed_at < 8.0 and me.guns[1] < 0:
+        # Just landed with nothing but the wrench: how to fight and loot.
+        let hint = "CLICK  swing the wrench     {controls.cap_of(controls.INTERACT)}  open chests     walk over guns to take them"
+        let pw = hint.length * 7.5 + 24
+        chip(w / 2 - pw / 2, 350, pw, 24)
+        text(hint, (w / 2 - pw / 2 + 12, 367), 12, (1.0, 0.85, 0.6, 0.95))
     # Where you are, top-centre.
     if place != "":
         let tw = place.length * 8.0 + 24
