@@ -104,3 +104,30 @@ fn camera_project_follows_the_shake() {
     assert_eq!(aim, "0");
     twec::camera3d::set_shake([0.0; 3]);
 }
+
+#[test]
+fn time_scale_slows_the_game_and_its_physics() {
+    let mut env = load(
+        "var t = 0.0\non update(dt):\n    t += dt\nphysics.reset()\nphysics.gravity(vec3(0, -9.8, 0))\nlet b = physics.body(\"box\", vec3(0, 50, 0), 1.0)\n",
+    );
+    let mut input = InputState::default();
+    let run = |env: &mut twec::value::Env, input: &mut InputState, n: u32| {
+        for _ in 0..n {
+            sim_tick(env, input, 1.0 / 60.0).expect("tick");
+        }
+    };
+    run(&mut env, &mut input, 60);
+    let normal_t: f64 = probe(&mut env, "print(t)").parse().unwrap();
+    let y1: f64 = probe(&mut env, "print(physics.position(b).y)").parse().unwrap();
+    probe(&mut env, "time.set_scale(0.25)");
+    assert_eq!(probe(&mut env, "print(time.scale)"), "0.25");
+    run(&mut env, &mut input, 60);
+    let slow_t: f64 = probe(&mut env, "print(t)").parse().unwrap();
+    let y2: f64 = probe(&mut env, "print(physics.position(b).y)").parse().unwrap();
+    // A second of ticks at a quarter speed is a quarter second of game.
+    assert!((normal_t - 1.0).abs() < 1e-6, "{normal_t}");
+    assert!((slow_t - 1.25).abs() < 1e-6, "{slow_t}");
+    // The box fell less in that second than in the first one at speed.
+    assert!(50.0 - y1 > (y1 - y2) * 1.5, "fell {} then {}", 50.0 - y1, y1 - y2);
+    probe(&mut env, "time.set_scale(1.0)");
+}

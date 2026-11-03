@@ -851,12 +851,14 @@ The `time` module exposes the simulation clock:
 time.dt              # seconds since the last tick — equals time.physics_dt
                      #  inside `on update(dt)`. 0.0 before the first tick.
 time.physics_dt      # constant 1/60s — the fixed-timestep simulation rate
+time.set_scale(0.3)  # Lanternfall G6: slow motion — each tick advances the game (physics and scripts) by 0.3 × physics_dt; 1.0 is normal, up to 4
+time.scale           # the current scale
                      #  the engine guarantees. Read at top level to size
                      #  velocity-per-step state independently of dt being 0.0
                      #  before any frame has run.
 ```
 
-**Phase 29 session 1:** the play loop drives ticks at the fixed `time.physics_dt` rate using a Glenn Fiedler accumulator. On display refresh rates above 60 Hz, some renders skip a tick; below 60 Hz, some renders run two. Either way, `dt` inside `on update(dt)` is constant — required for replay determinism and lockstep multiplayer.
+**Phase 29 session 1:** the play loop drives ticks at the fixed `time.physics_dt` rate using a Glenn Fiedler accumulator. On display refresh rates above 60 Hz, some renders skip a tick; below 60 Hz, some renders run two. Either way, `dt` inside `on update(dt)` is constant — required for replay determinism and lockstep multiplayer. Under `time.set_scale(s)` it is the constant `s × physics_dt`: ticks still come 60 times a second, each advancing the game less (or more). The scale is set by the script, so replays stay deterministic.
 
 The `gc` module configures the tracing-GC budget and exposes observability:
 

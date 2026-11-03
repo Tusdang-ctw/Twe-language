@@ -505,6 +505,9 @@ pub fn sim_tick(env: &mut Env, input: &mut InputState, dt: f64) -> Result<(), Ru
     }
     // Physics holds still while paused, unless a persistent state keeps
     // the world running (what `eval::tick_frame` ticks then).
+    // Lanternfall G6: `time.set_scale` slows (or speeds) the game: the
+    // tick advances physics and the script by the scaled step.
+    let dt = dt * crate::stdlib::time_scale();
     if !crate::stdlib::is_paused() || crate::stdlib::has_persistent_states() {
         crate::physics3d::step(dt as f32);
     }

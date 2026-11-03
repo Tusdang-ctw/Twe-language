@@ -33,6 +33,10 @@ entity Player:
     var squash = 0.0              # 1 just after landing a roll, easing to 0
     var hurt = 0.0                # 1 just after a hit, easing to 0
     var kick = 0.0                # recoil, easing to 0 (the camera reads it)
+    var hit_marker = 0.0          # 1 when a shot of yours lands, easing to 0
+    var hit_from = vec3(0, 0, 0)  # where the last hit on you came from
+    var hit_from_t = 0.0          # 1 just after, easing to 0
+    var step_t = 0.0              # until the next puff of footstep dust
     # --- the actor contract (see combat.twe) ---
     var hp = 100.0
     var shield = 0.0
@@ -78,6 +82,8 @@ entity Player:
             body = physics.character(pos + vec3(0, tuning.BODY_HEIGHT / 2, 0), tuning.BODY_HEIGHT, tuning.BODY_RADIUS)
         hurt = math.max(0.0, hurt - dt * 5.0)
         kick = math.max(0.0, kick - dt * 9.0)
+        hit_marker = math.max(0.0, hit_marker - dt * 7.0)
+        hit_from_t = math.max(0.0, hit_from_t - dt * 1.2)
         dodge_cd = math.max(0.0, dodge_cd - dt)
         fire_cd = math.max(0.0, fire_cd - dt)
         star_cd = math.max(0.0, star_cd - dt)
@@ -91,6 +97,17 @@ entity Player:
             vel = vel * math.max(0.0, 1.0 - tuning.FRICTION * dt / tuning.WALK_SPEED)
         move(dt)
         animate()
+        # Dust at the feet while running.
+        step_t -= dt
+        if step_t <= 0.0 and math.length(vel) > 3.0:
+            step_t = 0.26
+            spawn combat.FootDust at pos + vec3(0, 0.05, 0)
+
+    # The gun in hand (0: the wrench, or nothing).
+    function held_gun():
+        if slot > 0 and guns[slot] > 0:
+            return guns[slot]
+        return 0
 
     # WASD (or the left stick) to a ground velocity, the cursor to a
     # heading, Shift (or B) to a roll.
@@ -279,6 +296,8 @@ entity Player:
                     mag.set(slot, mag[slot] - 1)
                     kick = 1.0
                     fx.screen_shake(1.2, 0.05)
+                    if weapons.kind_of(id) == weapons.HITSCAN:
+                        spawn combat.Casings at muzzle()
                 else:
                     mesh_anim.play(self, "melee", false)
             elif reserve > 0:

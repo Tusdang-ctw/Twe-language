@@ -69,6 +69,8 @@ impl Game {
         self.exec("for b in entities.of(bots.Bot):
     if b.body >= 0:
         physics.despawn(b.body)
+    if b.held != nil:
+        b.held.gone = true
     despawn b");
         self.run(1, &[], &[]);
     }
@@ -447,4 +449,65 @@ fn a_round_renders() {
     let rgba = renderer.read_pixels().expect("pixels");
     std::fs::create_dir_all("target/lanternfall").unwrap();
     image::save_buffer("target/lanternfall/round.png", &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
+}
+
+#[test]
+fn held_guns_follow_their_fighters() {
+    let mut g = Game::new();
+    g.practice();
+    g.run(3, &[], &[]);
+    // The pistol is drawn at the keeper's hands, facing where it faces.
+    assert_eq!(g.probe("my_gun.shown"), "true");
+    assert_eq!(g.num("my_gun.gun"), 1.0);
+    assert!(g.num("math.length(my_gun.pos - me.pos)") < 1.5);
+    assert_eq!(g.num("my_gun.heading"), g.num("me.heading"));
+    // The wrench in hand: the gun is put away.
+    g.exec("me.slot = 0");
+    g.run(2, &[], &[]);
+    assert_eq!(g.probe("my_gun.shown"), "false");
+    // Every rival carries one too, gone when the rival is.
+    let mut r = Game::new();
+    r.run(2, &[], &[]);
+    assert_eq!(r.num("entities.count(loot.HeldGun)"), 32.0);
+    r.no_rivals();
+    r.run(2, &[], &[]);
+    assert_eq!(r.num("entities.count(loot.HeldGun)"), 1.0, "only the keeper's is left");
+}
+
+#[test]
+fn hits_mark_the_crosshair_and_point_at_the_shooter() {
+    let mut g = Game::new();
+    g.practice();
+    let d = "entities.of(combat.Dummy)[2]";
+    g.exec(&format!("combat.hurt({d}, 10.0, me, {d}.pos)"));
+    assert_eq!(g.num("me.hit_marker"), 1.0);
+    g.exec(&format!("combat.hurt(me, 10.0, {d}, me.pos)"));
+    assert_eq!(g.num("me.hit_from_t"), 1.0);
+    assert_eq!(g.num("me.hit_from.z"), g.num(&format!("{d}.pos.z")));
+    // Both fade.
+    g.run(90, &[], &[]);
+    assert_eq!(g.num("me.hit_marker"), 0.0);
+    assert!(g.num("me.hit_from_t") < 0.1);
+    // Low health turns the screen's edge red.
+    g.exec("me.hp = 10.0");
+    g.run(2, &[], &[]);
+    assert!(twec::stdlib::vignette_strength() >= 0.5);
+    assert!(twec::stdlib::vignette_color()[0] > 0.4, "a red edge");
+}
+
+#[test]
+fn the_last_moment_plays_in_slow_motion() {
+    let mut g = Game::new();
+    g.practice();
+    // Everyone else gone and the round live: the keeper wins, slowly.
+    g.exec("for d in entities.of(combat.Dummy):\n    despawn d\nstage = \"playing\"");
+    g.run(2, &[], &[]);
+    assert_eq!(g.probe("won"), "true");
+    assert_eq!(g.num("time.scale"), 0.3);
+    // 1.8 real seconds later the world is back to speed.
+    g.run(130, &[], &[]);
+    assert_eq!(g.num("time.scale"), 1.0);
+    // And a fresh round never starts slowed.
+    g.exec("time.set_scale(0.5)\nstart_round()");
+    assert_eq!(g.num("time.scale"), 1.0);
 }

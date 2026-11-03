@@ -152,7 +152,7 @@ pub fn tick(
                         None => cmd,
                     });
                 }
-                result = crate::eval::tick_frame(env, PHYSICS_DT);
+                result = crate::eval::tick_frame(env, PHYSICS_DT * crate::stdlib::time_scale());
                 if result.is_err() {
                     break;
                 }

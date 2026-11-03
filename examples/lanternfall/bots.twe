@@ -116,9 +116,11 @@ entity Bot:
     var strafe_t = 0.0
     var stuck_t = 0.0
     var last_pos = vec3(0, 0, 0)
+    var held = nil                # its HeldGun
     look:
         mesh: model
         facing: heading
+        scale: vec3(1.0 + hurt * 0.14, 1.0 - hurt * 0.12, 1.0 + hurt * 0.14)
         glow: (1.0, 0.9, 0.8) * hurt * 2.5
 
     function update(dt):
@@ -141,6 +143,8 @@ entity Bot:
             vel = vec3(0, 0, 0)
             if combat.time_now() - died_at > 5.0:
                 physics.despawn(body)
+                if held != nil:
+                    held.gone = true
                 despawn self
             return
         fire_cd = math.max(0.0, fire_cd - dt)
@@ -412,6 +416,10 @@ entity Bot:
             mesh_anim.blend_space(self, ["idle", "run"], [0.0, tuning.WALK_SPEED], math.length(vel))
         else:
             mesh_anim.blend_space(self, ["idle_armed", "run_armed"], [0.0, tuning.WALK_SPEED], math.length(vel))
+
+    # The gun in hand (0: the wrench).
+    function held_gun():
+        return gun
 
     # Holding a gun (not the wrench)? Asked of rivals and the keeper alike.
     function slot_is_gun():

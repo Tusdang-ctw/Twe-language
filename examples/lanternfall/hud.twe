@@ -103,6 +103,30 @@ function draw_playing(me, place):
         chip(w / 2 - tw / 2, 12, tw, 26)
         text(place, (w / 2 - tw / 2 + 12, 30), 14, WARM)
     crosshair(me.kick)
+    # A hit lands: an X on the crosshair.
+    if me.hit_marker > 0.0:
+        let a = me.hit_marker
+        let m = mouse.pos
+        line((m.x - 10, m.y - 10), (m.x - 4, m.y - 4), 2.0, (1.0, 1.0, 1.0, a))
+        line((m.x + 10, m.y - 10), (m.x + 4, m.y - 4), 2.0, (1.0, 1.0, 1.0, a))
+        line((m.x - 10, m.y + 10), (m.x - 4, m.y + 4), 2.0, (1.0, 1.0, 1.0, a))
+        line((m.x + 10, m.y + 10), (m.x + 4, m.y + 4), 2.0, (1.0, 1.0, 1.0, a))
+    # Hit from somewhere: a red chevron around the keeper, pointing there.
+    if me.hit_from_t > 0.0 and me.alive:
+        let at = camera.project(me.pos + vec3(0, 1.0, 0))
+        let to = camera.project(me.hit_from + vec3(0, 1.0, 0))
+        if at != nil and to != nil:
+            let dx = to.x - at.x
+            let dy = to.y - at.y
+            let d = math.max(0.001, math.sqrt(dx * dx + dy * dy))
+            let ux = dx / d
+            let uy = dy / d
+            let tip = (at.x + ux * 62.0, at.y + uy * 62.0)
+            let back = (at.x + ux * 48.0, at.y + uy * 48.0)
+            let side = (-uy * 9.0, ux * 9.0)
+            let c = (1.0, 0.25, 0.2, me.hit_from_t)
+            line((back[0] + side[0], back[1] + side[1]), tip, 3.0, c)
+            line((back[0] - side[0], back[1] - side[1]), tip, 3.0, c)
 
 # Floating words over the world ("CRACKED"), where their point projects.
 function draw_popups(popups):

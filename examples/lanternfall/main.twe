@@ -225,6 +225,9 @@ function clear_round():
         despawn d
     for b in entities.of(round.Barge):
         b.gone()
+    for h in entities.of(loot.HeldGun):
+        if h.owner != me:
+            despawn h
 
 # A new round: the barge sets out with everyone aboard.
 function start_round():
@@ -261,6 +264,9 @@ function start_round():
         b.name = names.handle()
         b.skill = 0.2 + random.float() * 0.7
         b.team = 10 + i
+        let held = spawn loot.HeldGun at b.pos
+        held.owner = b
+        b.held = held
     # The Hush waits for everyone to land.
     hush.pos = vec3(0, 0, 0)
     hush.radius = 150.0
@@ -272,6 +278,8 @@ function start_round():
     hud.banners = []
     stage = "barge"
     round_time = 0.0
+    time.set_scale(1.0)
+    slow_t = 0.0
     placement = 0
     won = false
     leader_kills = 0
@@ -291,6 +299,13 @@ function open_gate():
     physics.despawn(gate_body)
     hud.banner("THE SIGNAL VAULT IS OPEN", (0.75, 0.55, 1.0))
     combat.flash(vec3(0, 3.0, 11.0), (2.0, 1.2, 3.0), 18.0, 0.8)
+
+# The keeper's own gun in hand, made once.
+let my_gun = spawn loot.HeldGun at me.pos
+my_gun.owner = me
+
+# Seconds of slow motion left (the round's last moment).
+var slow_t = 0.0
 
 start_round()
 
@@ -346,7 +361,28 @@ on update(dt):
         watch_the_round()
     if stage == "over" and (key_press.r or gamepad_press.start):
         start_round()
+    # Slow motion fades back to speed in real seconds.
+    if slow_t > 0.0:
+        slow_t -= dt / time.scale
+        if slow_t <= 0.0:
+            time.set_scale(1.0)
+    mood()
     follow_camera(dt)
+
+# The screen's edge: red and pulsing when hurt, violet in the Hush.
+function mood():
+    var strength = 0.32
+    var tint = (0.02, 0.02, 0.08)
+    if me.alive and me.phase == "ground":
+        if me.hp < 35.0:
+            let pulse = 0.5 + 0.5 * math.sin(combat.time_now() * 7.0)
+            strength = 0.5 + 0.25 * pulse * (1.0 - me.hp / 35.0)
+            tint = (0.5, 0.03, 0.04)
+        elif hush.running and hush.outside(me.pos):
+            strength = 0.55
+            tint = (0.3, 0.08, 0.5)
+    postfx.vignette(strength)
+    postfx.vignette_color(tint)
 
 # Banners for the moments that matter, and the end of the round.
 function watch_the_round():
@@ -364,13 +400,17 @@ function watch_the_round():
         stage = "over"
         placement = alive + 1
         me.control = false
+        time.set_scale(0.35)
+        slow_t = 1.4
     elif alive == 1:
         stage = "over"
         won = true
         placement = 1
         me.control = false
         mesh_anim.play(me, "victory", true)
-        fx.hit_stop(0.25)
+        fx.hit_stop(0.2)
+        time.set_scale(0.3)
+        slow_t = 1.8
 
 function follow_camera(dt):
     # High above while aboard, lower while gliding, so you can pick

@@ -195,4 +195,30 @@ function gone(p):
 # Take a piece of loot off the ground.
 function take(l):
     l.taken = true
+    spawn combat.Sparkle at l.pos
     despawn l
+
+# The gun in a fighter's hands: drawn at their hands, facing where they
+# face, hidden while they hold the wrench, are aboard, gliding or down.
+entity HeldGun:
+    var pos = vec3(0, 0, 0)
+    var owner = nil
+    var heading = 0.0
+    var gun = 1
+    var shown = false
+    var gone = false
+    look:
+        mesh: GUN_MODELS[gun]
+        facing: heading
+        scale: if shown: 1.0 else: 0.001
+
+    function update(dt):
+        if gone or owner == nil:
+            despawn self
+            return
+        gun = math.max(1, owner.held_gun())
+        shown = owner.alive and owner.phase == "ground" and owner.held_gun() > 0
+        heading = owner.heading
+        let f = vec3(math.sin(heading), 0.0, math.cos(heading))
+        let r = vec3(f.z, 0.0, -f.x)
+        pos = owner.pos + f * 0.42 + r * -0.12 + vec3(0, 0.86, 0)

@@ -133,6 +133,48 @@ particles BlastDebris:
         p.pos += p.velocity * dt
         p.color = (0.35, 0.3, 0.28, 1.0 - p.age_ratio * p.age_ratio)
 
+# Spent brass, flicked out of a gun.
+particles Casings:
+    count: 1
+    lifetime: 0.6
+    collide: true
+    on_spawn(p):
+        let a = random.float() * 6.283
+        p.velocity = (math.cos(a) * 1.8, 2.5 + random.float(), math.sin(a) * 1.8)
+        p.color = (1.0, 0.8, 0.35, 1.0)
+        p.size = 0.03
+    on_update(p, dt):
+        p.velocity -= (0.0, 14.0, 0.0) * dt
+        p.pos += p.velocity * dt
+
+# Dust kicked up by running feet.
+particles FootDust:
+    count: 3
+    lifetime: 0.45
+    on_spawn(p):
+        let a = random.float() * 6.283
+        p.velocity = (math.cos(a) * 0.6, 0.3 + random.float() * 0.4, math.sin(a) * 0.6)
+        p.color = (0.55, 0.52, 0.46, 0.45)
+        p.size = 0.06 + random.float() * 0.05
+    on_update(p, dt):
+        p.pos += p.velocity * dt
+        p.color = (0.55, 0.52, 0.46, 0.45 * (1.0 - p.age_ratio))
+        p.size = 0.06 + p.age_ratio * 0.12
+
+# A pickup's sparkle.
+particles Sparkle:
+    count: 12
+    lifetime: 0.5
+    on_spawn(p):
+        let a = random.float() * 6.283
+        p.velocity = (math.cos(a) * 1.5, 2.0 + random.float() * 2.0, math.sin(a) * 1.5)
+        p.color = (1.0, 0.95, 0.7, 1.0)
+        p.size = 0.04
+    on_update(p, dt):
+        p.velocity *= 1.0 - dt * 3.0
+        p.pos += p.velocity * dt
+        p.color = (1.0, 0.95, 0.7, 1.0 - p.age_ratio)
+
 particles HealMotes:
     count: 4
     lifetime: 0.9
@@ -225,6 +267,15 @@ function hurt(t, amount, from, at):
     t.last_hit_by = from
     if from != nil:
         from.damage = from.damage + amount
+        # The keeper's hits flash a marker on the crosshair; the keeper
+        # being hit kicks the camera and points an arrow at the shooter.
+        if from.team == 1:
+            from.hit_marker = 1.0
+        if t.team == 1:
+            t.hit_from = from.pos
+            t.hit_from_t = 1.0
+    if t.team == 1:
+        shake_near(t.pos, 3.0 + amount * 0.08, 0.14)
     let tint = if to_shield > 0.0 and left <= 0.0: (0.5, 0.8, 1.0) else: (1.0, 0.92, 0.55)
     fx.damage_number(at + vec3(0, 1.4, 0), math.floor(amount), tint)
     if t.hp <= 0.0:
@@ -238,7 +289,36 @@ function hurt(t, amount, from, at):
             killer = from.name
             by_you = from.team == 1
         feed.append((killer, t.name, by_you, t.team == 1, time_now()))
+        fall_apart(t)
+        if by_you:
+            popup(t.pos + vec3(0, 2.4, 0), "ELIMINATED {t.name}", (1.0, 0.78, 0.4), 18.0)
+            fx.hit_stop(0.06)
     return true
+
+# A fighter going down: shards and embers burst off them, a flash, a ring.
+function fall_apart(t):
+    spawn DeathShards at t.pos + vec3(0, 1.0, 0)
+    spawn BlastFire at t.pos + vec3(0, 0.6, 0)
+    flash(t.pos + vec3(0, 1.2, 0), (2.2, 1.4, 0.8), 8.0, 0.25)
+    let r = spawn Ring at t.pos + vec3(0, 0.03, 0)
+    r.radius = 1.6
+    r.life = 0.35
+
+particles DeathShards:
+    count: 30
+    lifetime: 0.9
+    collide: true
+    on_spawn(p):
+        let a = random.float() * 6.283
+        let out = 2.0 + random.float() * 4.0
+        p.velocity = (math.cos(a) * out, 3.0 + random.float() * 5.0, math.sin(a) * out)
+        let warm = random.float()
+        p.color = (0.9, 0.55 + warm * 0.35, 0.3 + warm * 0.2, 1.0)
+        p.size = 0.07 + random.float() * 0.07
+    on_update(p, dt):
+        p.velocity -= (0.0, 16.0, 0.0) * dt
+        p.pos += p.velocity * dt
+        p.color = (p.color.x, p.color.y, p.color.z, 1.0 - p.age_ratio * p.age_ratio)
 
 particles ShieldShards:
     count: 18
@@ -265,6 +345,7 @@ function storm_hurt(t, amount):
         t.alive = false
         t.died_at = time_now()
         feed.append(("the Hush", t.name, false, t.team == 1, time_now()))
+        fall_apart(t)
 
 particles LandDust:
     count: 26

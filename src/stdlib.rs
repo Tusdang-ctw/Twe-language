@@ -139,6 +139,7 @@ pub fn clear_asset_caches() {
     // hit-stop ticks. A hot-reloaded script that just lost its boss
     // shouldn't inherit the death-burst from the previous run.
     crate::fx::clear();
+    TIME_SCALE.with(|t| t.set(1.0));
     // v1.0.1 session 3: wipe per-frame lights, ambient, and shadow
     // occluders so a hot-reloaded dungeon-demo doesn't start with
     // the previous run's torches.
@@ -3274,6 +3275,14 @@ fn install_time(env: &mut Env) {
         "physics_dt".to_string(),
         Value::from_float(crate::eval::PHYSICS_DT),
     );
+    // Lanternfall G6: slow motion. `time.set_scale(s)` makes each tick
+    // advance the game by `s` × `physics_dt` (physics and scripts alike);
+    // `time.scale` reads it back.
+    fields.insert("scale".to_string(), Value::from_float(1.0));
+    fields.insert(
+        "set_scale".to_string(),
+        Value::from_builtin("time.set_scale", &["scale"], time_set_scale_impl),
+    );
     env.set(
         "time".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -3281,6 +3290,36 @@ fn install_time(env: &mut Env) {
             kind: "module",
         }))),
     );
+}
+
+thread_local! {
+    /// Lanternfall G6: the game's time scale (`time.set_scale`).
+    static TIME_SCALE: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
+}
+
+/// The game's time scale: each tick advances the game by this many ticks'
+/// worth of time. 1.0 unless a script slowed (or sped) it.
+pub fn time_scale() -> f64 {
+    TIME_SCALE.with(std::cell::Cell::get)
+}
+
+fn time_set_scale_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "time.set_scale")?;
+    let s = number(&args[0], "time.set_scale.scale")?;
+    if s.is_nan() || s <= 0.0 {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!("time.set_scale: the scale must be above 0, got {s}"),
+            help: Some("0.3 is slow motion, 1.0 normal speed; to stop time use `pause(true)`".to_string()),
+        });
+    }
+    let s = s.min(4.0);
+    TIME_SCALE.with(|t| t.set(s));
+    if let Some(t) = env.get("time").filter(|t| t.is_object()) {
+        t.as_object().borrow_mut().insert_field("scale", Value::from_float(s));
+    }
+    Ok(Value::NIL)
 }
 
 /// Phase 29 session 2: `gc.*` namespace. Exposes the per-frame sweep
