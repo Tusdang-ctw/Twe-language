@@ -346,6 +346,7 @@ fn capture_web(shell: Rc<RefCell<Shell>>, frames: u32) {
                 let _ = renderer.render_2d(&[(&env.draw2d, camera)], assets);
             }
             Dimension::Three => {
+                input.set_view(s.canvas.width(), s.canvas.height());
                 let _ = twec::host3d::sim_tick(&mut s.env, &mut input, dt);
                 let Shell {
                     env,
@@ -368,6 +369,12 @@ fn frame(shell: &mut Shell) {
     fit_canvas(shell);
     if shell.dim == Dimension::Two {
         return frame_2d(shell);
+    }
+    // Lanternfall E1: a 3D game sees the canvas it is drawn to (its
+    // aspect drives `camera.project` and the HUD's width).
+    {
+        let (w, h) = (shell.canvas.width(), shell.canvas.height());
+        shell.input.borrow_mut().set_view(w, h);
     }
     let now = now_secs();
     let interval = now - shell.last_frame;
@@ -688,9 +695,11 @@ fn listen_focus(
     Ok(())
 }
 
-/// Mouse on the canvas: position in the HUD's 640×480 canvas units
-/// (whatever size the page draws the canvas), buttons, raw motion and
-/// wheel. The context menu is suppressed so right-click reaches the game.
+/// Mouse on the canvas: position in the HUD's canvas units (whatever
+/// size the page draws the canvas; `InputState::pointer` scales the
+/// fraction to 640×480 in 2D, to the view's aspect in 3D), buttons, raw
+/// motion and wheel. The context menu is suppressed so right-click
+/// reaches the game.
 fn listen_pointer(
     canvas: &web_sys::HtmlCanvasElement,
     input: Rc<RefCell<InputState>>,
@@ -701,10 +710,7 @@ fn listen_pointer(
         move |e: &web_sys::MouseEvent| {
             let w = f64::from(canvas.client_width().max(1));
             let h = f64::from(canvas.client_height().max(1));
-            (
-                f64::from(e.offset_x()) * f64::from(twec::kernel::canvas::CANVAS_W) / w,
-                f64::from(e.offset_y()) * f64::from(twec::kernel::canvas::CANVAS_H) / h,
-            )
+            (f64::from(e.offset_x()) / w, f64::from(e.offset_y()) / h)
         }
     };
     let button_name = |b: i16| match b {
@@ -719,7 +725,7 @@ fn listen_pointer(
         Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
             let (x, y) = pos(&e);
             let mut input = i.borrow_mut();
-            input.mouse_move(x, y);
+            input.pointer(x, y);
             input.mouse_motion(f64::from(e.movement_x()), f64::from(e.movement_y()));
         });
     let (i, pos) = (input.clone(), to_canvas);
@@ -727,7 +733,7 @@ fn listen_pointer(
         gestured.set(true);
         let (x, y) = pos(&e);
         let mut input = i.borrow_mut();
-        input.mouse_move(x, y);
+        input.pointer(x, y);
         if let Some(name) = button_name(e.button()) {
             input.button_down(name);
         }

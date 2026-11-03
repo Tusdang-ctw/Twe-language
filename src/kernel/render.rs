@@ -22,31 +22,10 @@ pub use crate::render3d_types::{
     AnimSnapshot, DrawCall3d, LightsUniform, PointLightU, Primitive, MAX_LIGHTS,
 };
 
-/// Camera placement for a frame.
-#[derive(Debug, Clone, Copy)]
-pub struct Camera3d {
-    pub eye: [f32; 3],
-    pub target: [f32; 3],
-    pub up: [f32; 3],
-    /// web3d-M7: vertical field of view (radians) and clip planes.
-    pub fov_y: f32,
-    pub near: f32,
-    pub far: f32,
-}
-
-impl Camera3d {
-    /// The game camera's lens: 60° vertical, 0.1 m to 100 m.
-    pub fn new(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Self {
-        Camera3d {
-            eye,
-            target,
-            up,
-            fov_y: 60_f32.to_radians(),
-            near: 0.1,
-            far: 100.0,
-        }
-    }
-}
+/// Camera placement for a frame. Lanternfall E1: the camera math lives
+/// in `crate::camera3d`, shared with `camera.project` / `camera.ray`.
+pub use crate::camera3d::Camera3d;
+use crate::camera3d::{look_at, mul, perspective};
 
 /// Sun-shadow settings for a frame.
 #[derive(Debug, Clone, Copy)]
@@ -3317,6 +3296,7 @@ impl Renderer {
             ),
             (None, None) => return Err("renderer has no target".to_string()),
         };
+        canvas.set_units(crate::kernel::canvas::CANVAS_W, crate::kernel::canvas::CANVAS_H);
         canvas.prepare_layers_loaded(
             &state.device,
             &state.queue,
@@ -6468,6 +6448,10 @@ impl Renderer {
             (None, Some(t)) => t.create_view(&wgpu::TextureViewDescriptor::default()),
             (None, None) => return Err("renderer has no target".to_string()),
         };
+        // Lanternfall E1: the HUD keeps its proportions — 480 units tall,
+        // as wide as the window's aspect (`camera3d::hud_size`).
+        let [hud_w, hud_h] = crate::camera3d::hud_size(state.config.width, state.config.height);
+        state.canvas.set_units(hud_w, hud_h);
         state.canvas.prepare(
             &state.device,
             &state.queue,
@@ -8823,42 +8807,6 @@ fn invert4(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut out = [[0.0f32; 4]; 4];
     for (i, v) in inv.iter().enumerate() {
         out[i / 4][i % 4] = (v / det) as f32;
-    }
-    out
-}
-
-fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
-    let f = 1.0 / (fovy * 0.5).tan();
-    [
-        [f / aspect, 0.0, 0.0, 0.0],
-        [0.0, f, 0.0, 0.0],
-        [0.0, 0.0, far / (near - far), -1.0],
-        [0.0, 0.0, (near * far) / (near - far), 0.0],
-    ]
-}
-
-fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
-    let f = normalize(sub(target, eye));
-    let s = normalize(cross(f, up));
-    let u = cross(s, f);
-    [
-        [s[0], u[0], -f[0], 0.0],
-        [s[1], u[1], -f[1], 0.0],
-        [s[2], u[2], -f[2], 0.0],
-        [-dot(s, eye), -dot(u, eye), dot(f, eye), 1.0],
-    ]
-}
-
-fn mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-    let mut out = [[0.0; 4]; 4];
-    for col in 0..4 {
-        for row in 0..4 {
-            let mut sum = 0.0;
-            for k in 0..4 {
-                sum += a[k][row] * b[col][k];
-            }
-            out[col][row] = sum;
-        }
     }
     out
 }

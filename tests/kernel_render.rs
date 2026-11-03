@@ -2232,3 +2232,54 @@ on render():
     let lit = rgba.chunks(4).filter(|p| p[0] > 100).count();
     assert!(lit > 500, "only {lit} lit pixels after the changes");
 }
+
+/// Lanternfall E1: `camera.project` in the script lands on the pixel the
+/// GPU draws the point at — the renderer and the script share one
+/// camera (`twec::camera3d`) — in a 16:9 view, where the HUD is 480
+/// units tall and as wide as the aspect makes it.
+#[test]
+fn camera_project_lands_on_the_drawn_pixel() {
+    let (w, h) = (480u32, 270u32);
+    let mut renderer = match pollster::block_on(Renderer::new_headless(w, h)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping headless render test: {e}");
+            return;
+        }
+    };
+    // The host reports its view; the script's camera sees that aspect.
+    twec::camera3d::set_viewport(w, h);
+    let src = "camera.eye = vec3(0, 13, 9)\ncamera.target = vec3(0, 0, 0)\n\
+               on render():\n    sphere(at: vec3(5, 0, -2), color: color.white, size: 0.6)\n";
+    let program = twec::parser::parse(&twec::lexer::lex(src).expect("lex")).expect("parse");
+    let mut env = twec::value::Env::new();
+    twec::stdlib::install(&mut env);
+    twec::eval::run_top_level(&mut env, &program).expect("top level");
+    let mut assets = twec::play3d::NativeAssets::default();
+    twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+    let rgba = renderer.read_pixels().expect("read pixels");
+
+    let probe = "let p = camera.project(vec3(5, 0, -2))\nprint(\"{p.x} {p.y} {screen.size.x}\")\n";
+    let program = twec::parser::parse(&twec::lexer::lex(probe).expect("lex")).expect("parse");
+    env.out.clear();
+    twec::eval::run_top_level(&mut env, &program).expect("probe");
+    let nums: Vec<f32> = env
+        .out
+        .split_whitespace()
+        .map(|n| n.parse().expect("number"))
+        .collect();
+    let hud_w = twec::camera3d::hud_size(w, h)[0];
+    let (px, py) = (nums[0] / hud_w * w as f32, nums[1] / 480.0 * h as f32);
+    let at = |x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        u32::from(rgba[i]) + u32::from(rgba[i + 1]) + u32::from(rgba[i + 2])
+    };
+    let sky = at(2, 2);
+    let hit = at(px.round() as u32, py.round() as u32);
+    assert!(
+        hit > sky + 100,
+        "the sphere isn't where camera.project put it: ({px}, {py}) = {hit}, sky {sky}"
+    );
+    // Off to the side by the sphere's on-screen size, it's sky again.
+    assert!(at((px + 40.0) as u32, py.round() as u32) < sky + 30);
+}

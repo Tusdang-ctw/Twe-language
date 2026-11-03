@@ -7,85 +7,10 @@
 //! [`render_frame`], so a frame means the same thing everywhere.
 
 use crate::eval;
-use crate::kernel::render::{
-    AssetSource, Camera3d, PostFx, RenderSnapshot, Renderer, ShadowSettings,
-};
+use crate::kernel::render::{AssetSource, PostFx, RenderSnapshot, Renderer, ShadowSettings};
 use crate::replay::InputCommand;
 use crate::value::{Env, RuntimeError, Value};
 use std::collections::BTreeSet;
-
-/// Extract `camera.eye` / `camera.target` / `camera.up` from the
-/// env's `camera` Object. Missing or malformed fields fall back to
-/// the stdlib defaults (eye 3 units back + 1.5 up, looking at the
-/// origin, +y up). Phase 5 task 5 session (d).
-/// The script's `camera`: eye, target, up, and (web3d-M7 session 16)
-/// `camera.far`, the view distance.
-fn read_camera(env: &Env) -> Camera3d {
-    let eye_default = [0.0, 1.5, 3.0];
-    let target_default = [0.0, 0.0, 0.0];
-    let up_default = [0.0, 1.0, 0.0];
-    let fallback = || Camera3d::new(eye_default, target_default, up_default);
-    let camera = {
-        let __opt = env.get("camera");
-        if let Some(__t) = (__opt).as_ref() {
-            if __t.is_object() {
-                let rc = __t.as_object();
-                rc.clone()
-            } else {
-                return fallback();
-            }
-        } else {
-            return fallback();
-        }
-    };
-    let cam = camera.borrow();
-    let eye = cam
-        .get_field("eye")
-        .as_ref()
-        .and_then(value_as_vec3)
-        .unwrap_or(eye_default);
-    let target = cam
-        .get_field("target")
-        .as_ref()
-        .and_then(value_as_vec3)
-        .unwrap_or(target_default);
-    let up = cam
-        .get_field("up")
-        .as_ref()
-        .and_then(value_as_vec3)
-        .unwrap_or(up_default);
-    let mut camera3d = Camera3d::new(eye, target, up);
-    if let Some(far) = cam.get_field("far").as_ref().and_then(number) {
-        // At least a metre past the near plane; finite.
-        camera3d.far = (far as f32).clamp(camera3d.near + 1.0, 1.0e6);
-    }
-    camera3d
-}
-
-fn value_as_vec3(v: &Value) -> Option<[f32; 3]> {
-    if v.is_tuple() {
-        let elems = v.as_tuple();
-        if elems.len() == 3 {
-            let x = number(&elems[0])?;
-            let y = number(&elems[1])?;
-            let z = number(&elems[2])?;
-            return Some([x as f32, y as f32, z as f32]);
-        }
-    }
-    None
-}
-
-fn number(v: &Value) -> Option<f64> {
-    if v.is_int_or_boxed_int() {
-        let n = v.as_int();
-        Some(n as f64)
-    } else if v.is_float() {
-        let f = v.as_float();
-        Some(f)
-    } else {
-        None
-    }
-}
 
 /// Where one rendered frame's time went, in milliseconds (0 when the
 /// host has no clock). Hosts show it (the web shell's `frame_stats()`,
@@ -120,7 +45,7 @@ pub fn render_frame(
             e.line, e.col, e.message
         ));
     }
-    let camera = read_camera(env);
+    let camera = crate::camera3d::read_camera(env);
     let draws = std::mem::take(&mut env.render_queue3d);
     let anim = |id: u32| crate::stdlib::mesh_anim_state(id);
     let lut = crate::stdlib::color_lut();
@@ -315,9 +240,44 @@ pub struct InputState {
     pad_axes: Option<[f64; 6]>,
     pad_held: BTreeSet<&'static str>,
     pad_pressed: BTreeSet<&'static str>,
+    /// Lanternfall E1: the view in pixels, as the 3D host last reported
+    /// it ([`InputState::set_view`]); `(0, 0)` in hosts that don't.
+    view: (u32, u32),
 }
 
 impl InputState {
+    /// Lanternfall E1: the window (or canvas) is now `width × height`
+    /// pixels. The simulation sees it through the next command
+    /// (`camera.project`, `screen.aspect`, the HUD's width), and the
+    /// cursor keeps its place in the view.
+    pub fn set_view(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 || (width, height) == self.view {
+            return;
+        }
+        let old = self.hud_size();
+        self.view = (width, height);
+        let new = self.hud_size();
+        self.mouse = (
+            self.mouse.0 * new[0] / old[0],
+            self.mouse.1 * new[1] / old[1],
+        );
+    }
+
+    /// The HUD canvas the cursor is measured in: 640×480 until a view
+    /// is set, then 480 units tall and as wide as the view's aspect
+    /// (`camera3d::hud_size`).
+    pub fn hud_size(&self) -> [f64; 2] {
+        let [w, h] = crate::camera3d::hud_size(self.view.0, self.view.1);
+        [f64::from(w), f64::from(h)]
+    }
+
+    /// The cursor is at fraction `(fx, fy)` of the view (0..1 from the
+    /// top-left), stored in HUD canvas units.
+    pub fn pointer(&mut self, fx: f64, fy: f64) {
+        let [w, h] = self.hud_size();
+        self.mouse = (fx * w, fy * h);
+    }
+
     /// A key went down. Auto-repeat (already held) is not a new press.
     pub fn key_down(&mut self, name: &'static str) {
         if self.keys_held.insert(name) {
@@ -404,6 +364,8 @@ impl InputState {
             pad_axes: self.pad_axes,
             pad_held: names(&self.pad_held),
             pad_pressed: names(&self.pad_pressed),
+            view_w: self.view.0,
+            view_h: self.view.1,
         };
         self.keys_pressed.clear();
         self.pad_pressed.clear();
@@ -442,6 +404,9 @@ pub fn apply_command(env: &mut Env, cmd: &InputCommand) {
         }
     }
     crate::replay::write_pad(env, cmd.pad_axes);
+    if cmd.view_w > 0 && cmd.view_h > 0 {
+        apply_view(env, cmd.view_w, cmd.view_h);
+    }
     if let Some(t) = env.get("mouse") {
         if t.is_object() {
             let rc = t.as_object();
@@ -459,6 +424,29 @@ pub fn apply_command(env: &mut Env, cmd: &InputCommand) {
             o.insert_field("dy", Value::from_float(cmd.mouse_dy));
             o.insert_field("wheel", Value::from_float(cmd.wheel));
         }
+    }
+}
+
+/// Lanternfall E1: the view is `width × height` pixels. `camera.project`
+/// and friends use its aspect; `screen.size` / `screen.center` report
+/// the HUD canvas it gives (480 units tall) and `screen.aspect` the
+/// ratio.
+fn apply_view(env: &mut Env, width: u32, height: u32) {
+    crate::camera3d::set_viewport(width, height);
+    let [w, h] = crate::camera3d::hud_size(width, height);
+    let (w, h) = (f64::from(w), f64::from(h));
+    if let Some(t) = env.get("screen").filter(|t| t.is_object()) {
+        let rc = t.as_object();
+        let mut o = rc.borrow_mut();
+        o.insert_field(
+            "size",
+            Value::from_tuple(vec![Value::from_float(w), Value::from_float(h)]),
+        );
+        o.insert_field(
+            "center",
+            Value::from_tuple(vec![Value::from_float(w * 0.5), Value::from_float(h * 0.5)]),
+        );
+        o.insert_field("aspect", Value::from_float(f64::from(width) / f64::from(height)));
     }
 }
 

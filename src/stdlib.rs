@@ -7259,6 +7259,9 @@ fn install_screen(env: &mut Env) {
         "center".to_string(),
         Value::from_tuple(vec![Value::from_float(320.0), Value::from_float(240.0)]),
     );
+    // Lanternfall E1: width over height of the view (a 3D host updates
+    // it, and `size` / `center`, when the window changes).
+    fields.insert("aspect".to_string(), Value::from_float(640.0 / 480.0));
     env.set(
         "screen".to_string(),
         Value::from_object(Rc::new(RefCell::new(Object {
@@ -10299,6 +10302,28 @@ fn install_3d(env: &mut Env) {
     // web3d-M7 session 16: 3D view distance in metres (the far clip
     // plane); nothing further away is drawn.
     fields.insert("far".to_string(), Value::from_float(100.0));
+    // Lanternfall E1: the 3D lens (vertical field of view, degrees) and
+    // the world <-> HUD mapping it gives.
+    fields.insert(
+        "fov".to_string(),
+        Value::from_float(f64::from(crate::camera3d::DEFAULT_FOV_DEGREES)),
+    );
+    fields.insert(
+        "project".to_string(),
+        Value::from_builtin("camera.project", &["point"], camera_project_impl),
+    );
+    fields.insert(
+        "ray".to_string(),
+        Value::from_builtin("camera.ray", &["screen"], camera_ray_impl),
+    );
+    fields.insert(
+        "ground_point".to_string(),
+        Value::from_builtin(
+            "camera.ground_point",
+            &["screen", "height"],
+            camera_ground_point_impl,
+        ),
+    );
     fields.insert(
         "follow".to_string(),
         Value::from_builtin("camera.follow", &["target", "lerp"], camera_follow_impl),
@@ -10415,6 +10440,73 @@ fn camera_shake_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErr
         }
     });
     Ok(Value::NIL)
+}
+
+/// The camera, view aspect and HUD canvas the `camera.project` family
+/// works in: the script's `camera` as the renderer will draw it, at the
+/// aspect of the view the host last reported.
+fn camera_frame(env: &Env) -> (crate::camera3d::Camera3d, f32, [f32; 2]) {
+    let (w, h) = crate::camera3d::viewport();
+    (
+        crate::camera3d::read_camera(env),
+        crate::camera3d::aspect(),
+        crate::camera3d::hud_size(w, h),
+    )
+}
+
+fn vec3_value(p: [f32; 3]) -> Value {
+    Value::from_tuple(vec![
+        Value::from_float(f64::from(p[0])),
+        Value::from_float(f64::from(p[1])),
+        Value::from_float(f64::from(p[2])),
+    ])
+}
+
+// Lanternfall E1: `camera.project(point)` — where a world point is on
+// the HUD canvas, `(x, y)`, or nil when it is behind the camera.
+fn camera_project_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "camera.project")?;
+    let p = xyz_of(&args[0], "camera.project.point")?;
+    let (cam, aspect, hud) = camera_frame(env);
+    Ok(match crate::camera3d::project(&cam, aspect, hud, p) {
+        Some([x, y]) => Value::from_tuple(vec![
+            Value::from_float(f64::from(x)),
+            Value::from_float(f64::from(y)),
+        ]),
+        None => Value::NIL,
+    })
+}
+
+// Lanternfall E1: `camera.ray(screen)` — the ray from the eye through a
+// HUD point: an object with `origin` and unit `dir` (vec3s).
+fn camera_ray_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "camera.ray")?;
+    let (x, y) = xy_of(&args[0], "camera.ray.screen")?;
+    let (cam, aspect, hud) = camera_frame(env);
+    let (origin, dir) = crate::camera3d::ray(&cam, aspect, hud, [x as f32, y as f32]);
+    let mut fields = HashMap::new();
+    fields.insert("origin".to_string(), vec3_value(origin));
+    fields.insert("dir".to_string(), vec3_value(dir));
+    Ok(Value::from_object(Rc::new(RefCell::new(Object {
+        fields,
+        kind: "ray",
+    }))))
+}
+
+// Lanternfall E1: `camera.ground_point(screen, height)` — where the ray
+// through a HUD point meets the plane `y = height` (a vec3), or nil
+// when it never does in front of the camera.
+fn camera_ground_point_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 2, "camera.ground_point")?;
+    let (x, y) = xy_of(&args[0], "camera.ground_point.screen")?;
+    let height = number(&args[1], "camera.ground_point.height")? as f32;
+    let (cam, aspect, hud) = camera_frame(env);
+    Ok(
+        match crate::camera3d::ground_point(&cam, aspect, hud, [x as f32, y as f32], height) {
+            Some(p) => vec3_value(p),
+            None => Value::NIL,
+        },
+    )
 }
 
 // `camera.reset()` — snap pos to (0, 0), zoom to 1.0, kill any

@@ -244,6 +244,7 @@ fn run_capture(mut env: Env, at: u32, out: &str) -> i32 {
     };
     let mut assets = NativeAssets::default();
     let mut input = crate::host3d::InputState::default();
+    input.set_view(w, h);
     for _ in 0..at {
         if let Err(e) = crate::host3d::sim_tick(&mut env, &mut input, crate::eval::PHYSICS_DT) {
             eprintln!("{}:{}: {}", e.line, e.col, e.message);
@@ -447,6 +448,8 @@ impl ApplicationHandler for App {
             .and_then(|surface| {
                 pollster::block_on(Renderer::new(&instance, surface, size.width, size.height))
             });
+        // Lanternfall E1: the simulation sees the view it is drawn to.
+        self.input.set_view(size.width, size.height);
         match created {
             Ok(renderer) => self.state = Some(ShellState { window, renderer }),
             Err(e) => {
@@ -473,6 +476,7 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
                     state.renderer.resize(size.width, size.height);
+                    self.input.set_view(size.width, size.height);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -507,13 +511,12 @@ impl ApplicationHandler for App {
             // position; MouseInput tracks button held + edge-press;
             // MouseWheel accumulates the per-frame wheel delta.
             WindowEvent::CursorMoved { position, .. } => {
-                // web3d-M4: in the HUD's 640×480 canvas units, as in 2D.
+                // web3d-M4: in the HUD's canvas units (Lanternfall E1:
+                // 480 tall, as wide as the window's aspect).
                 let size = state.window.inner_size();
-                self.input.mouse_move(
-                    position.x * f64::from(crate::kernel::canvas::CANVAS_W)
-                        / f64::from(size.width.max(1)),
-                    position.y * f64::from(crate::kernel::canvas::CANVAS_H)
-                        / f64::from(size.height.max(1)),
+                self.input.pointer(
+                    position.x / f64::from(size.width.max(1)),
+                    position.y / f64::from(size.height.max(1)),
                 );
             }
             WindowEvent::MouseInput {
@@ -534,13 +537,12 @@ impl ApplicationHandler for App {
                 id,
                 ..
             }) => {
-                // web3d-M6: in the HUD's 640×480 canvas units, as the
+                // web3d-M6: in the HUD's canvas units, as the
                 // cursor is. Mobile-3D reads these through `touch.*`.
                 let size = state.window.inner_size();
-                let x = location.x * f64::from(crate::kernel::canvas::CANVAS_W)
-                    / f64::from(size.width.max(1));
-                let y = location.y * f64::from(crate::kernel::canvas::CANVAS_H)
-                    / f64::from(size.height.max(1));
+                let [hud_w, hud_h] = self.input.hud_size();
+                let x = location.x * hud_w / f64::from(size.width.max(1));
+                let y = location.y * hud_h / f64::from(size.height.max(1));
                 match phase {
                     TouchPhase::Started | TouchPhase::Moved => {
                         self.touches.insert(id, (x as f32, y as f32));

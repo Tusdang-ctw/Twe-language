@@ -968,7 +968,7 @@ if mouse_held.left:     # held
 let scroll = mouse.wheel
 ```
 
-`mouse.x` / `mouse.y` are in the 640×480 canvas units that `text()` / `rect()` use, in 2D and (since web3d-M4) in 3D, whatever the window size, so hit-testing a HUD button is a plain rectangle check. `mouse.dx` / `mouse.dy` are raw pointer motion since the last tick.
+`mouse.x` / `mouse.y` are in the canvas units that `text()` / `rect()` use, in 2D and (since web3d-M4) in 3D, whatever the window size, so hit-testing a HUD button is a plain rectangle check. In 2D the canvas is 640×480; in 3D it is 480 units tall and as wide as the window's aspect (`screen.size`, §7.8). `mouse.dx` / `mouse.dy` are raw pointer motion since the last tick.
 
 **Gamepad:**
 
@@ -1193,6 +1193,27 @@ camera.reset()                    # snap to defaults
 ```
 
 **3D** (`twec play3d`): `camera.eye`, `camera.target`, `camera.up` are 3-tuples. `camera.far` *(web3d-M7 session 16)* is the view distance in metres, default 100: nothing further from the camera is drawn. Raise it for large scenes (`camera.far = 1200.0` shows a 600 m field from 400 m away).
+
+**World ↔ screen** *(Lanternfall E1)*. `camera.fov` is the vertical field of view in degrees (default 60, clamped to 5–170). Three methods map between the world and the HUD canvas, using the same view and projection the renderer draws with (`src/camera3d.rs`), at the aspect of the window the game is shown in:
+
+```twe
+# Where a world point is on the HUD: (x, y), or nil when it is behind the camera.
+# Points off the side of the view still project (outside the canvas), so a
+# script can clamp them to an edge arrow.
+let tag = camera.project(bot.pos + vec3(0, 2.2, 0))
+if tag != nil:
+    text(bot.name, (tag.x - 30, tag.y), 14, color.white)
+
+# Where the cursor points on a horizontal plane (a vec3), or nil when the ray
+# never meets it in front of the camera — top-down aiming.
+let aim = camera.ground_point(mouse.pos, 1.0)
+
+# The ray itself: an object with `origin` and unit `dir` (vec3s).
+let r = camera.ray(mouse.pos)
+let hit = physics.raycast(r.origin, r.dir, 200.0)
+```
+
+**The 3D HUD keeps its proportions.** In a 3D game the HUD canvas is 480 units tall and as wide as the window's aspect makes it: 640×480 at 4:3 (the same as 2D), about 853×480 at 16:9. `screen.size` and `screen.center` report it, `screen.aspect` is the window's width over height, and `mouse.x` / `mouse.y` are measured in it — so text, circles and a round minimap don't stretch, and right-aligned HUD items should position from `screen.size.x`, not 640. The window size is input: the 3D shells report it every tick, and replay logs (`TWE-REPLAY v3`) carry it, so a recorded run projects the same way when replayed.
 
 The `camera2d.*` namespace (v1.0.1 Session 8) adds **follow with deadzone**, **animated zoom**, **cinematic pan**, and **world bounds clamp** — the four Survivors/platformer/RPG camera patterns scripts were re-implementing by hand:
 

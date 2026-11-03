@@ -156,6 +156,10 @@ pub struct Canvas {
     batches: Vec<(Bind, std::ops::Range<u32>)>,
     vertex_buffer: wgpu::Buffer,
     vertex_capacity: u64,
+    /// Lanternfall E1: the canvas's size in script units — 640×480 for
+    /// 2D games, the view's aspect at 480 tall for the 3D HUD
+    /// ([`Canvas::set_units`]).
+    units: [f32; 2],
 }
 
 impl Canvas {
@@ -290,7 +294,16 @@ impl Canvas {
             batches: Vec::new(),
             vertex_buffer,
             vertex_capacity,
+            units: [CANVAS_W, CANVAS_H],
         }
+    }
+
+    /// Lanternfall E1: lay out the next frames in a `width × height`
+    /// unit canvas, stretched over whatever target they are drawn to.
+    /// The 3D HUD uses `camera3d::hud_size` so it keeps its proportions;
+    /// 2D games keep the 640×480 default.
+    pub fn set_units(&mut self, width: f32, height: f32) {
+        self.units = [width.max(1.0), height.max(1.0)];
     }
 
     /// Drop every loaded image and font (hot reload).
@@ -589,7 +602,7 @@ impl Canvas {
             batches: std::mem::take(&mut self.batches),
             bind: Bind::Atlas,
             batch_start: 0,
-            map: Map::new(None, width, height),
+            map: Map::new(None, width, height, self.units),
         };
         out.vertices.clear();
         out.batches.clear();
@@ -774,22 +787,25 @@ struct Map {
     /// Target pixels per canvas unit.
     scale: [f32; 2],
     size: [f32; 2],
+    /// The canvas size in script units.
+    units: [f32; 2],
 }
 
 impl Map {
-    fn new(camera: Option<Camera2d>, width: f32, height: f32) -> Self {
+    fn new(camera: Option<Camera2d>, width: f32, height: f32, units: [f32; 2]) -> Self {
         Map {
             camera,
-            scale: [width / CANVAS_W, height / CANVAS_H],
+            scale: [width / units[0], height / units[1]],
             size: [width, height],
+            units,
         }
     }
 
     fn clip(&self, p: [f32; 2]) -> [f32; 2] {
         let c = match self.camera {
             Some(cam) => [
-                (p[0] - cam.center[0]) * cam.zoom + CANVAS_W * 0.5,
-                (p[1] - cam.center[1]) * cam.zoom + CANVAS_H * 0.5,
+                (p[0] - cam.center[0]) * cam.zoom + self.units[0] * 0.5,
+                (p[1] - cam.center[1]) * cam.zoom + self.units[1] * 0.5,
             ],
             None => p,
         };

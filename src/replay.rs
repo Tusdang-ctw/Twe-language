@@ -21,16 +21,19 @@
 //! ## Format
 //!
 //! ```text
-//! TWE-REPLAY v2
-//! <keys_held>|<keys_pressed>|<mouse_x>|<mouse_y>|<mb_held>|<mb_press>|<mouse_dx>|<mouse_dy>|<wheel>|<pad_held>|<pad_press>|<pad_axes>
+//! TWE-REPLAY v3
+//! <keys_held>|<keys_pressed>|<mouse_x>|<mouse_y>|<mb_held>|<mb_press>|<mouse_dx>|<mouse_dy>|<wheel>|<pad_held>|<pad_press>|<pad_axes>|<view_w>|<view_h>
 //! ...
 //! ```
 //!
 //! Each `<keys_*>`, `<mb_*>` and `<pad_held/press>` field is a
 //! comma-separated list of names; blank fields are empty strings
 //! between `|`s. `<pad_axes>` is the six axes (`lx,ly,rx,ry,lt,rt`),
-//! or empty when no gamepad is connected. v1 logs (the first six
-//! fields only, header `TWE-REPLAY v1`) still play.
+//! or empty when no gamepad is connected. `<view_w>|<view_h>` is the
+//! view in pixels a 3D host reported (`0|0` when it reported none;
+//! `camera.project` depends on its aspect). v2 logs (the first twelve
+//! fields, header `TWE-REPLAY v2`) and v1 logs (the first six, header
+//! `TWE-REPLAY v1`) still play.
 //!
 //! ## What's *not* recorded
 //!
@@ -47,7 +50,8 @@ use std::rc::Rc;
 
 use crate::value::{Env, Object, Value};
 
-const HEADER: &str = "TWE-REPLAY v2";
+const HEADER: &str = "TWE-REPLAY v3";
+const HEADER_V2: &str = "TWE-REPLAY v2";
 const HEADER_V1: &str = "TWE-REPLAY v1";
 
 /// A recording is written out every this many ticks (and on stop), so
@@ -89,6 +93,11 @@ pub struct InputCommand {
     pub pad_axes: Option<[f64; 6]>,
     pub pad_held: Vec<String>,
     pub pad_pressed: Vec<String>,
+    /// Lanternfall E1: the view in pixels, as the 3D host reported it
+    /// (`0` when it didn't). Input, because `camera.project` /
+    /// `camera.ground_point` depend on its aspect.
+    pub view_w: u32,
+    pub view_h: u32,
 }
 
 type Frame = InputCommand;
@@ -280,6 +289,9 @@ fn snapshot_inputs(env: &Env) -> Frame {
             .filter(|n| n != "connected")
             .collect(),
         pad_pressed: collect_true_field_names(env, "gamepad_press"),
+        // The 2D loop has no 3D view to report.
+        view_w: 0,
+        view_h: 0,
     }
 }
 
@@ -485,7 +497,7 @@ fn push_line(out: &mut String, f: &Frame) {
     use std::fmt::Write;
     let _ = writeln!(
         out,
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         f.keys_held.join(","),
         f.keys_pressed.join(","),
         f.mouse_x,
@@ -500,6 +512,8 @@ fn push_line(out: &mut String, f: &Frame) {
         f.pad_axes
             .map(|a| a.map(|v| v.to_string()).join(","))
             .unwrap_or_default(),
+        f.view_w,
+        f.view_h,
     );
 }
 
@@ -507,7 +521,8 @@ fn parse_log(src: &str) -> Result<Vec<Frame>, String> {
     let mut lines = src.lines();
     let header = lines.next().ok_or("replay.play: empty file")?.trim();
     let fields = match header {
-        HEADER => 12,
+        HEADER => 14,
+        HEADER_V2 => 12,
         HEADER_V1 => 6,
         other => {
             return Err(format!(
@@ -541,7 +556,7 @@ fn parse_log(src: &str) -> Result<Vec<Frame>, String> {
             mb_press: split_csv(parts[5]),
             ..Frame::default()
         };
-        if fields == 12 {
+        if fields >= 12 {
             f.mouse_dx = num(parts[6], "mouse_dx", n)?;
             f.mouse_dy = num(parts[7], "mouse_dy", n)?;
             f.wheel = num(parts[8], "wheel", n)?;
@@ -558,6 +573,14 @@ fn parse_log(src: &str) -> Result<Vec<Frame>, String> {
                 }
                 f.pad_axes = Some(axes);
             }
+        }
+        if fields == 14 {
+            let px = |s: &str, what: &str| -> Result<u32, String> {
+                s.parse()
+                    .map_err(|e| format!("replay.play: line {n}: bad {what} ({e})"))
+            };
+            f.view_w = px(parts[12], "view_w")?;
+            f.view_h = px(parts[13], "view_h")?;
         }
         frames.push(f);
     }
@@ -593,6 +616,32 @@ mod tests {
         assert_eq!(frames[1].keys_held.len(), 0);
         assert_eq!(frames[1].mouse_x, 320.0);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Lanternfall E1: v3 lines carry the view a 3D host reported; v2
+    /// lines (no view) still parse, with the view unknown (0).
+    #[test]
+    fn v3_carries_the_view_and_v2_still_plays() {
+        let frame = Frame {
+            keys_held: vec!["w".to_string()],
+            mouse_x: 426.5,
+            mouse_y: 240.0,
+            view_w: 1920,
+            view_h: 1080,
+            ..Default::default()
+        };
+        let mut text = format!("{HEADER}
+");
+        push_line(&mut text, &frame);
+        let frames = parse_log(&text).unwrap();
+        assert_eq!(frames, vec![frame]);
+
+        let v2 = format!("{HEADER_V2}
+w||10|20|||0|0|0|||
+");
+        let frames = parse_log(&v2).unwrap();
+        assert_eq!(frames[0].keys_held, vec!["w".to_string()]);
+        assert_eq!((frames[0].view_w, frames[0].view_h), (0, 0));
     }
 
     #[test]

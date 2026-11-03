@@ -93,6 +93,9 @@ pub mod perf_snapshot;
 // would ask for in a first triage round (version, target triple,
 // active features, crash bundles, cache size).
 pub mod doctor;
+// Lanternfall E1: the 3D camera math (view / projection, 
+// `camera.project` / `camera.ray`), shared by renderer and script.
+pub mod camera3d;
 pub mod render3d_types;
 pub mod replay;
 pub mod resolve;
