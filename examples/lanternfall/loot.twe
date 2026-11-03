@@ -1,0 +1,198 @@
+# @task: Lanternfall loot module
+# @inputs: none
+# @expected: chests that open with a lid swing and a burst, spilling weapons, ammo and shield cells that arc out, bob and glow in their rarity's colour
+# @category: 3d
+# @difficulty: medium
+#
+# Lanternfall — what the island hides.
+#
+# Chests stand in the places (better ones in the Signal Vault). Opening
+# one swings its lid (`mesh_anim.play(chest, "open")`), flares gold and
+# spills two or three things that arc out and land: a weapon, ammo, a
+# shield cell. Loot bobs and turns under a beam in its rarity's colour.
+# Whoever falls drops what they carried.
+
+import "weapons"
+import "combat"
+
+let WEAPON = 0
+let AMMO = 1
+let CELL = 2
+
+let GUN_MODELS = [
+    "assets/gun_wrench.glb", "assets/gun_pistol.glb", "assets/gun_smg.glb",
+    "assets/gun_scatter.glb", "assets/gun_rifle.glb", "assets/gun_mortar.glb",
+]
+
+entity Chest:
+    var pos = vec3(0, 0, 0)
+    var turn = 0.0
+    var tier = 1                  # 1 the wilds, 2 a place, 3 the vault
+    var opened = false
+    var is_chest = true
+    var taken = false
+    look:
+        mesh: "assets/chest.glb"
+        facing: turn
+        glow: (0.9, 0.7, 0.3) * (if opened: 0.0 else: 0.12)
+
+# Something on the ground to pick up.
+entity Loot:
+    var pos = vec3(0, 0, 0)
+    var kind = 0
+    var gun = 1
+    var rarity = 0
+    var amount = 0
+    var vel = vec3(0, 0, 0)
+    var landed = false
+    var spin = 0.0
+    var age = 0.0
+    var taken = false
+    var is_chest = false
+    look:
+        mesh: model_of(kind, gun)
+        facing: spin
+        scale: 1.4
+        glow: glow_of(kind, rarity) * (0.5 + 0.25 * math.sin(age * 4.0))
+
+    function update(dt):
+        age += dt
+        spin += dt * 1.6
+        if not landed:
+            vel = vel - vec3(0, 22.0, 0) * dt
+            pos = pos + vel * dt
+            if pos.y <= 0.35:
+                pos = vec3(pos.x, 0.35, pos.z)
+                landed = true
+        else:
+            pos = vec3(pos.x, 0.35 + 0.08 * math.sin(age * 3.0), pos.z)
+
+# The light pillar over a piece of loot, in its rarity's colour.
+entity Beam:
+    var pos = vec3(0, 0, 0)
+    var of = nil
+    var color = (1.0, 1.0, 1.0)
+    look:
+        mesh: "cube"
+        scale: vec3(0.07, 3.2, 0.07)
+        tint: (color[0], color[1], color[2], 0.3)
+        glow: color * 0.9
+
+    function update(dt):
+        if of == nil or of.taken:
+            despawn self
+        else:
+            pos = vec3(of.pos.x, of.pos.y + 1.6, of.pos.z)
+
+function model_of(kind, gun):
+    if kind == WEAPON:
+        return GUN_MODELS[gun]
+    if kind == AMMO:
+        return "assets/ammo.glb"
+    return "assets/cell.glb"
+
+function glow_of(kind, rarity):
+    if kind == WEAPON:
+        return weapons.RARITY_COLORS[rarity]
+    if kind == CELL:
+        return (0.4, 0.75, 1.0)
+    return (0.6, 0.5, 0.2)
+
+# What a chest of `tier` holds, as a rarity roll.
+function roll_rarity(tier):
+    let r = random.float()
+    if tier >= 3:
+        if r < 0.3:
+            return 1
+        if r < 0.75:
+            return 2
+        return 3
+    if tier == 2:
+        if r < 0.4:
+            return 0
+        if r < 0.78:
+            return 1
+        if r < 0.96:
+            return 2
+        return 3
+    if r < 0.7:
+        return 0
+    if r < 0.95:
+        return 1
+    return 2
+
+# Throw a piece of loot out from `at`.
+function spill(at, kind, gun, rarity, amount):
+    let a = random.float() * 6.283
+    let out = 1.6 + random.float() * 2.0
+    let l = spawn Loot at at + vec3(0, 0.8, 0)
+    l.kind = kind
+    l.gun = gun
+    l.rarity = rarity
+    l.amount = amount
+    l.vel = vec3(math.cos(a) * out, 5.5 + random.float() * 2.0, math.sin(a) * out)
+    if kind == WEAPON:
+        let b = spawn Beam at at
+        b.of = l
+        b.color = weapons.RARITY_COLORS[rarity]
+    return l
+
+# Open chest `c`: the lid swings, it flares, and its things spill out.
+function open_chest(c):
+    if c.opened:
+        return
+    c.opened = true
+    mesh_anim.play(c, "open", false)
+    combat.flash(c.pos + vec3(0, 1.0, 0), (2.6, 1.9, 0.8), 7.0, 0.35)
+    spawn combat.Sparks at c.pos + vec3(0, 0.7, 0)
+    spill(c.pos, WEAPON, 1 + math.floor(random.float() * 5), roll_rarity(c.tier), 0)
+    spill(c.pos, AMMO, 0, 0, 18 + math.floor(random.float() * 18))
+    if random.float() < 0.35 + c.tier * 0.15:
+        spill(c.pos, CELL, 0, 0, 1)
+
+# What a fallen fighter drops: its gun, a little ammo, its cells.
+function drop_belongings(a, gun, rarity, cells):
+    if gun > 0:
+        spill(a.pos, WEAPON, gun, rarity, 0)
+    spill(a.pos, AMMO, 0, 0, 20)
+    for i in 0..<cells:
+        spill(a.pos, CELL, 0, 0, 1)
+
+# The nearest landed loot within `reach` of `at`, or nil.
+function nearest_loot(at, reach):
+    var best = nil
+    var best_d = reach * reach
+    for l in entities.of(Loot):
+        if l.landed and not l.taken:
+            let dx = l.pos.x - at.x
+            let dz = l.pos.z - at.z
+            let d = dx * dx + dz * dz
+            if d < best_d:
+                best = l
+                best_d = d
+    return best
+
+# The nearest unopened chest within `reach` of `at`, or nil.
+function nearest_chest(at, reach):
+    var best = nil
+    var best_d = reach * reach
+    for c in entities.of(Chest):
+        if not c.opened:
+            let dx = c.pos.x - at.x
+            let dz = c.pos.z - at.z
+            let d = dx * dx + dz * dz
+            if d < best_d:
+                best = c
+                best_d = d
+    return best
+
+# Is a prize (a chest or a piece of loot) no longer there to have?
+function gone(p):
+    if p.is_chest:
+        return p.opened
+    return p.taken
+
+# Take a piece of loot off the ground.
+function take(l):
+    l.taken = true
+    despawn l

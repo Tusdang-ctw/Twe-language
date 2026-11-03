@@ -41,4 +41,14 @@ let CELL_SHIELD = 25             # shield one cell gives
 
 # --- the bots ---
 let BOT_COUNT = 31               # rivals; with the keeper, 32 on the island
-let BOT_SIGHT = 26.0             # metres they can see in the dark
+let BOT_SIGHT = 21.0             # metres they can see in the dark
+let BOT_REACT = 0.9              # seconds before an unskilled bot opens fire on a new foe
+let BOT_AIM_ERROR = 0.24         # radians of aim error for an unskilled bot
+let BOT_FIRE_SLOWDOWN = 1.6      # an unskilled bot fires this much slower than the gun allows
+
+# --- the drop ---
+let GLIDE_SPEED = 9.0            # m/s, steering on the way down
+let GLIDE_FALL = 5.5             # m/s, the descent
+let CHESTS_PER_PLACE = 6
+let CHESTS_IN_WILDS = 26
+let VAULT_OPENS = 180.0          # seconds into the round

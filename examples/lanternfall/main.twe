@@ -1,6 +1,6 @@
 # @task: Lanternfall — a top-down 3D voxel battle royale on a night island lit by lanterns
-# @inputs: WASD move, mouse aim, left click fire, R reload, 1-3 / wheel switch, Shift roll, Q Starcall, hold F shield cell
-# @expected: the keeper walks the island at night, shooting training dummies with tracers, damage numbers, explosions and screen shake
+# @inputs: Space leap, WASD move / steer, mouse aim, left click fire, E open / pick up, R reload / play again, 1-3 / wheel switch, Shift roll, Q Starcall, hold F shield cell
+# @expected: a full round: leap from the lantern barge, glide down, loot chests, fight 31 rivals as the Hush closes in over five phases, until one is left
 # @category: 3d
 # @difficulty: large
 #
@@ -17,6 +17,8 @@ import "weapons"
 import "combat"
 import "bots"
 import "names"
+import "loot"
+import "round"
 import "hud"
 
 random.seed(20261103)
@@ -107,74 +109,158 @@ physics.static_box(vec3(-rim, 2, 0), vec3(1, 4, rim * 2))
 physics.static_box(vec3(rim, 2, 0), vec3(1, 4, rim * 2))
 
 # ---------------------------------------------------------------
-# The keeper and the camera.
+# The vault's gate, shut until the round's third minute.
 # ---------------------------------------------------------------
-let me = spawn player.Player at vec3(0, 0, 24)
-var cam_x = me.pos.x
-var cam_z = me.pos.z
+let gate = spawn world.Block at vec3(0, 1.7, 11.0)
+gate.size = vec3(5.0, 3.4, 0.5)
+gate.kind = 2
+gate.shade = (0.7, 0.75, 0.85)
+let gate_body = physics.static_box(gate.pos, gate.size)
+var gate_open = false
 
-# A training yard on the road south of the vault.
-for i in 0..<5:
-    let d = spawn combat.Dummy at vec3(-8.0 + i * 4.0, 0, 34.0)
-    d.turn = 3.14
-    if i == 2:
-        d.shield = 0.0
+# ---------------------------------------------------------------
+# The keeper, the camera, the round.
+# ---------------------------------------------------------------
+let me = spawn player.Player at vec3(0, 34, 0)
+var cam_x = 0.0
+var cam_z = 0.0
+var cam_h = tuning.CAM_HEIGHT
 
-# The rivals, scattered on clear ground away from the keeper, each in
-# its own colours, skill and starting weapon.
 let MODELS = ["assets/folk_moss.glb", "assets/folk_dusk.glb", "assets/folk_ember.glb", "assets/folk_tide.glb"]
-var spawned = 0
-var spawn_tries = 0
-while spawned < tuning.BOT_COUNT and spawn_tries < 4000:
-    spawn_tries += 1
-    let x = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 8)
-    let z = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 8)
-    let far_from_you = (x - me.pos.x) * (x - me.pos.x) + (z - me.pos.z) * (z - me.pos.z) > 30.0 * 30.0
-    if far_from_you and world.clear_ground(x, z, 2.0):
-        let b = spawn bots.Bot at vec3(x, 0, z)
-        b.model = MODELS[math.mod(spawned, 4)]
+
+var stage = "barge"               # barge → playing → over
+var barge = nil
+let hush = spawn round.Hush
+var round_time = 0.0
+var placement = 0
+var won = false
+var leader_kills = 0              # the most kills anyone has
+var last_call = 99                # the last "N LEFT" banner shown
+
+# Chests: a few in each place, the vault's richest, more in the wilds.
+function place_chests():
+    for p in world.PLACES:
+        let tier = if p[4] >= 3: 3 else: 2
+        var n = 0
+        var tries = 0
+        while n < tuning.CHESTS_PER_PLACE and tries < 300:
+            tries += 1
+            let a = random.float() * 6.283
+            let r = random.float() * p[3] * 0.85
+            let x = p[1] + math.cos(a) * r
+            let z = p[2] + math.sin(a) * r
+            if world.clear_ground(x, z, 1.2):
+                let c = spawn loot.Chest at vec3(x, 0, z)
+                c.tier = tier
+                c.turn = random.float() * 6.283
+                n += 1
+    var w = 0
+    var tries = 0
+    while w < tuning.CHESTS_IN_WILDS and tries < 1500:
+        tries += 1
+        let x = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 6)
+        let z = (random.float() * 2 - 1) * (tuning.ISLAND_HALF - 6)
+        if world.clear_ground(x, z, 1.5) and world.place_at(x, z) == "":
+            let c = spawn loot.Chest at vec3(x, 0, z)
+            c.turn = random.float() * 6.283
+            w += 1
+
+# Clear the last round's people, loot and effects away.
+function clear_round():
+    for b in entities.of(bots.Bot):
+        if b.body >= 0:
+            physics.despawn(b.body)
+        despawn b
+    for c in entities.of(loot.Chest):
+        despawn c
+    for l in entities.of(loot.Loot):
+        despawn l
+    for f in entities.of(combat.Flash):
+        if f.handle >= 0:
+            light.remove(f.handle)
+        despawn f
+    for t in entities.of(combat.Tracer):
+        despawn t
+    for s in entities.of(combat.Shell):
+        despawn s
+    for s in entities.of(combat.Star):
+        despawn s
+    for r in entities.of(combat.Ring):
+        despawn r
+    for p in entities.of(combat.Popup):
+        despawn p
+    for d in entities.of(combat.Dummy):
+        despawn d
+    for b in entities.of(round.Barge):
+        b.gone()
+
+# A new round: the barge sets out with everyone aboard.
+function start_round():
+    clear_round()
+    place_chests()
+    barge = round.launch_barge()
+    # The keeper.
+    if me.body >= 0:
+        physics.despawn(me.body)
+    me.body = -1
+    me.phase = "aboard"
+    me.barge = barge
+    me.alive = true
+    me.hp = 100.0
+    me.shield = 0.0
+    me.kills = 0
+    me.damage = 0.0
+    me.cells = 0
+    me.guns = [0, -1, -1]
+    me.rarity = [0, 0, 0]
+    me.mag = [0, 0, 0]
+    me.reserve = 0
+    me.slot = 0
+    me.star_cd = 0.0
+    me.control = true
+    me.pos = barge.pos
+    # The rivals, aboard too, each with somewhere it means to land.
+    for i in 0..<tuning.BOT_COUNT:
+        let b = spawn bots.Bot at barge.pos
+        b.barge = barge
+        b.offset = vec3((random.float() - 0.5) * 2.4, 1.4, (random.float() - 0.5) * 8.0)
+        b.target = bots.drop_target()
+        b.model = MODELS[math.mod(i, 4)]
         b.name = names.handle()
         b.skill = 0.2 + random.float() * 0.7
-        b.team = 10 + spawned
-        b.gun = 1 + math.floor(random.float() * 5)
-        b.rarity = math.floor(random.float() * random.float() * 4)
-        b.mag = weapons.magazine_of(b.gun, b.rarity)
-        b.shield = math.floor(random.float() * 3) * 25.0
-        b.heading = random.float() * 6.28
-        spawned += 1
+        b.team = 10 + i
+    # The Hush waits for everyone to land.
+    hush.pos = vec3(0, 0, 0)
+    hush.radius = 150.0
+    hush.running = false
+    bots.arena_center = vec3(0, 0, 0)
+    bots.arena_radius = 100.0
+    bots.sight_scale = 0.55
+    combat.feed = []
+    hud.banners = []
+    stage = "barge"
+    round_time = 0.0
+    placement = 0
+    won = false
+    leader_kills = 0
+    last_call = 99
+    close_gate()
+    cam_x = barge.pos.x
+    cam_z = barge.pos.z
 
-on update(dt):
-    mesh_anim.advance(dt)
-    # Everyone who can be hurt this tick (see combat.twe).
-    var everyone = [a for a in entities.of(bots.Bot)]
-    for d in entities.of(combat.Dummy):
-        everyone.append(d)
-    everyone.append(me)
-    combat.actors = everyone
-    # Follow the keeper, leaning toward the cursor so you see where you
-    # aim — but never so far that the keeper leaves the screen.
-    var lean_x = (me.aim.x - me.pos.x) * tuning.CAM_LEAD
-    var lean_z = (me.aim.z - me.pos.z) * tuning.CAM_LEAD
-    let lean = math.sqrt(lean_x * lean_x + lean_z * lean_z)
-    if lean > tuning.CAM_LEAN_MAX:
-        lean_x = lean_x * tuning.CAM_LEAN_MAX / lean
-        lean_z = lean_z * tuning.CAM_LEAN_MAX / lean
-    let want_x = me.pos.x + lean_x
-    let want_z = me.pos.z + lean_z
-    let k = math.min(1.0, dt * tuning.CAM_SMOOTH)
-    cam_x = cam_x + (want_x - cam_x) * k
-    cam_z = cam_z + (want_z - cam_z) * k
-    # Recoil nudges the view back along the aim.
-    let kx = -math.sin(me.heading) * me.kick * 0.12
-    let kz = -math.cos(me.heading) * me.kick * 0.12
-    camera.target = vec3(cam_x + kx, 0.6, cam_z + kz)
-    camera.eye = vec3(cam_x + kx, tuning.CAM_HEIGHT, cam_z + kz + tuning.CAM_BACK)
+function close_gate():
+    if gate_open:
+        gate_open = false
+        gate.pos = vec3(0, 1.7, 11.0)
 
-on render():
-    hud.draw_tags(entities.of(bots.Bot), me)
-    hud.draw_popups(entities.of(combat.Popup))
-    hud.draw_playing(me, world.place_at(me.pos.x, me.pos.z))
-    hud.draw_match(alive_count(), me.kills, combat.feed, combat.time_now())
+function open_gate():
+    gate_open = true
+    gate.pos = vec3(0, -20.0, 11.0)
+    physics.despawn(gate_body)
+    hud.banner("THE SIGNAL VAULT IS OPEN", (0.75, 0.55, 1.0))
+    combat.flash(vec3(0, 3.0, 11.0), (2.0, 1.2, 3.0), 18.0, 0.8)
+
+start_round()
 
 # Everyone still standing, the keeper included.
 function alive_count():
@@ -185,3 +271,112 @@ function alive_count():
     if me.alive:
         n += 1
     return n
+
+function anyone_aboard():
+    if me.phase != "ground":
+        return true
+    for b in entities.of(bots.Bot):
+        if b.phase != "ground":
+            return true
+    return false
+
+on update(dt):
+    mesh_anim.advance(dt)
+    # Everyone who can be hurt this tick (see combat.twe).
+    var everyone = [a for a in entities.of(bots.Bot)]
+    for d in entities.of(combat.Dummy):
+        everyone.append(d)
+    everyone.append(me)
+    combat.actors = everyone
+    if stage == "barge":
+        if barge != nil and barge.time_left() < -6.0:
+            barge.gone()
+            barge = nil
+        if not anyone_aboard():
+            stage = "playing"
+            hush.start()
+            hud.banner("THE HUSH STIRS", (0.75, 0.55, 1.0))
+    if stage == "playing":
+        round_time += dt
+        bots.arena_center = hush.next_center
+        bots.arena_radius = math.max(8.0, hush.next_radius)
+        bots.sight_scale = math.min(1.0, 0.55 + 0.15 * math.max(0, hush.phase))
+        if not gate_open and round_time >= tuning.VAULT_OPENS:
+            open_gate()
+        watch_the_round()
+    if stage == "over" and (key_press.r or gamepad_press.start):
+        start_round()
+    follow_camera(dt)
+
+# Banners for the moments that matter, and the end of the round.
+function watch_the_round():
+    let alive = alive_count()
+    if me.kills > leader_kills and me.kills >= 2:
+        hud.banner("NEW KILL LEADER", (1.0, 0.78, 0.4))
+    for b in entities.of(bots.Bot):
+        leader_kills = math.max(leader_kills, b.kills)
+    leader_kills = math.max(leader_kills, me.kills)
+    for n in [10, 5, 3, 2]:
+        if alive <= n and last_call > n and me.alive:
+            last_call = n
+            hud.banner("{n} LEFT", (1.0, 1.0, 1.0))
+    if not me.alive:
+        stage = "over"
+        placement = alive + 1
+        me.control = false
+    elif alive == 1:
+        stage = "over"
+        won = true
+        placement = 1
+        me.control = false
+        mesh_anim.play(me, "victory", true)
+        fx.hit_stop(0.25)
+
+function follow_camera(dt):
+    # High above while aboard, lower while gliding, so you can pick
+    # where to land and watch the ground come up.
+    var want_h = tuning.CAM_HEIGHT
+    if me.phase == "aboard":
+        want_h = tuning.CAM_HEIGHT * 3.2
+    elif me.phase == "glide":
+        want_h = tuning.CAM_HEIGHT + me.pos.y * 1.3
+    cam_h = cam_h + (want_h - cam_h) * math.min(1.0, dt * 1.5)
+    # Follow the keeper, leaning toward the cursor so you see where you
+    # aim — but never so far that the keeper leaves the screen.
+    var lean_x = 0.0
+    var lean_z = 0.0
+    if me.phase == "ground":
+        lean_x = (me.aim.x - me.pos.x) * tuning.CAM_LEAD
+        lean_z = (me.aim.z - me.pos.z) * tuning.CAM_LEAD
+        let lean = math.sqrt(lean_x * lean_x + lean_z * lean_z)
+        if lean > tuning.CAM_LEAN_MAX:
+            lean_x = lean_x * tuning.CAM_LEAN_MAX / lean
+            lean_z = lean_z * tuning.CAM_LEAN_MAX / lean
+    let want_x = me.pos.x + lean_x
+    let want_z = me.pos.z + lean_z
+    let k = math.min(1.0, dt * tuning.CAM_SMOOTH)
+    cam_x = cam_x + (want_x - cam_x) * k
+    cam_z = cam_z + (want_z - cam_z) * k
+    # Recoil nudges the view back along the aim.
+    let kx = -math.sin(me.heading) * me.kick * 0.12
+    let kz = -math.cos(me.heading) * me.kick * 0.12
+    let ground_y = if me.phase == "ground": 0.6 else: 0.0
+    camera.target = vec3(cam_x + kx, ground_y, cam_z + kz)
+    camera.eye = vec3(cam_x + kx, ground_y + cam_h, cam_z + kz + cam_h * tuning.CAM_BACK / tuning.CAM_HEIGHT)
+
+on render():
+    if stage != "barge" or me.phase == "ground":
+        hud.draw_tags(entities.of(bots.Bot), me)
+    hud.draw_popups(entities.of(combat.Popup))
+    if me.phase == "aboard":
+        hud.draw_aboard(barge, world.place_at(me.pos.x, me.pos.z))
+    elif me.phase == "glide":
+        hud.draw_glide(me, world.place_at(me.pos.x, me.pos.z))
+    else:
+        hud.draw_playing(me, world.place_at(me.pos.x, me.pos.z))
+    hud.draw_match(alive_count(), me.kills, combat.feed, combat.time_now())
+    hud.draw_hush(hush, me, stage)
+    hud.draw_map(me, hush, barge, world.PLACES)
+    hud.draw_banners(combat.time_now())
+    if stage == "over":
+        hud.draw_results(won, placement, me.kills, me.damage, round_time)

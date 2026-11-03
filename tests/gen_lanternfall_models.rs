@@ -42,6 +42,10 @@ struct Model {
     joints: Vec<(&'static str, Option<usize>, [f32; 3])>,
     parts: Vec<Part>,
     clips: Vec<Clip>,
+    /// Lanternfall G4: instead of box parts, an open tube of this many
+    /// segments — radius 1, y from 0 to 1, seen from both sides (the
+    /// safe zone's wall).
+    tube: Option<usize>,
 }
 
 // ---------------------------------------------------------------
@@ -229,6 +233,7 @@ fn character(name: &'static str, shirt: [u8; 3], pants: [u8; 3], hood: [u8; 3], 
         joints: character_joints(),
         parts: character_parts(),
         clips: character_clips(),
+        tube: None,
     }
 }
 
@@ -248,6 +253,7 @@ fn chest() -> Model {
             ([-0.52, 0.56, -0.34], [0.52, 0.64, 0.34], 1, BAND),
             ([-0.08, 0.38, 0.32], [0.08, 0.6, 0.37], 1, GOLD),
         ],
+        tube: None,
         clips: vec![
             Clip {
                 name: "shut",
@@ -264,7 +270,119 @@ fn chest() -> Model {
 }
 
 fn prop(name: &'static str, palette: Vec<[u8; 3]>, parts: Vec<Part>) -> Model {
-    Model { name, palette, joints: Vec::new(), parts, clips: Vec::new() }
+    Model { name, palette, joints: Vec::new(), parts, clips: Vec::new(), tube: None }
+}
+
+/// The lantern barge that carries everyone over the island: a hull, a
+/// long balloon, four propellers and a row of lanterns.
+fn barge() -> Model {
+    const HULL: usize = 0;
+    const TRIM: usize = 1;
+    const CLOTH: usize = 2;
+    const STRIPE: usize = 3;
+    const LAMP: usize = 4;
+    const DARK: usize = 5;
+    prop(
+        "barge",
+        vec![[120, 82, 54], [70, 50, 40], [228, 222, 206], [210, 120, 60], [255, 214, 120], [40, 34, 40]],
+        vec![
+            // hull and deck
+            ([-1.6, 0.0, -5.0], [1.6, 1.2, 5.0], 0, HULL),
+            ([-1.2, -0.4, -4.2], [1.2, 0.0, 4.2], 0, HULL),
+            ([-1.7, 1.2, -5.1], [1.7, 1.4, 5.1], 0, TRIM),
+            ([-0.9, 1.4, -1.5], [0.9, 2.6, 1.5], 0, TRIM),
+            // balloon: a long stack, wider in the middle, with a stripe
+            ([-2.6, 4.0, -6.5], [2.6, 7.4, 6.5], 0, CLOTH),
+            ([-2.2, 3.6, -7.5], [2.2, 7.8, 7.5], 0, CLOTH),
+            ([-1.6, 4.4, -8.3], [1.6, 7.0, 8.3], 0, CLOTH),
+            ([-2.65, 5.4, -6.6], [2.65, 6.0, 6.6], 0, STRIPE),
+            // fins
+            ([-0.15, 6.8, 6.6], [0.15, 8.8, 8.6], 0, STRIPE),
+            ([-2.4, 5.5, 7.0], [2.4, 5.8, 8.6], 0, STRIPE),
+            // ropes (posts) from hull to balloon
+            ([-1.3, 1.4, -3.8], [-1.1, 3.8, -3.6], 0, DARK),
+            ([1.1, 1.4, -3.8], [1.3, 3.8, -3.6], 0, DARK),
+            ([-1.3, 1.4, 3.6], [-1.1, 3.8, 3.8], 0, DARK),
+            ([1.1, 1.4, 3.6], [1.3, 3.8, 3.8], 0, DARK),
+            // propellers
+            ([-2.4, 0.3, 4.4], [-1.6, 1.1, 4.6], 0, DARK),
+            ([1.6, 0.3, 4.4], [2.4, 1.1, 4.6], 0, DARK),
+            ([-2.4, 0.3, -4.6], [-1.6, 1.1, -4.4], 0, DARK),
+            ([1.6, 0.3, -4.6], [2.4, 1.1, -4.4], 0, DARK),
+            // lanterns along the rail
+            ([-1.85, 1.5, -3.0], [-1.6, 1.9, -2.6], 0, LAMP),
+            ([1.6, 1.5, -3.0], [1.85, 1.9, -2.6], 0, LAMP),
+            ([-1.85, 1.5, 0.0], [-1.6, 1.9, 0.4], 0, LAMP),
+            ([1.6, 1.5, 0.0], [1.85, 1.9, 0.4], 0, LAMP),
+            ([-1.85, 1.5, 3.0], [-1.6, 1.9, 3.4], 0, LAMP),
+            ([1.6, 1.5, 3.0], [1.85, 1.9, 3.4], 0, LAMP),
+        ],
+    )
+}
+
+/// The Hush's wall: a smooth open tube, coloured and faded by its look.
+fn hush_wall() -> Model {
+    Model {
+        name: "hush_wall",
+        palette: vec![[255, 255, 255]],
+        joints: Vec::new(),
+        parts: Vec::new(),
+        clips: Vec::new(),
+        tube: Some(96),
+    }
+}
+
+/// The six weapons as loot: small voxel props, about 0.8 m long, along +Z.
+fn guns() -> Vec<Model> {
+    let metal = [70, 76, 88];
+    let dark = [36, 34, 40];
+    let wood = [120, 80, 50];
+    vec![
+        prop("gun_wrench", vec![metal, dark, [200, 120, 60]], vec![
+            ([-0.05, 0.0, -0.4], [0.05, 0.08, 0.25], 0, 0),
+            ([-0.14, 0.0, 0.2], [0.14, 0.08, 0.42], 0, 0),
+            ([-0.05, 0.0, -0.45], [0.05, 0.1, -0.25], 0, 2),
+        ]),
+        prop("gun_pistol", vec![metal, dark, [120, 220, 255]], vec![
+            ([-0.06, 0.0, -0.1], [0.06, 0.12, 0.32], 0, 0),
+            ([-0.05, -0.16, -0.12], [0.05, 0.0, 0.0], 0, 1),
+            ([-0.07, 0.05, 0.1], [0.07, 0.15, 0.2], 0, 2),
+        ]),
+        prop("gun_smg", vec![metal, dark, [80, 240, 255]], vec![
+            ([-0.07, 0.0, -0.3], [0.07, 0.14, 0.4], 0, 0),
+            ([-0.05, -0.2, 0.0], [0.05, 0.0, 0.1], 0, 1),
+            ([-0.05, -0.14, -0.22], [0.05, 0.0, -0.14], 0, 1),
+            ([-0.08, 0.06, -0.05], [0.08, 0.16, 0.25], 0, 2),
+        ]),
+        prop("gun_scatter", vec![wood, dark, [255, 160, 70]], vec![
+            ([-0.08, 0.0, -0.45], [0.08, 0.14, 0.0], 0, 0),
+            ([-0.1, 0.02, 0.0], [0.1, 0.16, 0.5], 0, 1),
+            ([-0.13, 0.0, 0.42], [0.13, 0.18, 0.55], 0, 2),
+        ]),
+        prop("gun_rifle", vec![wood, metal, [255, 210, 90]], vec![
+            ([-0.07, 0.0, -0.55], [0.07, 0.13, -0.05], 0, 0),
+            ([-0.05, 0.03, -0.05], [0.05, 0.11, 0.65], 0, 1),
+            ([-0.06, 0.13, -0.1], [0.06, 0.22, 0.2], 0, 2),
+        ]),
+        prop("gun_mortar", vec![[90, 70, 100], dark, [255, 120, 200]], vec![
+            ([-0.13, 0.0, -0.35], [0.13, 0.26, 0.35], 0, 0),
+            ([-0.16, 0.02, 0.3], [0.16, 0.28, 0.45], 0, 2),
+            ([-0.08, -0.15, -0.1], [0.08, 0.0, 0.05], 0, 1),
+        ]),
+    ]
+}
+
+fn loot_bits() -> Vec<Model> {
+    vec![
+        prop("cell", vec![[120, 200, 255], [40, 90, 160]], vec![
+            ([-0.12, 0.0, -0.12], [0.12, 0.36, 0.12], 0, 0),
+            ([-0.15, 0.08, -0.15], [0.15, 0.28, 0.15], 0, 1),
+        ]),
+        prop("ammo", vec![[200, 170, 70], [90, 76, 40]], vec![
+            ([-0.2, 0.0, -0.14], [0.2, 0.2, 0.14], 0, 0),
+            ([-0.21, 0.08, -0.15], [0.21, 0.12, 0.15], 0, 1),
+        ]),
+    ]
 }
 
 /// A lantern post: a pole, an arm and a hanging lamp (the light itself
@@ -337,7 +455,33 @@ fn models() -> Vec<Model> {
         tree(),
         rock(),
         crate_box(),
+        barge(),
+        hush_wall(),
     ]
+    .into_iter()
+    .chain(guns())
+    .chain(loot_bits())
+    .collect()
+}
+
+/// The open tube: `n` segments around, two rings of vertices, outward
+/// normals (the material is double-sided, so it shows from inside too).
+fn tube_geometry(n: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<u32>) {
+    let (mut pos, mut nrm, mut uv, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for i in 0..=n {
+        let a = i as f32 / n as f32 * std::f32::consts::TAU;
+        let (s, c) = a.sin_cos();
+        for y in [0.0f32, 1.0] {
+            pos.extend_from_slice(&[c, y, s]);
+            nrm.extend_from_slice(&[c, 0.0, s]);
+            uv.extend_from_slice(&[0.5, 0.5]);
+        }
+    }
+    for i in 0..n as u32 {
+        let b = i * 2;
+        idx.extend_from_slice(&[b, b + 2, b + 1, b + 1, b + 2, b + 3]);
+    }
+    (pos, nrm, uv, idx)
 }
 
 // ---------------------------------------------------------------
@@ -392,6 +536,9 @@ fn build(m: &Model) -> Vec<u8> {
     let skinned = !m.joints.is_empty();
     let (mut pos, mut nrm, mut uv) = (Vec::new(), Vec::new(), Vec::new());
     let (mut joints, mut weights, mut idx) = (Vec::<u16>::new(), Vec::new(), Vec::<u32>::new());
+    if let Some(n) = m.tube {
+        (pos, nrm, uv, idx) = tube_geometry(n);
+    }
     for &(lo, hi, joint, cell) in &m.parts {
         let u = (cell as f32 + 0.5) / m.palette.len() as f32;
         let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
@@ -534,7 +681,7 @@ fn build(m: &Model) -> Vec<u8> {
             r#""nodes":[{nodes}],"#,
             r#""meshes":[{{"name":"{name}","primitives":[{{"attributes":{{{attrs}}},"indices":{i},"material":0}}]}}],"#,
             "{extra}",
-            r#""materials":[{{"name":"palette","pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}},"metallicFactor":0,"roughnessFactor":0.85}}}}],"#,
+            r#""materials":[{{"name":"palette","pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}},"metallicFactor":0,"roughnessFactor":0.85}}{double}}}],"#,
             r#""textures":[{{"source":0,"sampler":0}}],"#,
             r#""samplers":[{{"magFilter":9728,"minFilter":9984}}],"#,
             r#""images":[{{"bufferView":{img},"mimeType":"image/png"}}],"#,
@@ -548,6 +695,7 @@ fn build(m: &Model) -> Vec<u8> {
         attrs = attributes,
         i = a_idx,
         extra = extra,
+        double = if m.tube.is_some() { r#","doubleSided":true"# } else { "" },
         img = img_view,
         len = b.bin.len().next_multiple_of(4),
         views = b.views.join(","),

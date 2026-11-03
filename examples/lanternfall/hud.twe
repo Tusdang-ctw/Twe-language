@@ -91,6 +91,11 @@ function draw_playing(me, place):
         let id = me.guns[me.slot]
         rect((w / 2 - 56, 397), (112 * (1 - me.reload_t / weapons.reload_of(id)), 5), WARM)
         text("reloading", (w / 2 - 54, 396), 11, DIM)
+    # What E would do here.
+    if me.prompt != "":
+        let pw = me.prompt.length * 7.5 + 24
+        chip(w / 2 - pw / 2, 350, pw, 24)
+        text(me.prompt, (w / 2 - pw / 2 + 12, 367), 12, (1.0, 1.0, 1.0, 0.95))
     # Where you are, top-centre.
     if place != "":
         let tw = place.length * 8.0 + 24
@@ -144,3 +149,133 @@ function draw_match(alive, kills, feed, now):
             text(line, (20, 26 + shown * 22), 11, (color[0], color[1], color[2], fade))
             shown += 1
         i -= 1
+
+# ---------------------------------------------------------------
+# Lanternfall G4: the round's HUD.
+# ---------------------------------------------------------------
+
+# Big moments, newest last: (text, colour, when). `banner` adds one;
+# `draw_banners` shows the newest for 2.6 s.
+var banners = []
+
+function banner(words, color):
+    banners.append((words, color, sound.now()))
+
+function draw_banners(now):
+    if banners.length == 0:
+        return
+    let b = banners[banners.length - 1]
+    let age = now - b[2]
+    if age < 2.6:
+        let w = screen.size.x
+        let grow = math.min(1.0, age * 6.0)
+        let fade = math.clamp((2.6 - age) / 0.5, 0.0, 1.0)
+        let size = 26.0 * (0.8 + 0.2 * grow)
+        let tw = b[0].length * size * 0.52
+        rect((w / 2 - tw / 2 - 18, 92), (tw + 36, 40), (0.03, 0.03, 0.07, 0.75 * fade))
+        rect((w / 2 - tw / 2 - 18, 92), (tw + 36, 3), (b[1][0], b[1][1], b[1][2], fade))
+        text(b[0], (w / 2 - tw / 2, 121), size, (b[1][0], b[1][1], b[1][2], fade))
+
+# A keycap and what it does, centred low on the screen.
+function prompt(key_label, words, y):
+    let w = screen.size.x
+    let tw = words.length * 8.0 + 52
+    chip(w / 2 - tw / 2, y, tw, 28)
+    rect((w / 2 - tw / 2 + 6, y + 5), (34, 18), (0.9, 0.9, 0.95, 0.9))
+    text(key_label, (w / 2 - tw / 2 + 9, y + 19), 11, (0.05, 0.05, 0.08, 1.0))
+    text(words, (w / 2 - tw / 2 + 46, y + 19), 13, (1.0, 1.0, 1.0, 0.95))
+
+# Aboard the barge: leap, what's below, how long until it turns back.
+function draw_aboard(b, below):
+    if b == nil:
+        return
+    prompt("SPACE", "Leap from the barge", 330)
+    var where = "the wilds"
+    if below != "":
+        where = below
+    let left = math.max(0.0, b.time_left())
+    let line = "Below: {where}  ·  the barge turns back in {math.ceil(left)}s"
+    text(line, (screen.size.x / 2 - line.length * 3.3, 376), 12, DIM)
+    crosshair(0.0)
+
+# Gliding down: how high, and where you'll come down.
+function draw_glide(me, below):
+    let w = screen.size.x
+    chip(w / 2 - 70, 330, 140, 26)
+    text("{math.ceil(me.pos.y)} m", (w / 2 - 60, 348), 14, WARM)
+    if below != "":
+        text(below, (w / 2 - 5, 348), 12, DIM)
+    text("WASD to steer", (w / 2 - 44, 376), 11, DIM)
+
+# The Hush: when it moves next, and a violet edge when you're outside.
+function draw_hush(h, me, stage):
+    if stage != "playing" or not h.running:
+        return
+    let w = screen.size.x
+    var label = "THE HUSH CLOSES IN"
+    if not h.waiting:
+        label = "THE HUSH IS CLOSING"
+    let secs = math.ceil(math.max(0.0, h.timer))
+    let mins = math.floor(secs / 60)
+    let rest = math.mod(secs, 60)
+    let pad = if rest < 10: "0" else: ""
+    let line = "{label}  {mins}:{pad}{rest}"
+    let tw = line.length * 7.0 + 24
+    chip(w / 2 - tw / 2, 44, tw, 22)
+    text(line, (w / 2 - tw / 2 + 12, 59), 12, (0.8, 0.65, 1.0, 1.0))
+    if h.outside(me.pos) and me.alive:
+        let pulse = 0.35 + 0.15 * math.sin(sound.now() * 6.0)
+        rect((0, 0), (w, 10), (0.55, 0.25, 1.0, pulse))
+        rect((0, 470), (w, 10), (0.55, 0.25, 1.0, pulse))
+        rect((0, 0), (10, 480), (0.55, 0.25, 1.0, pulse))
+        rect((w - 10, 0), (10, 480), (0.55, 0.25, 1.0, pulse))
+        text("OUTSIDE THE HUSH", (w / 2 - 64, 86), 13, (0.85, 0.65, 1.0, 1.0))
+
+# The minimap, top-right: the island, its places, the Hush, the barge's
+# line, and you.
+function draw_map(me, h, b, places):
+    let w = screen.size.x
+    let size = 112.0
+    let x0 = w - 12 - size
+    let y0 = 44.0
+    let scale = size / (tuning.BEACH_HALF * 2.0)
+    rect((x0 - 3, y0 - 3), (size + 6, size + 6), INK)
+    rect((x0, y0), (size, size), (0.05, 0.12, 0.2, 0.9))
+    let beach = tuning.BEACH_HALF * scale
+    let grass = tuning.ISLAND_HALF * scale
+    let cx = x0 + size / 2
+    let cy = y0 + size / 2
+    rect((cx - beach, cy - beach), (beach * 2, beach * 2), (0.55, 0.5, 0.38, 0.9))
+    rect((cx - grass, cy - grass), (grass * 2, grass * 2), (0.16, 0.3, 0.18, 0.95))
+    for p in places:
+        circle((cx + p[1] * scale, cy + p[2] * scale), 2.5, (0.9, 0.8, 0.55, 0.9))
+    if h.running:
+        if h.radius * scale < size * 0.7:
+            circle_outline((cx + h.pos.x * scale, cy + h.pos.z * scale), math.max(1.0, h.radius * scale), 1.5, (0.75, 0.5, 1.0, 0.95))
+        circle_outline((cx + h.next_center.x * scale, cy + h.next_center.z * scale), math.max(1.0, h.next_radius * scale), 1.0, (1.0, 1.0, 1.0, 0.7))
+    if b != nil:
+        let a = b.pos - b.dir * 200.0
+        let z = b.pos + b.dir * 200.0
+        line((cx + a.x * scale, cy + a.z * scale), (cx + z.x * scale, cy + z.z * scale), 1.0, (1.0, 0.85, 0.5, 0.5))
+        circle((cx + b.pos.x * scale, cy + b.pos.z * scale), 3.0, (1.0, 0.85, 0.5, 1.0))
+    let px = cx + me.pos.x * scale
+    let py = cy + me.pos.z * scale
+    circle((px, py), 3.0, (1.0, 1.0, 1.0, 1.0))
+    line((px, py), (px + math.sin(me.heading) * 7.0, py + math.cos(me.heading) * 7.0), 1.5, (1.0, 1.0, 1.0, 1.0))
+
+# The round's end: win or placement, kills, damage, time; play again.
+function draw_results(won, placement, kills, damage, secs):
+    let w = screen.size.x
+    rect((0, 0), (w, 480), (0.0, 0.0, 0.03, 0.55))
+    chip(w / 2 - 170, 150, 340, 180)
+    if won:
+        rect((w / 2 - 170, 150), (340, 4), WARM)
+        text("LAST LANTERN STANDING", (w / 2 - 150, 192), 24, WARM)
+    else:
+        rect((w / 2 - 170, 150), (340, 4), (0.8, 0.4, 0.4, 1.0))
+        text("YOUR LANTERN WENT OUT", (w / 2 - 150, 192), 24, (1.0, 0.6, 0.55, 1.0))
+    text("#{placement}", (w / 2 - 140, 238), 30, (1.0, 1.0, 1.0, 1.0))
+    text("{kills} kills", (w / 2 - 30, 228), 14, DIM)
+    text("{math.floor(damage)} damage", (w / 2 - 30, 248), 14, DIM)
+    text("{math.floor(secs / 60)}m {math.mod(math.floor(secs), 60)}s", (w / 2 + 80, 228), 14, DIM)
+    prompt("R", "Play again", 290)

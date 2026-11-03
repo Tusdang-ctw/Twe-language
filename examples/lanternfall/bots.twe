@@ -1,13 +1,15 @@
 # @task: Lanternfall bots module
 # @inputs: none
-# @expected: AI rivals that roam, spot enemies by line of sight, strafe at their weapon's range, aim with skill-based error, heal and get unstuck
+# @expected: AI rivals that drop from the barge onto a chosen place, loot chests, roam inside the safe zone, spot enemies by line of sight, strafe at their weapon's range, aim with skill-based error, heal and get unstuck
 # @category: 3d
 # @difficulty: large
 #
 # Lanternfall — the other islanders.
 #
 # Every bot is its own small state machine, run from `update(dt)`:
-#   roam  — walk toward a goal (a place, the safe zone)
+#   aboard / glide — ride the barge, leap near the place it chose, glide down
+#   loot  — head for the nearest chest or weapon and take it
+#   roam  — walk toward a goal inside the safe zone
 #   fight — keep its weapon's range from a seen enemy, strafe, fire
 #   heal  — out of a fight and hurt: stand still and charge a cell
 # It looks around five times a second, not every tick (staggered across
@@ -17,11 +19,17 @@
 import "tuning"
 import "weapons"
 import "combat"
+import "loot"
+import "world"
 
-# The circle the bots roam inside: the island, then (G4) the safe zone.
-# The main file moves it (`bots.arena_center = ...`).
+# The circle the bots roam inside: the island, then the Hush's next
+# circle. The main file moves it (`bots.arena_center = ...`).
 var arena_center = vec3(0, 0, 0)
 var arena_radius = 100.0
+# How far they look for fights, as a share of BOT_SIGHT: low while the
+# round is young (they'd rather loot), rising as the Hush closes. The
+# main file sets it each phase.
+var sight_scale = 0.55
 
 # Somewhere to walk to: often a random spot in the arena, sometimes one
 # nearby — so bots both wander and drift toward the middle.
@@ -45,6 +53,23 @@ function roam_goal(from):
     let lim = tuning.ISLAND_HALF - 3.0
     return vec3(math.clamp(x, -lim, lim), 0, math.clamp(z, -lim, lim))
 
+# Where a bot wants to land: usually one of the places (the richer, the
+# likelier — which makes hot drops), sometimes the wilds.
+function drop_target():
+    if random.float() < 0.7:
+        var total = 0.0
+        for p in world.PLACES:
+            total += p[4]
+        var pick = random.float() * total
+        for p in world.PLACES:
+            pick -= p[4]
+            if pick <= 0.0:
+                let a = random.float() * 6.283
+                let r = random.float() * p[3] * 0.8
+                return vec3(p[1] + math.cos(a) * r, 0, p[2] + math.sin(a) * r)
+    let lim = tuning.ISLAND_HALF - 10.0
+    return vec3((random.float() * 2.0 - 1.0) * lim, 0, (random.float() * 2.0 - 1.0) * lim)
+
 entity Bot:
     var pos = vec3(0, 0, 0)
     var body = -1
@@ -63,20 +88,28 @@ entity Bot:
     var iframes = 0.0
     var team = 10
     var kills = 0
+    var damage = 0.0
     var died_at = 0.0
     var last_hit_by = nil
-    # --- arms ---
-    var gun = 1
+    var dropped = false           # spilled its belongings yet
+    # --- arms: it starts with the wrench ---
+    var gun = 0
     var rarity = 0
-    var mag = 12
+    var mag = 0
     var fire_cd = 0.0
     var reload_t = 0.0
-    var cells = 1
+    var cells = 0
     var channel = 0.0
+    # --- the round ---
+    var phase = "aboard"
+    var barge = nil
+    var target = vec3(0, 0, 0)    # where it means to land
+    var offset = vec3(0, 0, 0)    # its spot on the barge's deck
     # --- mind ---
-    var mode = "roam"
+    var mode = "loot"
     var goal = vec3(0, 0, 0)
     var foe = nil
+    var prize = nil               # the chest or weapon it is after
     var think_t = 0.0             # seconds until it looks around again
     var react_t = 0.0             # seconds before it opens fire on a new foe
     var strafe = 1.0              # which way it circles
@@ -89,12 +122,21 @@ entity Bot:
         glow: (1.0, 0.9, 0.8) * hurt * 2.5
 
     function update(dt):
+        hurt = math.max(0.0, hurt - dt * 5.0)
+        if phase == "aboard":
+            ride()
+            return
+        if phase == "glide":
+            glide(dt)
+            return
         if body < 0:
             body = physics.character(pos + vec3(0, tuning.BODY_HEIGHT / 2, 0), tuning.BODY_HEIGHT, tuning.BODY_RADIUS)
             think_t = random.float() * 0.2
             goal = pos
-        hurt = math.max(0.0, hurt - dt * 5.0)
         if not alive:
+            if not dropped:
+                dropped = true
+                loot.drop_belongings(self, gun, rarity, cells)
             mesh_anim.play(self, "death", false)
             vel = vec3(0, 0, 0)
             if combat.time_now() - died_at > 5.0:
@@ -115,36 +157,90 @@ entity Bot:
             fight(dt)
         elif mode == "heal":
             heal(dt)
+        elif mode == "loot":
+            hunt(dt)
         else:
             roam(dt)
         move(dt)
         animate()
 
+    # Aboard: hidden on the deck until it leaps near its target.
+    function ride():
+        if barge == nil:
+            phase = "glide"
+            return
+        pos = barge.pos + offset
+        let dx = target.x - pos.x
+        let dz = target.z - pos.z
+        let ahead = dx * barge.dir.x + dz * barge.dir.z
+        # Leap once the target is abeam (or behind), or as the barge leaves.
+        if ahead < 8.0 or barge.time_left() <= 0.0:
+            phase = "glide"
+            vel = barge.dir * barge.speed * 0.5
+
+    function glide(dt):
+        let to = target - pos
+        let d = math.sqrt(to.x * to.x + to.z * to.z)
+        var want = vec3(0, 0, 0)
+        if d > 1.0:
+            want = vec3(to.x / d, 0, to.z / d) * tuning.GLIDE_SPEED
+        vel = vel + (want - vel) * math.min(1.0, dt * 2.5)
+        let next = pos + vel * dt - vec3(0, tuning.GLIDE_FALL * dt, 0)
+        let lim = tuning.ISLAND_HALF - 5.0
+        pos = vec3(math.clamp(next.x, -lim, lim), next.y, math.clamp(next.z, -lim, lim))
+        if vel.x * vel.x + vel.z * vel.z > 0.5:
+            heading = math.atan2(vel.x, vel.z)
+        mesh_anim.play(self, "glide", true)
+        if pos.y <= 0.0:
+            pos = vec3(pos.x, 0.0, pos.z)
+            if not world.clear_ground(pos.x, pos.z, 0.6):
+                # Over a building: drift toward the middle until clear.
+                let c = math.max(1.0, math.sqrt(pos.x * pos.x + pos.z * pos.z))
+                target = vec3(pos.x - pos.x / c * 6.0, 0, pos.z - pos.z / c * 6.0)
+            if world.clear_ground(pos.x, pos.z, 0.6):
+                phase = "ground"
+                vel = vel * 0.3
+                spawn combat.LandDust at pos
+
     # Who can it see? The nearest enemy within sight that a ray from its
-    # eyes reaches; and if it can see none, whether it should heal.
+    # eyes reaches; and if it can see none, what it should do instead.
     function look_around():
         var best = nil
-        var best_d = tuning.BOT_SIGHT
+        var best_d = tuning.BOT_SIGHT * sight_scale
+        # Whoever just hurt it is worth turning on, however far.
+        if last_hit_by != nil and hurt > 0.0 and last_hit_by.alive:
+            best_d = tuning.BOT_SIGHT
         for a in combat.actors:
-            if a.alive and a.team != team:
+            if a.alive and a.team != team and a.phase == "ground":
                 let dx = a.pos.x - pos.x
                 let dz = a.pos.z - pos.z
                 let d = math.sqrt(dx * dx + dz * dz)
                 if d < best_d and sees(a, d):
                     best = a
                     best_d = d
+        # Unarmed bots only fight up close, and not someone with a gun:
+        # they'd rather find one.
+        if best != nil and gun == 0 and (best_d > 5.0 or best.slot_is_gun()):
+            best = nil
         if best != nil:
             if foe == nil or mode != "fight":
-                react_t = 0.55 - skill * 0.4
+                react_t = tuning.BOT_REACT * (1.0 - skill * 0.6)
             foe = best
             mode = "fight"
             channel = 0.0
-        else:
-            foe = nil
-            if hp + shield < 90.0 and cells > 0 and shield < 100.0:
-                mode = "heal"
-            elif mode != "heal":
-                mode = "roam"
+            return
+        foe = nil
+        if mode == "heal":
+            return
+        if hp + shield < 90.0 and cells > 0 and shield < 100.0:
+            mode = "heal"
+        elif outside_arena():
+            mode = "roam"
+            goal = roam_goal(pos)
+        elif want_loot():
+            mode = "loot"
+        elif mode != "roam":
+            mode = "roam"
 
     function sees(a, d):
         let eye = pos + vec3(0, 1.3, 0)
@@ -152,6 +248,72 @@ entity Bot:
         let dir = to * (1.0 / math.max(0.01, math.length(to)))
         let hit = physics.raycast(eye + dir * 0.5, dir, d)
         return hit == nil or hit.distance > d - 1.4
+
+    function outside_arena():
+        let dx = pos.x - arena_center.x
+        let dz = pos.z - arena_center.z
+        return dx * dx + dz * dz > arena_radius * arena_radius
+
+    # Is there something worth fetching nearby?
+    function want_loot():
+        if prize != nil and loot.gone(prize):
+            prize = nil
+        if prize != nil:
+            return true
+        let l = loot.nearest_loot(pos, 22.0)
+        if l != nil and better(l):
+            prize = l
+            return true
+        if gun == 0 or cells < 2:
+            let c = loot.nearest_chest(pos, 30.0)
+            if c != nil:
+                prize = c
+                return true
+        return false
+
+    # Would it rather have this than what it has?
+    function better(l):
+        if l.kind == loot.WEAPON:
+            if gun == 0:
+                return true
+            return l.rarity > rarity or (l.rarity == rarity and weapons.damage_of(l.gun, l.rarity) / weapons.interval_of(l.gun) > weapons.damage_of(gun, rarity) / weapons.interval_of(gun))
+        if l.kind == loot.CELL:
+            return cells < 3
+        return false
+
+    # Walk to the prize; take it or open it on arrival.
+    function hunt(dt):
+        if prize == nil or loot.gone(prize):
+            prize = nil
+            mode = "roam"
+            return
+        let to = prize.pos - pos
+        let d = math.sqrt(to.x * to.x + to.z * to.z)
+        if d < 1.8:
+            if prize.is_chest:
+                loot.open_chest(prize)
+            else:
+                take(prize)
+            prize = nil
+            mode = "roam"
+            return
+        if stuck_t > 1.5:
+            prize = nil
+            mode = "roam"
+            return
+        steer_toward(vec3(to.x / d, 0, to.z / d) * tuning.WALK_SPEED, dt)
+        heading = math.atan2(to.x, to.z)
+
+    function take(l):
+        if l.kind == loot.WEAPON:
+            if gun > 0:
+                loot.spill(pos, loot.WEAPON, gun, rarity, 0)
+            gun = l.gun
+            rarity = l.rarity
+            mag = weapons.magazine_of(gun, rarity)
+        elif l.kind == loot.CELL:
+            cells += 1
+        loot.take(l)
 
     # Walk toward the goal; pick a new one when it gets there or sticks.
     function roam(dt):
@@ -184,17 +346,17 @@ entity Bot:
                 strafe = -strafe
         want = want + vec3(-fwd.z, 0, fwd.x) * strafe * (0.4 + skill * 0.5)
         steer_toward(want * tuning.WALK_SPEED, dt)
-        # Out of rounds: reload.
+        # Out of rounds: reload (bots carry enough spares).
         let need = weapons.magazine_of(gun, rarity)
         if need > 0 and mag <= 0 and reload_t <= 0.0:
             reload_t = weapons.reload_of(gun)
         if react_t <= 0.0 and fire_cd <= 0.0 and reload_t <= 0.0 and d < weapons.range_of(gun) * 1.05:
             # Aim error shrinks with skill, grows with distance.
-            let miss = (1.0 - skill) * 0.16 + d * 0.002
+            let miss = (1.0 - skill * 0.8) * tuning.BOT_AIM_ERROR + d * 0.004
             let yaw = heading + (random.float() * 2.0 - 1.0) * miss
-            let target = foe.pos + vec3((random.float() - 0.5) * 2.0 * (1.0 - skill), 0, (random.float() - 0.5) * 2.0 * (1.0 - skill))
-            combat.fire(self, gun, rarity, muzzle(), yaw, target)
-            fire_cd = weapons.interval_of(gun) * (1.25 - skill * 0.25)
+            let aim_at = foe.pos + vec3((random.float() - 0.5) * 2.0 * (1.0 - skill), 0, (random.float() - 0.5) * 2.0 * (1.0 - skill))
+            combat.fire(self, gun, rarity, muzzle(), yaw, aim_at)
+            fire_cd = weapons.interval_of(gun) * (tuning.BOT_FIRE_SLOWDOWN - skill * (tuning.BOT_FIRE_SLOWDOWN - 1.0))
             if need > 0:
                 mag -= 1
             else:
@@ -244,10 +406,14 @@ entity Bot:
             mesh_anim.play(self, "channel", true)
         elif mesh_anim.current(self).clip == "melee" and fire_cd > 0.15:
             mesh_anim.play(self, "melee", false)
-        elif weapons.kind_of(gun) == weapons.MELEE:
+        elif gun == 0:
             mesh_anim.blend_space(self, ["idle", "run"], [0.0, tuning.WALK_SPEED], math.length(vel))
         else:
             mesh_anim.blend_space(self, ["idle_armed", "run_armed"], [0.0, tuning.WALK_SPEED], math.length(vel))
+
+    # Holding a gun (not the wrench)? Asked of rivals and the keeper alike.
+    function slot_is_gun():
+        return gun > 0
 
     function muzzle():
         return pos + vec3(math.sin(heading) * 0.62, 0.95, math.cos(heading) * 0.62)

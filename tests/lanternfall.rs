@@ -73,6 +73,39 @@ impl Game {
         self.run(1, &[], &[]);
     }
 
+    /// The training yard: no round, no rivals; the keeper on the ground
+    /// south of the vault (0, 0, 24) with a pistol, five dummies further
+    /// south (z = 34), the middle one unshielded.
+    fn practice(&mut self) {
+        self.exec(concat!(
+            "stage = \"practice\"
+",
+            "if barge != nil:
+    barge.gone()
+    barge = nil
+",
+            "me.phase = \"ground\"
+me.pos = vec3(0, 0, 24)
+",
+            "me.guns = [0, 1, -1]
+me.mag = [0, 12, 0]
+me.reserve = 60
+me.slot = 1
+me.cells = 2
+",
+            "for i in 0..<5:
+    let d = spawn combat.Dummy at vec3(-8.0 + i * 4.0, 0, 34.0)
+    d.turn = 3.14
+    if i == 2:
+        d.shield = 0.0
+",
+        ));
+        self.no_rivals();
+        self.exec("var everyone = [d for d in entities.of(combat.Dummy)]
+everyone.append(me)
+combat.actors = everyone");
+    }
+
     fn num(&mut self, expr: &str) -> f64 {
         let s = self.probe(expr);
         s.parse().unwrap_or_else(|_| panic!("{expr} = {s}"))
@@ -82,7 +115,7 @@ impl Game {
 #[test]
 fn the_island_loads_and_runs() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     // The island is populated: blocks, lanterns, props.
     assert!(g.num("entities.count(world.Block)") >= 30.0);
     assert!(g.num("entities.count(world.LanternPost)") >= 20.0);
@@ -97,7 +130,7 @@ fn the_island_loads_and_runs() {
 #[test]
 fn the_keeper_walks_and_walls_stop_it() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     g.run(30, &[], &[]);
     let z0 = g.num("me.pos.z");
     // W walks north (-z) at walking speed.
@@ -118,7 +151,7 @@ fn the_keeper_walks_and_walls_stop_it() {
 #[test]
 fn the_keeper_faces_the_cursor_and_rolls() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     g.run(20, &[], &[]);
     // The cursor is ahead (north, -z) of the keeper: it faces about pi.
     let h = g.num("me.heading");
@@ -148,7 +181,7 @@ impl Game {
 #[test]
 fn the_pistol_hits_a_dummy_and_runs_dry() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     // The dummies stand south of the keeper (+z, toward the camera): aim
     // straight down the screen at the middle one, which has no shield.
     g.point(0.5, 0.9);
@@ -174,7 +207,7 @@ fn the_pistol_hits_a_dummy_and_runs_dry() {
 #[test]
 fn shields_soak_first_and_crack() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     g.run(5, &[], &[]);
     g.probe("combat.hurt(entities.of(combat.Dummy)[0], 30.0, me, vec3(0, 0, 0))");
     assert_eq!(g.num("entities.of(combat.Dummy)[0].shield"), 20.0);
@@ -188,7 +221,7 @@ fn shields_soak_first_and_crack() {
 #[test]
 fn a_mortar_shell_lands_and_bursts() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     g.run(5, &[], &[]);
     // Lob one at the middle dummies from the keeper.
     g.probe("combat.lob(me, me.pos + vec3(0, 1, 0), vec3(0, 0, 34), 64.0)");
@@ -202,7 +235,7 @@ fn a_mortar_shell_lands_and_bursts() {
 #[test]
 fn starcall_falls_where_you_point() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     g.point(0.5, 0.9);
     g.run(10, &[], &[]);
     g.run(1, &[], &["q"]);
@@ -215,7 +248,7 @@ fn starcall_falls_where_you_point() {
 #[test]
 fn holding_f_turns_a_cell_into_shield() {
     let mut g = Game::new();
-    g.no_rivals();
+    g.practice();
     g.run(10, &[], &[]);
     g.run(170, &["f"], &[]);
     assert_eq!(g.num("me.shield"), 25.0);
@@ -279,4 +312,135 @@ fn the_rivals_fight_each_other() {
     eprintln!("after 3 min: {alive} bots alive, {feed} kills; {per_tick:.3} ms per tick (tick + render queue; debug builds are ~30x slower)");
     assert!(feed >= 3.0, "the rivals killed each other: {feed} kills");
     assert!(alive < 31.0, "some fell: {alive} alive");
+}
+
+// --- Lanternfall G4: the round ---
+
+#[test]
+fn a_round_starts_aboard_and_the_keeper_drops_in() {
+    let mut g = Game::new();
+    assert_eq!(g.probe("stage"), "barge");
+    assert_eq!(g.probe("me.phase"), "aboard");
+    assert_eq!(g.num("entities.count(bots.Bot)"), 31.0);
+    assert!(g.num("entities.count(loot.Chest)") >= 50.0, "chests are out");
+    // Ride a while, then leap: the keeper glides down and lands.
+    g.run(120, &[], &[]);
+    g.run(1, &[], &["space"]);
+    assert_eq!(g.probe("me.phase"), "glide");
+    g.run(60 * 9, &["w"], &[]);
+    assert_eq!(g.probe("me.phase"), "ground", "landed: at {}", g.probe("me.pos"));
+    assert!(g.num("me.pos.y").abs() < 0.3);
+    // Once everyone is down the round is on and the Hush starts.
+    g.run(60 * 25, &[], &[]);
+    assert_eq!(g.probe("stage == \"playing\" or stage == \"over\""), "true");
+    assert_eq!(g.probe("hush.running"), "true");
+}
+
+#[test]
+fn a_chest_spills_loot_the_keeper_can_take() {
+    let mut g = Game::new();
+    g.practice();
+    g.exec("me.guns = [0, -1, -1]\nme.slot = 0\nlet c = spawn loot.Chest at me.pos + vec3(1.2, 0, 0)\nc.tier = 3");
+    g.run(5, &[], &[]);
+    assert_eq!(g.probe("me.prompt"), "E  open chest", "at {} with {} loot near", g.probe("me.pos"), g.probe("entities.count(loot.Loot)"));
+    g.run(1, &[], &["e"]);
+    assert_eq!(g.num("[c for c in entities.of(loot.Chest) if c.opened].length"), 1.0, "the chest opened");
+    g.run(60, &[], &[]);
+    assert!(g.num("entities.count(loot.Loot)") >= 2.0, "it spilled loot");
+    // Walk around the chest until the weapon's in reach, then take it.
+    let mut took = false;
+    for _ in 0..40 {
+        if g.probe("me.prompt").starts_with("E  take") {
+            g.run(1, &[], &["e"]);
+            took = true;
+            break;
+        }
+        g.exec("for l in entities.of(loot.Loot):\n    if l.kind == loot.WEAPON:\n        me.aim = l.pos");
+        g.run(4, &["d"], &[]);
+    }
+    if !took {
+        // Spilled out of the keeper's path: put it at its feet.
+        g.exec("for l in entities.of(loot.Loot):\n    if l.kind == loot.WEAPON:\n        l.pos = vec3(me.pos.x, 0.35, me.pos.z)");
+        g.run(2, &[], &[]);
+        g.run(1, &[], &["e"]);
+    }
+    assert!(g.num("me.guns[1]") > 0.0, "a gun in slot 2: {}", g.probe("me.guns"));
+    assert!(g.num("me.mag[1]") > 0.0, "loaded");
+}
+
+#[test]
+fn the_vault_opens_in_the_third_minute() {
+    let mut g = Game::new();
+    g.exec("stage = \"playing\"\nround_time = 179.9");
+    assert_eq!(g.probe("gate_open"), "false");
+    g.run(12, &[], &[]);
+    assert_eq!(g.probe("gate_open"), "true");
+    assert_eq!(g.probe("hud.banners[hud.banners.length - 1][0]"), "THE SIGNAL VAULT IS OPEN");
+}
+
+#[test]
+fn a_round_plays_out_to_one_left_standing() {
+    let mut g = Game::new();
+    // Ride until everyone has dropped, then step out of the fight.
+    g.run(60 * 40, &[], &[]);
+    assert_eq!(g.probe("anyone_aboard()"), "false", "everyone dropped");
+    g.exec("me.alive = false");
+    g.run(2, &[], &[]);
+    assert_eq!(g.probe("stage"), "over");
+    // The bots fight on as the Hush closes; well within a long round,
+    // at most one is left.
+    let start = std::time::Instant::now();
+    let mut minutes = 0;
+    while minutes < 12 && g.num("[b for b in entities.of(bots.Bot) if b.alive].length") > 1.0 {
+        g.run(60 * 60, &[], &[]);
+        minutes += 1;
+    }
+    let left = g.num("[b for b in entities.of(bots.Bot) if b.alive].length");
+    let per_tick = start.elapsed().as_secs_f64() * 1000.0 / (f64::from(minutes.max(1)) * 3600.0);
+    eprintln!("round over after ~{minutes} more minutes: {left} left; hush phase {}; {per_tick:.3} ms/tick", g.probe("hush.phase"));
+    assert!(left <= 1.0, "one (or none) left after {minutes} minutes: {left}");
+}
+
+#[test]
+fn play_again_starts_a_fresh_round() {
+    let mut g = Game::new();
+    g.run(30, &[], &[]);
+    g.exec("me.alive = false\nstage = \"over\"");
+    g.run(1, &[], &["r"]);
+    assert_eq!(g.probe("stage"), "barge");
+    assert_eq!(g.probe("me.phase"), "aboard");
+    assert_eq!(g.probe("me.alive"), "true");
+    assert_eq!(g.num("entities.count(bots.Bot)"), 31.0);
+    assert_eq!(g.num("combat.feed.length"), 0.0);
+}
+
+/// A round in play, rendered for eyes-on review
+/// (`target/lanternfall/round.png`): landed, the Hush closing, loot about.
+#[test]
+fn a_round_renders() {
+    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    let mut g = Game::new();
+    g.input.set_view(960, 540);
+    g.run(60 * 40, &[], &[]);
+    // Fast-forward into the first shrink, and open the nearest chest.
+    g.exec("hush.timer = 1.0\nlet c = loot.nearest_chest(me.pos, 60.0)\nif c != nil:\n    loot.open_chest(c)\n    me.pos = me.pos");
+    g.run(60 * 6, &[], &[]);
+    let mut assets = twec::play3d::NativeAssets::default();
+    for _ in 0..200 {
+        twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+        if assets.pending() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+    let rgba = renderer.read_pixels().expect("pixels");
+    std::fs::create_dir_all("target/lanternfall").unwrap();
+    image::save_buffer("target/lanternfall/round.png", &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
 }

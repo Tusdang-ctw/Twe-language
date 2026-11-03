@@ -1,0 +1,137 @@
+# @task: Lanternfall round module
+# @inputs: none
+# @expected: the lantern barge crossing the island, the drop, and the Hush — a violet wall closing in over five phases and hurting anyone outside it
+# @category: 3d
+# @difficulty: medium
+#
+# Lanternfall — the shape of a round.
+#
+# A round starts aboard the lantern barge, which crosses the island on a
+# random line; everyone leaps off somewhere along it and glides down.
+# Once they are down the Hush — a violet mist wall — starts to close:
+# five phases, each a wait and then a shrink onto a smaller circle
+# inside the last, hurting anyone outside it more each phase.
+
+import "tuning"
+import "combat"
+
+# (wait seconds, shrink seconds, end radius, damage per second outside)
+let PHASES = [
+    (70.0, 45.0, 74.0, 1.0),
+    (55.0, 40.0, 46.0, 2.0),
+    (40.0, 32.0, 25.0, 4.0),
+    (30.0, 28.0, 12.0, 7.0),
+    (20.0, 25.0, 0.0, 12.0),
+]
+
+entity Barge:
+    var pos = vec3(0, 34, 0)
+    var dir = vec3(1, 0, 0)
+    var speed = 15.0
+    var age = 0.0
+    var light_handle = -1
+    look:
+        mesh: "assets/barge.glb"
+        facing: math.atan2(dir.x, dir.z)
+        scale: 1.0
+
+    function update(dt):
+        age += dt
+        pos = pos + dir * speed * dt
+        if light_handle < 0:
+            light_handle = light.add(pos, (2.6, 1.5, 0.7, 1.0), 22.0)
+        light.set(light_handle, pos - vec3(0, 2.0, 0), (2.6, 1.5, 0.7, 1.0), 22.0)
+
+    # Seconds until it leaves the island (everyone still aboard drops).
+    function time_left():
+        let ahead = math.dot(vec3(-pos.x, 0, -pos.z), dir)
+        return (ahead + tuning.ISLAND_HALF * 0.95) / speed
+
+    function gone():
+        if light_handle >= 0:
+            light.remove(light_handle)
+        despawn self
+
+# A barge on a random line across the island, passing near the middle.
+function launch_barge():
+    let a = random.float() * 6.283
+    let dir = vec3(math.cos(a), 0, math.sin(a))
+    let side = vec3(-dir.z, 0, dir.x) * ((random.float() * 2.0 - 1.0) * 30.0)
+    let start = side - dir * (tuning.ISLAND_HALF + 25.0)
+    let b = spawn Barge at vec3(start.x, 34.0, start.z)
+    b.dir = dir
+    return b
+
+# The Hush: the safe circle now, the circle it closes onto, and its wall.
+entity Hush:
+    var pos = vec3(0, 0, 0)       # the wall's centre (the circle now)
+    var radius = 150.0
+    var from_center = vec3(0, 0, 0)
+    var from_radius = 150.0
+    var next_center = vec3(0, 0, 0)
+    var next_radius = 150.0
+    var phase = -1                # -1 before it starts; 0..4; 5 when it has closed
+    var waiting = true
+    var timer = 0.0               # seconds left in the current wait or shrink
+    var dps = 0.0
+    var tick_t = 0.0
+    var running = false
+    look:
+        mesh: "assets/hush_wall.glb"
+        scale: if running: vec3(radius, 60.0, radius) else: vec3(0.001, 0.001, 0.001)
+        tint: (0.55, 0.3, 1.0, 0.26)
+        glow: (0.55, 0.25, 1.0) * 1.4
+
+    function update(dt):
+        if not running:
+            return
+        timer -= dt
+        if waiting:
+            if timer <= 0.0:
+                waiting = false
+                timer = PHASES[phase][1]
+        else:
+            let total = PHASES[phase][1]
+            let k = math.clamp(1.0 - timer / total, 0.0, 1.0)
+            pos = from_center + (next_center - from_center) * k
+            radius = from_radius + (next_radius - from_radius) * k
+            if timer <= 0.0:
+                next_phase()
+        # Outside hurts, twice a second, through shields.
+        tick_t -= dt
+        if tick_t <= 0.0:
+            tick_t = 0.5
+            for a in combat.actors:
+                if a.alive and outside(a.pos):
+                    combat.storm_hurt(a, dps * 0.5)
+
+    function start():
+        running = true
+        phase = -1
+        from_center = pos
+        from_radius = radius
+        next_phase()
+
+    # The next circle: smaller, inside the current one.
+    function next_phase():
+        phase += 1
+        from_center = pos
+        from_radius = radius
+        if phase >= PHASES.length:
+            phase = PHASES.length - 1
+            timer = 999.0
+            return
+        let r = PHASES[phase][2]
+        let slack = math.max(0.0, radius - r) * 0.8
+        let a = random.float() * 6.283
+        let d = math.sqrt(random.float()) * slack
+        next_center = vec3(pos.x + math.cos(a) * d, 0, pos.z + math.sin(a) * d)
+        next_radius = r
+        dps = PHASES[phase][3]
+        waiting = true
+        timer = PHASES[phase][0]
+
+    function outside(p):
+        let dx = p.x - pos.x
+        let dz = p.z - pos.z
+        return dx * dx + dz * dz > radius * radius

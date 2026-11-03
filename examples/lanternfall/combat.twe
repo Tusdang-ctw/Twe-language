@@ -223,6 +223,8 @@ function hurt(t, amount, from, at):
     t.hp = t.hp - left
     t.hurt = 1.0
     t.last_hit_by = from
+    if from != nil:
+        from.damage = from.damage + amount
     let tint = if to_shield > 0.0 and left <= 0.0: (0.5, 0.8, 1.0) else: (1.0, 0.92, 0.55)
     fx.damage_number(at + vec3(0, 1.4, 0), math.floor(amount), tint)
     if t.hp <= 0.0:
@@ -250,6 +252,35 @@ particles ShieldShards:
         p.velocity -= (0.0, 9.0, 0.0) * dt
         p.pos += p.velocity * dt
         p.color = (0.45, 0.8, 1.0, 1.0 - p.age_ratio)
+
+# The Hush's harm: through shields, straight off health.
+function storm_hurt(t, amount):
+    if not t.alive:
+        return
+    t.hp = t.hp - amount
+    t.hurt = math.max(t.hurt, 0.5)
+    fx.damage_number(t.pos + vec3(0, 1.6, 0), math.ceil(amount), (0.75, 0.5, 1.0))
+    if t.hp <= 0.0:
+        t.hp = 0.0
+        t.alive = false
+        t.died_at = time_now()
+        feed.append(("the Hush", t.name, false, t.team == 1, time_now()))
+
+particles LandDust:
+    count: 26
+    lifetime: 0.6
+    collide: true
+    on_spawn(p):
+        let a = random.float() * 6.283
+        let out = 2.5 + random.float() * 2.5
+        p.velocity = (math.cos(a) * out, 0.4 + random.float() * 0.8, math.sin(a) * out)
+        p.color = (0.55, 0.5, 0.45, 0.8)
+        p.size = 0.1 + random.float() * 0.1
+    on_update(p, dt):
+        p.velocity *= 1.0 - dt * 3.5
+        p.pos += p.velocity * dt
+        p.color = (0.55, 0.5, 0.45, 0.8 * (1.0 - p.age_ratio))
+        p.size = (0.1 + p.age_ratio * 0.25)
 
 # The simulation clock, for "when did this die".
 function time_now():
@@ -471,7 +502,9 @@ entity Dummy:
     var hurt = 0.0
     var iframes = 0.0
     var team = 2
+    var phase = "ground"
     var name = "Dummy"
+    var damage = 0.0
     var kills = 0
     var died_at = 0.0
     var last_hit_by = nil
@@ -481,6 +514,9 @@ entity Dummy:
         mesh: "assets/folk_moss.glb"
         facing: turn
         glow: (1.0, 0.9, 0.8) * hurt * 2.5
+
+    function slot_is_gun():
+        return false
 
     function update(dt):
         hurt = math.max(0.0, hurt - dt * 5.0)
