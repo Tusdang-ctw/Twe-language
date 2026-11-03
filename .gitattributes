@@ -31,3 +31,9 @@
 *.bin binary
 *.ktx2 binary
 *.png binary
+# Lanternfall G5: HDR skies and audio are binary too. A Radiance file is a
+# text header over raw RGBE bytes with no NULs, so `text=auto` took it for
+# text and a Windows checkout could rewrite its 0x0A bytes as CRLF.
+*.hdr binary
+*.wav binary
+*.ogg binary
