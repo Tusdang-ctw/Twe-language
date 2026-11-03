@@ -12,6 +12,10 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Added (Lanternfall engine enablers)
+- **`camera.project` / `camera.ray` / `camera.ground_point` / `camera.fov`** (Lanternfall E1, 2026-11-03) — world <-> HUD mapping that matches the renderer exactly, for mouse aim, name tags and floating numbers. The 3D HUD is now 480 units tall and as wide as the window's aspect (640×480 at 4:3, unchanged); `screen.aspect` is new. Replay logs move to `TWE-REPLAY v3` (+ view size); v2/v1 still play. See `docs/changes/2026-11-03-web3d-camera-project.md`.
+- **Multi-file games build and ship** (Lanternfall E5, 2026-11-03) — `twec build` (web, `.exe`, `.twebundle`) packs every imported module into the bundle and built games load them from it; a missing module fails the build at its `import`. `spawn module.Class` spawns an imported module's entity. A module whose top level spawns, declares a scene or registers a top-level handler is now refused at load (those silently never ran). See `docs/changes/2026-11-03-web3d-multi-file-builds.md`.
+
 ### Added (game-feature depth, M11)
 - **BCn KTX2 textures upload compressed** (web3d, 2026-10-08) — a `.ktx2` holding block-compressed BC1–BC7 texture data now uploads straight to the GPU, compressed, on a device with `TEXTURE_COMPRESSION_BC` (desktop), with no CPU decode — saving the decode and ~4–8× the VRAM. `texture(path)` detects KTX2 automatically; supercompressed / universal / non-BC files get a clear `twec asset transcode` pointer. See `docs/changes/2026-10-08-web3d-bcn-ktx2-upload.md`.
 - **Physics in the browser** (web3d, 2026-10-08) — the `physics.*` surface (rapier3d) now runs on the web target, not just native. rapier3d is pure Rust and compiles to wasm, so browser 3D games get the same physics world as native; the step runs in the shared `host3d::sim_tick`. `examples/action3d`'s rope bridge now sways in the browser (its `not assets.is_browser()` guards are gone). See `docs/changes/2026-10-08-web3d-wasm-physics.md`.

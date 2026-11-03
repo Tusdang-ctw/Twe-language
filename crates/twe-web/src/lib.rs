@@ -253,12 +253,19 @@ async fn run() -> Result<(), String> {
     twec::save::install_web_storage(storage_get, storage_set);
     let tokens = twec::lexer::lex(&source).map_err(|e| format!("main.twe:{e}"))?;
     let program = twec::parser::parse(&tokens).map_err(|e| format!("main.twe:{e}"))?;
-    let mut env = twec::value::Env::new();
-    twec::stdlib::install(&mut env);
     // web3d-M7: this host simulates compiled particles on the GPU.
-    env.gpu_particles = true;
-    twec::eval::run_top_level(&mut env, &program)
-        .map_err(|e| format!("main.twe: runtime error: {e}"))?;
+    let gpu = |env: &mut twec::value::Env| env.gpu_particles = true;
+    let mut env = if twec::module::has_imports(&program) {
+        // Lanternfall E5: the game's modules are in its bundle.
+        twec::module::prepare_entry_bundled(&source, &gpu)?
+    } else {
+        let mut env = twec::value::Env::new();
+        twec::stdlib::install(&mut env);
+        gpu(&mut env);
+        twec::eval::run_top_level(&mut env, &program)
+            .map_err(|e| format!("main.twe: runtime error: {e}"))?;
+        env
+    };
     flush_output(&mut env);
     // web3d-M6: a 2D game (no `look:`, nothing 3D in its first frame)
     // runs through the kernel canvas; a 3D game through the scene path.

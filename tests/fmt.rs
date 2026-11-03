@@ -202,3 +202,14 @@ fn fmt_check_and_in_place_are_mutually_exclusive() {
         "stderr did not flag the conflict: {err}"
     );
 }
+
+/// Lanternfall E5: `spawn module.Class` survives print → parse → print.
+#[test]
+fn spawn_of_a_module_class_round_trips() {
+    let src = "import \"units\"\nspawn units.Bot at vec3(1, 0, 2)\n";
+    let program = parser::parse(&lexer::lex(src).expect("lex")).expect("parse");
+    let printed = printer::print_program(&program);
+    assert!(printed.contains("spawn units.Bot at vec3(1, 0, 2)"), "{printed}");
+    let again = parser::parse(&lexer::lex(&printed).expect("lex")).expect("reparse");
+    assert_eq!(printer::print_program(&again), printed);
+}

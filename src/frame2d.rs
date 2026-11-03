@@ -54,6 +54,10 @@ pub fn load_source(src: &str, label: &str) -> Result<Env, String> {
 pub fn load_source_any(src: &str, label: &str) -> Result<Env, String> {
     let tokens = crate::lexer::lex(src).map_err(|e| format!("{label}:{e}"))?;
     let program = crate::parser::parse(&tokens).map_err(|e| format!("{label}:{e}"))?;
+    // Lanternfall E5: a shipped game's modules travel in its bundle.
+    if crate::module::has_imports(&program) && crate::bundle::has_active_bundle() {
+        return crate::module::prepare_entry_bundled(src, &|_| {});
+    }
     let mut env = Env::new();
     crate::stdlib::install(&mut env);
     crate::eval::run_top_level(&mut env, &program)

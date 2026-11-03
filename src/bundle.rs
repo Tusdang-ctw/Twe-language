@@ -580,6 +580,16 @@ pub fn clear_active_bundle() {
     *guard = None;
 }
 
+/// Lanternfall E5: is `path` an entry of the active bundle (no
+/// filesystem fallback)? The module loader resolves a bundled game's
+/// imports with it.
+pub fn bundle_has(path: &str) -> bool {
+    ACTIVE_BUNDLE
+        .lock()
+        .map(|g| g.as_ref().is_some_and(|r| r.has(path)))
+        .unwrap_or(false)
+}
+
 /// True when a bundle is installed.
 pub fn has_active_bundle() -> bool {
     ACTIVE_BUNDLE.lock().map(|g| g.is_some()).unwrap_or(false)

@@ -214,6 +214,18 @@ spawn Counter at (1, 0)
       (integer_literal)
       (integer_literal))))
 ==================
+spawn a module's class
+==================
+spawn bots.Bot at (1, 0)
+---
+(source_file
+  (spawn_statement
+    module: (identifier)
+    class: (identifier)
+    at: (tuple
+      (integer_literal)
+      (integer_literal))))
+==================
 despawn self
 ==================
 despawn self

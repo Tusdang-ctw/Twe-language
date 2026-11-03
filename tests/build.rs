@@ -1234,3 +1234,87 @@ fn scaffolding_targets_need_the_experimental_feature() {
     }
     assert!(!BuildTarget::Web.is_experimental());
 }
+
+// --- Lanternfall E5: multi-file games in bundles ---
+
+/// A three-file project: `main.twe` imports `ai/brain` (which imports
+/// `helpers` next to it) and `units` (which declares an entity).
+fn multi_file_project(name: &str) -> PathBuf {
+    let root = temp_project(name);
+    fs::create_dir_all(root.join("ai")).unwrap();
+    fs::write(
+        root.join("main.twe"),
+        "import \"ai/brain\"\nimport \"units\"\n\
+         print(\"{brain.think(20)}\")\n\
+         spawn units.Bot at vec3(1, 0, 0)\n\
+         print(\"{entities.count(units.Bot)}\")\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("ai/brain.twe"),
+        "import \"helpers\"\nfunction think(x):\n    return helpers.double(x) + 2\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("ai/helpers.twe"),
+        "function double(x):\n    return x * 2\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("units.twe"),
+        "entity Bot:\n    var pos = vec3(0, 0, 0)\n    function update(dt):\n        pos = pos\n",
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn multi_file_game_runs_from_its_bundle() {
+    let _guard = BUNDLE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = multi_file_project("multi_file");
+    let project = discover_project(&root).expect("discover");
+    validate_project(&project).expect("validate");
+    let bytes = encode_bundle_to_vec(&project, false, BuildTarget::Web, BuildConfig::Release)
+        .expect("bundle");
+    let reader = BundleReader::from_bytes(bytes).expect("read bundle");
+    let keys: Vec<String> = reader.keys().map(str::to_string).collect();
+    for key in ["main.twe", "ai/brain.twe", "ai/helpers.twe", "units.twe"] {
+        assert!(keys.iter().any(|k| k == key), "bundle lacks {key}: {keys:?}");
+    }
+    // The project folder is gone: everything must come from the bundle,
+    // as in the browser or a shipped .exe.
+    fs::remove_dir_all(&root).unwrap();
+    set_active_bundle(reader);
+    let src = String::from_utf8(read_asset_bytes("main.twe").unwrap()).unwrap();
+    let env = twec::frame2d::load_source_any(&src, "main.twe");
+    clear_active_bundle();
+    let env = env.expect("bundled game loads");
+    assert_eq!(env.out, "42\n1\n");
+}
+
+#[test]
+fn a_missing_import_fails_the_build_where_it_is_named() {
+    let root = temp_project("missing_import");
+    fs::write(root.join("main.twe"), "let x = 1\nimport \"nowhere\"\n").unwrap();
+    let project = discover_project(&root).expect("discover");
+    let err = validate_project(&project).expect_err("missing module");
+    assert!(err.contains("main.twe:2:1"), "{err}");
+    assert!(err.contains("nowhere"), "{err}");
+}
+
+#[test]
+fn a_module_that_spawns_at_its_top_level_is_refused() {
+    let root = temp_project("module_spawns");
+    fs::write(root.join("main.twe"), "import \"units\"\n").unwrap();
+    fs::write(
+        root.join("units.twe"),
+        "entity Bot:\n    var pos = vec3(0, 0, 0)\nspawn Bot\n",
+    )
+    .unwrap();
+    let src = fs::read_to_string(root.join("main.twe")).unwrap();
+    let Err(err) = twec::module::prepare_entry(&root.join("main.twe"), &src) else {
+        panic!("a module that spawns should be refused");
+    };
+    assert!(err.contains("spawns an entity"), "{err}");
+    assert!(err.contains("`spawn module.Class`"), "{err}");
+}

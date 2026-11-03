@@ -327,6 +327,7 @@ every_block := "every" expr ":" block
 match_expr := "match" expr ":" INDENT (match_arm)+ DEDENT
 match_arm := pattern ":" block
 transition := "->" identifier        # state transition; only legal inside `state`
+spawn_stmt := "spawn" (identifier ".")? identifier ("at" expr)?   # module.Class: Lanternfall E5
 ```
 
 ### 3.7 Type expressions
@@ -990,6 +991,7 @@ Available buttons: `a b x y lb rb lt rt start select dup ddown dleft dright`. Ax
 
 ```twe
 spawn Slime at (100.0, 200.0)          # creates a new instance
+spawn bots.Bot at vec3(0, 0, 5)         # a class an imported module declares (§9.2)
 despawn slime                           # removes it (fields still valid this frame)
 
 for s in entities.of(Slime):           # iterate live instances
@@ -1842,22 +1844,24 @@ A module's functions and methods resolve free names in **their own module's** gl
 ### 9.2 Imports
 
 ```twe
-import math
-import scene as s
-from inventory import Sword, Shield
+import "ai/brain"            # binds `brain`: brain.think(x), brain.SOME_CONST
+import "units" as u          # binds `u`
+spawn u.Bot at vec3(0, 0, 0) # spawn a class the module declares (Lanternfall E5)
 ```
 
-Imported names are resolved at compile time. There is no dynamic import in v0.1.
+`import "<path>" [as name]` binds the module as an object named after the path's last segment (or `name`); its top-level `let` / `var` / `function` / `entity` / `visual` / `particles` declarations are its fields. Modules are loaded, and their top levels run, before the importing file's, in dependency order; cycles are an error that names the chain. There is no dynamic import.
+
+**What a module may do at its top level.** A module's top level runs in its own environment, which nothing ticks or draws. So a module declares classes, functions and values; the main file owns the world. A module that spawns an entity, declares a `scene`, or registers a top-level `on update` / `on render` / `on X.death` handler is refused at load with an error saying so (Lanternfall E5; before, they silently never ran). `spawn module.Class` in the main file spawns a module's entity; its methods resolve free names in the module's globals (§9.1).
+
+*Not implemented:* the `import math` / `from inventory import Sword` forms sketched in earlier drafts.
 
 ### 9.3 Module path resolution
 
-Module paths resolve against:
+`import "a/b"` in `dir/file.twe` loads `dir/a/b.twe`: paths are relative to the importing file, with `/` separators; `..` and leading `/` are rejected. `twec run <dir>` also consults `twe.toml` dependency paths and search paths.
 
-1. The current project root (where `twe.toml` lives).
-2. The standard library.
-3. Project dependencies (in `twe.toml`).
+**Built games carry their modules** *(Lanternfall E5)*. `twec build` (`.exe`, `--target web`, `.twebundle`) packs every module the main file imports, transitively, into the game's bundle under its path relative to the project folder (`ai/brain.twe`), and a built game loads them from there — so a multi-file game runs the same in the browser and as a shipped `.exe` as under `twec play3d`. A missing module fails the build at the `import` that names it (`main.twe:2:1`); a module outside the project folder is a build error. Before, built games ignored imports ("single-file today").
 
-A package manager (`twec add <pkg>`) is deferred to v0.2.
+A package manager (`twec add <pkg>`) is deferred.
 
 ---
 

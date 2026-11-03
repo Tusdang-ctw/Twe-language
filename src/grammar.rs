@@ -173,7 +173,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         name: "spawn_stmt",
-        body: "'spawn' IDENT ('at' expr)? NEWLINE",
+        body: "'spawn' IDENT ('.' IDENT)? ('at' expr)? NEWLINE",
     },
     Rule {
         name: "despawn_stmt",

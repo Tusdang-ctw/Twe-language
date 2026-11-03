@@ -583,6 +583,75 @@ fn walk_assets(dir: &Path, root: &Path, out: &mut Vec<AssetEntry>) -> Result<(),
     Ok(())
 }
 
+/// The bundle's user-facing entries: `main.twe` first (so the runtime
+/// entry point is found in the same well-known place every time), then
+/// the modules it imports (Lanternfall E5), then the assets, each in
+/// bundle-key order.
+pub fn bundle_entries(project: &DiscoveredProject) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let main_bytes = fs::read(&project.main)
+        .map_err(|e| format!("cannot read '{}': {e}", project.main.display()))?;
+    let modules = module_entries(project)?;
+    let mut entries: Vec<(String, Vec<u8>)> =
+        Vec::with_capacity(project.assets.len() + modules.len() + 2);
+    entries.push(("main.twe".to_string(), main_bytes));
+    entries.extend(modules);
+    for asset in &project.assets {
+        if entries.iter().any(|(key, _)| *key == asset.bundle_key) {
+            continue; // a module kept under assets/
+        }
+        let bytes = fs::read(&asset.abs)
+            .map_err(|e| format!("cannot read '{}': {e}", asset.abs.display()))?;
+        entries.push((asset.bundle_key.clone(), bytes));
+    }
+    Ok(entries)
+}
+
+/// Lanternfall E5: every module `main.twe` imports, directly or not, as
+/// `(bundle key, source)` — the key is the module's path relative to
+/// the project root, which is where a bundled game's loader looks for
+/// it (`module::prepare_entry_bundled`). Imports resolve relative to
+/// the importing file, as they do under `twec play3d`; a missing module
+/// fails the build at the `import` that names it.
+pub fn module_entries(project: &DiscoveredProject) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let main_str = project.main.display().to_string();
+    let src =
+        fs::read_to_string(&project.main).map_err(|e| format!("cannot read '{main_str}': {e}"))?;
+    let tokens = crate::lexer::lex(&src).map_err(|e| format!("{main_str}:{e}"))?;
+    let program = crate::parser::parse(&tokens).map_err(|e| format!("{main_str}:{e}"))?;
+    if !crate::module::has_imports(&program) {
+        return Ok(Vec::new());
+    }
+    let graph = crate::module::load_from_path(&project.main, Some(&src)).map_err(|e| {
+        let mut msg = format!("{}:{}:{}: {}", e.source.display(), e.line, e.col, e.message);
+        if let Some(help) = e.help {
+            msg.push_str(&format!("
+  help: {help}"));
+        }
+        msg
+    })?;
+    let root = project.root.canonicalize().unwrap_or_else(|_| project.root.clone());
+    let mut out = Vec::with_capacity(graph.deps.len());
+    for module in graph.deps.values() {
+        let rel = module.canonical_path.strip_prefix(&root).map_err(|_| {
+            format!(
+                "module '{}' is outside the project folder '{}'; a built game carries only the files under it",
+                module.canonical_path.display(),
+                root.display()
+            )
+        })?;
+        let key = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let bytes = fs::read(&module.canonical_path)
+            .map_err(|e| format!("cannot read '{}': {e}", module.canonical_path.display()))?;
+        out.push((key, bytes));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
 /// Parse + typecheck `main.twe` so build failures are caught before
 /// any expensive bundling step. Mirrors the lex / parse / infer
 /// pipeline `twec types` runs. Returns the parsed program for
@@ -600,6 +669,8 @@ pub fn validate_project(project: &DiscoveredProject) -> Result<crate::ast::Progr
     // strict-gate flag (e.g. `--config release-strict`) lands when
     // a contributor wants it; not in scope for v0.6.
     let _bindings = crate::infer::infer_program(&program);
+    // Lanternfall E5: every imported module must load, too.
+    module_entries(project)?;
     Ok(program)
 }
 
@@ -1136,15 +1207,7 @@ pub fn encode_bundle_to_vec(
     target: BuildTarget,
     config: BuildConfig,
 ) -> Result<Vec<u8>, String> {
-    let main_bytes = fs::read(&project.main)
-        .map_err(|e| format!("cannot read '{}': {e}", project.main.display()))?;
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(project.assets.len() + 2);
-    entries.push(("main.twe".to_string(), main_bytes));
-    for asset in &project.assets {
-        let bytes = fs::read(&asset.abs)
-            .map_err(|e| format!("cannot read '{}': {e}", asset.abs.display()))?;
-        entries.push((asset.bundle_key.clone(), bytes));
-    }
+    let mut entries = bundle_entries(project)?;
     // Phase 12 session 10: append the provenance entry last so the
     // recorded `entry_count` (user-facing entries: main.twe + assets)
     // is the one truth.
@@ -1218,18 +1281,7 @@ pub fn write_bundle_with_options(
                 .map_err(|e| format!("cannot create '{}': {e}", parent.display()))?;
         }
     }
-    let main_bytes = fs::read(&project.main)
-        .map_err(|e| format!("cannot read '{}': {e}", project.main.display()))?;
-    // Bundle entry layout: `main.twe` first (so the runtime entry
-    // point is found in the same well-known place every time), then
-    // assets in their already-sorted bundle-key order.
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(project.assets.len() + 1);
-    entries.push(("main.twe".to_string(), main_bytes));
-    for asset in &project.assets {
-        let bytes = fs::read(&asset.abs)
-            .map_err(|e| format!("cannot read '{}': {e}", asset.abs.display()))?;
-        entries.push((asset.bundle_key.clone(), bytes));
-    }
+    let entries = bundle_entries(project)?;
     let mut file = fs::File::create(out_path)
         .map_err(|e| format!("cannot create '{}': {e}", out_path.display()))?;
     crate::bundle::encode_with_options(&mut file, &entries, opts)
@@ -1694,8 +1746,8 @@ pub fn find_web_runtime() -> Result<PathBuf, String> {
 /// textures synchronously, as they do natively (web3d-M4). Uncompressed:
 /// the page is served compressed by the web server anyway.
 ///
-/// Games are single-file today: `import` resolves modules on the
-/// filesystem, which the browser doesn't have.
+/// Lanternfall E5: the bundle also carries every module the game
+/// imports, so multi-file games run in the browser as they do natively.
 pub fn write_web_build(
     project: &DiscoveredProject,
     runtime_dir: &Path,

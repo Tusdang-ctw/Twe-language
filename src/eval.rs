@@ -2247,6 +2247,22 @@ fn lookup_name(env: &Env, name: &str) -> Option<Value> {
     env.get(name)
 }
 
+/// The class a `spawn` names: a bare name, or (Lanternfall E5)
+/// `module.Class` — a class an imported module declares.
+fn lookup_spawn_class(env: &Env, class: &str) -> Option<Value> {
+    match class.split_once('.') {
+        None => lookup_name(env, class),
+        Some((module, member)) => {
+            let m = lookup_name(env, module)?;
+            if !m.is_object() {
+                return None;
+            }
+            let field = m.as_object().borrow().fields.get(member).copied();
+            field
+        }
+    }
+}
+
 fn lookup_self_field(env: &Env, name: &str) -> Option<Value> {
     match env.self_value.as_ref() {
         Some(t) if t.is_instance() => t.with_instance(|inst| inst.borrow().get_field(name)),
@@ -2841,11 +2857,16 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<(), RuntimeError> {
             line,
             col,
         } => {
-            let class_val = lookup_name(env, class).ok_or_else(|| RuntimeError {
+            let class_val = lookup_spawn_class(env, class).ok_or_else(|| RuntimeError {
                 line: *line,
                 col: *col,
                 message: format!("class '{class}' is not defined"),
-                help: Some(format!("declare it with `entity {class}:` first")),
+                help: Some(match class.split_once('.') {
+                    Some((module, member)) => format!(
+                        "`{module}` must be an imported module that declares `entity {member}:`"
+                    ),
+                    None => format!("declare it with `entity {class}:` first"),
+                }),
             })?;
             let class_rc = if class_val.is_class() {
                 class_val.as_class()

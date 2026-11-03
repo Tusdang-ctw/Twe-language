@@ -367,6 +367,8 @@ module.exports = grammar({
 
     spawn_statement: $ => seq(
       'spawn',
+      // Lanternfall E5: `spawn bots.Bot` names a class from a module.
+      optional(seq(field('module', $.identifier), '.')),
       field('class', $.identifier),
       optional(seq('at', field('at', $._expression))),
       $._newline,

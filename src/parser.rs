@@ -358,7 +358,14 @@ impl<'a> Parser<'a> {
 
     fn parse_spawn(&mut self) -> Result<Stmt, ParseError> {
         let kw = self.bump().clone();
-        let class = self.expect_ident("expected class name after `spawn`")?;
+        let mut class = self.expect_ident("expected class name after `spawn`")?;
+        // Lanternfall E5: `spawn bots.Bot` — a class from an imported
+        // module, stored as the dotted path.
+        if matches!(self.peek().kind, TokenKind::Dot) {
+            self.bump();
+            let member = self.expect_ident("expected a class name after `spawn <module>.`")?;
+            class = format!("{class}.{member}");
+        }
         // Optional `at <expr>` — `at` is a contextual keyword here, lexed
         // as an Ident.
         let at = if matches!(&self.peek().kind, TokenKind::Ident(s) if s == "at") {

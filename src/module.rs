@@ -19,6 +19,7 @@
 //! source-level mistake in v0.7 and the type-system stability that
 //! Phase 13 promises depends on a DAG.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -129,7 +130,7 @@ impl Loader {
         let canonical = canonicalize_or(entry_path);
         let text = match source {
             Some(s) => s.to_string(),
-            None => std::fs::read_to_string(entry_path).map_err(|e| LoadError {
+            None => read_source(entry_path).map_err(|e| LoadError {
                 message: format!("failed to read entry file: {e}"),
                 help: None,
                 source: entry_path.to_path_buf(),
@@ -190,7 +191,7 @@ impl Loader {
                     continue;
                 }
 
-                let text = std::fs::read_to_string(&target).map_err(|e| LoadError {
+                let text = read_source(&target).map_err(|e| LoadError {
                     message: format!(
                         "failed to read module `{}` ({}): {e}",
                         path,
@@ -278,19 +279,19 @@ pub fn resolve_with_config(
             if segments.len() == 1 {
                 let mut candidate = joined.clone();
                 candidate.set_extension("twe");
-                if candidate.exists() {
+                if source_exists(&candidate) {
                     return Ok(canonicalize_or(&candidate));
                 }
                 tried.push(candidate);
                 let main_candidate = joined.join("main.twe");
-                if main_candidate.exists() {
+                if source_exists(&main_candidate) {
                     return Ok(canonicalize_or(&main_candidate));
                 }
                 tried.push(main_candidate);
             } else {
                 let mut candidate = joined.clone();
                 candidate.set_extension("twe");
-                if candidate.exists() {
+                if source_exists(&candidate) {
                     return Ok(canonicalize_or(&candidate));
                 }
                 tried.push(candidate);
@@ -306,7 +307,7 @@ pub fn resolve_with_config(
     }
     let mut with_ext = joined.clone();
     with_ext.set_extension("twe");
-    if with_ext.exists() {
+    if source_exists(&with_ext) {
         return Ok(canonicalize_or(&with_ext));
     }
     tried.push(with_ext);
@@ -319,7 +320,7 @@ pub fn resolve_with_config(
         }
         let mut candidate = joined.clone();
         candidate.set_extension("twe");
-        if candidate.exists() {
+        if source_exists(&candidate) {
             return Ok(canonicalize_or(&candidate));
         }
         tried.push(candidate);
@@ -351,7 +352,50 @@ fn parse_text(text: &str, file: &Path) -> Result<Program, LoadError> {
 }
 
 fn canonicalize_or(p: &Path) -> PathBuf {
+    if bundled() {
+        return PathBuf::from(bundle_key(p));
+    }
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+thread_local! {
+    /// Lanternfall E5: true while a bundled game's modules load — from
+    /// the active bundle (`twec build` output: a shipped `.exe`, the
+    /// browser), not the filesystem. Module paths are then bundle keys
+    /// (`main.twe`, `ai/brain.twe`).
+    static BUNDLED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn bundled() -> bool {
+    BUNDLED.with(Cell::get)
+}
+
+/// A module path as a bundle key: forward slashes, no `.` segments.
+fn bundle_key(p: &Path) -> String {
+    p.components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn source_exists(p: &Path) -> bool {
+    if bundled() {
+        crate::bundle::bundle_has(&bundle_key(p))
+    } else {
+        p.exists()
+    }
+}
+
+fn read_source(p: &Path) -> std::io::Result<String> {
+    if !bundled() {
+        return std::fs::read_to_string(p);
+    }
+    let bytes = crate::bundle::read_asset_bytes(&bundle_key(p))?;
+    String::from_utf8(bytes)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"))
 }
 
 pub fn canonical_key(p: &Path) -> String {
@@ -498,10 +542,48 @@ pub fn prepare_entry(path: &Path, src: &str) -> Result<crate::value::Env, String
     entry_env(&graph).map_err(|e| format!("{}: runtime error: {e}", path.display()))
 }
 
+/// Lanternfall E5: [`prepare_entry`] for a bundled game — the entry is
+/// the bundle's `main.twe` (source `src`) and its imports are read
+/// from the active bundle, where `twec build` packed them under their
+/// paths relative to the project root. `init` runs on every env before
+/// its top level (the browser shell turns on GPU particles with it).
+pub fn prepare_entry_bundled(
+    src: &str,
+    init: &dyn Fn(&mut crate::value::Env),
+) -> Result<crate::value::Env, String> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            BUNDLED.with(|b| b.set(false));
+        }
+    }
+    BUNDLED.with(|b| b.set(true));
+    let _reset = Reset;
+    let entry = Path::new("main.twe");
+    let graph = load_from_path(entry, Some(src)).map_err(|e| {
+        format!(
+            "{}:{}:{}: {}",
+            display_path(&e.source),
+            e.line,
+            e.col,
+            e.message
+        )
+    })?;
+    entry_env_with(&graph, init).map_err(|e| format!("main.twe: runtime error: {e}"))
+}
+
 /// Evaluate every dependency of `graph` in topological order (each in
 /// its own env, as a module object), then run the entry's top level
 /// in a fresh env that can import them. Returns that env.
 pub fn entry_env(graph: &ModuleGraph) -> Result<crate::value::Env, crate::value::RuntimeError> {
+    entry_env_with(graph, &|_| {})
+}
+
+/// [`entry_env`], with `init` run on each env before its top level.
+pub fn entry_env_with(
+    graph: &ModuleGraph,
+    init: &dyn Fn(&mut crate::value::Env),
+) -> Result<crate::value::Env, crate::value::RuntimeError> {
     let order = topo_order(graph);
     let mut module_cache: std::collections::HashMap<String, crate::tagged_value::TaggedValue> =
         std::collections::HashMap::new();
@@ -521,7 +603,9 @@ pub fn entry_env(graph: &ModuleGraph) -> Result<crate::value::Env, crate::value:
         // names in this module's globals, not the importer's.
         let module_value = empty_module_value();
         sub_env.current_module = Some(module_value);
+        init(&mut sub_env);
         crate::eval::run_top_level(&mut sub_env, &module.program)?;
+        refuse_module_world(&sub_env, module)?;
         fill_module_value(&module_value, &sub_env, &stdlib_names);
         module_cache.insert(key.clone(), module_value);
     }
@@ -530,8 +614,45 @@ pub fn entry_env(graph: &ModuleGraph) -> Result<crate::value::Env, crate::value:
     crate::stdlib::install(&mut env);
     env.module_cache = module_cache;
     env.current_source = Some(graph.entry.canonical_path.clone());
+    init(&mut env);
     crate::eval::run_top_level(&mut env, &graph.entry.program)?;
     Ok(env)
+}
+
+/// Lanternfall E5: a module's top level runs in its own env, which
+/// nothing ticks or draws — an entity it spawns, a scene it declares or
+/// an `on update` / `on render` / `on X.death` handler it registers
+/// would silently never run. Say so instead (Principle 3).
+fn refuse_module_world(
+    env: &crate::value::Env,
+    module: &LoadedModule,
+) -> Result<(), crate::value::RuntimeError> {
+    let what = if !env.active_entities.is_empty() {
+        Some("spawns an entity")
+    } else if env.active_scene.is_some() {
+        Some("declares a scene")
+    } else if env.on_update.is_some() || env.top_on_render.is_some() {
+        Some("declares a top-level `on update` / `on render` handler")
+    } else if !env.death_handlers.is_empty() {
+        Some("declares an `on X.death` handler")
+    } else {
+        None
+    };
+    match what {
+        None => Ok(()),
+        Some(what) => Err(crate::value::RuntimeError {
+            line: 1,
+            col: 1,
+            message: format!(
+                "module `{}` {what} at its top level, which only the main file's world runs",
+                module.logical_path
+            ),
+            help: Some(
+                "keep classes and functions in modules; spawn, declare scenes and handlers in the main file (`spawn module.Class` spawns a module's entity)"
+                    .to_string(),
+            ),
+        }),
+    }
 }
 
 fn display_path(p: &Path) -> String {
