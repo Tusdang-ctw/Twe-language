@@ -116,10 +116,11 @@ exactly those names. Reply with the complete program in one ```python fenced blo
 pub fn stdlib_listing() -> String {
     let mut by_cat: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for s in crate::stdlib::manifest() {
-        by_cat
-            .entry(s.category.clone())
-            .or_default()
-            .push(format!("{}({})", s.name, s.params.join(", ")));
+        by_cat.entry(s.category.clone()).or_default().push(format!(
+            "{}({})",
+            s.name,
+            s.params.join(", ")
+        ));
     }
     let mut out = String::from("## Every stdlib builtin (name and parameters)\n\n");
     for (cat, names) in by_cat {
@@ -136,7 +137,11 @@ pub fn system_prompt(lang: Lang, primer: bool) -> String {
         return HARNESS_PY.to_string();
     }
     if primer {
-        format!("{}\n\n{}\n\n{HARNESS_TWE}", crate::primer::guide(), stdlib_listing())
+        format!(
+            "{}\n\n{}\n\n{HARNESS_TWE}",
+            crate::primer::guide(),
+            stdlib_listing()
+        )
     } else {
         format!("You are writing a program in Twe, a game scripting language.\n\n{HARNESS_TWE}")
     }
@@ -146,9 +151,14 @@ pub fn system_prompt(lang: Lang, primer: bool) -> String {
 /// for its language.
 pub fn task_prompt(task: &Task, lang: Lang) -> Result<String, String> {
     let read = |name: &str| {
-        std::fs::read_to_string(task.dir.join(name)).map_err(|e| format!("{}: {name}: {e}", task.id))
+        std::fs::read_to_string(task.dir.join(name))
+            .map_err(|e| format!("{}: {name}: {e}", task.id))
     };
-    Ok(format!("# Task\n\n{}\n# Interface\n\n{}", read("task.md")?, read(lang.interface_file())?))
+    Ok(format!(
+        "# Task\n\n{}\n# Interface\n\n{}",
+        read("task.md")?,
+        read(lang.interface_file())?
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +182,9 @@ pub fn hash_hex(data: &str) -> String {
     let mut b: u64 = 0x6c62_272e_07bb_0142;
     for &byte in data.as_bytes() {
         a = (a ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        b = (b ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(5);
+        b = (b ^ u64::from(byte))
+            .wrapping_mul(0x0000_0100_0000_01b3)
+            .rotate_left(5);
     }
     format!("{a:016x}{b:016x}")
 }
@@ -296,7 +308,11 @@ impl SampleRecord {
             tier: v["tier"].as_u64()? as u8,
             sample: v["sample"].as_u64()? as u32,
             infra_error: v["infra_error"].as_str().map(str::to_string),
-            grade: if v["grade"].is_null() { None } else { Grade::from_json(&v["grade"]) },
+            grade: if v["grade"].is_null() {
+                None
+            } else {
+                Grade::from_json(&v["grade"])
+            },
             rounds: v["rounds"].as_u64().unwrap_or(0) as u32,
             first_syntax_error: v["first_syntax_error"].as_bool().unwrap_or(false),
             first_verify_errors: v["first_verify_errors"].as_u64().unwrap_or(0) as usize,
@@ -350,7 +366,11 @@ fn static_verdict(grader: &Grader, source: &str, limit: Duration) -> StaticVerdi
         ),
         Lang::Python => format!("Python's checks (`compile()` and pyflakes) found errors:\n\n{report}"),
     };
-    StaticVerdict { errors, report, message }
+    StaticVerdict {
+        errors,
+        report,
+        message,
+    }
 }
 
 /// Whether `source` doesn't even parse.
@@ -435,11 +455,18 @@ pub fn run_sample(
     };
     let loop_options = LoopOptions {
         max_rounds: options.max_rounds,
-        trace_dir: Some(options.out_dir.join("transcripts").join(&task.id).join(sample.to_string())),
+        trace_dir: Some(
+            options
+                .out_dir
+                .join("transcripts")
+                .join(&task.id)
+                .join(sample.to_string()),
+        ),
         source_path: None,
         log_prompts: true,
         system: system_prompt(lang, options.primer),
-        starter: std::fs::read_to_string(task.dir.join(format!("starter.{}", lang.ext()))).unwrap_or_default(),
+        starter: std::fs::read_to_string(task.dir.join(format!("starter.{}", lang.ext())))
+            .unwrap_or_default(),
         max_tokens: options.max_tokens,
         verify_feedback: options.verify_feedback,
         lang: lang.fences()[0].to_string(),
@@ -455,8 +482,14 @@ pub fn run_sample(
     let verdict = |source: &str| static_verdict(grader, source, options.grade_limit);
     let outcome = match &options.cache_dir {
         Some(dir) => {
-            let mut cached = Cached { inner: provider, dir: dir.clone(), sample, hits: 0 };
-            let outcome = llm_loop::run_loop_with(&mut cached, &prompt, &loop_options, &verdict, &smoke);
+            let mut cached = Cached {
+                inner: provider,
+                dir: dir.clone(),
+                sample,
+                hits: 0,
+            };
+            let outcome =
+                llm_loop::run_loop_with(&mut cached, &prompt, &loop_options, &verdict, &smoke);
             record.cache_hits = cached.hits;
             outcome
         }
@@ -478,14 +511,22 @@ pub fn run_sample(
     if let Some(last) = outcome.rounds.last() {
         record.final_verify_errors = last.verify_errors;
     }
-    record.stop_truncated = outcome.rounds.iter().any(|r| r.stop == StopReason::MaxTokens);
+    record.stop_truncated = outcome
+        .rounds
+        .iter()
+        .any(|r| r.stop == StopReason::MaxTokens);
     record.usage = outcome.usage;
     record.cost_usd = outcome.cost_usd;
     let program_dir = options.out_dir.join("programs").join(&task.id);
     let _ = std::fs::create_dir_all(&program_dir);
-    let _ = std::fs::write(program_dir.join(format!("{sample}.{}", lang.ext())), &outcome.final_source);
+    let _ = std::fs::write(
+        program_dir.join(format!("{sample}.{}", lang.ext())),
+        &outcome.final_source,
+    );
     record.edit = !loop_options.starter.is_empty();
-    if let Ok(reference) = std::fs::read_to_string(task.dir.join(format!("solution.{}", lang.ext()))) {
+    if let Ok(reference) =
+        std::fs::read_to_string(task.dir.join(format!("solution.{}", lang.ext())))
+    {
         record.copies_reference = similarity(&outcome.final_source, &reference) >= 0.9;
     }
     record.grade = Some(grader.grade(task, &outcome.final_source, options.grade_limit));
@@ -506,7 +547,8 @@ pub fn run(
     provider_id: &str,
     options: &RunOptions,
 ) -> Result<Vec<SampleRecord>, String> {
-    std::fs::create_dir_all(&options.out_dir).map_err(|e| format!("{}: {e}", options.out_dir.display()))?;
+    std::fs::create_dir_all(&options.out_dir)
+        .map_err(|e| format!("{}: {e}", options.out_dir.display()))?;
     let settings = json!({
         "bench_version": BENCH_VERSION,
         "lang": options.grader.lang.as_str(),
@@ -526,7 +568,18 @@ pub fn run(
     let run_json = options.out_dir.join("run.json");
     if let Ok(old) = std::fs::read_to_string(&run_json) {
         let old: Json = serde_json::from_str(&old).unwrap_or(Json::Null);
-        for key in ["bench_version", "lang", "system_prompt_hash", "tasks_hash", "provider", "max_rounds", "verify_feedback", "smoke_feedback", "primer", "max_tokens"] {
+        for key in [
+            "bench_version",
+            "lang",
+            "system_prompt_hash",
+            "tasks_hash",
+            "provider",
+            "max_rounds",
+            "verify_feedback",
+            "smoke_feedback",
+            "primer",
+            "max_tokens",
+        ] {
             if old[key] != settings[key] {
                 return Err(format!(
                     "{} holds a run with different settings ({key}: {} vs {}); use another --out",
@@ -537,15 +590,19 @@ pub fn run(
             }
         }
     }
-    std::fs::write(&run_json, serde_json::to_string_pretty(&settings).unwrap_or_default())
-        .map_err(|e| format!("{}: {e}", run_json.display()))?;
+    std::fs::write(
+        &run_json,
+        serde_json::to_string_pretty(&settings).unwrap_or_default(),
+    )
+    .map_err(|e| format!("{}: {e}", run_json.display()))?;
 
     let samples_path = options.out_dir.join("samples.jsonl");
     let mut records = read_samples(&samples_path);
     // Infrastructure failures are retried; finished samples are kept.
     records.retain(|r| r.infra_error.is_none());
     rewrite_samples(&samples_path, &records)?;
-    let done: std::collections::HashSet<(String, u32)> = records.iter().map(|r| (r.task.clone(), r.sample)).collect();
+    let done: std::collections::HashSet<(String, u32)> =
+        records.iter().map(|r| (r.task.clone(), r.sample)).collect();
     let mut queue: std::collections::VecDeque<(&Task, u32)> = std::collections::VecDeque::new();
     for sample in 0..options.samples {
         for task in tasks {
@@ -576,7 +633,9 @@ pub fn run(
                     if fatal.lock().unwrap().is_some() {
                         return;
                     }
-                    let Some((task, sample)) = queue.lock().unwrap().pop_front() else { return };
+                    let Some((task, sample)) = queue.lock().unwrap().pop_front() else {
+                        return;
+                    };
                     let record = run_sample(provider.as_mut(), task, sample, options);
                     {
                         let mut in_a_row = failures_in_a_row.lock().unwrap();
@@ -605,8 +664,10 @@ pub fn run(
                         record.sample,
                         match (&record.infra_error, &record.grade) {
                             (Some(e), _) => format!("ERROR {e}"),
-                            (None, Some(g)) if g.passed => format!("pass ({} rounds)", record.rounds),
-                            (None, Some(g)) => format!("fail at {} ({} rounds)", g.stage.as_str(), record.rounds),
+                            (None, Some(g)) if g.passed =>
+                                format!("pass ({} rounds)", record.rounds),
+                            (None, Some(g)) =>
+                                format!("fail at {} ({} rounds)", g.stage.as_str(), record.rounds),
                             (None, None) => "no grade".into(),
                         }
                     );
@@ -614,7 +675,11 @@ pub fn run(
                     let line = record.to_json().to_string();
                     let mut all = shared.lock().unwrap();
                     use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&samples_path) {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&samples_path)
+                    {
                         let _ = writeln!(f, "{line}");
                     }
                     all.push(record);
@@ -651,7 +716,13 @@ fn rewrite_samples(path: &Path, records: &[SampleRecord]) -> Result<(), String> 
 /// Re-grade every program in a run directory with the current grader
 /// (no model calls), then rewrite `samples.jsonl` and the summary.
 /// `grader` must be for the run's language (`run.json`'s `lang`).
-pub fn regrade(grader: &Grader, run_dir: &Path, tasks_root: &Path, limit: Duration, jobs: usize) -> Result<Vec<SampleRecord>, String> {
+pub fn regrade(
+    grader: &Grader,
+    run_dir: &Path,
+    tasks_root: &Path,
+    limit: Duration,
+    jobs: usize,
+) -> Result<Vec<SampleRecord>, String> {
     let samples_path = run_dir.join("samples.jsonl");
     let mut records = read_samples(&samples_path);
     if records.is_empty() {
@@ -667,7 +738,9 @@ pub fn regrade(grader: &Grader, run_dir: &Path, tasks_root: &Path, limit: Durati
             tasks.insert(r.task.clone(), bench::load_task(&tasks_root.join(&r.task))?);
         }
     }
-    let todo: Vec<usize> = (0..records.len()).filter(|&i| records[i].infra_error.is_none()).collect();
+    let todo: Vec<usize> = (0..records.len())
+        .filter(|&i| records[i].infra_error.is_none())
+        .collect();
     for chunk in todo.chunks(jobs.max(1)) {
         let grades: Vec<(usize, Grade)> = std::thread::scope(|s| {
             let handles: Vec<_> = chunk
@@ -675,7 +748,11 @@ pub fn regrade(grader: &Grader, run_dir: &Path, tasks_root: &Path, limit: Durati
                 .map(|&i| {
                     let r = &records[i];
                     let task = &tasks[&r.task];
-                    let path = run_dir.join("programs").join(&r.task).join(format!("{}.{}", r.sample, grader.lang.ext()));
+                    let path = run_dir.join("programs").join(&r.task).join(format!(
+                        "{}.{}",
+                        r.sample,
+                        grader.lang.ext()
+                    ));
                     s.spawn(move || {
                         let source = std::fs::read_to_string(&path).unwrap_or_default();
                         (i, grader.grade(task, &source, limit))
@@ -737,7 +814,12 @@ pub fn mean_ci(values: &[f64]) -> (f64, f64, f64) {
     let mean = values.iter().sum::<f64>() / n as f64;
     let mut rng = SplitMix(0x5eed_7e57);
     let mut means: Vec<f64> = (0..10_000)
-        .map(|_| (0..n).map(|_| values[(rng.next() % n as u64) as usize]).sum::<f64>() / n as f64)
+        .map(|_| {
+            (0..n)
+                .map(|_| values[(rng.next() % n as u64) as usize])
+                .sum::<f64>()
+                / n as f64
+        })
         .collect();
     means.sort_by(|a, b| a.total_cmp(b));
     (mean, means[249], means[9_749])
@@ -752,11 +834,20 @@ struct TaskScore {
 }
 
 /// Write `summary.json` and `summary.md` for a set of records.
-pub fn write_summary(dir: &Path, tasks: &[Task], records: &[SampleRecord], settings: &Json) -> Result<Json, String> {
+pub fn write_summary(
+    dir: &Path,
+    tasks: &[Task],
+    records: &[SampleRecord],
+    settings: &Json,
+) -> Result<Json, String> {
     let summary = summarize(tasks, records, settings);
-    std::fs::write(dir.join("summary.json"), serde_json::to_string_pretty(&summary).unwrap_or_default())
+    std::fs::write(
+        dir.join("summary.json"),
+        serde_json::to_string_pretty(&summary).unwrap_or_default(),
+    )
+    .map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::write(dir.join("summary.md"), summary_markdown(&summary))
         .map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::write(dir.join("summary.md"), summary_markdown(&summary)).map_err(|e| format!("{}: {e}", dir.display()))?;
     Ok(summary)
 }
 
@@ -783,8 +874,11 @@ pub fn summarize(tasks: &[Task], records: &[SampleRecord], settings: &Json) -> J
             json!({"k": k, "mean": m, "ci95": [lo, hi]})
         })
         .collect();
-    let edit_tasks: std::collections::HashSet<&str> =
-        graded.iter().filter(|r| r.edit).map(|r| r.task.as_str()).collect();
+    let edit_tasks: std::collections::HashSet<&str> = graded
+        .iter()
+        .filter(|r| r.edit)
+        .map(|r| r.task.as_str())
+        .collect();
     let by_kind: Vec<Json> = [("new", false), ("edit", true)]
         .iter()
         .filter_map(|(kind, edit)| {
@@ -802,7 +896,11 @@ pub fn summarize(tasks: &[Task], records: &[SampleRecord], settings: &Json) -> J
         .collect();
     let by_tier: Vec<Json> = (1..=3u8)
         .filter_map(|tier| {
-            let per: Vec<f64> = scores.iter().filter(|s| s.tier == tier).map(|s| f64::from(s.c) / f64::from(s.n)).collect();
+            let per: Vec<f64> = scores
+                .iter()
+                .filter(|s| s.tier == tier)
+                .map(|s| f64::from(s.c) / f64::from(s.n))
+                .collect();
             if per.is_empty() {
                 return None;
             }
@@ -942,7 +1040,13 @@ pub fn summary_markdown(s: &Json) -> String {
     out.push_str(&stages.join(", "));
     out.push_str(" (`checks` means it ran every tick; pass or fail is then the checks').\n\n| Task | Tier | Passed |\n|---|---:|---:|\n");
     for t in s["per_task"].as_array().into_iter().flatten() {
-        out.push_str(&format!("| `{}` | {} | {}/{} |\n", t["task"].as_str().unwrap_or("?"), t["tier"], t["passed"], t["n"]));
+        out.push_str(&format!(
+            "| `{}` | {} | {}/{} |\n",
+            t["task"].as_str().unwrap_or("?"),
+            t["tier"],
+            t["passed"],
+            t["n"]
+        ));
     }
     out
 }
@@ -994,8 +1098,16 @@ mod tests {
 
     #[test]
     fn similarity_ignores_comments_and_layout() {
-        assert_eq!(similarity("var x = 1\nprint(x)", "var x = 1   # one\n\nprint( x )"), 1.0);
-        assert!(similarity("var x = 1\nprint(x)", "let total = 0\nfor i in 0..<9:\n    total += i") < 0.2);
+        assert_eq!(
+            similarity("var x = 1\nprint(x)", "var x = 1   # one\n\nprint( x )"),
+            1.0
+        );
+        assert!(
+            similarity(
+                "var x = 1\nprint(x)",
+                "let total = 0\nfor i in 0..<9:\n    total += i"
+            ) < 0.2
+        );
     }
 
     #[test]

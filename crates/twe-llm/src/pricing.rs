@@ -34,13 +34,19 @@ pub fn prices(model: &str) -> Option<Prices> {
         ("claude-haiku-4-5", 1.0, 5.0, 0.10),
     ];
     let family = match model.rsplit_once('-') {
-        Some((family, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => family,
+        Some((family, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => {
+            family
+        }
         _ => model,
     };
     TABLE
         .iter()
         .find(|(id, ..)| *id == family)
-        .map(|&(_, input, output, cache_read)| Prices { input, output, cache_read })
+        .map(|&(_, input, output, cache_read)| Prices {
+            input,
+            output,
+            cache_read,
+        })
 }
 
 /// The cost of `usage` on `model` in US dollars.

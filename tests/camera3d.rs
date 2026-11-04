@@ -97,7 +97,10 @@ fn fov_widens_the_view() {
         project(&c, 4.0 / 3.0, hud, p).unwrap()
     };
     // The same point sits further from the centre with a narrower lens.
-    assert!(narrow[0] - 320.0 > wide[0] - 320.0, "{narrow:?} vs {wide:?}");
+    assert!(
+        narrow[0] - 320.0 > wide[0] - 320.0,
+        "{narrow:?} vs {wide:?}"
+    );
 }
 
 /// Run `src`, give the simulation a `w × h` view and one tick, then

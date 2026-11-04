@@ -193,8 +193,10 @@ fn rejects_unknown_material_output_with_suggestion() {
         \x20       return material(roughnes: 0.5)\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("no output `roughnes`")
-            && e.help.as_deref().is_some_and(|h| h.contains("roughness"))),
+        errors
+            .iter()
+            .any(|e| e.message.contains("no output `roughnes`")
+                && e.help.as_deref().is_some_and(|h| h.contains("roughness"))),
         "got: {errors:#?}"
     );
 }
@@ -206,7 +208,9 @@ fn surface_must_return_material() {
         \x20       return color.red\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("returns `material(...)`")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("returns `material(...)`")),
         "got: {errors:#?}"
     );
 }
@@ -219,7 +223,9 @@ fn material_only_as_surface_return() {
         \x20       return color.red\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("only valid as what `surface` returns")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("only valid as what `surface` returns")),
         "got: {errors:#?}"
     );
 }
@@ -231,7 +237,9 @@ fn material_takes_named_arguments_only() {
         \x20       return material(color.red)\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("named arguments only")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("named arguments only")),
         "got: {errors:#?}"
     );
 }
@@ -244,7 +252,10 @@ fn rejects_pixel_and_surface_together() {
         \x20   surface(uv, time) -> material:\n\
         \x20       return material()\n";
     let errors = check(src);
-    assert!(errors.iter().any(|e| e.message.contains("not both")), "got: {errors:#?}");
+    assert!(
+        errors.iter().any(|e| e.message.contains("not both")),
+        "got: {errors:#?}"
+    );
 }
 
 #[test]
@@ -256,7 +267,9 @@ fn rejects_unknown_visual_method() {
         \x20       return (0, 0, 0)\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("`vertex` is not a visual method")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("`vertex` is not a visual method")),
         "got: {errors:#?}"
     );
 }
@@ -270,7 +283,9 @@ fn reports_type_errors_through_codegen() {
         \x20       return material(roughness: (0.5, 0.5))\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("`roughness` must be a number")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("`roughness` must be a number")),
         "got: {errors:#?}"
     );
     let src = "visual Bar:\n\
@@ -280,7 +295,9 @@ fn reports_type_errors_through_codegen() {
         \x20       return 0.1\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("`displace` returns an (x, y, z) offset")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("`displace` returns an (x, y, z) offset")),
         "got: {errors:#?}"
     );
 }
@@ -293,7 +310,9 @@ fn rejects_named_arguments_outside_material() {
         \x20       return color.red\n";
     let errors = check(src);
     assert!(
-        errors.iter().any(|e| e.message.contains("named argument `p:`")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("named argument `p:`")),
         "got: {errors:#?}"
     );
 }

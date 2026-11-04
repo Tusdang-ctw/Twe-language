@@ -34,7 +34,10 @@ impl Provider for CommandProvider {
             .map_err(|e| Error::Transport(format!("starting `{}` failed: {e}", self.program)))?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(request.flatten().as_bytes()).map_err(|e| {
-                Error::Transport(format!("writing the prompt to `{}` failed: {e}", self.program))
+                Error::Transport(format!(
+                    "writing the prompt to `{}` failed: {e}",
+                    self.program
+                ))
             })?;
         }
         let output = child
@@ -48,8 +51,9 @@ impl Provider for CommandProvider {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        let text = String::from_utf8(output.stdout)
-            .map_err(|e| Error::Malformed(format!("`{}` wrote non-UTF-8 output: {e}", self.program)))?;
+        let text = String::from_utf8(output.stdout).map_err(|e| {
+            Error::Malformed(format!("`{}` wrote non-UTF-8 output: {e}", self.program))
+        })?;
         Ok(Reply::text_only(text, self.id()))
     }
 

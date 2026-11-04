@@ -430,7 +430,12 @@ impl Ao {
     }
 
     /// Record GTAO and the blur from the prepass `depth`.
-    pub fn record(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, depth: &wgpu::TextureView) {
+    pub fn record(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::TextureView,
+    ) {
         let (Some(raw), Some(blurred)) = (&self.raw, &self.blurred) else {
             return;
         };

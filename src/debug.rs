@@ -65,7 +65,9 @@ enum StepMode {
     Run,
     /// Pause at the next statement whose call depth is `<= limit`
     /// (`u32::MAX` for step-into: any depth).
-    Step { limit: u32 },
+    Step {
+        limit: u32,
+    },
 }
 
 struct Ctl {
@@ -224,7 +226,10 @@ mod tests {
         run_src("let a = 1\nlet b = 2\nlet d = 3\n");
         clear();
         // One breakpoint hit + at least one step.
-        assert!(count.load(Ordering::SeqCst) >= 2, "stepped past the breakpoint");
+        assert!(
+            count.load(Ordering::SeqCst) >= 2,
+            "stepped past the breakpoint"
+        );
     }
 
     #[test]

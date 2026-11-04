@@ -47,24 +47,59 @@ fn every_committed_task_is_sound() {
         }
         // The canary marks the benchmark in any corpus it leaks into; it
         // is in the task and both reference solutions, never in a prompt.
-        assert_eq!(task.canary.as_deref(), Some(twec::bench::CANARY), "{}: canary", task.id);
+        assert_eq!(
+            task.canary.as_deref(),
+            Some(twec::bench::CANARY),
+            "{}: canary",
+            task.id
+        );
         for file in ["solution.twe", "solution.py"] {
             let src = std::fs::read_to_string(dir.join(file)).unwrap();
-            assert!(src.lines().next().unwrap_or("").contains(twec::bench::CANARY), "{}: {file} lacks the canary", task.id);
+            assert!(
+                src.lines()
+                    .next()
+                    .unwrap_or("")
+                    .contains(twec::bench::CANARY),
+                "{}: {file} lacks the canary",
+                task.id
+            );
         }
-        for file in ["task.md", "twe.md", "python.md", "starter.twe", "starter.py"] {
+        for file in [
+            "task.md",
+            "twe.md",
+            "python.md",
+            "starter.twe",
+            "starter.py",
+        ] {
             let text = std::fs::read_to_string(dir.join(file)).unwrap_or_default();
-            assert!(!text.contains("canary GUID"), "{}: the canary would reach a model through {file}", task.id);
+            assert!(
+                !text.contains("canary GUID"),
+                "{}: the canary would reach a model through {file}",
+                task.id
+            );
         }
     }
     std::thread::scope(|s| {
         for task in &tasks {
             s.spawn(move || {
                 let read = |f: &str| std::fs::read_to_string(task.dir.join(f));
-                let solution = grade_in_child(exe(), task, &read("solution.twe").unwrap(), Duration::from_secs(60));
-                assert!(solution.passed, "{}: the solution fails: {solution:?}", task.id);
+                let solution = grade_in_child(
+                    exe(),
+                    task,
+                    &read("solution.twe").unwrap(),
+                    Duration::from_secs(60),
+                );
+                assert!(
+                    solution.passed,
+                    "{}: the solution fails: {solution:?}",
+                    task.id
+                );
                 if let Ok(starter) = read("starter.twe") {
-                    assert!(!grade_in_child(exe(), task, &starter, Duration::from_secs(60)).passed, "{}: the starter passes", task.id);
+                    assert!(
+                        !grade_in_child(exe(), task, &starter, Duration::from_secs(60)).passed,
+                        "{}: the starter passes",
+                        task.id
+                    );
                 }
             });
         }
@@ -112,7 +147,11 @@ fn child_grades_match_in_process_grades() {
     let g = grade_in_child(exe(), &task, &flipped, Duration::from_secs(30));
     assert!(!g.passed);
     assert_eq!(g.stage, Stage::Checks);
-    assert!(g.failed_checks().contains(&"W for 0.5 s moves 2.5 toward -z"), "{g:?}");
+    assert!(
+        g.failed_checks()
+            .contains(&"W for 0.5 s moves 2.5 toward -z"),
+        "{g:?}"
+    );
 }
 
 #[test]
@@ -130,10 +169,24 @@ fn validation_rejects_a_vacuous_check_and_a_failing_solution() {
     assert!(v.strengths[0].killed > 0);
 
     std::fs::write(dir.join("solution.twe"), "var n = 0\n").unwrap();
-    std::fs::write(dir.join("starter.twe"), "var n = 0\non update(dt):\n    n = n + 1\n").unwrap();
+    std::fs::write(
+        dir.join("starter.twe"),
+        "var n = 0\non update(dt):\n    n = n + 1\n",
+    )
+    .unwrap();
     let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 4).unwrap();
-    assert!(v.problems.iter().any(|p| p.starts_with("the solution fails")), "{:?}", v.problems);
-    assert!(v.problems.iter().any(|p| p == "the starter already passes"), "{:?}", v.problems);
+    assert!(
+        v.problems
+            .iter()
+            .any(|p| p.starts_with("the solution fails")),
+        "{:?}",
+        v.problems
+    );
+    assert!(
+        v.problems.iter().any(|p| p == "the starter already passes"),
+        "{:?}",
+        v.problems
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -148,7 +201,11 @@ fn hand_written_mutants_count() {
     let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 2).unwrap();
     assert!(!v.ok(), "no mechanical mutant changes a string");
     std::fs::create_dir_all(dir.join("mutants")).unwrap();
-    std::fs::write(dir.join("mutants/wrong_greeting.twe"), "let greeting = \"two\"\nprint(greeting)\n").unwrap();
+    std::fs::write(
+        dir.join("mutants/wrong_greeting.twe"),
+        "let greeting = \"two\"\nprint(greeting)\n",
+    )
+    .unwrap();
     let v = validate(&Grader::twe(exe()), &task, Duration::from_secs(30), 2).unwrap();
     assert!(v.ok(), "{:?}", v.problems);
     let _ = std::fs::remove_dir_all(&dir);

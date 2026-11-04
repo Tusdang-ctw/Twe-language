@@ -350,9 +350,8 @@ struct Instance {
 
 // `Instance`'s size; the GPU cull and every shader's `InstanceInput`
 // depend on it.
-const _: () = assert!(
-    std::mem::size_of::<Instance>() as u64 == crate::kernel::gpu_cull::INSTANCE_BYTES
-);
+const _: () =
+    assert!(std::mem::size_of::<Instance>() as u64 == crate::kernel::gpu_cull::INSTANCE_BYTES);
 
 /// Lanternfall E3: the GPU instance for a draw — position, colour, the
 /// orientation (`yaw` about +Y, then `rotation`), the per-axis scale
@@ -3415,7 +3414,10 @@ impl Renderer {
             ),
             (None, None) => return Err("renderer has no target".to_string()),
         };
-        canvas.set_units(crate::kernel::canvas::CANVAS_W, crate::kernel::canvas::CANVAS_H);
+        canvas.set_units(
+            crate::kernel::canvas::CANVAS_W,
+            crate::kernel::canvas::CANVAS_H,
+        );
         canvas.prepare_layers_loaded(
             &state.device,
             &state.queue,
@@ -5655,7 +5657,9 @@ impl Renderer {
         // The 3D scene's size: the window, scaled by the tier. The 2D
         // canvas, the camera's aspect and the swapchain stay at the
         // window's size; the tonemap pass samples the scene up to it.
-        let (scene_w, scene_h) = state.quality.scene_size(state.config.width, state.config.height);
+        let (scene_w, scene_h) = state
+            .quality
+            .scene_size(state.config.width, state.config.height);
         let Camera3d {
             eye,
             target,
@@ -5738,7 +5742,10 @@ impl Renderer {
         };
         wanting.sort_by(|&a, &b| reach(&point_lights[a]).total_cmp(&reach(&point_lights[b])));
         let mut point_shadow_lights: Vec<([f32; 3], f32)> = Vec::new();
-        for &i in wanting.iter().take(POINT_SHADOW_LIGHTS.min(state.quality.point_shadows)) {
+        for &i in wanting
+            .iter()
+            .take(POINT_SHADOW_LIGHTS.min(state.quality.point_shadows))
+        {
             let pl = &mut point_lights[i];
             point_shadow_lights.push(([pl.pos[0], pl.pos[1], pl.pos[2]], pl.color_radius[3]));
             pl.pos[3] = point_shadow_lights.len() as f32;
@@ -5818,7 +5825,8 @@ impl Renderer {
             near,
             far,
         };
-        let mut shadow_uniform = compute_shadow_uniform(&lights_uniform, &cascade_camera, snap.shadow);
+        let mut shadow_uniform =
+            compute_shadow_uniform(&lights_uniform, &cascade_camera, snap.shadow);
         if !state.quality.soft_shadows {
             shadow_uniform.flags[0] = 1.0;
         }
@@ -6494,13 +6502,18 @@ impl Renderer {
                 let capacity = need.next_power_of_two();
                 state.joints_buffer.destroy();
                 state.joints_buffer = joint_palette_buffer(&state.device, capacity);
-                state.joints_bind_group =
-                    joint_palette_bind_group(&state.device, &state.joints_bgl, &state.joints_buffer);
+                state.joints_bind_group = joint_palette_bind_group(
+                    &state.device,
+                    &state.joints_bgl,
+                    &state.joints_buffer,
+                );
                 state.joints_capacity = capacity;
             }
-            state
-                .queue
-                .write_buffer(&state.joints_buffer, 0, bytemuck::cast_slice(&palette.matrices));
+            state.queue.write_buffer(
+                &state.joints_buffer,
+                0,
+                bytemuck::cast_slice(&palette.matrices),
+            );
         }
         // 4d. Phase 24: update each skinned mesh's joint UBO from
         //     the script-driven animation state. Walks every mesh
@@ -6990,12 +7003,7 @@ impl Renderer {
             &[(target, Access::Attach)],
         );
         let plan = graph.compile().map_err(|e| e.to_string())?;
-        state.pool.prepare(
-            &state.device,
-            &plan,
-            scene_w,
-            scene_h,
-        );
+        state.pool.prepare(&state.device, &plan, scene_w, scene_h);
         if taa_on {
             state.taa.prepare(
                 &state.device,
@@ -9384,9 +9392,7 @@ mod tests {
     #[test]
     fn parse_glb_combines_multiple_skins() {
         let bytes = make_two_skin_glb();
-        let GlbData {
-            vertices, skin, ..
-        } = *parse_glb_bytes(&bytes).expect("decode").0;
+        let GlbData { vertices, skin, .. } = *parse_glb_bytes(&bytes).expect("decode").0;
         let skin = skin.expect("combined skin");
         // Both skins' joints are concatenated.
         assert_eq!(skin.joint_node_indices, vec![2, 3]);

@@ -608,7 +608,8 @@ pub struct Env {
     pub gpu_particles: bool,
     /// web3d-M7: each `particles` block compiled for the GPU, by name;
     /// `Err` holds why it stays on the CPU.
-    pub particle_classes: HashMap<String, Result<crate::kernel::particles::ParticleProgram, String>>,
+    pub particle_classes:
+        HashMap<String, Result<crate::kernel::particles::ParticleProgram, String>>,
     /// Particle program id → program, as the kernel's snapshot takes it.
     pub particle_programs: Vec<crate::kernel::particles::ParticleProgram>,
     particle_program_names: Vec<String>,
@@ -866,7 +867,14 @@ impl Env {
     /// one. Particle bodies draw from their emitter's own stream, so
     /// spawning particles never changes the script's random numbers.
     pub fn swap_rng(&mut self, state: u64) -> u64 {
-        std::mem::replace(&mut self.rng_state, if state == 0 { 0x9E37_79B9_7F4A_7C15 } else { state })
+        std::mem::replace(
+            &mut self.rng_state,
+            if state == 0 {
+                0x9E37_79B9_7F4A_7C15
+            } else {
+                state
+            },
+        )
     }
 
     /// web3d-M7: the GPU program id for particles block `name`, if it

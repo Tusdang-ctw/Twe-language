@@ -25,8 +25,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use twe_llm::{CommandProvider, FixtureProvider, Provider};
 use twe_llm::edit::{self, Edit};
+pub use twe_llm::{CommandProvider, FixtureProvider, Provider};
 use twe_llm::{Message, Reply, Request, StopReason, Usage};
 
 use crate::verify::verify_program_with_path;
@@ -184,7 +184,9 @@ pub fn run_loop_with(
     }
 
     let lang = options.lang.as_str();
-    let fences: Vec<&str> = std::iter::once(lang).chain(options.lang_aliases.iter().map(String::as_str)).collect();
+    let fences: Vec<&str> = std::iter::once(lang)
+        .chain(options.lang_aliases.iter().map(String::as_str))
+        .collect();
     let protocol = edit::protocol_instructions(lang);
     let system = if options.system.is_empty() {
         protocol
@@ -194,7 +196,10 @@ pub fn run_loop_with(
     let first = if options.starter.is_empty() {
         task.to_string()
     } else {
-        format!("{task}\n\nThe current file:\n```{lang}\n{}\n```", options.starter)
+        format!(
+            "{task}\n\nThe current file:\n```{lang}\n{}\n```",
+            options.starter
+        )
     };
     let mut request = Request {
         system,
@@ -230,7 +235,12 @@ pub fn run_loop_with(
                     (verdict.report, false, None, feedback)
                 } else if let Some(problem) = check(&source) {
                     check_error = Some(problem.clone());
-                    (verdict.report, false, None, format!("{truncated}{problem}\n\n{reply_how}"))
+                    (
+                        verdict.report,
+                        false,
+                        None,
+                        format!("{truncated}{problem}\n\n{reply_how}"),
+                    )
                 } else {
                     (verdict.report, true, None, String::new())
                 }
@@ -245,7 +255,11 @@ pub fn run_loop_with(
         let rec = LoopRound {
             round,
             prompt: if options.log_prompts {
-                request.messages.last().map(|m| m.text.clone()).unwrap_or_default()
+                request
+                    .messages
+                    .last()
+                    .map(|m| m.text.clone())
+                    .unwrap_or_default()
             } else {
                 String::new()
             },
@@ -308,7 +322,13 @@ fn trace_filename(dir: &Path, provider_id: &str) -> PathBuf {
         .unwrap_or(0);
     let safe: String = provider_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     dir.join(format!("llm_loop_{safe}_{ts}.jsonl"))
 }
@@ -343,7 +363,10 @@ fn append_trace(path: &Path, rec: &LoopRound, reply: &Reply) -> std::io::Result<
         "response": rec.response,
         "verify": verify,
     });
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     writeln!(file, "{line}")
 }
 
@@ -382,7 +405,10 @@ mod tests {
         ]);
         let outcome = run_loop(&mut p, "task", &LoopOptions::default()).unwrap();
         assert!(outcome.passed, "{:?}", outcome.rounds);
-        assert_eq!(outcome.final_source, "# verified\nlet apple = 1\nlet y = apple");
+        assert_eq!(
+            outcome.final_source,
+            "# verified\nlet apple = 1\nlet y = apple"
+        );
         // Round 2 sees round 1's reply and the verify JSON.
         let second = &p.requests[1].messages;
         assert_eq!(second.len(), 3);
@@ -396,12 +422,23 @@ mod tests {
             "<<<<<<< SEARCH\nlet z = 3\n=======\nlet z = 4\n>>>>>>> REPLACE".into(),
             "<<<<<<< SEARCH\nlet x = 1\n=======\nlet x = 2\n>>>>>>> REPLACE".into(),
         ]);
-        let options = LoopOptions { starter: "let x = 1".into(), ..Default::default() };
+        let options = LoopOptions {
+            starter: "let x = 1".into(),
+            ..Default::default()
+        };
         let outcome = run_loop(&mut p, "task", &options).unwrap();
         assert!(outcome.passed);
-        assert!(outcome.rounds[0].edit_error.as_deref().unwrap().contains("did not match"));
-        assert!(p.requests[0].messages[0].text.contains("The current file:\n```twe\nlet x = 1\n```"));
-        assert!(p.requests[1].messages[2].text.contains("could not be applied"));
+        assert!(outcome.rounds[0]
+            .edit_error
+            .as_deref()
+            .unwrap()
+            .contains("did not match"));
+        assert!(p.requests[0].messages[0]
+            .text
+            .contains("The current file:\n```twe\nlet x = 1\n```"));
+        assert!(p.requests[1].messages[2]
+            .text
+            .contains("could not be applied"));
         assert_eq!(outcome.final_source, "let x = 2");
     }
 
@@ -410,12 +447,20 @@ mod tests {
         let reply = || Reply {
             text: "```twe\n# verified\nlet x = oops\n```".into(),
             stop: StopReason::EndTurn,
-            usage: Usage { input: 10, output: 5, cache_read: 100, cache_write: 0 },
+            usage: Usage {
+                input: 10,
+                output: 5,
+                cache_read: 100,
+                cache_write: 0,
+            },
             model: "claude-sonnet-5-5".into(),
             cost_usd: Some(0.5),
         };
         let mut p = FixtureProvider::with_replies([reply(), reply()]);
-        let options = LoopOptions { max_rounds: 2, ..Default::default() };
+        let options = LoopOptions {
+            max_rounds: 2,
+            ..Default::default()
+        };
         let outcome = run_loop(&mut p, "task", &options).unwrap();
         assert!(!outcome.passed);
         assert_eq!(outcome.rounds.len(), 2);

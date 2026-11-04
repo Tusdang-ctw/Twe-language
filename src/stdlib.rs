@@ -12,8 +12,8 @@ use physics::*;
 mod save;
 use save::*;
 mod mesh_anim;
-use mesh_anim::*;
 pub(crate) use mesh_anim::mesh_anim_state;
+use mesh_anim::*;
 mod quat;
 pub(crate) use quat::quat_from_value;
 use quat::*;
@@ -529,7 +529,11 @@ pub fn install(env: &mut Env) {
     );
     graphics_fields.insert(
         "render_scale".to_string(),
-        Value::from_builtin("graphics.render_scale", &["scale"], graphics_render_scale_impl),
+        Value::from_builtin(
+            "graphics.render_scale",
+            &["scale"],
+            graphics_render_scale_impl,
+        ),
     );
     graphics_fields.insert(
         "tier".to_string(),
@@ -615,23 +619,43 @@ pub fn install(env: &mut Env) {
         // web3d-M11 session 2: joints + CCD.
         physics_fields.insert(
             "fixed_joint".to_string(),
-            Value::from_builtin("physics.fixed_joint", &["a", "b", "anchor_a", "anchor_b"], physics_fixed_joint_impl),
+            Value::from_builtin(
+                "physics.fixed_joint",
+                &["a", "b", "anchor_a", "anchor_b"],
+                physics_fixed_joint_impl,
+            ),
         );
         physics_fields.insert(
             "spherical_joint".to_string(),
-            Value::from_builtin("physics.spherical_joint", &["a", "b", "anchor_a", "anchor_b"], physics_spherical_joint_impl),
+            Value::from_builtin(
+                "physics.spherical_joint",
+                &["a", "b", "anchor_a", "anchor_b"],
+                physics_spherical_joint_impl,
+            ),
         );
         physics_fields.insert(
             "revolute_joint".to_string(),
-            Value::from_builtin("physics.revolute_joint", &["a", "b", "anchor_a", "anchor_b", "axis"], physics_revolute_joint_impl),
+            Value::from_builtin(
+                "physics.revolute_joint",
+                &["a", "b", "anchor_a", "anchor_b", "axis"],
+                physics_revolute_joint_impl,
+            ),
         );
         physics_fields.insert(
             "prismatic_joint".to_string(),
-            Value::from_builtin("physics.prismatic_joint", &["a", "b", "anchor_a", "anchor_b", "axis"], physics_prismatic_joint_impl),
+            Value::from_builtin(
+                "physics.prismatic_joint",
+                &["a", "b", "anchor_a", "anchor_b", "axis"],
+                physics_prismatic_joint_impl,
+            ),
         );
         physics_fields.insert(
             "remove_joint".to_string(),
-            Value::from_builtin("physics.remove_joint", &["handle"], physics_remove_joint_impl),
+            Value::from_builtin(
+                "physics.remove_joint",
+                &["handle"],
+                physics_remove_joint_impl,
+            ),
         );
         physics_fields.insert(
             "set_ccd".to_string(),
@@ -3333,13 +3357,17 @@ fn time_set_scale_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeEr
             line: 0,
             col: 0,
             message: format!("time.set_scale: the scale must be above 0, got {s}"),
-            help: Some("0.3 is slow motion, 1.0 normal speed; to stop time use `pause(true)`".to_string()),
+            help: Some(
+                "0.3 is slow motion, 1.0 normal speed; to stop time use `pause(true)`".to_string(),
+            ),
         });
     }
     let s = s.min(4.0);
     TIME_SCALE.with(|t| t.set(s));
     if let Some(t) = env.get("time").filter(|t| t.is_object()) {
-        t.as_object().borrow_mut().insert_field("scale", Value::from_float(s));
+        t.as_object()
+            .borrow_mut()
+            .insert_field("scale", Value::from_float(s));
     }
     Ok(Value::NIL)
 }
@@ -10370,7 +10398,11 @@ fn install_3d(env: &mut Env) {
     );
     mesh_anim.insert(
         "set_crossfade".to_string(),
-        Value::from_builtin("mesh.set_crossfade", &["mesh", "seconds"], mesh_set_crossfade_impl),
+        Value::from_builtin(
+            "mesh.set_crossfade",
+            &["mesh", "seconds"],
+            mesh_set_crossfade_impl,
+        ),
     );
     env.set(
         "mesh_anim".to_string(),
@@ -11451,7 +11483,10 @@ mod tests {
         assert_eq!(s.clip, "attack");
         assert_eq!(s.blend_clip.as_deref(), Some("walk"));
         assert!((s.blend_t - 1.0).abs() < 1e-6);
-        assert!((s.blend_time - 0.5).abs() < 1e-6, "old clip continues from its time");
+        assert!(
+            (s.blend_time - 0.5).abs() < 1e-6,
+            "old clip continues from its time"
+        );
         assert_eq!(s.time, 0.0, "new clip starts at 0");
 
         // Halfway through the 0.15 s default crossfade → blend_t ≈ 0.5.
@@ -11490,14 +11525,22 @@ mod tests {
         let stops = [0.0_f64, 3.0, 6.0];
         let blend_space = |env: &mut Env, value: f64| {
             let clips = Value::from_list(Rc::new(RefCell::new(
-                names.iter().map(|n| Value::from_string((*n).to_string())).collect(),
+                names
+                    .iter()
+                    .map(|n| Value::from_string((*n).to_string()))
+                    .collect(),
             )));
             let stops_v = Value::from_list(Rc::new(RefCell::new(
                 stops.iter().map(|s| Value::from_float(*s)).collect(),
             )));
             super::mesh_blend_space_impl(
                 env,
-                &[Value::from_string(path.to_string()), clips, stops_v, Value::from_float(value)],
+                &[
+                    Value::from_string(path.to_string()),
+                    clips,
+                    stops_v,
+                    Value::from_float(value),
+                ],
             )
             .unwrap();
         };
@@ -11539,16 +11582,29 @@ mod tests {
         blend_space(&mut env, 2.0); // same bracket, new weight
         let s = super::mesh_anim_state(h);
         assert!(s.time >= 0.4 - 1e-6, "clock kept running, got {}", s.time);
-        assert!((s.blend_time - s.time).abs() < 1e-6, "partner clip stays phase-synced");
+        assert!(
+            (s.blend_time - s.time).abs() < 1e-6,
+            "partner clip stays phase-synced"
+        );
 
         // Bad input is reported, not silently accepted.
-        let one = Value::from_list(Rc::new(RefCell::new(vec![Value::from_string("idle".into())])));
+        let one = Value::from_list(Rc::new(RefCell::new(vec![Value::from_string(
+            "idle".into(),
+        )])));
         let stops_v = Value::from_list(Rc::new(RefCell::new(vec![Value::from_float(0.0)])));
-        assert!(super::mesh_blend_space_impl(
-            &mut env,
-            &[Value::from_string(path.to_string()), one, stops_v, Value::from_float(0.0)],
-        )
-        .is_err(), "fewer than two clips is an error");
+        assert!(
+            super::mesh_blend_space_impl(
+                &mut env,
+                &[
+                    Value::from_string(path.to_string()),
+                    one,
+                    stops_v,
+                    Value::from_float(0.0)
+                ],
+            )
+            .is_err(),
+            "fewer than two clips is an error"
+        );
     }
 
     #[test]

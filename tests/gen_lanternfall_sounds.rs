@@ -57,7 +57,12 @@ fn note(semitones: f32) -> f32 {
 
 /// An oscillator: frequency and amplitude as functions of time; the
 /// phase accumulates, so sweeps are smooth.
-fn osc(seconds: f32, hz: impl Fn(f32) -> f32, shape: fn(f32) -> f32, amp: impl Fn(f32) -> f32) -> Vec<f32> {
+fn osc(
+    seconds: f32,
+    hz: impl Fn(f32) -> f32,
+    shape: fn(f32) -> f32,
+    amp: impl Fn(f32) -> f32,
+) -> Vec<f32> {
     let mut ph = 0.0f32;
     (0..samples(seconds))
         .map(|i| {
@@ -76,7 +81,13 @@ fn coef(hz: f32) -> f32 {
 
 /// White noise through a low-pass with a cutoff that moves over time,
 /// and a fixed high-pass (`hp` Hz, 0 for none).
-fn hiss(seconds: f32, seed: u32, lp: impl Fn(f32) -> f32, hp: f32, amp: impl Fn(f32) -> f32) -> Vec<f32> {
+fn hiss(
+    seconds: f32,
+    seed: u32,
+    lp: impl Fn(f32) -> f32,
+    hp: f32,
+    amp: impl Fn(f32) -> f32,
+) -> Vec<f32> {
     let mut n = Noise(seed);
     let mut low = 0.0f32;
     let mut floor = 0.0f32;
@@ -115,8 +126,16 @@ fn decay(rate: f32) -> impl Fn(f32) -> f32 {
 fn bell(hz: f32, seconds: f32, rate: f32) -> Vec<f32> {
     let mut b = Buf::new(seconds);
     b.add(0.0, &osc(seconds, |_| hz, sine, decay(rate)), 1.0);
-    b.add(0.0, &osc(seconds, |_| hz * 2.76, sine, decay(rate * 1.8)), 0.35);
-    b.add(0.0, &osc(seconds, |_| hz * 5.4, sine, decay(rate * 3.0)), 0.12);
+    b.add(
+        0.0,
+        &osc(seconds, |_| hz * 2.76, sine, decay(rate * 1.8)),
+        0.35,
+    );
+    b.add(
+        0.0,
+        &osc(seconds, |_| hz * 5.4, sine, decay(rate * 3.0)),
+        0.12,
+    );
     b.s
 }
 
@@ -135,11 +154,17 @@ struct Buf {
 
 impl Buf {
     fn new(seconds: f32) -> Self {
-        Buf { s: vec![0.0; samples(seconds)], wrap: false }
+        Buf {
+            s: vec![0.0; samples(seconds)],
+            wrap: false,
+        }
     }
 
     fn looped(seconds: f32) -> Self {
-        Buf { s: vec![0.0; samples(seconds)], wrap: true }
+        Buf {
+            s: vec![0.0; samples(seconds)],
+            wrap: true,
+        }
     }
 
     fn add(&mut self, at: f32, v: &[f32], gain: f32) {
@@ -182,12 +207,42 @@ fn finish(mut v: Vec<f32>, peak: f32, one_shot: bool) -> Vec<f32> {
 }
 
 /// A gunshot: a bright crack, a noise body and a falling thump.
-fn shot(seconds: f32, seed: u32, body_lp: f32, body_rate: f32, thump: (f32, f32), crack: f32) -> Vec<f32> {
+fn shot(
+    seconds: f32,
+    seed: u32,
+    body_lp: f32,
+    body_rate: f32,
+    thump: (f32, f32),
+    crack: f32,
+) -> Vec<f32> {
     let mut b = Buf::new(seconds);
-    b.add(0.0, &hiss(0.03, seed, |_| 9000.0, 2000.0, decay(120.0)), crack);
-    b.add(0.0, &hiss(seconds, seed + 1, |t| body_lp * (-t * 6.0).exp() + 200.0, 60.0, decay(body_rate)), 1.0);
+    b.add(
+        0.0,
+        &hiss(0.03, seed, |_| 9000.0, 2000.0, decay(120.0)),
+        crack,
+    );
+    b.add(
+        0.0,
+        &hiss(
+            seconds,
+            seed + 1,
+            |t| body_lp * (-t * 6.0).exp() + 200.0,
+            60.0,
+            decay(body_rate),
+        ),
+        1.0,
+    );
     let (from, to) = thump;
-    b.add(0.0, &osc(seconds, |t| to + (from - to) * (-t * 30.0).exp(), sine, decay(body_rate * 0.8)), 0.7);
+    b.add(
+        0.0,
+        &osc(
+            seconds,
+            |t| to + (from - to) * (-t * 30.0).exp(),
+            sine,
+            decay(body_rate * 0.8),
+        ),
+        0.7,
+    );
     b.s
 }
 
@@ -195,9 +250,18 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     let mut out = Vec::new();
 
     // Guns.
-    out.push(("pistol", finish(shot(0.25, 11, 4000.0, 26.0, (190.0, 80.0), 0.6), 0.7, true)));
-    out.push(("smg", finish(shot(0.13, 12, 5500.0, 42.0, (260.0, 140.0), 0.5), 0.5, true)));
-    out.push(("scatter", finish(shot(0.5, 13, 2600.0, 9.0, (110.0, 42.0), 0.8), 0.85, true)));
+    out.push((
+        "pistol",
+        finish(shot(0.25, 11, 4000.0, 26.0, (190.0, 80.0), 0.6), 0.7, true),
+    ));
+    out.push((
+        "smg",
+        finish(shot(0.13, 12, 5500.0, 42.0, (260.0, 140.0), 0.5), 0.5, true),
+    ));
+    out.push((
+        "scatter",
+        finish(shot(0.5, 13, 2600.0, 9.0, (110.0, 42.0), 0.8), 0.85, true),
+    ));
     let rifle = {
         let dry = shot(0.75, 14, 3500.0, 7.0, (150.0, 55.0), 1.2);
         let mut b = Buf::new(0.75);
@@ -208,18 +272,37 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     out.push(("rifle", finish(rifle, 0.85, true)));
     let mortar = {
         let mut b = Buf::new(0.4);
-        b.add(0.0, &osc(0.4, |t| 55.0 + 110.0 * (-t * 14.0).exp(), sine, decay(9.0)), 1.0);
+        b.add(
+            0.0,
+            &osc(0.4, |t| 55.0 + 110.0 * (-t * 14.0).exp(), sine, decay(9.0)),
+            1.0,
+        );
         b.add(0.0, &hiss(0.4, 15, |_| 700.0, 40.0, decay(22.0)), 0.6);
         b.s
     };
     out.push(("mortar", finish(mortar, 0.7, true)));
 
     // Hits.
-    let swing = hiss(0.26, 16, |t| 600.0 + 3000.0 * (t / 0.26 * std::f32::consts::PI).sin(), 300.0, |t| (t / 0.26 * std::f32::consts::PI).sin().powi(2));
+    let swing = hiss(
+        0.26,
+        16,
+        |t| 600.0 + 3000.0 * (t / 0.26 * std::f32::consts::PI).sin(),
+        300.0,
+        |t| (t / 0.26 * std::f32::consts::PI).sin().powi(2),
+    );
     out.push(("swing", finish(swing, 0.5, true)));
     let hit = {
         let mut b = Buf::new(0.1);
-        b.add(0.0, &osc(0.1, |t| 110.0 + 130.0 * (-t * 40.0).exp(), sine, decay(40.0)), 1.0);
+        b.add(
+            0.0,
+            &osc(
+                0.1,
+                |t| 110.0 + 130.0 * (-t * 40.0).exp(),
+                sine,
+                decay(40.0),
+            ),
+            1.0,
+        );
         b.add(0.0, &hiss(0.03, 17, |_| 5000.0, 800.0, decay(150.0)), 0.5);
         b.s
     };
@@ -247,16 +330,52 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     let boom = {
         let mut b = Buf::new(1.5);
         b.add(0.0, &hiss(0.04, 21, |_| 8000.0, 1500.0, decay(90.0)), 0.8);
-        b.add(0.0, &hiss(1.5, 22, |t| 120.0 + 2500.0 * (-t * 4.0).exp(), 20.0, decay(3.2)), 1.0);
-        b.add(0.0, &osc(1.5, |t| 30.0 + 45.0 * (-t * 5.0).exp(), sine, decay(3.5)), 0.9);
+        b.add(
+            0.0,
+            &hiss(
+                1.5,
+                22,
+                |t| 120.0 + 2500.0 * (-t * 4.0).exp(),
+                20.0,
+                decay(3.2),
+            ),
+            1.0,
+        );
+        b.add(
+            0.0,
+            &osc(1.5, |t| 30.0 + 45.0 * (-t * 5.0).exp(), sine, decay(3.5)),
+            0.9,
+        );
         b.s
     };
     out.push(("boom", finish(boom, 0.95, true)));
     let starcall = {
         let mut b = Buf::new(1.2);
-        b.add(0.0, &osc(1.2, |t| 300.0 + 1300.0 * (t / 1.2).powi(2) + 12.0 * (t * 38.0).sin(), sine, |t| (t / 1.2).powi(2)), 1.0);
-        b.add(0.0, &osc(1.2, |t| 450.0 + 1950.0 * (t / 1.2).powi(2), tri, |t| (t / 1.2).powi(3)), 0.35);
-        b.add(0.0, &hiss(1.2, 23, |_| 7000.0, 3000.0, |t| (t / 1.2).powi(2)), 0.25);
+        b.add(
+            0.0,
+            &osc(
+                1.2,
+                |t| 300.0 + 1300.0 * (t / 1.2).powi(2) + 12.0 * (t * 38.0).sin(),
+                sine,
+                |t| (t / 1.2).powi(2),
+            ),
+            1.0,
+        );
+        b.add(
+            0.0,
+            &osc(
+                1.2,
+                |t| 450.0 + 1950.0 * (t / 1.2).powi(2),
+                tri,
+                |t| (t / 1.2).powi(3),
+            ),
+            0.35,
+        );
+        b.add(
+            0.0,
+            &hiss(1.2, 23, |_| 7000.0, 3000.0, |t| (t / 1.2).powi(2)),
+            0.25,
+        );
         b.s
     };
     out.push(("starcall", finish(starcall, 0.5, true)));
@@ -271,8 +390,22 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     out.push(("kill", finish(kill, 0.55, true)));
     let down = {
         let mut b = Buf::new(0.6);
-        b.add(0.0, &hiss(0.6, 24, |t| 200.0 + 2500.0 * (-t * 6.0).exp(), 40.0, decay(6.0)), 1.0);
-        b.add(0.0, &osc(0.6, |t| 80.0 + 320.0 * (-t * 7.0).exp(), tri, decay(6.0)), 0.6);
+        b.add(
+            0.0,
+            &hiss(
+                0.6,
+                24,
+                |t| 200.0 + 2500.0 * (-t * 6.0).exp(),
+                40.0,
+                decay(6.0),
+            ),
+            1.0,
+        );
+        b.add(
+            0.0,
+            &osc(0.6, |t| 80.0 + 320.0 * (-t * 7.0).exp(), tri, decay(6.0)),
+            0.6,
+        );
         b.s
     };
     out.push(("down", finish(down, 0.5, true)));
@@ -280,7 +413,12 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     // Loot.
     let chest = {
         let mut b = Buf::new(0.75);
-        let creak = osc(0.35, |t| 95.0 + 35.0 * (t * 23.0).sin() + 60.0 * t, saw, |t| (t / 0.35 * std::f32::consts::PI).sin());
+        let creak = osc(
+            0.35,
+            |t| 95.0 + 35.0 * (t * 23.0).sin() + 60.0 * t,
+            saw,
+            |t| (t / 0.35 * std::f32::consts::PI).sin(),
+        );
         b.add(0.0, &lowpass(&creak, |_| 900.0), 0.6);
         let mut n = Noise(25);
         for k in 0..7 {
@@ -313,7 +451,17 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     let reload = {
         let mut b = Buf::new(0.55);
         b.add(0.0, &clack(28), 0.8);
-        b.add(0.12, &hiss(0.15, 29, |_| 2500.0, 600.0, |t| (t / 0.15 * std::f32::consts::PI).sin()), 0.4);
+        b.add(
+            0.12,
+            &hiss(
+                0.15,
+                29,
+                |_| 2500.0,
+                600.0,
+                |t| (t / 0.15 * std::f32::consts::PI).sin(),
+            ),
+            0.4,
+        );
         b.add(0.35, &clack(30), 1.2);
         b.add(0.42, &clack(31), 0.7);
         b.s
@@ -323,13 +471,23 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
 
     // Moving.
     let whoosh = |seconds: f32, seed: u32, rise: f32| {
-        hiss(seconds, seed, move |t| 400.0 + rise * (t / seconds), 150.0, move |t| (t / seconds * std::f32::consts::PI).sin().powi(2))
+        hiss(
+            seconds,
+            seed,
+            move |t| 400.0 + rise * (t / seconds),
+            150.0,
+            move |t| (t / seconds * std::f32::consts::PI).sin().powi(2),
+        )
     };
     out.push(("leap", finish(whoosh(0.55, 33, 3500.0), 0.45, true)));
     out.push(("roll", finish(whoosh(0.3, 34, 1800.0), 0.35, true)));
     let land = {
         let mut b = Buf::new(0.35);
-        b.add(0.0, &osc(0.35, |t| 45.0 + 60.0 * (-t * 20.0).exp(), sine, decay(14.0)), 1.0);
+        b.add(
+            0.0,
+            &osc(0.35, |t| 45.0 + 60.0 * (-t * 20.0).exp(), sine, decay(14.0)),
+            1.0,
+        );
         b.add(0.0, &hiss(0.35, 35, |_| 900.0, 60.0, decay(14.0)), 0.6);
         b.s
     };
@@ -339,8 +497,16 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     let charge = {
         let mut b = Buf::new(2.5);
         let tremolo = |t: f32| (0.6 + 0.4 * (t * TAU * 7.0).sin()) * (t / 2.5).min(1.0);
-        b.add(0.0, &osc(2.5, |t| 220.0 + 220.0 * t / 2.5, sine, tremolo), 1.0);
-        b.add(0.0, &osc(2.5, |t| 330.0 + 330.0 * t / 2.5, tri, tremolo), 0.3);
+        b.add(
+            0.0,
+            &osc(2.5, |t| 220.0 + 220.0 * t / 2.5, sine, tremolo),
+            1.0,
+        );
+        b.add(
+            0.0,
+            &osc(2.5, |t| 330.0 + 330.0 * t / 2.5, tri, tremolo),
+            0.3,
+        );
         b.s
     };
     out.push(("charge", finish(charge, 0.32, true)));
@@ -370,7 +536,16 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
             b.add(k as f32 * 0.13, &bell(note(*n), 1.6, 3.0), 0.6);
         }
         for n in [0.0f32, 4.0, 7.0] {
-            b.add(0.55, &osc(1.85, move |_| note(n - 12.0), tri, |t| (t / 0.1).min(1.0) * (-t * 1.6).exp()), 0.25);
+            b.add(
+                0.55,
+                &osc(
+                    1.85,
+                    move |_| note(n - 12.0),
+                    tri,
+                    |t| (t / 0.1).min(1.0) * (-t * 1.6).exp(),
+                ),
+                0.25,
+            );
         }
         b.s
     };
@@ -378,7 +553,11 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     let defeat = {
         let mut b = Buf::new(2.0);
         for (k, n) in [0.0f32, -4.0, -7.0, -12.0].iter().enumerate() {
-            b.add(k as f32 * 0.28, &pluck(note(*n - 12.0), 1.2, 2.5, 1500.0), 0.6);
+            b.add(
+                k as f32 * 0.28,
+                &pluck(note(*n - 12.0), 1.2, 2.5, 1500.0),
+                0.6,
+            );
         }
         b.s
     };
@@ -393,16 +572,41 @@ fn sounds() -> Vec<(&'static str, Vec<f32>)> {
     out.push(("heartbeat", finish(heartbeat, 0.6, true)));
     let hush = {
         let mut b = Buf::new(0.28);
-        let buzz = osc(0.28, |t| 68.0 + 8.0 * (t * 30.0).sin(), square, |t| (t / 0.28 * std::f32::consts::PI).sin());
+        let buzz = osc(
+            0.28,
+            |t| 68.0 + 8.0 * (t * 30.0).sin(),
+            square,
+            |t| (t / 0.28 * std::f32::consts::PI).sin(),
+        );
         b.add(0.0, &lowpass(&buzz, |_| 600.0), 1.0);
-        b.add(0.0, &hiss(0.28, 36, |_| 1500.0, 300.0, |t| (t / 0.28 * std::f32::consts::PI).sin()), 0.4);
+        b.add(
+            0.0,
+            &hiss(
+                0.28,
+                36,
+                |_| 1500.0,
+                300.0,
+                |t| (t / 0.28 * std::f32::consts::PI).sin(),
+            ),
+            0.4,
+        );
         b.s
     };
     out.push(("hush", finish(hush, 0.4, true)));
 
     // The menus.
-    out.push(("click", finish(osc(0.05, |t| 1400.0 - 6000.0 * t, sine, decay(70.0)), 0.35, true)));
-    out.push(("tick", finish(osc(0.03, |_| 2200.0, sine, decay(120.0)), 0.2, true)));
+    out.push((
+        "click",
+        finish(
+            osc(0.05, |t| 1400.0 - 6000.0 * t, sine, decay(70.0)),
+            0.35,
+            true,
+        ),
+    ));
+    out.push((
+        "tick",
+        finish(osc(0.03, |_| 2200.0, sine, decay(120.0)), 0.2, true),
+    ));
 
     out.push(("music_calm", finish(music_calm(), 0.55, false)));
     out.push(("music_tension", finish(music_tension(), 0.6, false)));
@@ -435,7 +639,10 @@ fn music_calm() -> Vec<f32> {
         for v in voices {
             let hz = note(*v);
             let mut pad = osc(3.8, move |_| hz * 0.9985, sine, swell);
-            for (x, y) in pad.iter_mut().zip(osc(3.8, move |_| hz * 1.0015, sine, swell)) {
+            for (x, y) in pad
+                .iter_mut()
+                .zip(osc(3.8, move |_| hz * 1.0015, sine, swell))
+            {
                 *x += y;
             }
             for (x, y) in pad.iter_mut().zip(osc(3.8, move |_| hz * 2.0, tri, swell)) {
@@ -448,7 +655,12 @@ fn music_calm() -> Vec<f32> {
         b.add(at, &osc(3.8, move |_| root * 2.0, sine, swell), 0.06);
     }
     // Bells: chord tones an octave up; -1 rests.
-    let tones: [[f32; 4]; 4] = [[0.0, 3.0, 7.0, 12.0], [-4.0, 0.0, 3.0, 8.0], [3.0, 7.0, 10.0, 15.0], [-2.0, 2.0, 5.0, 10.0]];
+    let tones: [[f32; 4]; 4] = [
+        [0.0, 3.0, 7.0, 12.0],
+        [-4.0, 0.0, 3.0, 8.0],
+        [3.0, 7.0, 10.0, 15.0],
+        [-2.0, 2.0, 5.0, 10.0],
+    ];
     let figures: [[i32; 8]; 4] = [
         [0, -1, 2, -1, 3, -1, 2, -1],
         [-1, 1, -1, 2, -1, 0, -1, -1],
@@ -459,11 +671,21 @@ fn music_calm() -> Vec<f32> {
         for (step, &i) in figure.iter().enumerate() {
             if i >= 0 {
                 let hz = note(chord[i as usize]);
-                b.add(bar as f32 * BAR + step as f32 * EIGHTH, &bell(hz, 1.8, 3.2), 0.075);
+                b.add(
+                    bar as f32 * BAR + step as f32 * EIGHTH,
+                    &bell(hz, 1.8, 3.2),
+                    0.075,
+                );
             }
         }
     }
-    let wind = hiss(LOOP, 40, |_| 450.0, 80.0, |t| 0.6 + 0.4 * (t / LOOP * TAU).sin());
+    let wind = hiss(
+        LOOP,
+        40,
+        |_| 450.0,
+        80.0,
+        |t| 0.6 + 0.4 * (t / LOOP * TAU).sin(),
+    );
     b.add(0.0, &wind, 0.05);
     b.s
 }
@@ -484,7 +706,11 @@ fn music_tension() -> Vec<f32> {
     for k in 0..32 {
         let hz = pattern[k % 8];
         let accent = if k % 2 == 0 { 1.0 } else { 0.6 };
-        b.add(k as f32 * EIGHTH, &pluck(hz, 0.4, 7.0, 1700.0), 0.16 * accent);
+        b.add(
+            k as f32 * EIGHTH,
+            &pluck(hz, 0.4, 7.0, 1700.0),
+            0.16 * accent,
+        );
     }
     let kick = osc(0.3, |t| 40.0 + 80.0 * (-t * 18.0).exp(), sine, decay(13.0));
     for beat in 0..16 {
@@ -493,12 +719,19 @@ fn music_tension() -> Vec<f32> {
     }
     for k in 0..32 {
         if k % 2 == 1 {
-            b.add(k as f32 * EIGHTH, &hiss(0.05, 41 + k as u32, |_| 9000.0, 5000.0, decay(70.0)), 0.12);
+            b.add(
+                k as f32 * EIGHTH,
+                &hiss(0.05, 41 + k as u32, |_| 9000.0, 5000.0, decay(70.0)),
+                0.12,
+            );
         }
     }
     for bar in 0..4 {
         let mut drum = osc(0.6, |t| 60.0 + 30.0 * (-t * 10.0).exp(), sine, decay(6.0));
-        for (x, y) in drum.iter_mut().zip(hiss(0.6, 50 + bar, |_| 350.0, 30.0, decay(8.0))) {
+        for (x, y) in drum
+            .iter_mut()
+            .zip(hiss(0.6, 50 + bar, |_| 350.0, 30.0, decay(8.0)))
+        {
             *x += y * 0.7;
         }
         b.add(bar as f32 * BAR, &drum, 0.45);
@@ -538,7 +771,10 @@ fn lanternfall_sounds_exist_and_match_their_recipes() {
             std::fs::write(&path, &bytes).expect("write wav");
         }
         let on_disk = std::fs::read(&path).expect("read wav");
-        assert!(on_disk.starts_with(b"RIFF") && &on_disk[8..12] == b"WAVE", "{name}: a WAV");
+        assert!(
+            on_disk.starts_with(b"RIFF") && &on_disk[8..12] == b"WAVE",
+            "{name}: a WAV"
+        );
         assert!(on_disk.len() > 44 + 200, "{name}: has samples");
         assert_eq!(on_disk, bytes, "{name}.wav is stale: delete it and rerun");
     }
@@ -549,12 +785,19 @@ fn the_music_layers_share_a_length_and_loop_cleanly() {
     let all = sounds();
     let calm = &all.iter().find(|(n, _)| *n == "music_calm").unwrap().1;
     let tension = &all.iter().find(|(n, _)| *n == "music_tension").unwrap().1;
-    assert_eq!(calm.len(), tension.len(), "same length, so the layers stay together");
+    assert_eq!(
+        calm.len(),
+        tension.len(),
+        "same length, so the layers stay together"
+    );
     for m in [calm, tension] {
         // The seam: the jump from the last sample to the first is no
         // bigger than the loop's ordinary sample-to-sample steps.
         let seam = (m[0] - m[m.len() - 1]).abs();
-        let typical = m.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        let typical = m
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
         assert!(seam <= typical, "seam {seam} vs largest step {typical}");
     }
 }

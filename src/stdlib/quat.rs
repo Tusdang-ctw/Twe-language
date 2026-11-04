@@ -117,16 +117,36 @@ pub(super) fn quat_look_along_impl(_env: &mut Env, args: &[Value]) -> Result<Val
     let trace = m00 + m11 + m22;
     let q = if trace > 0.0 {
         let s = (trace + 1.0).sqrt() * 2.0;
-        [(u[2] - f[1]) / s, (f[0] - r[2]) / s, (r[1] - u[0]) / s, 0.25 * s]
+        [
+            (u[2] - f[1]) / s,
+            (f[0] - r[2]) / s,
+            (r[1] - u[0]) / s,
+            0.25 * s,
+        ]
     } else if m00 > m11 && m00 > m22 {
         let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
-        [0.25 * s, (u[0] + r[1]) / s, (f[0] + r[2]) / s, (u[2] - f[1]) / s]
+        [
+            0.25 * s,
+            (u[0] + r[1]) / s,
+            (f[0] + r[2]) / s,
+            (u[2] - f[1]) / s,
+        ]
     } else if m11 > m22 {
         let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
-        [(u[0] + r[1]) / s, 0.25 * s, (f[1] + u[2]) / s, (f[0] - r[2]) / s]
+        [
+            (u[0] + r[1]) / s,
+            0.25 * s,
+            (f[1] + u[2]) / s,
+            (f[0] - r[2]) / s,
+        ]
     } else {
         let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
-        [(f[0] + r[2]) / s, (f[1] + u[2]) / s, 0.25 * s, (r[1] - u[0]) / s]
+        [
+            (f[0] + r[2]) / s,
+            (f[1] + u[2]) / s,
+            0.25 * s,
+            (r[1] - u[0]) / s,
+        ]
     };
     Ok(quat_to_value(q))
 }
@@ -145,7 +165,10 @@ pub(super) fn quat_identity_impl(_env: &mut Env, _args: &[Value]) -> Result<Valu
     Ok(quat_to_value([0.0, 0.0, 0.0, 1.0]))
 }
 
-pub(super) fn quat_from_axis_angle_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn quat_from_axis_angle_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 2, "quat.from_axis_angle")?;
     let axis = xyz_of(&args[0], "quat.from_axis_angle.axis")?;
     let angle = number(&args[1], "quat.from_axis_angle.angle")? as f32;
@@ -246,4 +269,3 @@ pub(super) fn quat_to_mat4_impl(_env: &mut Env, args: &[Value]) -> Result<Value,
     ];
     Ok(mat4_to_value(&m))
 }
-

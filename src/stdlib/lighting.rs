@@ -125,7 +125,10 @@ pub(super) fn light_volumetric_impl(_env: &mut Env, args: &[Value]) -> Result<Va
 // light from every direction and reflections in glossy surfaces
 // (image-based lighting). It replaces `light.ambient`'s flat colour;
 // the sun and point lights still add. Intensity 0 turns it off.
-pub(super) fn light_environment_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn light_environment_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 2, "light.environment")?;
     let help = "e.g. `light.environment(\"assets/sky.hdr\", 1.0)`; intensity 0 turns it off";
     if !args[0].is_str() || !args[0].as_string().ends_with(".hdr") {
@@ -215,7 +218,11 @@ pub(super) fn light_set_radius_impl(_env: &mut Env, args: &[Value]) -> Result<Va
 pub(super) fn light_background_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "light.background")?;
     let (r, g, b, _) = rgba(&args[0], "light.background.color")?;
-    let linear = [srgb_to_linear(r) as f32, srgb_to_linear(g) as f32, srgb_to_linear(b) as f32];
+    let linear = [
+        srgb_to_linear(r) as f32,
+        srgb_to_linear(g) as f32,
+        srgb_to_linear(b) as f32,
+    ];
     BACKGROUND.with(|s| *s.borrow_mut() = linear);
     Ok(Value::NIL)
 }
@@ -272,7 +279,10 @@ pub(super) fn sun_shadow_impl(_env: &mut Env, args: &[Value]) -> Result<Value, R
     Ok(Value::NIL)
 }
 
-pub(super) fn sun_shadow_extent_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn sun_shadow_extent_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "sun.shadow_extent")?;
     let r = number(&args[0], "sun.shadow_extent.radius")? as f32;
     if r > 0.0 {
@@ -325,7 +335,10 @@ pub(super) fn postfx_exposure_impl(_env: &mut Env, args: &[Value]) -> Result<Val
     Ok(Value::NIL)
 }
 
-pub(super) fn postfx_auto_exposure_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn postfx_auto_exposure_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "postfx.auto_exposure")?;
     if !args[0].is_bool() {
         return Err(RuntimeError {
@@ -371,7 +384,10 @@ pub(super) fn postfx_dof_impl(_env: &mut Env, args: &[Value]) -> Result<Value, R
 
 // web3d-M7: camera motion blur; the fraction of a frame the shutter is
 // open (0.5 = a film camera's 180-degree shutter), 0 = off.
-pub(super) fn postfx_motion_blur_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn postfx_motion_blur_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "postfx.motion_blur")?;
     let shutter = (number(&args[0], "postfx.motion_blur.shutter")? as f32).clamp(0.0, 2.0);
     MOTION_BLUR.with(|s| *s.borrow_mut() = shutter);
@@ -447,7 +463,10 @@ pub(super) fn postfx_vignette_impl(_env: &mut Env, args: &[Value]) -> Result<Val
 // Phase 28 session 4: vignette tint color. Accepts an (r, g, b)
 // or (r, g, b, a) tuple — alpha is ignored. Components clamp to
 // [0, 1] so any color literal or color.* constant is valid input.
-pub(super) fn postfx_vignette_color_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn postfx_vignette_color_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "postfx.vignette_color")?;
     let (r, g, b, _a) = rgba(&args[0], "postfx.vignette_color.color")?;
     VIGNETTE_COLOR.with(|c| {
@@ -471,14 +490,20 @@ pub(super) fn postfx_bloom_impl(_env: &mut Env, args: &[Value]) -> Result<Value,
 
 // Phase 28 session 3: bloom threshold. HDR luminance below this
 // value contributes nothing; above it, the excess blooms.
-pub(super) fn postfx_bloom_threshold_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn postfx_bloom_threshold_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "postfx.bloom_threshold")?;
     let t = (number(&args[0], "postfx.bloom_threshold.threshold")? as f32).max(0.0);
     BLOOM_THRESHOLD.with(|st| *st.borrow_mut() = t);
     Ok(Value::NIL)
 }
 
-pub(super) fn postfx_frustum_cull_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn postfx_frustum_cull_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "postfx.frustum_cull")?;
     let on = if args[0].is_bool() {
         args[0].as_bool()

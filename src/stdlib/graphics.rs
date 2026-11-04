@@ -52,7 +52,9 @@ fn env_tier() -> Option<Tier> {
     if cfg!(target_arch = "wasm32") {
         return None;
     }
-    std::env::var("TWE_QUALITY").ok().and_then(|v| Tier::parse(&v.to_ascii_lowercase()))
+    std::env::var("TWE_QUALITY")
+        .ok()
+        .and_then(|v| Tier::parse(&v.to_ascii_lowercase()))
 }
 
 pub(super) fn graphics_quality_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -73,7 +75,10 @@ pub(super) fn graphics_quality_impl(_env: &mut Env, args: &[Value]) -> Result<Va
     Ok(Value::NIL)
 }
 
-pub(super) fn graphics_render_scale_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn graphics_render_scale_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "graphics.render_scale")?;
     let scale = number(&args[0], "graphics.render_scale")?;
     if !(0.25..=1.0).contains(&scale) {
@@ -90,5 +95,7 @@ pub(super) fn graphics_render_scale_impl(_env: &mut Env, args: &[Value]) -> Resu
 
 pub(super) fn graphics_tier_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 0, "graphics.tier")?;
-    Ok(Value::from_string(graphics_quality().tier.name().to_string()))
+    Ok(Value::from_string(
+        graphics_quality().tier.name().to_string(),
+    ))
 }

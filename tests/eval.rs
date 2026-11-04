@@ -1295,7 +1295,11 @@ fn postfx_tonemap_curves() {
         ("\"aces\"", Tonemapper::Aces),
     ] {
         run_program_str(&format!("postfx.tonemap({arg})\n")).expect("should run");
-        assert_eq!(twec::stdlib::tonemap_curve(), curve, "postfx.tonemap({arg})");
+        assert_eq!(
+            twec::stdlib::tonemap_curve(),
+            curve,
+            "postfx.tonemap({arg})"
+        );
     }
     let err = run_program_str("postfx.tonemap(\"filmic\")\n").expect_err("unknown curve");
     assert!(err.contains("unknown curve \"filmic\""), "{err}");
@@ -1309,59 +1313,111 @@ fn postfx_exposure_and_ao_setters() {
     assert!(twec::stdlib::auto_exposure_enabled());
     run_program_str("postfx.ao(0.8)\npostfx.ao_radius(2)\n").expect("should run");
     assert_eq!(twec::stdlib::ao_settings(), (0.8, 2.0));
-    assert!(run_program_str("postfx.ao_radius(0)\n").is_err(), "a zero radius is rejected");
-    assert!(run_program_str("postfx.auto_exposure(1)\n").is_err(), "auto_exposure takes a bool");
+    assert!(
+        run_program_str("postfx.ao_radius(0)\n").is_err(),
+        "a zero radius is rejected"
+    );
+    assert!(
+        run_program_str("postfx.auto_exposure(1)\n").is_err(),
+        "auto_exposure takes a bool"
+    );
 }
 
 /// web3d-M7: depth of field, motion blur and colour-grading setters.
 #[test]
 fn postfx_dof_motion_blur_and_lut_setters() {
-    run_program_str("postfx.dof(8, 1.4)
+    run_program_str(
+        "postfx.dof(8, 1.4)
 postfx.motion_blur(0.5)
 postfx.lut(\"looks/warm.cube\", 0.75)
-").expect("should run");
+",
+    )
+    .expect("should run");
     assert_eq!(twec::stdlib::dof_settings(), (8.0, 1.4));
     assert_eq!(twec::stdlib::motion_blur_shutter(), 0.5);
-    assert_eq!(twec::stdlib::color_lut(), Some(("looks/warm.cube".to_string(), 0.75)));
-    run_program_str("postfx.lut(\"looks/warm.cube\", 0)
-").expect("should run");
-    assert_eq!(twec::stdlib::color_lut(), None, "strength 0 turns grading off");
-    assert!(run_program_str("postfx.dof(-1, 2)
-").is_err(), "negative focus is rejected");
-    assert!(run_program_str("postfx.lut(3, 1)
-").is_err(), "the LUT is a path");
+    assert_eq!(
+        twec::stdlib::color_lut(),
+        Some(("looks/warm.cube".to_string(), 0.75))
+    );
+    run_program_str(
+        "postfx.lut(\"looks/warm.cube\", 0)
+",
+    )
+    .expect("should run");
+    assert_eq!(
+        twec::stdlib::color_lut(),
+        None,
+        "strength 0 turns grading off"
+    );
+    assert!(
+        run_program_str(
+            "postfx.dof(-1, 2)
+"
+        )
+        .is_err(),
+        "negative focus is rejected"
+    );
+    assert!(
+        run_program_str(
+            "postfx.lut(3, 1)
+"
+        )
+        .is_err(),
+        "the LUT is a path"
+    );
 }
 
 /// web3d-M7: `light.fog` sets height fog; density 0 turns it off.
 #[test]
 fn light_fog_setter() {
-    run_program_str("light.fog(0.05, 0.3, (0.7, 0.75, 0.8))
-").expect("should run");
+    run_program_str(
+        "light.fog(0.05, 0.3, (0.7, 0.75, 0.8))
+",
+    )
+    .expect("should run");
     let (density, falloff, color) = twec::stdlib::fog_settings().expect("fog on");
     assert_eq!((density, falloff), (0.05, 0.3));
     assert!((color[1] - 0.75).abs() < 1e-6);
-    run_program_str("light.fog(0, 0, color.white)
-").expect("should run");
+    run_program_str(
+        "light.fog(0, 0, color.white)
+",
+    )
+    .expect("should run");
     assert_eq!(twec::stdlib::fog_settings(), None);
-    assert!(run_program_str("light.fog(-1, 0, color.white)
-").is_err());
+    assert!(run_program_str(
+        "light.fog(-1, 0, color.white)
+"
+    )
+    .is_err());
 }
 
 /// web3d-M7: `postfx.ssr` (clamped to 0..1) and `light.volumetric`.
 #[test]
 fn ssr_and_volumetric_setters() {
-    run_program_str("postfx.ssr(0.8)
+    run_program_str(
+        "postfx.ssr(0.8)
 light.volumetric(true)
-").expect("should run");
+",
+    )
+    .expect("should run");
     assert_eq!(twec::stdlib::ssr_strength(), 0.8);
     assert!(twec::stdlib::fog_volumetric());
-    run_program_str("postfx.ssr(3)
+    run_program_str(
+        "postfx.ssr(3)
 light.volumetric(false)
-").expect("should run");
+",
+    )
+    .expect("should run");
     assert_eq!(twec::stdlib::ssr_strength(), 1.0);
     assert!(!twec::stdlib::fog_volumetric());
-    assert!(run_program_str("light.volumetric(1)
-").is_err(), "volumetric takes a bool");
+    assert!(
+        run_program_str(
+            "light.volumetric(1)
+"
+        )
+        .is_err(),
+        "volumetric takes a bool"
+    );
 }
 
 /// web3d-M7: lights are no longer capped at 8 (clustered shading);
@@ -1380,14 +1436,23 @@ light.cone(last, vec3(0, -1, 0), 30)
     let lights = twec::stdlib::point_lights_snapshot();
     assert_eq!(lights.len(), 40);
     let cone = lights[39].cone;
-    assert!((cone[3] - 30f32.to_radians().cos()).abs() < 1e-5 && cone[1] == -1.0, "{cone:?}");
+    assert!(
+        (cone[3] - 30f32.to_radians().cos()).abs() < 1e-5 && cone[1] == -1.0,
+        "{cone:?}"
+    );
     assert!(lights[0].cone[3] < -1.0, "the others stay point lights");
-    assert!(run_program_str("light.clear()
+    assert!(run_program_str(
+        "light.clear()
 let l = light.add((0, 1, 0), (1, 1, 1, 1), 3)
 light.cone(l, vec3(0, 0, 0), 30)
-").is_err());
-    run_program_str("light.clear()
-").expect("clears");
+"
+    )
+    .is_err());
+    run_program_str(
+        "light.clear()
+",
+    )
+    .expect("clears");
     assert!(twec::stdlib::point_lights_snapshot().is_empty());
 }
 
@@ -2050,12 +2115,23 @@ on update(dt):
     };
     let (cpu, cpu_emissions) = run(false);
     let (gpu, gpu_emissions) = run(true);
-    assert_eq!((cpu_emissions, gpu_emissions), (0, 1), "the GPU run records its emission");
+    assert_eq!(
+        (cpu_emissions, gpu_emissions),
+        (0, 1),
+        "the GPU run records its emission"
+    );
     assert_eq!(cpu, gpu);
     // The emitter lives 0.1 s: six ticks of 1/60 sum to just under 0.1
     // in floating point, so the seventh ends it.
-    let counts: Vec<&str> = cpu.lines().map(|l| l.split(' ').next().unwrap_or("")).collect();
-    assert_eq!(counts[..9], ["1", "1", "1", "1", "1", "1", "1", "0", "0"], "{cpu}");
+    let counts: Vec<&str> = cpu
+        .lines()
+        .map(|l| l.split(' ').next().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        counts[..9],
+        ["1", "1", "1", "1", "1", "1", "1", "0", "0"],
+        "{cpu}"
+    );
 }
 
 /// web3d-M7: whatever the GPU compiler accepts, the CPU runs too (the
@@ -3132,7 +3208,9 @@ fn ui_widgets_draw_in_3d_without_macroquad() {
     eval::run_top_level(&mut env, &program).expect("top-level");
     eval::render_frame3d(&mut env).expect("a widget draws in 3D");
     assert!(
-        env.draw2d.iter().any(|c| matches!(c, twec::draw2d::Draw2d::Text { text, .. } if text == "Go")),
+        env.draw2d
+            .iter()
+            .any(|c| matches!(c, twec::draw2d::Draw2d::Text { text, .. } if text == "Go")),
         "{:?}",
         env.draw2d
     );
@@ -3502,8 +3580,14 @@ fn light_environment_setter() {
     );
     run_program_str("light.environment(\"assets/sky.hdr\", 0)\n").expect("should run");
     assert_eq!(twec::stdlib::environment_settings(), None);
-    assert!(run_program_str("light.environment(\"sky.png\", 1)\n").is_err(), "needs a .hdr");
-    assert!(run_program_str("light.environment(\"sky.hdr\", -1)\n").is_err(), "negative intensity");
+    assert!(
+        run_program_str("light.environment(\"sky.png\", 1)\n").is_err(),
+        "needs a .hdr"
+    );
+    assert!(
+        run_program_str("light.environment(\"sky.hdr\", -1)\n").is_err(),
+        "negative intensity"
+    );
 }
 
 /// web3d-M5: the `nil` literal docs/06 §2.5.3 specifies works (it was
@@ -3521,7 +3605,10 @@ fn graphics_quality_and_render_scale() {
     let out = run_program_str("graphics.quality(\"low\")\nprint(graphics.tier())\n").expect("runs");
     assert_eq!(out.trim(), "low");
     let err = run_program_str("graphics.quality(\"epic\")\n").expect_err("unknown tier");
-    assert!(err.contains("unknown tier") && err.contains("medium"), "{err}");
+    assert!(
+        err.contains("unknown tier") && err.contains("medium"),
+        "{err}"
+    );
     let err = run_program_str("graphics.render_scale(2.0)\n").expect_err("too big");
     assert!(err.contains("0.25"), "{err}");
     run_program_str("graphics.render_scale(0.5)\n").expect("in range");
@@ -3529,7 +3616,8 @@ fn graphics_quality_and_render_scale() {
 
 #[test]
 fn an_entity_starts_in_its_initial_state_so_persistent_survives_pause() {
-    let out = run_program_frames("tests/programs/entity_persistent_pause.twe", 5, 1.0 / 60.0).expect("runs");
+    let out = run_program_frames("tests/programs/entity_persistent_pause.twe", 5, 1.0 / 60.0)
+        .expect("runs");
     assert_eq!(out, "shell 3, crate 0\n");
 }
 

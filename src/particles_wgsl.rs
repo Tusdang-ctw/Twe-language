@@ -103,7 +103,12 @@ pub fn compile(name: &str, members: &[DeclMember]) -> Result<ParticleProgram, St
             DeclMember::Field { name, value, .. } => {
                 fields.insert(name.as_str(), value);
             }
-            DeclMember::Method { name: n, params, body, .. } => match n.as_str() {
+            DeclMember::Method {
+                name: n,
+                params,
+                body,
+                ..
+            } => match n.as_str() {
                 "on_spawn" => spawn = Some((params, body)),
                 "on_update" => update = Some((params, body)),
                 "render" => {
@@ -167,7 +172,11 @@ fn arith_ty(op: BinOp, a: Ty, b: Ty, line: u32) -> Result<Ty, String> {
     let float = a.is_float() || b.is_float();
     let shape = match (a, b) {
         (Ty::N { .. }, Ty::N { .. }) => Some(a),
-        (Ty::V { n, .. }, Ty::V { n: m, .. }) if n == m && matches!(op, BinOp::Add | BinOp::Sub) => Some(a),
+        (Ty::V { n, .. }, Ty::V { n: m, .. })
+            if n == m && matches!(op, BinOp::Add | BinOp::Sub) =>
+        {
+            Some(a)
+        }
         (Ty::V { .. }, Ty::N { .. }) if matches!(op, BinOp::Mul | BinOp::Div) => Some(a),
         (Ty::N { .. }, Ty::V { .. }) if op == BinOp::Mul => Some(b),
         _ => None,
@@ -252,18 +261,31 @@ impl<'a> Codegen<'a> {
 
     fn stmt(&mut self, out: &mut String, stmt: &Stmt) -> Result<(), String> {
         match stmt {
-            Stmt::Let { name, value, line, .. } => {
-                if self.scopes.last().is_some_and(|s| s.iter().any(|(n, _)| n == name)) {
+            Stmt::Let {
+                name, value, line, ..
+            } => {
+                if self
+                    .scopes
+                    .last()
+                    .is_some_and(|s| s.iter().any(|(n, _)| n == name))
+                {
                     return Err(unsupported(&format!("declaring `{name}` twice"), *line));
                 }
                 self.pad(out);
                 write!(out, "var v_{name} = ").unwrap();
                 let ty = self.expr(out, value)?;
                 out.push_str(";\n");
-                self.scopes.last_mut().expect("a scope").push((name.clone(), ty));
+                self.scopes
+                    .last_mut()
+                    .expect("a scope")
+                    .push((name.clone(), ty));
             }
             Stmt::Assign {
-                target, op, value, line, ..
+                target,
+                op,
+                value,
+                line,
+                ..
             } => {
                 self.pad(out);
                 let target_ty = match target {
@@ -273,7 +295,10 @@ impl<'a> Codegen<'a> {
                             t
                         }
                         None => {
-                            return Err(unsupported(&format!("setting `{name}` (not a local)"), *line));
+                            return Err(unsupported(
+                                &format!("setting `{name}` (not a local)"),
+                                *line,
+                            ));
                         }
                     },
                     AssignTarget::Field { object, name } => self.place(out, object, name, *line)?,
@@ -355,7 +380,11 @@ impl<'a> Codegen<'a> {
     fn condition(&self, out: &mut String, cond: &Expr) -> Result<(), String> {
         match self.expr(out, cond)? {
             Ty::B => Ok(()),
-            t => Err(format!("line {}: a condition must be a boolean, not {}", cond.line(), t.name())),
+            t => Err(format!(
+                "line {}: a condition must be a boolean, not {}",
+                cond.line(),
+                t.name()
+            )),
         }
     }
 
@@ -365,7 +394,10 @@ impl<'a> Codegen<'a> {
         match object {
             Expr::Ident { name: o, .. } if o == self.particle => {
                 if !WRITABLE.contains(&name) {
-                    return Err(unsupported(&format!("setting the particle's `{name}`"), line));
+                    return Err(unsupported(
+                        &format!("setting the particle's `{name}`"),
+                        line,
+                    ));
                 }
                 write!(out, "pt.{name}").unwrap();
                 Ok(field_ty(name).expect("writable fields exist"))
@@ -403,7 +435,13 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expr::Tuple { elems, line, .. } => self.vector(out, "a tuple", elems, *line)?,
-            Expr::Binary { op, left, right, line, .. } => {
+            Expr::Binary {
+                op,
+                left,
+                right,
+                line,
+                ..
+            } => {
                 let (text, kind) = match op {
                     BinOp::Add => ("+", 0),
                     BinOp::Sub => ("-", 0),
@@ -431,7 +469,9 @@ impl<'a> Codegen<'a> {
                 };
                 ty.ok_or_else(|| mismatch(&format!("`{text}`"), &[a, b], *line))?
             }
-            Expr::Unary { op, operand, line, .. } => {
+            Expr::Unary {
+                op, operand, line, ..
+            } => {
                 out.push_str(match op {
                     UnOp::Neg => "-(",
                     UnOp::Not => "!(",
@@ -466,19 +506,29 @@ impl<'a> Codegen<'a> {
                 }
                 a.with_float(a.is_float() && b.is_float())
             }
-            Expr::Field { object, name, line, .. } => match object.as_ref() {
+            Expr::Field {
+                object, name, line, ..
+            } => match object.as_ref() {
                 Expr::Ident { name: o, .. } if o == self.particle => {
-                    let ty = field_ty(name).ok_or_else(|| format!("line {line}: particles have no field `{name}`"))?;
+                    let ty = field_ty(name)
+                        .ok_or_else(|| format!("line {line}: particles have no field `{name}`"))?;
                     write!(out, "pt.{name}").unwrap();
                     ty
                 }
                 Expr::Ident { name: o, .. } if o == "color" && self.local(o).is_none() => {
                     let c = crate::visual_wgsl::color_constant(name)
                         .ok_or_else(|| format!("line {line}: unknown `color.{name}`"))?;
-                    write!(out, "vec4<f32>({:?}, {:?}, {:?}, {:?})", c[0], c[1], c[2], c[3]).unwrap();
+                    write!(
+                        out,
+                        "vec4<f32>({:?}, {:?}, {:?}, {:?})",
+                        c[0], c[1], c[2], c[3]
+                    )
+                    .unwrap();
                     Ty::V { n: 4, float: true }
                 }
-                Expr::Ident { name: o, .. } if o == "math" && name == "pi" && self.local(o).is_none() => {
+                Expr::Ident { name: o, .. }
+                    if o == "math" && name == "pi" && self.local(o).is_none() =>
+                {
                     out.push_str("3.14159265");
                     FLOAT
                 }
@@ -491,7 +541,11 @@ impl<'a> Codegen<'a> {
                 }
             },
             Expr::Call {
-                callee, args, kwargs, line, ..
+                callee,
+                args,
+                kwargs,
+                line,
+                ..
             } => {
                 if !kwargs.is_empty() {
                     return Err(unsupported("named arguments", *line));
@@ -511,9 +565,18 @@ impl<'a> Codegen<'a> {
     }
 
     /// `vecN<f32>(...)` from N numbers.
-    fn vector(&self, out: &mut String, what: &str, elems: &[Expr], line: u32) -> Result<Ty, String> {
+    fn vector(
+        &self,
+        out: &mut String,
+        what: &str,
+        elems: &[Expr],
+        line: u32,
+    ) -> Result<Ty, String> {
         if !(2..=4).contains(&elems.len()) {
-            return Err(unsupported(&format!("{what} that isn't 2, 3 or 4 numbers"), line));
+            return Err(unsupported(
+                &format!("{what} that isn't 2, 3 or 4 numbers"),
+                line,
+            ));
         }
         write!(out, "vec{}<f32>", elems.len()).unwrap();
         let tys = self.args(out, elems)?;
@@ -535,7 +598,9 @@ impl<'a> Codegen<'a> {
                 return Ok(FLOAT);
             }
             // `vec3` converts its arguments to floats.
-            "vec3" if args.len() == 3 => return Ok(self.vector(out, "`vec3`", args, line)?.with_float(true)),
+            "vec3" if args.len() == 3 => {
+                return Ok(self.vector(out, "`vec3`", args, line)?.with_float(true))
+            }
             "smoothstep" | "mix" | "noise" => {}
             _ if name.starts_with("math.") => {}
             _ => return Err(unsupported(&format!("`{name}(...)`"), line)),
@@ -543,8 +608,8 @@ impl<'a> Codegen<'a> {
         let wgsl = match base {
             "atan2" => "atan2",
             "mod" => "twe_mod",
-            "abs" | "sqrt" | "floor" | "ceil" | "sin" | "cos" | "min" | "max" | "clamp" | "smoothstep" | "mix"
-            | "noise" | "dot" | "cross" | "length" | "normalize" => base,
+            "abs" | "sqrt" | "floor" | "ceil" | "sin" | "cos" | "min" | "max" | "clamp"
+            | "smoothstep" | "mix" | "noise" | "dot" | "cross" | "length" | "normalize" => base,
             _ => return Err(unsupported(&format!("`{name}(...)`"), line)),
         };
         out.push_str(wgsl);
@@ -552,7 +617,8 @@ impl<'a> Codegen<'a> {
         // Which arguments the CPU's builtin takes, and what it returns.
         let numbers = |k: usize| tys.len() == k && tys.iter().all(|t| t.is_number());
         let all_float = tys.iter().all(|t| t.is_float());
-        let vectors = |k: usize| tys.len() == k && tys.iter().all(|t| t.is_vector() && t.same_shape(tys[0]));
+        let vectors =
+            |k: usize| tys.len() == k && tys.iter().all(|t| t.is_vector() && t.same_shape(tys[0]));
         let result = match base {
             "abs" if numbers(1) => Some(tys[0]),
             "min" | "max" if numbers(2) => Some(Ty::N { float: all_float }),
@@ -563,10 +629,17 @@ impl<'a> Codegen<'a> {
             "atan2" if numbers(2) => Some(FLOAT),
             "smoothstep" if numbers(3) => Some(FLOAT),
             "mix" if numbers(3) => Some(FLOAT),
-            "mix" if tys.len() == 3 && tys[0].is_vector() && tys[0].same_shape(tys[1]) && tys[2].is_number() => {
+            "mix"
+                if tys.len() == 3
+                    && tys[0].is_vector()
+                    && tys[0].same_shape(tys[1])
+                    && tys[2].is_number() =>
+            {
                 Some(tys[0].with_float(true))
             }
-            "noise" if tys.len() == 1 && tys[0].same_shape(Ty::V { n: 2, float: true }) => Some(FLOAT),
+            "noise" if tys.len() == 1 && tys[0].same_shape(Ty::V { n: 2, float: true }) => {
+                Some(FLOAT)
+            }
             "dot" if vectors(2) => Some(Ty::N {
                 float: tys[0].is_float() || tys[1].is_float(),
             }),
@@ -598,8 +671,14 @@ impl<'a> Codegen<'a> {
     fn emitter_field(&self, out: &mut String, name: &str, line: u32) -> Result<Ty, String> {
         match self.fields.get(name) {
             Some(value) if is_literal(value) => self.expr(out, value),
-            Some(_) => Err(unsupported(&format!("emitter field `{name}` (not a literal)"), line)),
-            None => Err(unsupported(&format!("`{name}` (not a local or emitter field)"), line)),
+            Some(_) => Err(unsupported(
+                &format!("emitter field `{name}` (not a literal)"),
+                line,
+            )),
+            None => Err(unsupported(
+                &format!("`{name}` (not a local or emitter field)"),
+                line,
+            )),
         }
     }
 }
@@ -659,7 +738,11 @@ mod tests {
         let program = compile("Sparks", &members(SPARKS)).expect("compiles");
         assert!(program.collide);
         assert!(program.spawn.contains("twe_rand()"), "{}", program.spawn);
-        assert!(program.update.contains("pt.pos += (pt.velocity * dt);"), "{}", program.update);
+        assert!(
+            program.update.contains("pt.pos += (pt.velocity * dt);"),
+            "{}",
+            program.update
+        );
         crate::kernel::particles::tests::validate(&program).expect("valid WGSL");
     }
 
@@ -669,21 +752,57 @@ mod tests {
             ("    on_spawn(p):\n        print(1)\n", "print"),
             ("    on_spawn(p):\n        p.lifetime = 3.0\n", "lifetime"),
             ("    on_update(p, dt):\n        p.size = score\n", "score"),
-            ("    on_spawn(p):\n        p.size = 7 / 2\n", "may divide integers"),
-            ("    on_spawn(p):\n        p.size = math.floor(p.age * 4.0) / 2\n", "may divide integers"),
-            ("    on_spawn(p):\n        p.pos = p.pos / 2\n", "may divide integers"),
+            (
+                "    on_spawn(p):\n        p.size = 7 / 2\n",
+                "may divide integers",
+            ),
+            (
+                "    on_spawn(p):\n        p.size = math.floor(p.age * 4.0) / 2\n",
+                "may divide integers",
+            ),
+            (
+                "    on_spawn(p):\n        p.pos = p.pos / 2\n",
+                "may divide integers",
+            ),
             // What the CPU can't do either.
-            ("    on_spawn(p):\n        p.color.a = 0.5\n", "setting `.a`"),
-            ("    on_spawn(p):\n        p.pos = -p.pos\n", "this operator"),
-            ("    on_spawn(p):\n        p.pos = p.pos * p.pos\n", "`*` doesn't take"),
-            ("    on_spawn(p):\n        p.pos = math.abs(p.pos)\n", "`math.abs` doesn't take"),
+            (
+                "    on_spawn(p):\n        p.color.a = 0.5\n",
+                "setting `.a`",
+            ),
+            (
+                "    on_spawn(p):\n        p.pos = -p.pos\n",
+                "this operator",
+            ),
+            (
+                "    on_spawn(p):\n        p.pos = p.pos * p.pos\n",
+                "`*` doesn't take",
+            ),
+            (
+                "    on_spawn(p):\n        p.pos = math.abs(p.pos)\n",
+                "`math.abs` doesn't take",
+            ),
             ("    function render():\n        print(1)\n", "render"),
             // Type errors: caught here, not by a shader compiler.
-            ("    on_spawn(p):\n        p.size = (1.0, 2.0)\n", "can't assign a 2-vector to a number"),
-            ("    on_spawn(p):\n        p.pos = p.pos + 1.0\n", "`+` doesn't take a 3-vector and a number"),
-            ("    on_spawn(p):\n        if p.size:\n            p.size = 1.0\n", "must be a boolean"),
-            ("    on_spawn(p):\n        p.size = p.pos.w\n", "has no `.w`"),
-            ("    on_spawn(p):\n        p.size = math.cross(p.pos, p.pos)\n", "can't assign a 3-vector"),
+            (
+                "    on_spawn(p):\n        p.size = (1.0, 2.0)\n",
+                "can't assign a 2-vector to a number",
+            ),
+            (
+                "    on_spawn(p):\n        p.pos = p.pos + 1.0\n",
+                "`+` doesn't take a 3-vector and a number",
+            ),
+            (
+                "    on_spawn(p):\n        if p.size:\n            p.size = 1.0\n",
+                "must be a boolean",
+            ),
+            (
+                "    on_spawn(p):\n        p.size = p.pos.w\n",
+                "has no `.w`",
+            ),
+            (
+                "    on_spawn(p):\n        p.size = math.cross(p.pos, p.pos)\n",
+                "can't assign a 3-vector",
+            ),
         ];
         for (body, why) in cases {
             let src = format!("particles B:\n    count: 3\n\n{body}");

@@ -37,7 +37,10 @@ impl TranscodeReport {
             parts.push("meshopt geometry decoded".to_string());
         }
         if self.ktx2_images > 0 {
-            parts.push(format!("{} KTX2/Basis texture(s) → RGBA8 PNG", self.ktx2_images));
+            parts.push(format!(
+                "{} KTX2/Basis texture(s) → RGBA8 PNG",
+                self.ktx2_images
+            ));
         }
         if parts.is_empty() {
             parts.push("no compression found; normalised to a self-contained .glb".to_string());
@@ -53,7 +56,8 @@ impl TranscodeReport {
 
 /// Transcode `in_path` into a plain `.glb` at `out_path`.
 pub fn transcode(in_path: &Path, out_path: &Path) -> Result<TranscodeReport, String> {
-    let bytes = std::fs::read(in_path).map_err(|e| format!("cannot read '{}': {e}", in_path.display()))?;
+    let bytes =
+        std::fs::read(in_path).map_err(|e| format!("cannot read '{}': {e}", in_path.display()))?;
     let mut report = TranscodeReport {
         in_bytes: bytes.len() as u64,
         ..Default::default()
@@ -104,7 +108,8 @@ pub fn transcode(in_path: &Path, out_path: &Path) -> Result<TranscodeReport, Str
         report.ktx2_images = n;
     }
 
-    std::fs::write(out_path, &glb).map_err(|e| format!("cannot write '{}': {e}", out_path.display()))?;
+    std::fs::write(out_path, &glb)
+        .map_err(|e| format!("cannot write '{}': {e}", out_path.display()))?;
     report.out_bytes = glb.len() as u64;
     Ok(report)
 }
@@ -204,10 +209,7 @@ fn sandbox_input(in_path: &Path, bytes: &[u8]) -> Result<SandboxedInput, String>
                     "refusing to transcode: '{uri}' resolves outside the asset's directory"
                 ));
             }
-            let ext = canon
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("bin");
+            let ext = canon.extension().and_then(|e| e.to_str()).unwrap_or("bin");
             let flat = format!("f{copy_counter}.{ext}");
             copy_counter += 1;
             std::fs::copy(&canon, tempdir.join(&flat)).map_err(|e| {
@@ -267,14 +269,19 @@ fn extensions_used(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(doc
         .get("extensionsUsed")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default())
 }
 
 /// Draco decode + normalise to a self-contained GLB v2. Works whether
 /// or not the input uses Draco (a plain file just round-trips).
 fn draco_pass(bytes: &[u8], base: Option<&Path>) -> Result<Vec<u8>, String> {
-    let mut import = draco_gltf::import_slice(bytes, base).map_err(|e| format!("draco import: {e}"))?;
+    let mut import =
+        draco_gltf::import_slice(bytes, base).map_err(|e| format!("draco import: {e}"))?;
     // Materialise the decoded geometry into plain accessors + buffers
     // (without this, to_bytes re-emits the compressed representation).
     import
@@ -349,7 +356,8 @@ fn split_glb(bytes: &[u8]) -> Result<(serde_json::Value, Vec<u8>), String> {
             pos += 1;
         }
     }
-    json.map(|j| (j, bin)).ok_or_else(|| "glb has no JSON chunk".into())
+    json.map(|j| (j, bin))
+        .ok_or_else(|| "glb has no JSON chunk".into())
 }
 
 /// Pack a JSON document and a binary buffer back into a GLB v2.
@@ -410,7 +418,8 @@ fn prune_orphan_accessors(doc: &mut serde_json::Value) {
         for mesh in meshes.iter_mut() {
             if let Some(prims) = mesh.get_mut("primitives").and_then(|v| v.as_array_mut()) {
                 for prim in prims.iter_mut() {
-                    if let Some(attrs) = prim.get_mut("attributes").and_then(|a| a.as_object_mut()) {
+                    if let Some(attrs) = prim.get_mut("attributes").and_then(|a| a.as_object_mut())
+                    {
                         for (_, v) in attrs.iter_mut() {
                             map(v);
                         }
@@ -477,11 +486,13 @@ fn strip_extension(json: &mut serde_json::Value, name: &str) {
 /// them). Draco covers the same "compressed geometry" need today.
 mod meshopt_impl {
     pub fn decode(_glb: &[u8]) -> Result<Vec<u8>, String> {
-        Err("EXT_meshopt_compression: the meshopt 0.6 crate does not expose the \
+        Err(
+            "EXT_meshopt_compression: the meshopt 0.6 crate does not expose the \
              inverse vertex filters (octahedral/quaternion/exponential) or index-sequence \
              decode, so filtered attributes would decode as corrupt geometry. Not transcoded \
              (M9 follow-up: port the three filters). Use Draco for compressed geometry today."
-            .to_string())
+                .to_string(),
+        )
     }
 }
 
@@ -521,7 +532,9 @@ mod ktx2_impl {
             let view = &views[view_idx as usize];
             let off = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let len = view.get("byteLength").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let src = bin.get(off..off + len).ok_or("image bufferView out of range")?;
+            let src = bin
+                .get(off..off + len)
+                .ok_or("image bufferView out of range")?;
             // Treat it as KTX2 if the mime says so or the magic matches.
             let magic = [0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB];
             if !is_ktx2 && !src.starts_with(&magic) {
@@ -653,7 +666,10 @@ mod tests {
             lk = ktx2.len(),
             bl = bin.len()
         );
-        pack_glb(&serde_json::from_str(&json).expect("minimal glb json"), &bin)
+        pack_glb(
+            &serde_json::from_str(&json).expect("minimal glb json"),
+            &bin,
+        )
     }
 
     #[test]
@@ -663,7 +679,10 @@ mod tests {
         assert_eq!(n, 1, "one KTX2 image converted");
         // No KHR_texture_basisu left, image is PNG, and the runtime loads it.
         let used = extensions_used(&out).unwrap();
-        assert!(!used.iter().any(|e| e == "KHR_texture_basisu"), "basisu stripped: {used:?}");
+        assert!(
+            !used.iter().any(|e| e == "KHR_texture_basisu"),
+            "basisu stripped: {used:?}"
+        );
         crate::kernel::render::parse_glb_bytes(&out).expect("runtime loads transcoded KTX2 glb");
         // asset info sees a 32x32 PNG texture now.
         let tmp = std::env::temp_dir().join("twe_ktx2_out.glb");
@@ -705,11 +724,8 @@ mod tests {
     #[test]
     fn transcodes_draco_box_to_plain() {
         let out = std::env::temp_dir().join("twe_box_draco_plain.glb");
-        let report = transcode(
-            Path::new("examples/assets/compressed/Box_draco.gltf"),
-            &out,
-        )
-        .expect("transcode Draco Box");
+        let report = transcode(Path::new("examples/assets/compressed/Box_draco.gltf"), &out)
+            .expect("transcode Draco Box");
         assert!(report.draco, "Box_draco uses KHR_draco_mesh_compression");
 
         // The transcoded glb has no Draco extension and loads in the
@@ -721,7 +737,8 @@ mod tests {
             !used.iter().any(|e| e == "KHR_draco_mesh_compression"),
             "Draco extension stripped: {used:?}"
         );
-        let decoded = crate::kernel::render::parse_glb_bytes(&bytes).expect("runtime loads transcoded");
+        let decoded =
+            crate::kernel::render::parse_glb_bytes(&bytes).expect("runtime loads transcoded");
         let plain = crate::kernel::render::parse_glb_bytes(
             &std::fs::read("examples/assets/compressed/Box.glb").unwrap(),
         )

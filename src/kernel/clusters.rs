@@ -44,7 +44,14 @@ pub(crate) struct ClusterUniform {
 }
 
 impl ClusterUniform {
-    pub fn new(view: [[f32; 4]; 4], inv_proj: [[f32; 4]; 4], near: f32, far: f32, size: (u32, u32), lights: u32) -> Self {
+    pub fn new(
+        view: [[f32; 4]; 4],
+        inv_proj: [[f32; 4]; 4],
+        near: f32,
+        far: f32,
+        size: (u32, u32),
+        lights: u32,
+    ) -> Self {
         let scale = GRID_Z as f32 / (far / near).ln();
         ClusterUniform {
             view,
@@ -294,7 +301,12 @@ mod tests {
     /// ratio of depths.
     #[test]
     fn slices_are_exponential() {
-        let id = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let id = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
         let u = ClusterUniform::new(id, id, 0.1, 100.0, (1280, 720), 0);
         assert_eq!(slice_of(&u, 0.1001), 0);
         assert_eq!(slice_of(&u, 99.9), GRID_Z - 1);
@@ -302,7 +314,11 @@ mod tests {
         let ratio = (100.0f32 / 0.1).powf(1.0 / GRID_Z as f32);
         for k in 1..GRID_Z {
             let start = 0.1 * ratio.powi(k as i32);
-            assert_eq!(slice_of(&u, start * 1.001), k, "slice {k} starts at {start}");
+            assert_eq!(
+                slice_of(&u, start * 1.001),
+                k,
+                "slice {k} starts at {start}"
+            );
         }
     }
 }

@@ -231,7 +231,10 @@ fn method_fn(m: Method<'_>, ret: Ret) -> Result<String, WgslError> {
 
 /// Compile one visual block to a WGSL module string.
 pub fn compile_visual(name: &str, members: &[DeclMember]) -> Result<String, WgslError> {
-    if let (None, Some(m)) = (find_method(members, "pixel"), find_method(members, "surface")) {
+    if let (None, Some(m)) = (
+        find_method(members, "pixel"),
+        find_method(members, "surface"),
+    ) {
         return Err(WgslError {
             message: format!(
                 "visual `{name}` is a `surface` material: draw it on a mesh with a look's `material: {name}` (a fullscreen visual needs `pixel`)"
@@ -535,7 +538,10 @@ impl Codegen {
                 Ok(())
             }
             ty => Err(err(
-                format!("{what} must be a color (r, g, b) or (r, g, b, a), not {}", ty.describe()),
+                format!(
+                    "{what} must be a color (r, g, b) or (r, g, b, a), not {}",
+                    ty.describe()
+                ),
                 e.line(),
                 e.col(),
             )),
@@ -556,7 +562,11 @@ impl Codegen {
     }
 
     fn lookup(&self, name: &str) -> Option<Ty> {
-        self.scope.iter().rev().find(|(n, _)| n == name).map(|(_, t)| *t)
+        self.scope
+            .iter()
+            .rev()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| *t)
     }
 
     /// The WGSL type of `expr`.
@@ -564,23 +574,27 @@ impl Codegen {
         Ok(match expr {
             Expr::Int { .. } | Expr::Float { .. } => Ty::F32,
             Expr::Bool { .. } => Ty::Bool,
-            Expr::Ident { name, line, col, .. } => self.lookup(name).ok_or_else(|| {
+            Expr::Ident {
+                name, line, col, ..
+            } => self.lookup(name).ok_or_else(|| {
                 err(
                     format!("unknown name `{name}` in a visual body"),
                     *line,
                     *col,
                 )
             })?,
-            Expr::Tuple { elems, line, col } => match elems.len() {
-                n @ 2..=4 => Ty::Vec(n as u8),
-                n => {
-                    return Err(err(
+            Expr::Tuple { elems, line, col } => {
+                match elems.len() {
+                    n @ 2..=4 => Ty::Vec(n as u8),
+                    n => {
+                        return Err(err(
                         format!("tuple of {n} elements has no WGSL vector type (expected 2, 3, or 4)"),
                         *line,
                         *col,
                     ));
+                    }
                 }
-            },
+            }
             Expr::Binary {
                 op, left, right, ..
             } => match op {
@@ -628,9 +642,11 @@ impl Codegen {
             } => {
                 let name = call_name(callee).unwrap_or_default();
                 let arg = |i: usize| -> Result<Ty, WgslError> {
-                    args.get(i)
-                        .map(|a| self.ty_of(a))
-                        .unwrap_or(Err(err(format!("`{name}` is missing an argument"), *line, *col)))
+                    args.get(i).map(|a| self.ty_of(a)).unwrap_or(Err(err(
+                        format!("`{name}` is missing an argument"),
+                        *line,
+                        *col,
+                    )))
                 };
                 match name.as_str() {
                     "material" => Ty::Material,
@@ -748,7 +764,11 @@ impl Codegen {
                             .unwrap();
                             return Ok(());
                         }
-                        return Err(err(format!("unknown `color.{name}` in visual body"), *line, *col));
+                        return Err(err(
+                            format!("unknown `color.{name}` in visual body"),
+                            *line,
+                            *col,
+                        ));
                     }
                     if m == "math" && name == "pi" {
                         out.push_str("3.14159265");
@@ -769,8 +789,13 @@ impl Codegen {
                 line,
                 col,
             } => {
-                let name = call_name(callee)
-                    .ok_or_else(|| err("visual codegen: unsupported callee shape".to_string(), *line, *col))?;
+                let name = call_name(callee).ok_or_else(|| {
+                    err(
+                        "visual codegen: unsupported callee shape".to_string(),
+                        *line,
+                        *col,
+                    )
+                })?;
                 self.emit_call(out, &name, args, kwargs, *line, *col)?;
             }
             other => {
@@ -809,7 +834,10 @@ impl Codegen {
                 col,
             ));
         }
-        let tys = args.iter().map(|a| self.ty_of(a)).collect::<Result<Vec<_>, _>>()?;
+        let tys = args
+            .iter()
+            .map(|a| self.ty_of(a))
+            .collect::<Result<Vec<_>, _>>()?;
         let all = tys.iter().fold(Ty::F32, |a, &b| widest(a, b));
         let list = |out: &mut String, to: Option<Ty>| -> Result<(), WgslError> {
             for (i, a) in args.iter().enumerate() {
@@ -856,7 +884,11 @@ impl Codegen {
             "dot" | "length" => need_vector("tuples")?,
             "cross" => {
                 if tys.iter().any(|t| *t != Ty::Vec(3)) {
-                    return Err(err("`math.cross` takes two (x, y, z) tuples".to_string(), line, col));
+                    return Err(err(
+                        "`math.cross` takes two (x, y, z) tuples".to_string(),
+                        line,
+                        col,
+                    ));
                 }
             }
             "noise" => {
@@ -904,7 +936,10 @@ impl Codegen {
             }
             Some(e) => {
                 return Err(err(
-                    format!("`normal` must be an (x, y, z) direction, not {}", self.ty_of(e)?.describe()),
+                    format!(
+                        "`normal` must be an (x, y, z) direction, not {}",
+                        self.ty_of(e)?.describe()
+                    ),
                     e.line(),
                     e.col(),
                 ));
@@ -921,7 +956,10 @@ impl Codegen {
                 }
                 Some(e) => {
                     return Err(err(
-                        format!("`{key}` must be a number from 0 to 1, not {}", self.ty_of(e)?.describe()),
+                        format!(
+                            "`{key}` must be a number from 0 to 1, not {}",
+                            self.ty_of(e)?.describe()
+                        ),
                         e.line(),
                         e.col(),
                     ));
@@ -945,7 +983,10 @@ impl Codegen {
                 }
                 ty => {
                     return Err(err(
-                        format!("`emission` must be a color (r, g, b), not {}", ty.describe()),
+                        format!(
+                            "`emission` must be a color (r, g, b), not {}",
+                            ty.describe()
+                        ),
                         e.line(),
                         e.col(),
                     ));

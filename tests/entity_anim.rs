@@ -58,7 +58,13 @@ fn each_entity_keeps_its_own_clip_and_clock() {
     // before the entities' first `play`, so 29 ticks of time).
     assert_eq!(lines, vec!["idle 4", "run 4"], "{out}");
     // The mesh's shared animation is untouched.
-    assert_eq!(probe(&mut env, "print(mesh_anim.current(\"assets/bot.glb\").clip)"), "");
+    assert_eq!(
+        probe(
+            &mut env,
+            "print(mesh_anim.current(\"assets/bot.glb\").clip)"
+        ),
+        ""
+    );
 }
 
 #[test]
@@ -105,14 +111,18 @@ fn stopping_an_entity_returns_it_to_the_shared_animation() {
                spawn Bot\nfor b in entities.of(Bot):\n    mesh_anim.play(b, \"run\", true)\n    mesh_anim.stop(b)\n";
     let env = run(src, 1);
     assert_eq!(env.render_queue3d.len(), 1);
-    assert_eq!(env.render_queue3d[0].anim, 0, "back on the mesh's animation");
+    assert_eq!(
+        env.render_queue3d[0].anim, 0,
+        "back on the mesh's animation"
+    );
     assert!(env.instance_anims.is_empty());
 }
 
 #[test]
 fn a_non_entity_non_path_handle_says_what_to_pass() {
     let program =
-        twec::parser::parse(&twec::lexer::lex("mesh_anim.play(3.5, \"run\", true)\n").unwrap()).unwrap();
+        twec::parser::parse(&twec::lexer::lex("mesh_anim.play(3.5, \"run\", true)\n").unwrap())
+            .unwrap();
     let mut env = twec::value::Env::new();
     twec::stdlib::install(&mut env);
     let err = twec::eval::run_top_level(&mut env, &program).expect_err("bad handle");

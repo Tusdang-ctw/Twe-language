@@ -539,7 +539,13 @@ impl PhysicsWorld {
     }
 
     /// Rigidly lock two bodies' relative transform.
-    pub fn fixed_joint(&mut self, a: u32, b: u32, anchor_a: [f32; 3], anchor_b: [f32; 3]) -> Option<u32> {
+    pub fn fixed_joint(
+        &mut self,
+        a: u32,
+        b: u32,
+        anchor_a: [f32; 3],
+        anchor_b: [f32; 3],
+    ) -> Option<u32> {
         let j = FixedJointBuilder::new()
             .local_anchor1(point![anchor_a[0], anchor_a[1], anchor_a[2]])
             .local_anchor2(point![anchor_b[0], anchor_b[1], anchor_b[2]])
@@ -548,7 +554,13 @@ impl PhysicsWorld {
     }
 
     /// Ball joint: the two anchor points coincide, free rotation (chains, ropes).
-    pub fn spherical_joint(&mut self, a: u32, b: u32, anchor_a: [f32; 3], anchor_b: [f32; 3]) -> Option<u32> {
+    pub fn spherical_joint(
+        &mut self,
+        a: u32,
+        b: u32,
+        anchor_a: [f32; 3],
+        anchor_b: [f32; 3],
+    ) -> Option<u32> {
         let j = SphericalJointBuilder::new()
             .local_anchor1(point![anchor_a[0], anchor_a[1], anchor_a[2]])
             .local_anchor2(point![anchor_b[0], anchor_b[1], anchor_b[2]])

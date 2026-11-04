@@ -192,12 +192,17 @@ fn fs_composite(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 /// The trace shader alone (the composite's binding 0 differs).
 fn trace_source() -> String {
-    SHADER[..SHADER.find("@group(0) @binding(0) var t_reflection").expect("composite")].to_string()
+    SHADER[..SHADER
+        .find("@group(0) @binding(0) var t_reflection")
+        .expect("composite")]
+        .to_string()
 }
 
 /// The composite shader alone.
 fn composite_source() -> String {
-    let start = SHADER.find("@group(0) @binding(0) var t_reflection").expect("composite");
+    let start = SHADER
+        .find("@group(0) @binding(0) var t_reflection")
+        .expect("composite");
     let vs_start = SHADER.find("@vertex").expect("vs");
     let vs_end = SHADER.find("fn world_at").expect("world_at");
     format!("{}{}", &SHADER[vs_start..vs_end], &SHADER[start..])
@@ -243,7 +248,12 @@ impl Ssr {
                 },
                 texture(1, float, Dim::D2, false),
                 texture(2, wgpu::TextureSampleType::Depth, Dim::D2, true),
-                texture(3, wgpu::TextureSampleType::Float { filterable: false }, Dim::D2, false),
+                texture(
+                    3,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    Dim::D2,
+                    false,
+                ),
                 texture(4, float, Dim::Cube, false),
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
@@ -255,7 +265,12 @@ impl Ssr {
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("twe-kernel ssr composite bgl"),
-            entries: &[texture(0, wgpu::TextureSampleType::Float { filterable: false }, Dim::D2, false)],
+            entries: &[texture(
+                0,
+                wgpu::TextureSampleType::Float { filterable: false },
+                Dim::D2,
+                false,
+            )],
         });
         let pipeline = |label, source: String, layout: &wgpu::BindGroupLayout, entry, blend| {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -308,8 +323,20 @@ impl Ssr {
             },
         };
         Ssr {
-            trace: pipeline("twe-kernel ssr trace", trace_source(), &layout, "fs_trace", None),
-            composite: pipeline("twe-kernel ssr composite", composite_source(), &composite_layout, "fs_composite", Some(add)),
+            trace: pipeline(
+                "twe-kernel ssr trace",
+                trace_source(),
+                &layout,
+                "fs_trace",
+                None,
+            ),
+            composite: pipeline(
+                "twe-kernel ssr composite",
+                composite_source(),
+                &composite_layout,
+                "fs_composite",
+                Some(add),
+            ),
             layout,
             composite_layout,
             uniform: device.create_buffer(&wgpu::BufferDescriptor {
@@ -333,7 +360,12 @@ impl Ssr {
             view_proj: f.view_proj,
             inv_view_proj: f.inv_view_proj,
             eye: [f.eye[0], f.eye[1], f.eye[2], 1.0],
-            screen: [size.0 as f32, size.1 as f32, f.strength, (f.frame % 64) as f32],
+            screen: [
+                size.0 as f32,
+                size.1 as f32,
+                f.strength,
+                (f.frame % 64) as f32,
+            ],
             env: [f.env[0], f.env[1], f.env[2], MAX_ROUGHNESS],
             ambient: [f.ambient[0], f.ambient[1], f.ambient[2], 0.0],
         };
@@ -359,17 +391,36 @@ impl Ssr {
                     binding: 0,
                     resource: self.uniform.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry { binding: 1, resource: view(hdr) },
-                wgpu::BindGroupEntry { binding: 2, resource: view(depth) },
-                wgpu::BindGroupEntry { binding: 3, resource: view(surface) },
-                wgpu::BindGroupEntry { binding: 4, resource: view(env) },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: view(hdr),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: view(depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: view(surface),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: view(env),
+                },
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
             ],
         });
-        fullscreen(encoder, "twe-kernel ssr trace", &self.trace, &bg, reflection, true);
+        fullscreen(
+            encoder,
+            "twe-kernel ssr trace",
+            &self.trace,
+            &bg,
+            reflection,
+            true,
+        );
     }
 
     /// Add the correction onto the frame.
@@ -388,7 +439,14 @@ impl Ssr {
                 resource: wgpu::BindingResource::TextureView(reflection),
             }],
         });
-        fullscreen(encoder, "twe-kernel ssr composite", &self.composite, &bg, hdr, false);
+        fullscreen(
+            encoder,
+            "twe-kernel ssr composite",
+            &self.composite,
+            &bg,
+            hdr,
+            false,
+        );
     }
 }
 
@@ -430,10 +488,14 @@ mod tests {
     use super::*;
 
     fn validate(label: &str, src: &str) {
-        let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(src)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())
-            .validate(&module)
-            .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+        let module = naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(src)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{label}: {e:?}"));
     }
 
     #[test]

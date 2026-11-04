@@ -126,7 +126,10 @@ impl Builder {
 }
 
 fn nums(xs: &[f32]) -> String {
-    xs.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(",")
+    xs.iter()
+        .map(|x| format!("{x}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn quat_x(deg: f32) -> [f32; 4] {
@@ -142,12 +145,60 @@ fn build() -> Vec<u8> {
         let u = (cell as f32 + 0.5) / PALETTE.len() as f32;
         // (normal, four corners counter-clockwise seen from outside)
         let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-            ([1.0, 0.0, 0.0], [[hi[0], lo[1], hi[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [hi[0], hi[1], hi[2]]]),
-            ([-1.0, 0.0, 0.0], [[lo[0], lo[1], lo[2]], [lo[0], lo[1], hi[2]], [lo[0], hi[1], hi[2]], [lo[0], hi[1], lo[2]]]),
-            ([0.0, 1.0, 0.0], [[lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]]]),
-            ([0.0, -1.0, 0.0], [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], lo[1], hi[2]], [lo[0], lo[1], hi[2]]]),
-            ([0.0, 0.0, 1.0], [[lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]]),
-            ([0.0, 0.0, -1.0], [[hi[0], lo[1], lo[2]], [lo[0], lo[1], lo[2]], [lo[0], hi[1], lo[2]], [hi[0], hi[1], lo[2]]]),
+            (
+                [1.0, 0.0, 0.0],
+                [
+                    [hi[0], lo[1], hi[2]],
+                    [hi[0], lo[1], lo[2]],
+                    [hi[0], hi[1], lo[2]],
+                    [hi[0], hi[1], hi[2]],
+                ],
+            ),
+            (
+                [-1.0, 0.0, 0.0],
+                [
+                    [lo[0], lo[1], lo[2]],
+                    [lo[0], lo[1], hi[2]],
+                    [lo[0], hi[1], hi[2]],
+                    [lo[0], hi[1], lo[2]],
+                ],
+            ),
+            (
+                [0.0, 1.0, 0.0],
+                [
+                    [lo[0], hi[1], hi[2]],
+                    [hi[0], hi[1], hi[2]],
+                    [hi[0], hi[1], lo[2]],
+                    [lo[0], hi[1], lo[2]],
+                ],
+            ),
+            (
+                [0.0, -1.0, 0.0],
+                [
+                    [lo[0], lo[1], lo[2]],
+                    [hi[0], lo[1], lo[2]],
+                    [hi[0], lo[1], hi[2]],
+                    [lo[0], lo[1], hi[2]],
+                ],
+            ),
+            (
+                [0.0, 0.0, 1.0],
+                [
+                    [lo[0], lo[1], hi[2]],
+                    [hi[0], lo[1], hi[2]],
+                    [hi[0], hi[1], hi[2]],
+                    [lo[0], hi[1], hi[2]],
+                ],
+            ),
+            (
+                [0.0, 0.0, -1.0],
+                [
+                    [hi[0], lo[1], lo[2]],
+                    [lo[0], lo[1], lo[2]],
+                    [lo[0], hi[1], lo[2]],
+                    [hi[0], hi[1], lo[2]],
+                ],
+            ),
         ];
         for (n, corners) in faces {
             let base = (pos.len() / 3) as u32;
@@ -171,7 +222,12 @@ fn build() -> Vec<u8> {
     }
 
     let mut b = Builder::default();
-    let a_pos = b.floats(&pos, 3, "VEC3", &format!(r#","min":[{}],"max":[{}]"#, nums(&min), nums(&max)));
+    let a_pos = b.floats(
+        &pos,
+        3,
+        "VEC3",
+        &format!(r#","min":[{}],"max":[{}]"#, nums(&min), nums(&max)),
+    );
     let a_nrm = b.floats(&nrm, 3, "VEC3", "");
     let a_uv = b.floats(&uv, 2, "VEC2", "");
     let joint_bytes: Vec<u8> = joints.iter().flat_map(|j| j.to_le_bytes()).collect();
@@ -199,17 +255,26 @@ fn build() -> Vec<u8> {
     let mut anims = Vec::new();
     for clip in &CLIPS {
         let t_last = *clip.times.last().unwrap();
-        let a_t = b.floats(clip.times, 1, "SCALAR", &format!(r#","min":[0],"max":[{t_last}]"#));
+        let a_t = b.floats(
+            clip.times,
+            1,
+            "SCALAR",
+            &format!(r#","min":[0],"max":[{t_last}]"#),
+        );
         let mut samplers = Vec::new();
         let mut channels = Vec::new();
         let lift: Vec<f32> = clip.lift.iter().flat_map(|y| [0.0, *y, 0.0]).collect();
         let a_lift = b.floats(&lift, 3, "VEC3", "");
-        samplers.push(format!(r#"{{"input":{a_t},"output":{a_lift},"interpolation":"LINEAR"}}"#));
+        samplers.push(format!(
+            r#"{{"input":{a_t},"output":{a_lift},"interpolation":"LINEAR"}}"#
+        ));
         channels.push(r#"{"sampler":0,"target":{"node":1,"path":"translation"}}"#.to_string());
         for (k, swing) in clip.swing.iter().enumerate() {
             let rot: Vec<f32> = swing.iter().flat_map(|d| quat_x(*d)).collect();
             let a_rot = b.floats(&rot, 4, "VEC4", "");
-            samplers.push(format!(r#"{{"input":{a_t},"output":{a_rot},"interpolation":"LINEAR"}}"#));
+            samplers.push(format!(
+                r#"{{"input":{a_t},"output":{a_rot},"interpolation":"LINEAR"}}"#
+            ));
             channels.push(format!(
                 r#"{{"sampler":{},"target":{{"node":{},"path":"rotation"}}}}"#,
                 k + 1,
@@ -371,7 +436,10 @@ fn survive3d_hero_exists_and_loads() {
     // It parses as glTF, with the skin, both clips and the texture.
     let (doc, _, images) = gltf::import_slice(&bytes).expect("valid glTF");
     assert_eq!(doc.skins().count(), 1);
-    let names: Vec<_> = doc.animations().filter_map(|a| a.name().map(str::to_string)).collect();
+    let names: Vec<_> = doc
+        .animations()
+        .filter_map(|a| a.name().map(str::to_string))
+        .collect();
     assert_eq!(names, ["walk", "idle"]);
     assert_eq!(images.len(), 1);
     assert_eq!(images[0].width as usize, CELL * PALETTE.len());

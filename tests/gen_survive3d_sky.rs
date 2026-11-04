@@ -23,7 +23,11 @@ fn sun_dir() -> [f32; 3] {
 }
 
 fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
 }
 
 /// Linear radiance seen in direction `d`.
@@ -40,7 +44,11 @@ fn sky(d: [f32; 3]) -> [f32; 3] {
     let s = sun_dir();
     let cos = (d[0] * s[0] + d[1] * s[1] + d[2] * s[2]).max(0.0);
     let glow = cos.powf(24.0) * 6.0 + cos.powf(4.0) * 0.4;
-    [base[0] + glow * 1.0, base[1] + glow * 0.75, base[2] + glow * 0.5]
+    [
+        base[0] + glow * 1.0,
+        base[1] + glow * 0.75,
+        base[2] + glow * 0.5,
+    ]
 }
 
 fn rgbe(c: [f32; 3]) -> [u8; 4] {
@@ -87,7 +95,11 @@ fn survive3d_sky_exists_and_is_an_hdr() {
         .windows(header.len())
         .position(|w| w == header.as_bytes())
         .expect("resolution line");
-    assert_eq!(bytes.len() - (at + header.len()), W * H * 4, "flat RGBE pixels");
+    assert_eq!(
+        bytes.len() - (at + header.len()),
+        W * H * 4,
+        "flat RGBE pixels"
+    );
     // The committed file is what the recipe makes.
     assert_eq!(bytes, image(), "sky.hdr is stale: delete it and rerun");
 }

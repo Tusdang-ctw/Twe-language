@@ -22,12 +22,16 @@ impl Game {
         // folder, never the player's real one.
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let data = std::path::PathBuf::from(format!("target/lanternfall/data/{}-{n}", std::process::id()));
+        let data = std::path::PathBuf::from(format!(
+            "target/lanternfall/data/{}-{n}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&data);
         std::env::set_var("TWE_DATA_DIR", &data);
         twec::bundle::set_asset_root(Some("examples/lanternfall".into()));
         let src = std::fs::read_to_string(MAIN).expect("read main.twe");
-        let env = twec::module::prepare_entry(std::path::Path::new(MAIN), &src).expect("load the game");
+        let env =
+            twec::module::prepare_entry(std::path::Path::new(MAIN), &src).expect("load the game");
         let mut input = InputState::default();
         input.set_view(1280, 720);
         // The cursor straight ahead of the keeper's starting spot.
@@ -73,20 +77,24 @@ impl Game {
 
     /// Run statements in the game's world (a test's setup).
     fn exec(&mut self, src: &str) {
-        let src = format!("{src}
-");
+        let src = format!(
+            "{src}
+"
+        );
         let program = twec::parser::parse(&twec::lexer::lex(&src).expect("lex")).expect("parse");
         twec::eval::run_top_level(&mut self.env, &program).expect("exec");
     }
 
     /// Clear the rivals off the island, for tests of the keeper alone.
     fn no_rivals(&mut self) {
-        self.exec("for b in entities.of(bots.Bot):
+        self.exec(
+            "for b in entities.of(bots.Bot):
     if b.body >= 0:
         physics.despawn(b.body)
     if b.held != nil:
         b.held.gone = true
-    despawn b");
+    despawn b",
+        );
         self.run(1, &[], &[]);
     }
 
@@ -121,9 +129,11 @@ me.cells = 2
 ",
         ));
         self.no_rivals();
-        self.exec("var everyone = [d for d in entities.of(combat.Dummy)]
+        self.exec(
+            "var everyone = [d for d in entities.of(combat.Dummy)]
 everyone.append(me)
-combat.actors = everyone");
+combat.actors = everyone",
+        );
     }
 
     fn num(&mut self, expr: &str) -> f64 {
@@ -156,7 +166,11 @@ fn the_keeper_walks_and_walls_stop_it() {
     // W walks north (-z) at walking speed.
     g.run(60, &["w"], &[]);
     let z1 = g.num("me.pos.z");
-    assert!(z0 - z1 > 4.0 && z0 - z1 < 6.0, "walked {} m in a second", z0 - z1);
+    assert!(
+        z0 - z1 > 4.0 && z0 - z1 < 6.0,
+        "walked {} m in a second",
+        z0 - z1
+    );
     // The vault's south wall (z = 11, a gate in its middle): walk west of
     // the gate, then north into the wall for three seconds.
     let wall_z = 11.0 + 0.6 + 0.34; // wall half-thickness + capsule radius
@@ -175,7 +189,10 @@ fn the_keeper_faces_the_cursor_and_rolls() {
     g.run(20, &[], &[]);
     // The cursor is ahead (north, -z) of the keeper: it faces about pi.
     let h = g.num("me.heading");
-    assert!((h.abs() - std::f64::consts::PI).abs() < 0.5, "faces the cursor: heading {h}");
+    assert!(
+        (h.abs() - std::f64::consts::PI).abs() < 0.5,
+        "faces the cursor: heading {h}"
+    );
     // A roll covers ground fast, then cools down.
     let z0 = g.num("me.pos.z");
     g.run(1, &["w"], &["shift"]);
@@ -235,7 +252,10 @@ fn shields_soak_first_and_crack() {
     g.probe("combat.hurt(entities.of(combat.Dummy)[0], 30.0, me, vec3(0, 0, 0))");
     assert_eq!(g.num("entities.of(combat.Dummy)[0].shield"), 0.0);
     assert_eq!(g.num("entities.of(combat.Dummy)[0].hp"), 90.0);
-    assert!(g.num("entities.count(combat.Popup)") >= 1.0, "CRACKED pops up");
+    assert!(
+        g.num("entities.count(combat.Popup)") >= 1.0,
+        "CRACKED pops up"
+    );
 }
 
 #[test]
@@ -247,7 +267,11 @@ fn a_mortar_shell_lands_and_bursts() {
     g.probe("combat.lob(me, me.pos + vec3(0, 1, 0), vec3(0, 0, 34), 64.0)");
     assert_eq!(g.num("entities.count(combat.Shell)"), 1.0);
     g.run(90, &[], &[]);
-    assert_eq!(g.num("entities.count(combat.Shell)"), 0.0, "the shell landed");
+    assert_eq!(
+        g.num("entities.count(combat.Shell)"),
+        0.0,
+        "the shell landed"
+    );
     let hp = g.num("entities.of(combat.Dummy)[2].hp");
     assert!(hp < 100.0, "the burst hurt the dummy under it: hp {hp}");
 }
@@ -279,23 +303,26 @@ fn holding_f_turns_a_cell_into_shield() {
 /// (`target/lanternfall/firefight.png`). Skips without a GPU.
 #[test]
 fn firefight_renders() {
-    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skipping: {e}");
-            return;
-        }
-    };
+    let mut renderer =
+        match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
     let mut g = Game::new();
     g.practice();
     g.input.set_view(960, 540);
     g.point(0.5, 0.92);
     g.run(30, &[], &[]);
     // A rival beside the keeper, to see its name tag and health pips.
-    g.exec("let near = spawn bots.Bot at vec3(5, 0, 27)
+    g.exec(
+        "let near = spawn bots.Bot at vec3(5, 0, 27)
 near.name = \"MossyWick42\"
 near.shield = 50.0
-near.model = \"assets/folk_ember.glb\"");
+near.model = \"assets/folk_ember.glb\"",
+    );
     g.probe("combat.lob(me, me.pos + vec3(0, 1, 0), vec3(4, 0, 34), 64.0)");
     g.run(40, &[], &[]);
     g.input.button_down("left");
@@ -312,7 +339,14 @@ near.model = \"assets/folk_ember.glb\"");
     twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
     let rgba = renderer.read_pixels().expect("pixels");
     std::fs::create_dir_all("target/lanternfall").unwrap();
-    image::save_buffer("target/lanternfall/firefight.png", &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
+    image::save_buffer(
+        "target/lanternfall/firefight.png",
+        &rgba,
+        960,
+        540,
+        image::ColorType::Rgba8,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -321,7 +355,10 @@ fn the_rivals_fight_each_other() {
     let n = g.num("entities.count(bots.Bot)");
     assert_eq!(n, 31.0, "31 rivals on the island");
     let name = g.probe("entities.of(bots.Bot)[0].name");
-    assert!(name.len() > 6 && name.chars().last().unwrap().is_ascii_digit(), "a handle: {name}");
+    assert!(
+        name.len() > 6 && name.chars().last().unwrap().is_ascii_digit(),
+        "a handle: {name}"
+    );
     // Keep the keeper out of it: unhittable, out of the way.
     g.exec("me.alive = false");
     // Three simulated minutes: bots meet, fight and fall.
@@ -343,13 +380,21 @@ fn a_round_starts_aboard_and_the_keeper_drops_in() {
     assert_eq!(g.probe("stage"), "barge");
     assert_eq!(g.probe("me.phase"), "aboard");
     assert_eq!(g.num("entities.count(bots.Bot)"), 31.0);
-    assert!(g.num("entities.count(loot.Chest)") >= 50.0, "chests are out");
+    assert!(
+        g.num("entities.count(loot.Chest)") >= 50.0,
+        "chests are out"
+    );
     // Ride a while, then leap: the keeper glides down and lands.
     g.run(120, &[], &[]);
     g.run(1, &[], &["space"]);
     assert_eq!(g.probe("me.phase"), "glide");
     g.run(60 * 9, &["w"], &[]);
-    assert_eq!(g.probe("me.phase"), "ground", "landed: at {}", g.probe("me.pos"));
+    assert_eq!(
+        g.probe("me.phase"),
+        "ground",
+        "landed: at {}",
+        g.probe("me.pos")
+    );
     assert!(g.num("me.pos.y").abs() < 0.3);
     // Once everyone is down the round is on and the Hush starts.
     g.run(60 * 25, &[], &[]);
@@ -363,9 +408,19 @@ fn a_chest_spills_loot_the_keeper_can_take() {
     g.practice();
     g.exec("me.guns = [0, -1, -1]\nme.slot = 0\nlet c = spawn loot.Chest at me.pos + vec3(1.2, 0, 0)\nc.tier = 3");
     g.run(5, &[], &[]);
-    assert_eq!(g.probe("me.prompt"), "E  open chest", "at {} with {} loot near", g.probe("me.pos"), g.probe("entities.count(loot.Loot)"));
+    assert_eq!(
+        g.probe("me.prompt"),
+        "E  open chest",
+        "at {} with {} loot near",
+        g.probe("me.pos"),
+        g.probe("entities.count(loot.Loot)")
+    );
     g.run(1, &[], &["e"]);
-    assert_eq!(g.num("[c for c in entities.of(loot.Chest) if c.opened].length"), 1.0, "the chest opened");
+    assert_eq!(
+        g.num("[c for c in entities.of(loot.Chest) if c.opened].length"),
+        1.0,
+        "the chest opened"
+    );
     g.run(60, &[], &[]);
     assert!(g.num("entities.count(loot.Loot)") >= 2.0, "it spilled loot");
     // Walk around the chest until the weapon's in reach, then take it.
@@ -385,7 +440,11 @@ fn a_chest_spills_loot_the_keeper_can_take() {
         g.run(2, &[], &[]);
         g.run(1, &[], &["e"]);
     }
-    assert!(g.num("me.guns[1]") > 0.0, "a gun in slot 2: {}", g.probe("me.guns"));
+    assert!(
+        g.num("me.guns[1]") > 0.0,
+        "a gun in slot 2: {}",
+        g.probe("me.guns")
+    );
     assert!(g.num("me.mag[1]") > 0.0, "loaded");
 }
 
@@ -396,7 +455,10 @@ fn the_vault_opens_in_the_third_minute() {
     assert_eq!(g.probe("gate_open"), "false");
     g.run(12, &[], &[]);
     assert_eq!(g.probe("gate_open"), "true");
-    assert_eq!(g.probe("hud.banners[hud.banners.length - 1][0]"), "THE SIGNAL VAULT IS OPEN");
+    assert_eq!(
+        g.probe("hud.banners[hud.banners.length - 1][0]"),
+        "THE SIGNAL VAULT IS OPEN"
+    );
 }
 
 #[test]
@@ -419,7 +481,10 @@ fn a_round_plays_out_to_one_left_standing() {
     let left = g.num("[b for b in entities.of(bots.Bot) if b.alive].length");
     let per_tick = start.elapsed().as_secs_f64() * 1000.0 / (f64::from(minutes.max(1)) * 3600.0);
     eprintln!("round over after ~{minutes} more minutes: {left} left; hush phase {}; {per_tick:.3} ms/tick", g.probe("hush.phase"));
-    assert!(left <= 1.0, "one (or none) left after {minutes} minutes: {left}");
+    assert!(
+        left <= 1.0,
+        "one (or none) left after {minutes} minutes: {left}"
+    );
 }
 
 #[test]
@@ -447,13 +512,14 @@ fn play_again_starts_a_fresh_round() {
 /// (`target/lanternfall/round.png`): landed, the Hush closing, loot about.
 #[test]
 fn a_round_renders() {
-    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skipping: {e}");
-            return;
-        }
-    };
+    let mut renderer =
+        match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
     let mut g = Game::new();
     g.input.set_view(960, 540);
     g.run(60 * 40, &[], &[]);
@@ -471,7 +537,14 @@ fn a_round_renders() {
     twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
     let rgba = renderer.read_pixels().expect("pixels");
     std::fs::create_dir_all("target/lanternfall").unwrap();
-    image::save_buffer("target/lanternfall/round.png", &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
+    image::save_buffer(
+        "target/lanternfall/round.png",
+        &rgba,
+        960,
+        540,
+        image::ColorType::Rgba8,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -517,7 +590,11 @@ fn held_guns_follow_their_fighters() {
     assert_eq!(r.num("entities.count(loot.HeldGun)"), 32.0);
     r.no_rivals();
     r.run(2, &[], &[]);
-    assert_eq!(r.num("entities.count(loot.HeldGun)"), 1.0, "only the keeper's is left");
+    assert_eq!(
+        r.num("entities.count(loot.HeldGun)"),
+        1.0,
+        "only the keeper's is left"
+    );
 }
 
 #[test]
@@ -570,7 +647,11 @@ fn the_game_opens_on_the_title_and_plays_from_it() {
     g.run(20, &[], &[]);
     assert_eq!(g.probe("stage"), "title");
     assert_eq!(g.probe("menu"), "title");
-    assert_eq!(g.num("entities.count(bots.Bot)"), 0.0, "an empty island behind the title");
+    assert_eq!(
+        g.num("entities.count(bots.Bot)"),
+        0.0,
+        "an empty island behind the title"
+    );
     assert_eq!(g.probe("me.control"), "false");
     // The camera drifts round the island.
     let x0 = g.num("camera.eye.x");
@@ -589,13 +670,14 @@ fn the_game_opens_on_the_title_and_plays_from_it() {
 
 #[test]
 fn the_mouse_works_the_menus() {
-    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(640, 360)) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skipping: {e}");
-            return;
-        }
-    };
+    let mut renderer =
+        match pollster::block_on(twec::kernel::render::Renderer::new_headless(640, 360)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
     let mut g = Game::title();
     g.input.set_view(640, 360);
     g.run(20, &[], &[]);
@@ -679,7 +761,10 @@ fn keys_rebind_from_settings_and_stick() {
     g.practice();
     let z0 = g.num("me.pos.z");
     g.run(30, &["w"], &[]);
-    assert!((g.num("me.pos.z") - z0).abs() < 0.05, "W is no longer bound");
+    assert!(
+        (g.num("me.pos.z") - z0).abs() < 0.05,
+        "W is no longer bound"
+    );
     g.run(30, &["i"], &[]);
     assert!(g.num("me.pos.z") < z0 - 1.0, "I walks north");
 }
@@ -713,13 +798,14 @@ fn a_finished_round_is_remembered() {
 /// The menus, rendered for eyes-on review: `target/lanternfall/menu_*.png`.
 #[test]
 fn the_menus_render() {
-    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skipping: {e}");
-            return;
-        }
-    };
+    let mut renderer =
+        match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 540)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
     let mut g = Game::title();
     g.input.set_view(960, 540);
     g.run(90, &[], &[]);
@@ -735,7 +821,14 @@ fn the_menus_render() {
         twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
         let rgba = renderer.read_pixels().expect("pixels");
         std::fs::create_dir_all("target/lanternfall").unwrap();
-        image::save_buffer(format!("target/lanternfall/menu_{name}.png"), &rgba, 960, 540, image::ColorType::Rgba8).unwrap();
+        image::save_buffer(
+            format!("target/lanternfall/menu_{name}.png"),
+            &rgba,
+            960,
+            540,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
     };
     shot(&mut g, "title");
     tap(&mut g, "down");
@@ -768,7 +861,10 @@ fn perf_breakdown() {
     let mut g = Game::new();
     // Everyone leaps and lands; the round runs a while.
     g.run(60 * 50, &[], &["space"]);
-    eprintln!("frozen in the first 50 s: {:.0} of 3000 ticks", 3000.0 - g.env.sim_time / DT);
+    eprintln!(
+        "frozen in the first 50 s: {:.0} of 3000 ticks",
+        3000.0 - g.env.sim_time / DT
+    );
     let n = 600;
     let sim0 = g.env.sim_time;
     let t = std::time::Instant::now();
@@ -784,7 +880,8 @@ fn perf_breakdown() {
     twec::profile::disable();
     let trace = std::path::Path::new("target/lanternfall/perf_trace.json");
     twec::profile::dump_to_path(trace).expect("trace");
-    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(trace).unwrap()).unwrap();
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(trace).unwrap()).unwrap();
     let mut by: std::collections::HashMap<String, (f64, u64)> = Default::default();
     for e in doc["traceEvents"].as_array().unwrap() {
         let name = e["name"].as_str().unwrap_or("?").to_string();
@@ -796,7 +893,11 @@ fn perf_breakdown() {
     let mut rows: Vec<_> = by.into_iter().collect();
     rows.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap());
     for (name, (us, count)) in rows.iter().take(30) {
-        eprintln!("  {:>8.3} ms/tick  {:>7} calls/tick  {name}", us / 1000.0 / n as f64, count / n as u64);
+        eprintln!(
+            "  {:>8.3} ms/tick  {:>7} calls/tick  {name}",
+            us / 1000.0 / n as f64,
+            count / n as u64
+        );
     }
     let frames = 300;
     let t = std::time::Instant::now();
@@ -835,13 +936,14 @@ fn perf_breakdown() {
 #[test]
 #[ignore]
 fn perf_render() {
-    let mut renderer = match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 720)) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skipping: {e}");
-            return;
-        }
-    };
+    let mut renderer =
+        match pollster::block_on(twec::kernel::render::Renderer::new_headless(960, 720)) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
     let mut g = Game::new();
     g.input.set_view(960, 720);
     g.exec("graphics.quality(\"high\")");
@@ -869,7 +971,8 @@ fn perf_render() {
     let t = std::time::Instant::now();
     for _ in 0..n {
         g.run(1, &[], &[]);
-        let times = twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
+        let times =
+            twec::host3d::render_frame(&mut renderer, &mut g.env, &mut assets).expect("render");
         script += times.script_ms;
         kernel += times.kernel_ms;
     }
@@ -913,20 +1016,32 @@ fn from_the_title_the_keeper_can_punch_and_take_guns() {
     g.input.button_down("left");
     g.run(3, &[], &[]);
     g.input.button_up("left");
-    assert_eq!(g.probe("mesh_anim.current(me).clip"), "melee", "the wrench swung");
+    assert_eq!(
+        g.probe("mesh_anim.current(me).clip"),
+        "melee",
+        "the wrench swung"
+    );
     assert!(g.num("entities.of(combat.Dummy)[0].hp") < hp0, "and hit");
     // A gun at the keeper's feet with a free slot: walking onto it takes it.
     g.exec("loot.spill(me.pos, loot.WEAPON, 1, 1, 0)");
     g.run(60, &[], &[]);
     g.exec("for l in entities.of(loot.Loot):\n    l.pos = me.pos");
     g.run(2, &[], &[]);
-    assert!(g.num("me.guns[1]") > 0.0, "took the gun without a key: {}", g.probe("me.guns"));
+    assert!(
+        g.num("me.guns[1]") > 0.0,
+        "took the gun without a key: {}",
+        g.probe("me.guns")
+    );
     // Both slots full: a gun on the ground needs E, to swap.
     g.exec("me.guns = [0, 1, 2]\nme.slot = 1\nloot.spill(me.pos, loot.WEAPON, 4, 2, 0)");
     g.run(60, &[], &[]);
     g.exec("for l in entities.of(loot.Loot):\n    l.pos = me.pos");
     g.run(2, &[], &[]);
-    assert!(g.probe("me.prompt").starts_with("E  swap for"), "{}", g.probe("me.prompt"));
+    assert!(
+        g.probe("me.prompt").starts_with("E  swap for"),
+        "{}",
+        g.probe("me.prompt")
+    );
     tap(&mut g, "e");
     assert_eq!(g.num("me.guns[1]"), 4.0, "swapped: {}", g.probe("me.guns"));
 }

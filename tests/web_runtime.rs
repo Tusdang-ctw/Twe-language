@@ -12,7 +12,6 @@
 //! Without it the test prints a notice and passes, unless `TWE_WEB_WASM`
 //! names the file to check — CI sets that, so there it is mandatory.
 
-
 const DEFAULT_WASM: &str = "target/wasm32-unknown-unknown/release/twe_web.wasm";
 
 #[test]

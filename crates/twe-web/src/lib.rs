@@ -87,8 +87,15 @@ pub fn bench_ticks(source: &str, ticks: u32) -> Result<Vec<f64>, String> {
 /// JSON. Saves go to an in-memory store, since Node has no
 /// localStorage. A multi-file game loads its modules from the bundle.
 #[wasm_bindgen]
-pub fn soak(bundle: &[u8], ticks: u32, variant: u32, gc_stress: bool, pilot: String) -> Result<String, String> {
-    let pilot = twec::soak::Pilot::parse(&pilot).ok_or_else(|| format!("unknown pilot `{pilot}`"))?;
+pub fn soak(
+    bundle: &[u8],
+    ticks: u32,
+    variant: u32,
+    gc_stress: bool,
+    pilot: String,
+) -> Result<String, String> {
+    let pilot =
+        twec::soak::Pilot::parse(&pilot).ok_or_else(|| format!("unknown pilot `{pilot}`"))?;
     let reader = twec::bundle::BundleReader::from_bytes(bundle.to_vec())
         .map_err(|e| format!("bundle: {e}"))?;
     twec::bundle::set_active_bundle(reader);
@@ -210,7 +217,9 @@ fn fit_canvas(shell: &mut Shell) {
     if cw <= 0 || ch <= 0 {
         return; // hidden: keep the last size
     }
-    let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio()).clamp(1.0, 2.0);
+    let dpr = web_sys::window()
+        .map_or(1.0, |w| w.device_pixel_ratio())
+        .clamp(1.0, 2.0);
     let w = ((f64::from(cw) * dpr).round() as u32).max(1);
     let h = ((f64::from(ch) * dpr).round() as u32).max(1);
     if (w, h) != (shell.canvas.width(), shell.canvas.height()) {
@@ -397,7 +406,12 @@ fn frame(shell: &mut Shell) {
         60.0,
     ) {
         web_sys::console::info_1(
-            &format!("twe: quality {} at {:.0}% scale", q.tier.name(), q.render_scale * 100.0).into(),
+            &format!(
+                "twe: quality {} at {:.0}% scale",
+                q.tier.name(),
+                q.render_scale * 100.0
+            )
+            .into(),
         );
     }
 

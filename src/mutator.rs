@@ -450,9 +450,13 @@ fn replace_word(line: &str, from: &str, to: &str) -> Option<String> {
         } else if c == b'#' && !in_str {
             return None;
         } else if !in_str && line[i..].starts_with(from) {
-            let before = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'.');
+            let before = i == 0
+                || !(bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b'.');
             let end = i + from.len();
-            let after = end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+            let after =
+                end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
             if before && after {
                 return Some(format!("{}{}{}", &line[..i], to, &line[end..]));
             }
@@ -475,7 +479,10 @@ impl MutationRule for EntityOnUpdateRule {
         line_rewrites(source, self.name(), &|line| {
             let indent = line.len() - line.trim_start().len();
             (indent > 0 && line.trim() == "function update(dt):").then(|| {
-                (format!("{}on update(dt):", &line[..indent]), "an entity's `function update(dt):` written as `on update(dt):`".into())
+                (
+                    format!("{}on update(dt):", &line[..indent]),
+                    "an entity's `function update(dt):` written as `on update(dt):`".into(),
+                )
             })
         })
     }
@@ -495,7 +502,10 @@ impl MutationRule for ListLenRule {
             if line[end..].starts_with(|c: char| c.is_alphanumeric() || c == '_') {
                 return None;
             }
-            Some((format!("{}.len(){}", &line[..i], &line[end..]), "`.length` written as `.len()`".into()))
+            Some((
+                format!("{}.len(){}", &line[..i], &line[end..]),
+                "`.length` written as `.len()`".into(),
+            ))
         })
     }
 }
@@ -569,7 +579,12 @@ impl MutationRule for MissingVarRule {
     fn apply(&self, source: &str) -> Vec<MutationCandidate> {
         line_rewrites(source, self.name(), &|line| {
             let rest = line.strip_prefix("var ")?;
-            rest.contains('=').then(|| (rest.to_string(), "top-level `var` declaration written without `var`".into()))
+            rest.contains('=').then(|| {
+                (
+                    rest.to_string(),
+                    "top-level `var` declaration written without `var`".into(),
+                )
+            })
         })
     }
 }
@@ -607,7 +622,10 @@ impl MutationRule for DuplicateHandlerRule {
         }
         vec![MutationCandidate {
             kind: self.name(),
-            mutated: format!("{}\non update(dt):\n    print(\"tick\")\n", source.trim_end()),
+            mutated: format!(
+                "{}\non update(dt):\n    print(\"tick\")\n",
+                source.trim_end()
+            ),
             note: "a second top-level `on update` handler appended".into(),
         }]
     }

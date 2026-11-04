@@ -193,8 +193,10 @@ pub fn fx_draw_overlay_3d(
 }
 
 fn draw_one(out: &mut Vec<crate::draw2d::Draw2d>, fx: &ActiveFx) {
-    use crate::draw2d::{circle as draw_circle, circle_lines as draw_circle_lines, rect as draw_rectangle};
     use crate::draw2d::text as draw_text;
+    use crate::draw2d::{
+        circle as draw_circle, circle_lines as draw_circle_lines, rect as draw_rectangle,
+    };
 
     let t = (fx.age / fx.lifetime).clamp(0.0, 1.0);
     let inv_t = 1.0 - t;
@@ -206,7 +208,8 @@ fn draw_one(out: &mut Vec<crate::draw2d::Draw2d>, fx: &ActiveFx) {
             height,
         } => {
             let c = with_alpha(*color, inv_t);
-            draw_rectangle(out, 
+            draw_rectangle(
+                out,
                 fx.pos.0 - width * 0.5,
                 fx.pos.1 - height * 0.5,
                 *width,

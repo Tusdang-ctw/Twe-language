@@ -79,7 +79,10 @@ impl BuildTarget {
             "linux-server" | "x86_64-unknown-linux-server" => Some(BuildTarget::LinuxServer),
             // web3d-M6: one browser runtime (`twe-web`) runs both 2D and
             // 3D, so every wasm alias resolves to `web`.
-            "web" | "wasm32" | "wasm32-unknown-unknown" | "wasm32-3d"
+            "web"
+            | "wasm32"
+            | "wasm32-unknown-unknown"
+            | "wasm32-3d"
             | "wasm32-unknown-unknown-3d" => Some(BuildTarget::Web),
             "ios" | "ios-aarch64" | "aarch64-apple-ios" => Some(BuildTarget::IosAarch64),
             "android" | "android-aarch64" | "aarch64-linux-android" => {
@@ -624,12 +627,17 @@ pub fn module_entries(project: &DiscoveredProject) -> Result<Vec<(String, Vec<u8
     let graph = crate::module::load_from_path(&project.main, Some(&src)).map_err(|e| {
         let mut msg = format!("{}:{}:{}: {}", e.source.display(), e.line, e.col, e.message);
         if let Some(help) = e.help {
-            msg.push_str(&format!("
-  help: {help}"));
+            msg.push_str(&format!(
+                "
+  help: {help}"
+            ));
         }
         msg
     })?;
-    let root = project.root.canonicalize().unwrap_or_else(|_| project.root.clone());
+    let root = project
+        .root
+        .canonicalize()
+        .unwrap_or_else(|_| project.root.clone());
     let mut out = Vec::with_capacity(graph.deps.len());
     for module in graph.deps.values() {
         let rel = module.canonical_path.strip_prefix(&root).map_err(|_| {
@@ -692,14 +700,20 @@ pub fn audit_assets(project: &DiscoveredProject) -> Vec<String> {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if !matches!(ext.as_str(), "glb" | "gltf" | "png" | "jpg" | "jpeg" | "hdr" | "ktx2") {
+        if !matches!(
+            ext.as_str(),
+            "glb" | "gltf" | "png" | "jpg" | "jpeg" | "hdr" | "ktx2"
+        ) {
             continue;
         }
         // Catch compression even when the strict loader rejects the file
         // (a Draco document doesn't parse at all).
         for ext in crate::asset_info::compression_extensions(&asset.abs) {
             needs_transcode = true;
-            warnings.push(format!("{}: uses {ext} — not loadable by the runtime", asset.bundle_key));
+            warnings.push(format!(
+                "{}: uses {ext} — not loadable by the runtime",
+                asset.bundle_key
+            ));
         }
         let Ok(report) = crate::asset_info::inspect(&asset.abs) else {
             continue;
@@ -918,7 +932,10 @@ fn print_build_result_json(
         ("ok", Value::Bool(ok)),
         ("dry_run", Value::Bool(dry_run)),
         ("target", Value::Str(args.target.label().to_string())),
-        ("config", Value::Str(format!("{:?}", args.config).to_lowercase())),
+        (
+            "config",
+            Value::Str(format!("{:?}", args.config).to_lowercase()),
+        ),
         ("project", Value::Str(project.name.clone())),
         ("artifact", Value::Str(out_path.display().to_string())),
         (

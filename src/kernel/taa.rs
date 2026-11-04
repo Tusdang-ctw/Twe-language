@@ -341,7 +341,9 @@ impl Taa {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.history[self.latest.get()].1),
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.history[self.latest.get()].1,
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,

@@ -335,17 +335,25 @@ fn seed_particle_emitter(
     if env.gpu_particles {
         if let (Some(at), Some(program)) = (gpu_at, env.intern_particle_program(&class.name)) {
             if !env.particles_unseen {
-                env.particle_emissions.push(crate::kernel::particles::ParticleEmission {
-                    program,
-                    at,
-                    count: count.min(u32::MAX as usize) as u32,
-                    lifetime: lifetime as f32,
-                    seed,
-                });
+                env.particle_emissions
+                    .push(crate::kernel::particles::ParticleEmission {
+                        program,
+                        at,
+                        count: count.min(u32::MAX as usize) as u32,
+                        lifetime: lifetime as f32,
+                        seed,
+                    });
             }
             let mut e = emitter.borrow_mut();
             e.insert_field("__gpu_age", Value::from_float(0.0));
-            e.insert_field("__gpu_lifetime", Value::from_float(if count == 0 { f64::NEG_INFINITY } else { lifetime }));
+            e.insert_field(
+                "__gpu_lifetime",
+                Value::from_float(if count == 0 {
+                    f64::NEG_INFINITY
+                } else {
+                    lifetime
+                }),
+            );
             return Ok(());
         }
     }
@@ -376,7 +384,10 @@ fn seed_particle_emitter(
         particles.push(p);
     }
     let mut e = emitter.borrow_mut();
-    e.insert_field("__particles", Value::from_list(Rc::new(RefCell::new(particles))));
+    e.insert_field(
+        "__particles",
+        Value::from_list(Rc::new(RefCell::new(particles))),
+    );
     e.insert_field("__rng", Value::from_int(rng as i64));
     Ok(())
 }
@@ -454,7 +465,10 @@ fn tick_particle_emitter(
         }
     };
     let snapshot: Vec<Value> = particles.borrow().clone();
-    let stream = emitter.borrow().get_field("__rng").filter(|v| v.is_int_or_boxed_int());
+    let stream = emitter
+        .borrow()
+        .get_field("__rng")
+        .filter(|v| v.is_int_or_boxed_int());
     let mut rng = stream.map_or(1, |v| v.as_int() as u64);
     for p in &snapshot {
         if let Some(method) = on_update.clone() {
@@ -511,7 +525,9 @@ fn tick_particle_emitter(
             o.insert_field("age_ratio", Value::from_float(ratio));
         }
     }
-    emitter.borrow_mut().insert_field("__rng", Value::from_int(rng as i64));
+    emitter
+        .borrow_mut()
+        .insert_field("__rng", Value::from_int(rng as i64));
     // Drop dead particles.
     particles.borrow_mut().retain(|p| {
         if p.is_object() {
@@ -841,7 +857,11 @@ struct LookValues {
 fn draw_looks(env: &mut Env) -> Result<(), RuntimeError> {
     // web3d-M7 session 16: gather the entities with looks only when
     // something that could change them happened (`look_epoch`).
-    if env.look_cache.as_ref().is_none_or(|c| c.epoch != crate::value::look_epoch()) {
+    if env
+        .look_cache
+        .as_ref()
+        .is_none_or(|c| c.epoch != crate::value::look_epoch())
+    {
         env.look_cache = Some(gather_looks(env)?);
     }
     // Taken out while look keys run (they may spawn, or read `env`).
@@ -955,7 +975,12 @@ fn looks_fingerprint(env: &mut Env, cache: &crate::value::LookCache) -> Result<u
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cache.epoch.hash(&mut h);
     for (entity, positions) in &cache.shared {
-        let look = entity.borrow().class.look.clone().expect("gathered with a look");
+        let look = entity
+            .borrow()
+            .class
+            .look
+            .clone()
+            .expect("gathered with a look");
         let v = look_values(env, entity, &look, false, LookValues::default_look())?;
         match v.primitive {
             crate::value::Primitive::Cube => 0u32.hash(&mut h),
@@ -965,7 +990,13 @@ fn looks_fingerprint(env: &mut Env, cache: &crate::value::LookCache) -> Result<u
         for x in v.color {
             x.to_bits().hash(&mut h);
         }
-        (v.size.to_bits(), v.yaw.to_bits(), v.material, positions.len()).hash(&mut h);
+        (
+            v.size.to_bits(),
+            v.yaw.to_bits(),
+            v.material,
+            positions.len(),
+        )
+            .hash(&mut h);
         for x in v.rotation.iter().chain(&v.scale).chain(&v.glow) {
             x.to_bits().hash(&mut h);
         }
@@ -977,32 +1008,34 @@ fn looks_fingerprint(env: &mut Env, cache: &crate::value::LookCache) -> Result<u
 /// cached positions; per-entity keys for the entities that have them.
 fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), RuntimeError> {
     let mut shared: Vec<(*const ClassDef, LookValues)> = Vec::new();
-    let mut class_values = |env: &mut Env, entity: &Rc<RefCell<Instance>>| -> Result<LookValues, RuntimeError> {
-        let class = entity.borrow().class.clone();
-        let key = Rc::as_ptr(&class);
-        if let Some((_, v)) = shared.iter().find(|(k, _)| *k == key) {
-            return Ok(*v);
-        }
-        let look = class.look.clone().expect("gathered with a look");
-        let v = look_values(env, entity, &look, false, LookValues::default_look())?;
-        shared.push((key, v));
-        Ok(v)
-    };
+    let mut class_values =
+        |env: &mut Env, entity: &Rc<RefCell<Instance>>| -> Result<LookValues, RuntimeError> {
+            let class = entity.borrow().class.clone();
+            let key = Rc::as_ptr(&class);
+            if let Some((_, v)) = shared.iter().find(|(k, _)| *k == key) {
+                return Ok(*v);
+            }
+            let look = class.look.clone().expect("gathered with a look");
+            let v = look_values(env, entity, &look, false, LookValues::default_look())?;
+            shared.push((key, v));
+            Ok(v)
+        };
     for (entity, positions) in &cache.shared {
         let values = class_values(env, entity)?;
-        env.render_queue3d.extend(positions.iter().map(|&at| crate::value::DrawCall3d {
-            primitive: values.primitive,
-            at,
-            color: values.color,
-            size: values.size,
-            texture: 0,
-            yaw: values.yaw,
-            material: values.material,
-            rotation: values.rotation,
-            scale: values.scale,
-            glow: values.glow,
-            anim: 0,
-        }));
+        env.render_queue3d
+            .extend(positions.iter().map(|&at| crate::value::DrawCall3d {
+                primitive: values.primitive,
+                at,
+                color: values.color,
+                size: values.size,
+                texture: 0,
+                yaw: values.yaw,
+                material: values.material,
+                rotation: values.rotation,
+                scale: values.scale,
+                glow: values.glow,
+                anim: 0,
+            }));
     }
     // Evaluate every per-entity look first, so an attached look can
     // read its parent's final place whatever their order.
@@ -1012,7 +1045,12 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
             continue;
         }
         let base = class_values(env, entity)?;
-        let look = entity.borrow().class.look.clone().expect("gathered with a look");
+        let look = entity
+            .borrow()
+            .class
+            .look
+            .clone()
+            .expect("gathered with a look");
         let values = look_values(env, entity, &look, true, base)?;
         let parent = match &look.attach {
             Some(slot) => look_parent(eval_look_slot(env, entity, slot)?, slot)?,
@@ -1384,7 +1422,10 @@ fn look_rotation(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 4], Ru
 /// as emission (Lanternfall E3). Above 1 it is HDR and blooms.
 fn look_glow(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 3], RuntimeError> {
     let help = || {
-        Some("`glow:` is a number (white) or an (r, g, b) colour, e.g. `glow: hurt * 4.0`".to_string())
+        Some(
+            "`glow:` is a number (white) or an (r, g, b) colour, e.g. `glow: hurt * 4.0`"
+                .to_string(),
+        )
     };
     crate::stdlib::not_kind(&v, crate::tagged_value::TupleKind::Vector, "look glow")
         .map_err(|e| at_slot(e, slot))?;
@@ -1394,13 +1435,19 @@ fn look_glow(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 3], Runtim
             let c = |x: &Value| {
                 crate::stdlib::number(x, "look glow")
                     .map(|n| n.max(0.0) as f32)
-                    .map_err(|e| RuntimeError { help: help(), ..at_slot(e, slot) })
+                    .map_err(|e| RuntimeError {
+                        help: help(),
+                        ..at_slot(e, slot)
+                    })
             };
             return Ok([c(&e[0])?, c(&e[1])?, c(&e[2])?]);
         }
     }
     let n = crate::stdlib::number(&v, "look glow")
-        .map_err(|e| RuntimeError { help: help(), ..at_slot(e, slot) })?
+        .map_err(|e| RuntimeError {
+            help: help(),
+            ..at_slot(e, slot)
+        })?
         .max(0.0) as f32;
     Ok([n; 3])
 }
@@ -2543,9 +2590,9 @@ fn spawn_entity(
         col,
         message: format!("class '{class}' is not defined"),
         help: Some(match class.split_once('.') {
-            Some((module, member)) => format!(
-                "`{module}` must be an imported module that declares `entity {member}:`"
-            ),
+            Some((module, member)) => {
+                format!("`{module}` must be an imported module that declares `entity {member}:`")
+            }
             None => format!("declare it with `entity {class}:` first"),
         }),
     })?;
@@ -4457,7 +4504,11 @@ fn method_label(recv: &Value, method: &MethodDef) -> String {
     let class = recv.as_instance().borrow().class.clone();
     let mut c = Some(class.clone());
     while let Some(k) = c {
-        if let Some((name, _)) = k.methods.iter().find(|(_, m)| std::ptr::eq(m.as_ref(), method)) {
+        if let Some((name, _)) = k
+            .methods
+            .iter()
+            .find(|(_, m)| std::ptr::eq(m.as_ref(), method))
+        {
             return format!("{}.{name}", class.name);
         }
         c = k.parent.clone();
@@ -4713,8 +4764,9 @@ fn build_look(
         return Err(RuntimeError {
             line: offset.line,
             col: offset.col,
-            message: "look key `offset` needs `attach`: it is a place in the attached entity's frame"
-                .to_string(),
+            message:
+                "look key `offset` needs `attach`: it is a place in the attached entity's frame"
+                    .to_string(),
             help: Some(
                 "add `attach: owner` (the entity to ride on), or move the entity's `pos` instead"
                     .to_string(),

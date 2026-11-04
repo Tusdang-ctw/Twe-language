@@ -278,11 +278,20 @@ impl Bloom {
 
     /// Size the chain for a `width × height` target and set the
     /// threshold.
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, threshold: f32) {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        threshold: f32,
+    ) {
         if self.size != (width, height) || self.levels.is_empty() {
             let (w, h) = ((width / 2).max(1), (height / 2).max(1));
             // Down to about 8 pixels on the short side.
-            let levels = (32 - w.min(h).max(1).leading_zeros()).saturating_sub(3).clamp(1, MAX_LEVELS);
+            let levels = (32 - w.min(h).max(1).leading_zeros())
+                .saturating_sub(3)
+                .clamp(1, MAX_LEVELS);
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("twe-kernel bloom chain"),
                 size: wgpu::Extent3d {
@@ -294,7 +303,8 @@ impl Bloom {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: HDR_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             crate::kernel::release_view(self.levels.first());
@@ -340,7 +350,12 @@ impl Bloom {
     }
 
     /// Record the chain from the HDR frame `source`.
-    pub fn record(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView) {
+    pub fn record(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+    ) {
         let bind = |uniform: &wgpu::Buffer, input: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("twe-kernel bloom bg"),
@@ -868,7 +883,11 @@ fn screen_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
-            texture(1, wgpu::TextureSampleType::Float { filterable: true }, false),
+            texture(
+                1,
+                wgpu::TextureSampleType::Float { filterable: true },
+                false,
+            ),
             texture(2, wgpu::TextureSampleType::Depth, true),
             wgpu::BindGroupLayoutEntry {
                 binding: 3,
@@ -876,7 +895,11 @@ fn screen_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            texture(4, wgpu::TextureSampleType::Float { filterable: true }, false),
+            texture(
+                4,
+                wgpu::TextureSampleType::Float { filterable: true },
+                false,
+            ),
         ],
     })
 }
@@ -994,7 +1017,14 @@ impl Dof {
 
     /// Size the half-resolution target and write the lens. Returns
     /// false when the settings blur nothing (the pass is skipped).
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, f: &DofFrame) -> bool {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        f: &DofFrame,
+    ) -> bool {
         let Some(scale) = coc_scale(f, height as f32) else {
             return false;
         };
@@ -1013,7 +1043,8 @@ impl Dof {
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: HDR_FORMAT,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
                         view_formats: &[],
                     })
                     .create_view(&wgpu::TextureViewDescriptor::default()),
@@ -1044,11 +1075,31 @@ impl Dof {
             return;
         };
         let bind = |second: &wgpu::TextureView| {
-            screen_bind_group(device, &self.layout, &self.uniform, color, depth, &self.sampler, second)
+            screen_bind_group(
+                device,
+                &self.layout,
+                &self.uniform,
+                color,
+                depth,
+                &self.sampler,
+                second,
+            )
         };
         // The gather's second input is unused; bind the colour again.
-        screen_pass(encoder, "twe-kernel dof gather", &self.gather, &bind(color), half);
-        screen_pass(encoder, "twe-kernel dof composite", &self.composite, &bind(half), output);
+        screen_pass(
+            encoder,
+            "twe-kernel dof gather",
+            &self.gather,
+            &bind(color),
+            half,
+        );
+        screen_pass(
+            encoder,
+            "twe-kernel dof composite",
+            &self.composite,
+            &bind(half),
+            output,
+        );
     }
 }
 
@@ -1339,7 +1390,14 @@ impl MotionBlur {
 
     /// Size the targets and write this frame's uniform; the first
     /// frame after a reset blurs nothing.
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, f: &MotionFrame) {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        f: &MotionFrame,
+    ) {
         let MotionFrame {
             view_proj,
             inv_view_proj,
@@ -1366,7 +1424,8 @@ impl MotionBlur {
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: HDR_FORMAT,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
                         view_formats: &[],
                     })
                     .create_view(&wgpu::TextureViewDescriptor::default())
@@ -1434,9 +1493,27 @@ impl MotionBlur {
         };
         // Unused inputs are bound to the colour (never the pass's own
         // target).
-        screen_pass(encoder, "twe-kernel motion velocity", &self.velocity_pipeline, &bind(color, color), velocity);
-        screen_pass(encoder, "twe-kernel motion tiles", &self.tile_pipeline, &bind(color, velocity), tiles);
-        screen_pass(encoder, "twe-kernel motion neighbours", &self.neighbor_pipeline, &bind(color, tiles), neighbors);
+        screen_pass(
+            encoder,
+            "twe-kernel motion velocity",
+            &self.velocity_pipeline,
+            &bind(color, color),
+            velocity,
+        );
+        screen_pass(
+            encoder,
+            "twe-kernel motion tiles",
+            &self.tile_pipeline,
+            &bind(color, velocity),
+            tiles,
+        );
+        screen_pass(
+            encoder,
+            "twe-kernel motion neighbours",
+            &self.neighbor_pipeline,
+            &bind(color, tiles),
+            neighbors,
+        );
         screen_pass(
             encoder,
             "twe-kernel motion blur",
@@ -1476,16 +1553,24 @@ pub(crate) fn parse_cube(text: &str) -> Result<CubeLut, String> {
                     .and_then(|w| w.parse().ok())
                     .ok_or(format!("line {}: LUT_3D_SIZE needs a number", n + 1))?;
                 if !(2..=256).contains(&s) {
-                    return Err(format!("line {}: LUT_3D_SIZE {s} is out of range (2..256)", n + 1));
+                    return Err(format!(
+                        "line {}: LUT_3D_SIZE {s} is out of range (2..256)",
+                        n + 1
+                    ));
                 }
                 size = Some(s);
             }
-            "LUT_1D_SIZE" => return Err("1D LUTs aren't supported; export a 3D LUT (LUT_3D_SIZE)".to_string()),
+            "LUT_1D_SIZE" => {
+                return Err("1D LUTs aren't supported; export a 3D LUT (LUT_3D_SIZE)".to_string())
+            }
             "DOMAIN_MIN" | "DOMAIN_MAX" => {
                 let want = if first == "DOMAIN_MIN" { 0.0 } else { 1.0 };
                 let values: Vec<f32> = words.filter_map(|w| w.parse().ok()).collect();
                 if values.len() != 3 || values.iter().any(|v| (v - want).abs() > 1e-6) {
-                    return Err(format!("line {}: only the default domain (0 to 1) is supported", n + 1));
+                    return Err(format!(
+                        "line {}: only the default domain (0 to 1) is supported",
+                        n + 1
+                    ));
                 }
             }
             _ => {
@@ -1495,7 +1580,10 @@ pub(crate) fn parse_cube(text: &str) -> Result<CubeLut, String> {
                     .collect::<Result<_, _>>()
                     .map_err(|_| format!("line {}: expected three numbers, got `{line}`", n + 1))?;
                 if rgb.len() != 3 {
-                    return Err(format!("line {}: expected three numbers, got `{line}`", n + 1));
+                    return Err(format!(
+                        "line {}: expected three numbers, got `{line}`",
+                        n + 1
+                    ));
                 }
                 data.push([rgb[0], rgb[1], rgb[2]]);
             }
@@ -1504,13 +1592,20 @@ pub(crate) fn parse_cube(text: &str) -> Result<CubeLut, String> {
     let size = size.ok_or("no LUT_3D_SIZE line")?;
     let want = (size * size * size) as usize;
     if data.len() != want {
-        return Err(format!("LUT_3D_SIZE {size} needs {want} entries, found {}", data.len()));
+        return Err(format!(
+            "LUT_3D_SIZE {size} needs {want} entries, found {}",
+            data.len()
+        ));
     }
     Ok(CubeLut { size, data })
 }
 
 /// Upload a LUT as a 3D texture (half floats, filterable everywhere).
-pub(crate) fn upload_lut(device: &wgpu::Device, queue: &wgpu::Queue, lut: &CubeLut) -> wgpu::TextureView {
+pub(crate) fn upload_lut(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lut: &CubeLut,
+) -> wgpu::TextureView {
     let bits = crate::kernel::environment::f16_bits;
     let texels: Vec<u16> = lut
         .data
@@ -1712,7 +1807,10 @@ impl Transmission {
             })
             .collect();
         crate::kernel::release_view(self.chain.as_ref().map(|c| &c.0));
-        self.chain = Some((texture.create_view(&wgpu::TextureViewDescriptor::default()), levels));
+        self.chain = Some((
+            texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            levels,
+        ));
         self.size = (width, height);
         self.generation += 1;
     }
@@ -1737,7 +1835,12 @@ impl Transmission {
 
     /// Copy the resolved opaque frame `source` into mip 0, then halve
     /// it down the chain.
-    pub fn record(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView) {
+    pub fn record(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+    ) {
         let Some((_, levels)) = &self.chain else {
             return;
         };
@@ -1757,7 +1860,13 @@ impl Transmission {
                     },
                 ],
             });
-            screen_pass(encoder, "twe-kernel transmission mip", &self.pipeline, &bg, target);
+            screen_pass(
+                encoder,
+                "twe-kernel transmission mip",
+                &self.pipeline,
+                &bg,
+                target,
+            );
         }
     }
 }
@@ -1768,14 +1877,19 @@ mod tests {
 
     #[test]
     fn cube_files_parse() {
-        let text = "# a comment\nTITLE \"invert\"\nLUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n\
+        let text =
+            "# a comment\nTITLE \"invert\"\nLUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n\
                     1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n";
         let lut = parse_cube(text).expect("parses");
         assert_eq!(lut.size, 2);
         assert_eq!(lut.data[1], [0.0, 1.0, 1.0], "red varies fastest");
-        assert!(parse_cube("LUT_3D_SIZE 2\n0 0 0\n").unwrap_err().contains("needs 8 entries"));
+        assert!(parse_cube("LUT_3D_SIZE 2\n0 0 0\n")
+            .unwrap_err()
+            .contains("needs 8 entries"));
         assert!(parse_cube("LUT_1D_SIZE 16\n").unwrap_err().contains("1D"));
-        assert!(parse_cube("LUT_3D_SIZE 2\nDOMAIN_MAX 2 2 2\n").unwrap_err().contains("domain"));
+        assert!(parse_cube("LUT_3D_SIZE 2\nDOMAIN_MAX 2 2 2\n")
+            .unwrap_err()
+            .contains("domain"));
     }
 
     /// A 50 mm lens (27° vertical on full frame) at f/2, focused at

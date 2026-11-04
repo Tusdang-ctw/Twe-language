@@ -188,7 +188,10 @@ pub(super) fn apply_save_from_value(value: Value) {
     });
 }
 
-pub(super) fn save_set_schema_version_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn save_set_schema_version_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "save.set_schema_version")?;
     let v = number(&args[0], "save.set_schema_version.version")? as i64;
     if v < 1 {
@@ -207,13 +210,19 @@ pub(super) fn save_set_schema_version_impl(_env: &mut Env, args: &[Value]) -> Re
     Ok(Value::NIL)
 }
 
-pub(super) fn save_schema_version_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn save_schema_version_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 0, "save.schema_version")?;
     let v = SAVE_SCHEMA_VERSION.with(|cell| *cell.borrow());
     Ok(Value::from_int(v))
 }
 
-pub(super) fn save_loaded_version_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn save_loaded_version_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 0, "save.loaded_version")?;
     let v = SAVE_LOADED_VERSION.with(|cell| *cell.borrow());
     Ok(match v {
@@ -221,4 +230,3 @@ pub(super) fn save_loaded_version_impl(_env: &mut Env, args: &[Value]) -> Result
         None => Value::NIL,
     })
 }
-

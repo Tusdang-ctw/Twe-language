@@ -32,7 +32,12 @@ fn end_to_end_recovery_from_did_you_mean_typo() {
     // Round 2's prompt must include the structured fix payload —
     // that's the contract the LLM is supposed to act on.
     assert!(
-        p.requests[1].messages.last().unwrap().text.contains("\"replace\":\"apple\""),
+        p.requests[1]
+            .messages
+            .last()
+            .unwrap()
+            .text
+            .contains("\"replace\":\"apple\""),
         "follow-up prompt missing structured fix payload"
     );
 }

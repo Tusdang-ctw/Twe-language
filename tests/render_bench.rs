@@ -143,7 +143,10 @@ fn measure_materials(
     }
     renderer.read_pixels().expect("sync");
     let total = start.elapsed().as_secs_f64();
-    let (cpu_ms, frame_ms) = (cpu * 1e3 / f64::from(FRAMES), total * 1e3 / f64::from(FRAMES));
+    let (cpu_ms, frame_ms) = (
+        cpu * 1e3 / f64::from(FRAMES),
+        total * 1e3 / f64::from(FRAMES),
+    );
     eprintln!("{name:>10} cull={cull:<5}: render() {cpu_ms:6.2} ms CPU, {frame_ms:6.2} ms/frame");
     (cpu_ms, frame_ms)
 }
@@ -176,7 +179,13 @@ fn render_large_scenes() {
     for i in 0..300 {
         let a = i as f32 * 0.37;
         let r = 3.0 + (i % 17) as f32;
-        small.push(cube(r * a.cos(), 0.5, r * a.sin(), 1.0, [0.9, 0.4, 0.3, 1.0]));
+        small.push(cube(
+            r * a.cos(),
+            0.5,
+            r * a.sin(),
+            1.0,
+            [0.9, 0.4, 0.3, 1.0],
+        ));
     }
     let top = Camera3d {
         far: 200.0,
@@ -191,10 +200,24 @@ fn render_large_scenes() {
             .map(|i| {
                 let a = i as f32 * 2.399;
                 let r = 20.0 * ((i as f32 + 0.5) / n as f32).sqrt();
-                twec::kernel::render::PointLightU::point([r * a.cos(), 1.0, r * a.sin()], [1.0, 0.7, 0.4], 3.0)
+                twec::kernel::render::PointLightU::point(
+                    [r * a.cos(), 1.0, r * a.sin()],
+                    [1.0, 0.7, 0.4],
+                    3.0,
+                )
             })
             .collect();
-        measure_lit(if n == 100 { "100 lights" } else { "1000 lights" }, top, &small, &lights, true);
+        measure_lit(
+            if n == 100 {
+                "100 lights"
+            } else {
+                "1000 lights"
+            },
+            top,
+            &small,
+            &lights,
+            true,
+        );
     }
     // Fixed costs: nothing to draw, and everything behind the camera.
     measure("empty", low, &[], true);
@@ -226,7 +249,13 @@ fn render_particles() {
     for i in 0..300 {
         let a = i as f32 * 0.37;
         let r = 3.0 + (i % 17) as f32;
-        small.push(cube(r * a.cos(), 0.5, r * a.sin(), 1.0, [0.9, 0.4, 0.3, 1.0]));
+        small.push(cube(
+            r * a.cos(),
+            0.5,
+            r * a.sin(),
+            1.0,
+            [0.9, 0.4, 0.3, 1.0],
+        ));
     }
     let camera = Camera3d {
         far: 200.0,
@@ -311,7 +340,13 @@ fn render_ssr_and_fog() {
     for i in 0..300 {
         let a = i as f32 * 0.37;
         let r = 3.0 + (i % 17) as f32;
-        small.push(cube(r * a.cos(), 0.5, r * a.sin(), 1.0, [0.9, 0.4, 0.3, 1.0]));
+        small.push(cube(
+            r * a.cos(),
+            0.5,
+            r * a.sin(),
+            1.0,
+            [0.9, 0.4, 0.3, 1.0],
+        ));
     }
     let top = Camera3d {
         far: 200.0,
@@ -321,7 +356,11 @@ fn render_ssr_and_fog() {
         .map(|i| {
             let a = i as f32 * 2.399;
             let r = 20.0 * ((i as f32 + 0.5) / 100.0).sqrt();
-            twec::kernel::render::PointLightU::point([r * a.cos(), 1.0, r * a.sin()], [1.0, 0.7, 0.4], 3.0)
+            twec::kernel::render::PointLightU::point(
+                [r * a.cos(), 1.0, r * a.sin()],
+                [1.0, 0.7, 0.4],
+                3.0,
+            )
         })
         .collect();
     let fog = |volumetric| {
@@ -338,8 +377,24 @@ fn render_ssr_and_fog() {
     };
     measure_with("plain", top, &small, &lights, PostFx::default(), None, true);
     measure_with("ssr", top, &small, &lights, ssr, None, true);
-    measure_with("fog", top, &small, &lights, PostFx::default(), fog(false), true);
-    measure_with("vol fog", top, &small, &lights, PostFx::default(), fog(true), true);
+    measure_with(
+        "fog",
+        top,
+        &small,
+        &lights,
+        PostFx::default(),
+        fog(false),
+        true,
+    );
+    measure_with(
+        "vol fog",
+        top,
+        &small,
+        &lights,
+        PostFx::default(),
+        fog(true),
+        true,
+    );
 }
 
 /// web3d-M7 session 15: procedural surface materials over the small
@@ -414,12 +469,18 @@ fn render_stress_scene() {
         return;
     };
     // `TWE_STRESS_SCRIPT` swaps in a variant (for splitting the cost).
-    let path = std::env::var("TWE_STRESS_SCRIPT").unwrap_or_else(|_| "examples/stress_3d.twe".to_string());
+    let path =
+        std::env::var("TWE_STRESS_SCRIPT").unwrap_or_else(|_| "examples/stress_3d.twe".to_string());
     let src = std::fs::read_to_string(&path).expect("read");
-    let out_dir = std::env::current_dir().expect("cwd").join("target/kernel-render");
+    let out_dir = std::env::current_dir()
+        .expect("cwd")
+        .join("target/kernel-render");
     // Asset paths are relative to the game's directory, as when it's played
     // (a multi-file game like survive3d loads `assets/…`).
-    if let Some(dir) = std::path::Path::new(&path).parent().filter(|d| !d.as_os_str().is_empty()) {
+    if let Some(dir) = std::path::Path::new(&path)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+    {
         std::env::set_current_dir(dir).expect("cd into the script's directory");
     }
     let tokens = twec::lexer::lex(&src).expect("lex");
@@ -467,18 +528,29 @@ fn render_stress_scene() {
     let (mut tick, mut script, mut kernel) = (0.0, 0.0, 0.0);
     let start = std::time::Instant::now();
     // `TWE_STRESS_FRAMES` measures longer (the GPU profile prints every 60).
-    let frames: u32 = std::env::var("TWE_STRESS_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(FRAMES);
+    let frames: u32 = std::env::var("TWE_STRESS_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(FRAMES);
     for _ in 0..frames {
         let t = std::time::Instant::now();
         twec::eval::tick_frame(&mut env, 1.0 / 60.0).expect("tick");
         tick += t.elapsed().as_secs_f64();
-        let times = twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
+        let times =
+            twec::host3d::render_frame(&mut renderer, &mut env, &mut assets).expect("render");
         script += times.script_ms;
         kernel += times.kernel_ms;
     }
     let rgba = renderer.read_pixels().expect("sync");
     std::fs::create_dir_all(&out_dir).expect("output dir");
-    image::save_buffer(out_dir.join("stress.png"), &rgba, W, H, image::ColorType::Rgba8).expect("png");
+    image::save_buffer(
+        out_dir.join("stress.png"),
+        &rgba,
+        W,
+        H,
+        image::ColorType::Rgba8,
+    )
+    .expect("png");
     let n = f64::from(frames);
     eprintln!(
         "stress: tick {:.2} ms, looks {:.2} ms, kernel {:.2} ms (CPU), {:.2} ms/frame",
@@ -533,7 +605,14 @@ fn render_animated_crowd() {
                 .kernel_ms;
         }
         renderer.read_pixels().expect("sync");
-        let label = if own { "own animation each" } else { "one shared animation" };
-        eprintln!("40 skinned heroes, {label:<22}: kernel {:6.3} ms/frame", kernel / f64::from(FRAMES));
+        let label = if own {
+            "own animation each"
+        } else {
+            "one shared animation"
+        };
+        eprintln!(
+            "40 skinned heroes, {label:<22}: kernel {:6.3} ms/frame",
+            kernel / f64::from(FRAMES)
+        );
     }
 }

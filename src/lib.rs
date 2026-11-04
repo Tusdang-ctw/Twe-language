@@ -95,7 +95,7 @@ pub mod perf_snapshot;
 // would ask for in a first triage round (version, target triple,
 // active features, crash bundles, cache size).
 pub mod doctor;
-// Lanternfall E1: the 3D camera math (view / projection, 
+// Lanternfall E1: the 3D camera math (view / projection,
 // `camera.project` / `camera.ray`), shared by renderer and script.
 pub mod camera3d;
 pub mod render3d_types;
@@ -180,13 +180,13 @@ pub mod kernel;
 // web3d-M2: interpreter-side 3D hosting shared by the native and web shells.
 pub mod host3d;
 // web3d-M4: the scripted-player soak harness (native tests + wasm export).
-pub mod soak;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play3d;
+pub mod soak;
 // web3d-M6: the native 2D shell (winit + the kernel canvas).
 #[cfg(not(target_arch = "wasm32"))]
-pub mod play2d;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod native_audio;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod play2d;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_visual;

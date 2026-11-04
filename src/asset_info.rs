@@ -45,7 +45,10 @@ pub enum ImageFormat {
     Hdr,
     /// KTX2 container. `supercompression` distinguishes Basis ETC1S
     /// (scheme 1) from Zstd (2) / none (0) / etc.
-    Ktx2 { supercompression: u32, vk_format: u32 },
+    Ktx2 {
+        supercompression: u32,
+        vk_format: u32,
+    },
     Unknown,
 }
 
@@ -55,7 +58,10 @@ impl ImageFormat {
             ImageFormat::Png => "PNG".into(),
             ImageFormat::Jpeg => "JPEG".into(),
             ImageFormat::Hdr => "Radiance HDR".into(),
-            ImageFormat::Ktx2 { supercompression, vk_format } => {
+            ImageFormat::Ktx2 {
+                supercompression,
+                vk_format,
+            } => {
                 let sc = match supercompression {
                     0 if vk_format == 0 => "Basis UASTC",
                     0 => "uncompressed/BCn",
@@ -73,7 +79,10 @@ impl ImageFormat {
     /// True when the current runtime cannot decode this on load (M9
     /// closes KTX2/Basis in session 7).
     fn runtime_loads(self) -> bool {
-        matches!(self, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Hdr)
+        matches!(
+            self,
+            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Hdr
+        )
     }
 }
 
@@ -206,7 +215,8 @@ pub fn compression_extensions(path: &Path) -> Vec<String> {
 
 /// Inspect a file. Never touches a GPU; never decodes a full image.
 pub fn inspect(path: &Path) -> Result<AssetReport, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
     let file_bytes = bytes.len() as u64;
     let ext = path
         .extension()
@@ -216,7 +226,9 @@ pub fn inspect(path: &Path) -> Result<AssetReport, String> {
 
     if ext == "glb" || ext == "gltf" {
         inspect_gltf(path, &bytes, file_bytes)
-    } else if is_image_magic(&bytes) || matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "hdr" | "ktx2") {
+    } else if is_image_magic(&bytes)
+        || matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "hdr" | "ktx2")
+    {
         inspect_image_file(path, &bytes, file_bytes)
     } else {
         Err(format!(
@@ -262,11 +274,16 @@ fn inspect_gltf(path: &Path, bytes: &[u8], file_bytes: u64) -> Result<AssetRepor
     let generator = gltf_generator(doc);
 
     let extensions_used: Vec<String> = doc.extensions_used().map(|s| s.to_string()).collect();
-    let extensions_required: Vec<String> = doc.extensions_required().map(|s| s.to_string()).collect();
+    let extensions_required: Vec<String> =
+        doc.extensions_required().map(|s| s.to_string()).collect();
 
     let compression = CompressionFlags {
-        meshopt: extensions_used.iter().any(|e| e == "EXT_meshopt_compression"),
-        draco: extensions_used.iter().any(|e| e == "KHR_draco_mesh_compression"),
+        meshopt: extensions_used
+            .iter()
+            .any(|e| e == "EXT_meshopt_compression"),
+        draco: extensions_used
+            .iter()
+            .any(|e| e == "KHR_draco_mesh_compression"),
         basisu: extensions_used.iter().any(|e| e == "KHR_texture_basisu"),
     };
 
@@ -351,12 +368,20 @@ fn inspect_gltf(path: &Path, bytes: &[u8], file_bytes: u64) -> Result<AssetRepor
     // Feature-gap notes for the M9 report.
     let mut gaps = Vec::new();
     if compression.meshopt {
-        gaps.push("EXT_meshopt_compression present — geometry not loaded yet (M9 session 5)".into());
+        gaps.push(
+            "EXT_meshopt_compression present — geometry not loaded yet (M9 session 5)".into(),
+        );
     }
     if compression.draco {
-        gaps.push("KHR_draco_mesh_compression present — geometry not loaded yet (M9 session 6)".into());
+        gaps.push(
+            "KHR_draco_mesh_compression present — geometry not loaded yet (M9 session 6)".into(),
+        );
     }
-    if compression.basisu || images.iter().any(|i| matches!(i.format, ImageFormat::Ktx2 { .. })) {
+    if compression.basisu
+        || images
+            .iter()
+            .any(|i| matches!(i.format, ImageFormat::Ktx2 { .. }))
+    {
         gaps.push("KTX2/Basis textures present — not decoded yet (M9 session 7)".into());
     }
     // Morph targets (M9 s2), multi-skin (M9 s3) and KHR_materials_anisotropy
@@ -505,7 +530,9 @@ fn is_image_magic(bytes: &[u8]) -> bool {
     detect_format(bytes) != ImageFormat::Unknown
 }
 
-const KTX2_ID: [u8; 12] = [0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A];
+const KTX2_ID: [u8; 12] = [
+    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
+];
 
 fn detect_format(bytes: &[u8]) -> ImageFormat {
     if bytes.len() >= 4 && bytes[..4] == [0x89, 0x50, 0x4E, 0x47] {
@@ -515,7 +542,10 @@ fn detect_format(bytes: &[u8]) -> ImageFormat {
     } else if bytes.len() >= 12 && bytes[..12] == KTX2_ID {
         let vk_format = le_u32(bytes, 12).unwrap_or(0);
         let supercompression = le_u32(bytes, 44).unwrap_or(0);
-        ImageFormat::Ktx2 { supercompression, vk_format }
+        ImageFormat::Ktx2 {
+            supercompression,
+            vk_format,
+        }
     } else if bytes.len() >= 2 && (&bytes[..2] == b"#?") {
         ImageFormat::Hdr
     } else {
@@ -535,7 +565,10 @@ fn le_u32(bytes: &[u8], off: usize) -> Option<u32> {
 fn image_info_from_bytes(name: Option<String>, bytes: &[u8], encoded_bytes: u64) -> ImageInfo {
     let format = detect_format(bytes);
     let (width, height) = match format {
-        ImageFormat::Ktx2 { .. } => (le_u32(bytes, 20).unwrap_or(0), le_u32(bytes, 24).unwrap_or(0)),
+        ImageFormat::Ktx2 { .. } => (
+            le_u32(bytes, 20).unwrap_or(0),
+            le_u32(bytes, 24).unwrap_or(0),
+        ),
         ImageFormat::Unknown => (0, 0),
         _ => {
             use std::io::Cursor;
@@ -632,7 +665,10 @@ impl AssetReport {
                 s.push_str(&format!("    - {}\n", describe_image(img)));
             }
             if !g.extensions_used.is_empty() {
-                s.push_str(&format!("  extensions used: {}\n", g.extensions_used.join(", ")));
+                s.push_str(&format!(
+                    "  extensions used: {}\n",
+                    g.extensions_used.join(", ")
+                ));
             }
             if !g.extensions_required.is_empty() {
                 s.push_str(&format!(
@@ -650,7 +686,11 @@ impl AssetReport {
             mib(self.vram.geometry_bytes),
             mib(self.vram.texture_bytes),
             self.vram.budget_bytes / (1024 * 1024),
-            if self.vram.over_budget() { "  ** OVER BUDGET **" } else { "" }
+            if self.vram.over_budget() {
+                "  ** OVER BUDGET **"
+            } else {
+                ""
+            }
         ));
         if !self.gaps.is_empty() {
             s.push_str("  M9 gaps:\n");
@@ -684,7 +724,10 @@ impl AssetReport {
         map.insert(
             "vram".into(),
             json::obj([
-                ("geometry_bytes", Value::Int(self.vram.geometry_bytes as i64)),
+                (
+                    "geometry_bytes",
+                    Value::Int(self.vram.geometry_bytes as i64),
+                ),
                 ("texture_bytes", Value::Int(self.vram.texture_bytes as i64)),
                 ("total_bytes", Value::Int(self.vram.total_bytes as i64)),
                 ("budget_bytes", Value::Int(self.vram.budget_bytes as i64)),
@@ -704,8 +747,16 @@ impl AssetReport {
 }
 
 fn describe_image(img: &ImageInfo) -> String {
-    let nm = img.name.as_deref().map(|n| format!("{n} ")).unwrap_or_default();
-    let gap = if img.format.runtime_loads() { "" } else { "  (not loaded yet)" };
+    let nm = img
+        .name
+        .as_deref()
+        .map(|n| format!("{n} "))
+        .unwrap_or_default();
+    let gap = if img.format.runtime_loads() {
+        ""
+    } else {
+        "  (not loaded yet)"
+    };
     format!(
         "{nm}{} {}x{}  {:.2} MiB on disk, ~{:.1} MiB VRAM{gap}",
         img.format.label(),
@@ -718,10 +769,7 @@ fn describe_image(img: &ImageInfo) -> String {
 
 fn image_json(img: &ImageInfo) -> Value {
     json::obj([
-        (
-            "name",
-            img.name.clone().map_or(Value::Null, Value::Str),
-        ),
+        ("name", img.name.clone().map_or(Value::Null, Value::Str)),
         ("format", Value::Str(img.format.label())),
         ("width", Value::Int(img.width as i64)),
         ("height", Value::Int(img.height as i64)),
@@ -762,29 +810,49 @@ fn gltf_json(g: &GltfInfo) -> Value {
         ("basisu", Value::Bool(g.compression.basisu)),
     ]);
     json::obj([
-        ("generator", g.generator.clone().map_or(Value::Null, Value::Str)),
+        (
+            "generator",
+            g.generator.clone().map_or(Value::Null, Value::Str),
+        ),
         (
             "extensions_used",
             Value::Array(g.extensions_used.iter().cloned().map(Value::Str).collect()),
         ),
         (
             "extensions_required",
-            Value::Array(g.extensions_required.iter().cloned().map(Value::Str).collect()),
+            Value::Array(
+                g.extensions_required
+                    .iter()
+                    .cloned()
+                    .map(Value::Str)
+                    .collect(),
+            ),
         ),
         ("meshes", Value::Int(g.meshes as i64)),
         ("primitives", Value::Int(g.primitives as i64)),
-        ("non_triangle_primitives", Value::Int(g.non_triangle_primitives as i64)),
+        (
+            "non_triangle_primitives",
+            Value::Int(g.non_triangle_primitives as i64),
+        ),
         ("total_vertices", Value::Int(g.total_vertices as i64)),
         ("total_indices", Value::Int(g.total_indices as i64)),
         ("attributes", attrs),
         ("morph_target_max", Value::Int(g.morph_target_max as i64)),
-        ("morph_target_prims", Value::Int(g.morph_target_prims as i64)),
+        (
+            "morph_target_prims",
+            Value::Int(g.morph_target_prims as i64),
+        ),
         ("materials", materials),
         ("images", images),
         ("skins", Value::Int(g.skins as i64)),
         (
             "skin_joints",
-            Value::Array(g.skin_joints.iter().map(|j| Value::Int(*j as i64)).collect()),
+            Value::Array(
+                g.skin_joints
+                    .iter()
+                    .map(|j| Value::Int(*j as i64))
+                    .collect(),
+            ),
         ),
         ("animations", Value::Int(g.animations as i64)),
         ("compression", compression),
@@ -805,7 +873,13 @@ mod tests {
         bytes[44..48].copy_from_slice(&1u32.to_le_bytes()); // BasisLZ
         let info = image_info_from_bytes(None, &bytes, bytes.len() as u64);
         assert_eq!((info.width, info.height), (256, 128));
-        assert!(matches!(info.format, ImageFormat::Ktx2 { supercompression: 1, .. }));
+        assert!(matches!(
+            info.format,
+            ImageFormat::Ktx2 {
+                supercompression: 1,
+                ..
+            }
+        ));
         assert!(!info.format.runtime_loads());
     }
 

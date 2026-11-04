@@ -57,10 +57,16 @@ pub struct Message {
 
 impl Message {
     pub fn user(text: impl Into<String>) -> Self {
-        Message { role: Role::User, text: text.into() }
+        Message {
+            role: Role::User,
+            text: text.into(),
+        }
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Message { role: Role::Assistant, text: text.into() }
+        Message {
+            role: Role::Assistant,
+            text: text.into(),
+        }
     }
 }
 

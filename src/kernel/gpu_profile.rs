@@ -43,7 +43,10 @@ pub(crate) fn wanted_features(adapter: &wgpu::Adapter) -> wgpu::Features {
 
 impl GpuProfile {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Self> {
-        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+        if !device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+        {
             return None;
         }
         let size = u64::from(MAX_STAMPS) * 8;

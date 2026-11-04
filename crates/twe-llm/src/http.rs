@@ -14,7 +14,11 @@ const TIMEOUT: Duration = Duration::from_secs(600);
 /// POST `body` (JSON) to `url` with `headers`; the response body on a
 /// 2xx status. Retryable failures back off 2, 4, 8, 16 s, or as long
 /// as the service's `retry-after` asks (up to a minute).
-pub(crate) fn post_json(url: &str, headers: &[(&str, String)], body: &str) -> Result<String, Error> {
+pub(crate) fn post_json(
+    url: &str,
+    headers: &[(&str, String)],
+    body: &str,
+) -> Result<String, Error> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(TIMEOUT))
@@ -43,7 +47,10 @@ pub(crate) fn post_json(url: &str, headers: &[(&str, String)], body: &str) -> Re
                 }
                 let retryable = status == 429 || status >= 500;
                 if !retryable || attempt == RETRIES {
-                    return Err(Error::Http { status, message: error_message(&text) });
+                    return Err(Error::Http {
+                        status,
+                        message: error_message(&text),
+                    });
                 }
                 retry_after.map(|s| Duration::from_secs(s.min(60)))
             }

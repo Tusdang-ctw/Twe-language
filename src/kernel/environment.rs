@@ -123,7 +123,17 @@ pub(crate) fn irradiance_sh9(img: &HdrImage) -> [[f32; 4]; 9] {
             }
         }
     }
-    let band = [PI, 2.0 * PI / 3.0, 2.0 * PI / 3.0, 2.0 * PI / 3.0, PI / 4.0, PI / 4.0, PI / 4.0, PI / 4.0, PI / 4.0];
+    let band = [
+        PI,
+        2.0 * PI / 3.0,
+        2.0 * PI / 3.0,
+        2.0 * PI / 3.0,
+        PI / 4.0,
+        PI / 4.0,
+        PI / 4.0,
+        PI / 4.0,
+        PI / 4.0,
+    ];
     let mut out = [[0.0f32; 4]; 9];
     for i in 0..9 {
         for k in 0..3 {
@@ -134,7 +144,10 @@ pub(crate) fn irradiance_sh9(img: &HdrImage) -> [[f32; 4]; 9] {
 }
 
 fn hammersley(i: u32, n: u32) -> [f32; 2] {
-    [i as f32 / n as f32, i.reverse_bits() as f32 * 2.328_306_4e-10]
+    [
+        i as f32 / n as f32,
+        i.reverse_bits() as f32 * 2.328_306_4e-10,
+    ]
 }
 
 /// A GGX-distributed half vector around +z.
@@ -172,13 +185,18 @@ pub(crate) fn dfg_lut() -> Vec<[f32; 3]> {
                 let nol = l_z.clamp(0.0, 1.0);
                 if nol > 0.0 {
                     let noh = h[2].max(1e-7);
-                    let g_vis = v_smith_ggx_correlated(nov, nol, a) * 4.0 * nol * voh.max(0.0) / noh;
+                    let g_vis =
+                        v_smith_ggx_correlated(nov, nol, a) * 4.0 * nol * voh.max(0.0) / noh;
                     let fc = (1.0 - voh.max(0.0)).powi(5);
                     sa += (1.0 - fc) * g_vis;
                     sb += fc * g_vis;
                 }
             }
-            out.push([sa / DFG_SAMPLES as f32, sb / DFG_SAMPLES as f32, sheen_albedo(nov, roughness)]);
+            out.push([
+                sa / DFG_SAMPLES as f32,
+                sb / DFG_SAMPLES as f32,
+                sheen_albedo(nov, roughness),
+            ]);
         }
     }
     out
@@ -201,7 +219,9 @@ pub(crate) fn sheen_albedo(nov: f32, roughness: f32) -> f32 {
         let phi = 2.0 * std::f32::consts::PI * u2;
         let l = [sin_t * phi.cos(), sin_t * phi.sin(), cos_t];
         let hv = [v[0] + l[0], v[1] + l[1], v[2] + l[2]];
-        let len = (hv[0] * hv[0] + hv[1] * hv[1] + hv[2] * hv[2]).sqrt().max(1e-7);
+        let len = (hv[0] * hv[0] + hv[1] * hv[1] + hv[2] * hv[2])
+            .sqrt()
+            .max(1e-7);
         let noh = hv[2] / len;
         let sin2 = (1.0 - noh * noh).max(0.0078125);
         let d = (2.0 + inv_a) * sin2.powf(inv_a * 0.5) / (2.0 * std::f32::consts::PI);
@@ -398,8 +418,15 @@ fn fs_prefilter(in: VOut) -> @location(0) vec4<f32> {
 /// Build the GPU side of an environment from a decoded HDR map.
 pub(crate) fn build(device: &wgpu::Device, queue: &wgpu::Queue, img: &HdrImage) -> GpuEnvironment {
     let texels: Vec<[f32; 4]> = img.rgb.iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
-    let equirect = upload_rgba16f(device, queue, "twe-kernel environment", img.width, img.height, &texels)
-        .create_view(&wgpu::TextureViewDescriptor::default());
+    let equirect = upload_rgba16f(
+        device,
+        queue,
+        "twe-kernel environment",
+        img.width,
+        img.height,
+        &texels,
+    )
+    .create_view(&wgpu::TextureViewDescriptor::default());
 
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("twe-kernel env precompute bgl"),
@@ -595,13 +622,23 @@ pub(crate) fn build(device: &wgpu::Device, queue: &wgpu::Queue, img: &HdrImage) 
     };
     // 1. Equirect → source cube, mip 0.
     for face in 0..6 {
-        pass(&from_equirect, &face_view(&source, 0, face), params(face, 0.0, 0, 0), &dummy_cube);
+        pass(
+            &from_equirect,
+            &face_view(&source, 0, face),
+            params(face, 0.0, 0, 0),
+            &dummy_cube,
+        );
     }
     // 2. The source cube's mip chain.
     for mip in 1..source_mips {
         let above = cube_view(&source, mip - 1, Some(1));
         for face in 0..6 {
-            pass(&downsample, &face_view(&source, mip, face), params(face, 0.0, 0, 0), &above);
+            pass(
+                &downsample,
+                &face_view(&source, mip, face),
+                params(face, 0.0, 0, 0),
+                &above,
+            );
         }
     }
     // 3. The prefiltered specular cube: mip 0 is the mirror reflection
@@ -635,15 +672,32 @@ pub(crate) fn build(device: &wgpu::Device, queue: &wgpu::Queue, img: &HdrImage) 
 
 /// The DFG table as an Rgba16Float texture (A, B, 0, 1).
 pub(crate) fn dfg_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let texels: Vec<[f32; 4]> = dfg_lut().iter().map(|[a, b, c]| [*a, *b, *c, 1.0]).collect();
-    upload_rgba16f(device, queue, "twe-kernel dfg lut", DFG_SIZE, DFG_SIZE, &texels)
-        .create_view(&wgpu::TextureViewDescriptor::default())
+    let texels: Vec<[f32; 4]> = dfg_lut()
+        .iter()
+        .map(|[a, b, c]| [*a, *b, *c, 1.0])
+        .collect();
+    upload_rgba16f(
+        device,
+        queue,
+        "twe-kernel dfg lut",
+        DFG_SIZE,
+        DFG_SIZE,
+        &texels,
+    )
+    .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// A black 1×1 environment for frames without one.
 pub(crate) fn placeholder(device: &wgpu::Device, queue: &wgpu::Queue) -> GpuEnvironment {
-    let equirect = upload_rgba16f(device, queue, "twe-kernel no environment", 1, 1, &[[0.0, 0.0, 0.0, 1.0]])
-        .create_view(&wgpu::TextureViewDescriptor::default());
+    let equirect = upload_rgba16f(
+        device,
+        queue,
+        "twe-kernel no environment",
+        1,
+        1,
+        &[[0.0, 0.0, 0.0, 1.0]],
+    )
+    .create_view(&wgpu::TextureViewDescriptor::default());
     let cube = device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
@@ -697,7 +751,12 @@ mod tests {
             rgb: vec![[1.0; 3]; 64 * 32],
         };
         let sh = irradiance_sh9(&img);
-        for n in [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.577, 0.577, 0.577]] {
+        for n in [
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.577, 0.577, 0.577],
+        ] {
             let b = sh_basis(n);
             let e: f32 = (0..9).map(|i| sh[i][0] * b[i]).sum();
             assert!((e - PI).abs() < 0.02, "E({n:?}) = {e}");
@@ -708,8 +767,14 @@ mod tests {
     fn a_sky_lights_upward_faces_more_than_downward_ones() {
         // Bright top half, dark bottom half.
         let (w, h) = (64usize, 32usize);
-        let rgb = (0..w * h).map(|i| if i / w < h / 2 { [2.0; 3] } else { [0.0; 3] }).collect();
-        let sh = irradiance_sh9(&HdrImage { width: w as u32, height: h as u32, rgb });
+        let rgb = (0..w * h)
+            .map(|i| if i / w < h / 2 { [2.0; 3] } else { [0.0; 3] })
+            .collect();
+        let sh = irradiance_sh9(&HdrImage {
+            width: w as u32,
+            height: h as u32,
+            rgb,
+        });
         let e = |n| (0..9).map(|i| sh[i][0] * sh_basis(n)[i]).sum::<f32>();
         assert!(e([0.0, 1.0, 0.0]) > 5.0 * e([0.0, -1.0, 0.0]).max(0.01));
     }
@@ -722,7 +787,10 @@ mod tests {
         }
         // Smooth, facing the viewer: almost all energy is reflected.
         let smooth_head_on = lut[(DFG_SIZE - 1) as usize];
-        assert!(smooth_head_on[0] + smooth_head_on[1] > 0.95, "{smooth_head_on:?}");
+        assert!(
+            smooth_head_on[0] + smooth_head_on[1] > 0.95,
+            "{smooth_head_on:?}"
+        );
         // Rough loses energy to single scattering (what the multiscatter
         // compensation restores).
         let rough = lut[((DFG_SIZE - 1) * DFG_SIZE + DFG_SIZE / 2) as usize];

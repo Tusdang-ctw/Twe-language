@@ -14,7 +14,11 @@ fn twe_blocks(text: &str) -> Vec<(usize, String)> {
     let mut lines = text.lines().enumerate();
     while let Some((n, line)) = lines.next() {
         if line.trim() == "```twe" {
-            let body: Vec<&str> = lines.by_ref().map(|(_, l)| l).take_while(|l| l.trim() != "```").collect();
+            let body: Vec<&str> = lines
+                .by_ref()
+                .map(|(_, l)| l)
+                .take_while(|l| l.trim() != "```")
+                .collect();
             out.push((n + 2, body.join("\n") + "\n"));
         }
     }
@@ -40,6 +44,11 @@ fn every_twe_block_in_the_primer_verifies() {
 fn the_curated_examples_verify() {
     for ex in twec::primer::EXAMPLES {
         let report = verify_program(ex.source);
-        assert!(report.ok(), "example `{}` doesn't verify: {}", ex.name, report.to_json());
+        assert!(
+            report.ok(),
+            "example `{}` doesn't verify: {}",
+            ex.name,
+            report.to_json()
+        );
     }
 }

@@ -39,8 +39,14 @@ fn the_statement_form_is_unchanged_and_round_trips() {
     let src = "entity Box:\n    var pos = vec3(0, 0, 0)\nspawn Box at vec3(1, 0, 0)\nlet b = spawn Box at vec3(2, 0, 0)\n";
     let program = twec::parser::parse(&twec::lexer::lex(src).unwrap()).unwrap();
     let printed = twec::printer::print_program(&program);
-    assert!(printed.contains("spawn Box at vec3(1, 0, 0)\n"), "{printed}");
-    assert!(printed.contains("let b = spawn Box at vec3(2, 0, 0)\n"), "{printed}");
+    assert!(
+        printed.contains("spawn Box at vec3(1, 0, 0)\n"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("let b = spawn Box at vec3(2, 0, 0)\n"),
+        "{printed}"
+    );
     let again = twec::parser::parse(&twec::lexer::lex(&printed).unwrap()).unwrap();
     assert_eq!(twec::printer::print_program(&again), printed);
 }

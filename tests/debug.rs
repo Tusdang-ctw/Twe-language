@@ -59,7 +59,10 @@ fn breakpoint_pause_and_continue_over_stdio() {
     // Only the two user globals, not the stdlib surface.
     assert_eq!(globals.len(), 2);
     assert_eq!(
-        events.last().and_then(|e| e.get("event")).and_then(|e| e.as_str()),
+        events
+            .last()
+            .and_then(|e| e.get("event"))
+            .and_then(|e| e.as_str()),
         Some("exited")
     );
 }
@@ -67,9 +70,15 @@ fn breakpoint_pause_and_continue_over_stdio() {
 #[test]
 fn stop_before_run_exits_cleanly() {
     let events = run_debug("let a = 1\n", "{\"cmd\":\"stop\"}\n");
-    assert_eq!(events[0].get("event").and_then(|e| e.as_str()), Some("ready"));
     assert_eq!(
-        events.last().and_then(|e| e.get("event")).and_then(|e| e.as_str()),
+        events[0].get("event").and_then(|e| e.as_str()),
+        Some("ready")
+    );
+    assert_eq!(
+        events
+            .last()
+            .and_then(|e| e.get("event"))
+            .and_then(|e| e.as_str()),
         Some("exited")
     );
 }

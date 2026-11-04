@@ -224,7 +224,9 @@ fn capture_request() -> Option<(u32, String)> {
     match n.trim().parse::<u32>() {
         Ok(n) if n > 0 && !path.is_empty() => Some((n, path.to_string())),
         _ => {
-            eprintln!("[twec] TWE_CAPTURE should be FRAME:PATH, e.g. 90:out.png; ignoring '{spec}'");
+            eprintln!(
+                "[twec] TWE_CAPTURE should be FRAME:PATH, e.g. 90:out.png; ignoring '{spec}'"
+            );
             None
         }
     }

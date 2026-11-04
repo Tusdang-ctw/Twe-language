@@ -40,7 +40,15 @@ use crate::types::{apply_subst, unify, Substitution, Type, TypeVarGen};
 
 /// Every member a list has: the `.length` field and the methods of
 /// `eval::list_method_call`.
-const LIST_MEMBERS: &[&str] = &["length", "append", "prepend", "pop_back", "pop_front", "contains", "set"];
+const LIST_MEMBERS: &[&str] = &[
+    "length",
+    "append",
+    "prepend",
+    "pop_back",
+    "pop_front",
+    "contains",
+    "set",
+];
 
 /// Result of inference over a program — top-level names bound to
 /// their (best-effort) type, with all type variables fully
@@ -915,7 +923,12 @@ impl Inferer {
                     _ => Type::Unknown,
                 }
             }
-            Expr::Field { object, name, line, col } => {
+            Expr::Field {
+                object,
+                name,
+                line,
+                col,
+            } => {
                 let obj_t = self.expr_type(object);
                 let resolved = self.resolve(&obj_t);
                 match (&resolved, name.as_str()) {

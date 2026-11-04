@@ -385,12 +385,32 @@ impl CullProbe {
         let f = self.frame % CYCLE;
         self.frame = self.frame.wrapping_add(1);
         let (cull, window) = if f < WINDOW {
-            (true, if f >= SETTLE { Window::On } else { Window::None })
+            (
+                true,
+                if f >= SETTLE {
+                    Window::On
+                } else {
+                    Window::None
+                },
+            )
         } else if f < 2 * WINDOW {
-            (false, if f >= WINDOW + SETTLE { Window::Off } else { Window::None })
+            (
+                false,
+                if f >= WINDOW + SETTLE {
+                    Window::Off
+                } else {
+                    Window::None
+                },
+            )
         } else {
             if f == 2 * WINDOW {
-                let mean = |(t, n): (f64, u32)| if n > 0 { t / f64::from(n) } else { f64::INFINITY };
+                let mean = |(t, n): (f64, u32)| {
+                    if n > 0 {
+                        t / f64::from(n)
+                    } else {
+                        f64::INFINITY
+                    }
+                };
                 self.cull = mean(self.on) < 0.95 * mean(self.off);
                 self.on = (0.0, 0);
                 self.off = (0.0, 0);
@@ -585,7 +605,9 @@ impl GpuCull {
     /// given that it could (`eligible`): see [`CullProbe`]. Call once
     /// per frame, before `prepare`.
     pub fn should_cull(&self, eligible: bool) -> bool {
-        self.probe.borrow_mut().decide(eligible, crate::clock::now_secs())
+        self.probe
+            .borrow_mut()
+            .decide(eligible, crate::clock::now_secs())
     }
 
     /// Low-end track (G5): the frame's cost changed for another reason
@@ -615,9 +637,19 @@ impl GpuCull {
             planes,
             instances,
         } = *f;
-        let grow = |cap: u64, need: u64| if need > cap { need.next_power_of_two().max(64) } else { cap };
+        let grow = |cap: u64, need: u64| {
+            if need > cap {
+                need.next_power_of_two().max(64)
+            } else {
+                cap
+            }
+        };
         let (ci, cg, cd) = self.caps;
-        let need = (grow(ci, u64::from(instances)), grow(cg, groups.len() as u64), grow(cd, draws.len() as u64));
+        let need = (
+            grow(ci, u64::from(instances)),
+            grow(cg, groups.len() as u64),
+            grow(cd, draws.len() as u64),
+        );
         let storage_usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         if need.0 != ci {
             // New flags start at 0: the first frame draws everything late.
@@ -697,7 +729,10 @@ impl GpuCull {
                 p.out.destroy();
                 p.args.destroy();
             }
-            self.phases = Some([phase("twe-kernel cull early"), phase("twe-kernel cull late")]);
+            self.phases = Some([
+                phase("twe-kernel cull early"),
+                phase("twe-kernel cull late"),
+            ]);
             self.caps = need;
         }
         if self.hiz_size != size || self.hiz.is_none() {
@@ -713,7 +748,8 @@ impl GpuCull {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::R32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let mips = (0..levels)
@@ -726,7 +762,10 @@ impl GpuCull {
                 })
                 .collect();
             crate::kernel::release_view(self.hiz.as_ref().map(|h| &h.0));
-            self.hiz = Some((texture.create_view(&wgpu::TextureViewDescriptor::default()), mips));
+            self.hiz = Some((
+                texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                mips,
+            ));
             self.hiz_size = size;
         }
         queue.write_buffer(&self.groups, 0, bytemuck::cast_slice(groups));
@@ -734,7 +773,12 @@ impl GpuCull {
         let uniform = CullUniform {
             view_proj,
             planes,
-            params: [size.0 as f32, size.1 as f32, instances as f32, draws.len() as f32],
+            params: [
+                size.0 as f32,
+                size.1 as f32,
+                instances as f32,
+                draws.len() as f32,
+            ],
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         self.group_count = groups.len();
@@ -742,7 +786,12 @@ impl GpuCull {
         self.instance_count = instances;
     }
 
-    fn frame_bind(&self, device: &wgpu::Device, instances: &wgpu::Buffer, hiz: &wgpu::TextureView) -> wgpu::BindGroup {
+    fn frame_bind(
+        &self,
+        device: &wgpu::Device,
+        instances: &wgpu::Buffer,
+        hiz: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("twe-kernel cull frame bg"),
             layout: &self.frame_layout,
@@ -775,7 +824,13 @@ impl GpuCull {
         })
     }
 
-    fn cull(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, instances: &wgpu::Buffer, late: bool) {
+    fn cull(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        instances: &wgpu::Buffer,
+        late: bool,
+    ) {
         let Some(phases) = &self.phases else { return };
         let phase = &phases[usize::from(late)];
         encoder.clear_buffer(&phase.counts, 0, Some(self.group_count.max(1) as u64 * 4));
@@ -785,7 +840,11 @@ impl GpuCull {
         };
         let frame = self.frame_bind(device, instances, hiz);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(if late { "twe-kernel cull late" } else { "twe-kernel cull early" }),
+            label: Some(if late {
+                "twe-kernel cull late"
+            } else {
+                "twe-kernel cull early"
+            }),
             timestamp_writes: None,
         });
         pass.set_bind_group(0, &frame, &[]);
@@ -797,7 +856,12 @@ impl GpuCull {
     }
 
     /// Record the early cull over `instances` (the instance buffer).
-    pub fn record_early(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, instances: &wgpu::Buffer) {
+    pub fn record_early(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        instances: &wgpu::Buffer,
+    ) {
         self.cull(device, encoder, instances, false);
     }
 
@@ -812,7 +876,11 @@ impl GpuCull {
     ) {
         let Some((_, mips)) = &self.hiz else { return };
         for (level, target) in mips.iter().enumerate() {
-            let src = if level == 0 { &self.hiz_dummy } else { &mips[level - 1] };
+            let src = if level == 0 {
+                &self.hiz_dummy
+            } else {
+                &mips[level - 1]
+            };
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("twe-kernel hiz bg"),
                 layout: &self.hiz_layout,
@@ -843,7 +911,11 @@ impl GpuCull {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(if level == 0 { &self.hiz_init } else { &self.hiz_down });
+            pass.set_pipeline(if level == 0 {
+                &self.hiz_init
+            } else {
+                &self.hiz_down
+            });
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -854,7 +926,11 @@ impl GpuCull {
     /// the last frame drew early and late, out of how many opaque
     /// instances took part. `None` before the first culled frame.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn last_counts(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Option<(u32, u32, u32)> {
+    pub fn last_counts(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<(u32, u32, u32)> {
         let phases = self.phases.as_ref()?;
         let bytes = self.group_count as u64 * 4;
         if bytes == 0 {
@@ -866,7 +942,8 @@ impl GpuCull {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(&phases[0].counts, 0, &staging, 0, bytes);
         encoder.copy_buffer_to_buffer(&phases[1].counts, 0, &staging, bytes, bytes);
         queue.submit(Some(encoder.finish()));
@@ -887,7 +964,14 @@ impl GpuCull {
 
     /// Draw `d` of phase `late` (false = early): its group's compacted
     /// instances as the instance vertex buffer, and its indirect args.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, late: bool, d: u32, group: &CullGroup, group_len: u32) {
+    pub fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        late: bool,
+        d: u32,
+        group: &CullGroup,
+        group_len: u32,
+    ) {
         let Some(phases) = &self.phases else { return };
         let phase = &phases[usize::from(late)];
         let start = u64::from(group.base) * INSTANCE_BYTES;
@@ -918,7 +1002,10 @@ mod probe_tests {
     fn keeps_culling_only_when_it_is_faster() {
         assert!(settle(0.008, 0.020), "culling much faster: keep it");
         assert!(!settle(0.020, 0.012), "culling slower: drop it");
-        assert!(!settle(0.0167, 0.0167), "no difference (a vsync cap): drop it");
+        assert!(
+            !settle(0.0167, 0.0167),
+            "no difference (a vsync cap): drop it"
+        );
     }
 
     #[test]
@@ -930,8 +1017,14 @@ mod probe_tests {
             let c = p.decide(true, Some(t));
             t += if c { 0.020 } else { 0.010 };
         }
-        assert!(p.decide(true, Some(t)), "a new probe starts with culling on");
+        assert!(
+            p.decide(true, Some(t)),
+            "a new probe starts with culling on"
+        );
         assert!(!p.decide(false, Some(t)), "never culls when it can't");
-        assert!(CullProbe::new().decide(true, None), "no clock: cull whenever it can");
+        assert!(
+            CullProbe::new().decide(true, None),
+            "no clock: cull whenever it can"
+        );
     }
 }

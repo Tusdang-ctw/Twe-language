@@ -630,15 +630,19 @@ mod tests {
             view_h: 1080,
             ..Default::default()
         };
-        let mut text = format!("{HEADER}
-");
+        let mut text = format!(
+            "{HEADER}
+"
+        );
         push_line(&mut text, &frame);
         let frames = parse_log(&text).unwrap();
         assert_eq!(frames, vec![frame]);
 
-        let v2 = format!("{HEADER_V2}
+        let v2 = format!(
+            "{HEADER_V2}
 w||10|20|||0|0|0|||
-");
+"
+        );
         let frames = parse_log(&v2).unwrap();
         assert_eq!(frames[0].keys_held, vec!["w".to_string()]);
         assert_eq!((frames[0].view_w, frames[0].view_h), (0, 0));

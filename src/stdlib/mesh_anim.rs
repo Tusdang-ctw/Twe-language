@@ -23,7 +23,11 @@ pub(super) enum AnimTarget {
     Entity(Rc<RefCell<crate::value::Instance>>),
 }
 
-pub(super) fn anim_handle(env: &mut Env, v: &Value, what: &str) -> Result<AnimTarget, RuntimeError> {
+pub(super) fn anim_handle(
+    env: &mut Env,
+    v: &Value,
+    what: &str,
+) -> Result<AnimTarget, RuntimeError> {
     if v.is_instance() {
         return Ok(AnimTarget::Entity(v.as_instance()));
     }
@@ -141,13 +145,22 @@ pub(super) fn mesh_blend_impl(env: &mut Env, args: &[Value]) -> Result<Value, Ru
 }
 
 /// Read a Twe list argument as `Vec<String>` for the anim builtins.
-pub(super) fn anim_string_list(v: &Value, what: &str, field: &str) -> Result<Vec<String>, RuntimeError> {
+pub(super) fn anim_string_list(
+    v: &Value,
+    what: &str,
+    field: &str,
+) -> Result<Vec<String>, RuntimeError> {
     if !v.is_list() {
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("{what}: `{field}` must be a list of clip names, got {}", v.type_name()),
-            help: Some(format!("e.g. `{what}(hero, [\"idle\", \"walk\", \"run\"], [0, 3, 6], speed)`")),
+            message: format!(
+                "{what}: `{field}` must be a list of clip names, got {}",
+                v.type_name()
+            ),
+            help: Some(format!(
+                "e.g. `{what}(hero, [\"idle\", \"walk\", \"run\"], [0, 3, 6], speed)`"
+            )),
         });
     }
     let list = v.as_list();
@@ -158,7 +171,10 @@ pub(super) fn anim_string_list(v: &Value, what: &str, field: &str) -> Result<Vec
             return Err(RuntimeError {
                 line: 0,
                 col: 0,
-                message: format!("{what}: every `{field}` entry must be a clip name (string), got {}", item.type_name()),
+                message: format!(
+                    "{what}: every `{field}` entry must be a clip name (string), got {}",
+                    item.type_name()
+                ),
                 help: None,
             });
         }
@@ -173,8 +189,13 @@ pub(super) fn anim_f32_list(v: &Value, what: &str, field: &str) -> Result<Vec<f3
         return Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("{what}: `{field}` must be a list of numbers, got {}", v.type_name()),
-            help: Some(format!("e.g. `{what}(hero, [\"idle\", \"walk\", \"run\"], [0, 3, 6], speed)`")),
+            message: format!(
+                "{what}: `{field}` must be a list of numbers, got {}",
+                v.type_name()
+            ),
+            help: Some(format!(
+                "e.g. `{what}(hero, [\"idle\", \"walk\", \"run\"], [0, 3, 6], speed)`"
+            )),
         });
     }
     let list = v.as_list();
@@ -233,7 +254,11 @@ pub(super) fn mesh_blend_space_impl(env: &mut Env, args: &[Value]) -> Result<Val
             i += 1;
         }
         let span = stops[i + 1] - stops[i];
-        let t = if span > 0.0 { (value - stops[i]) / span } else { 0.0 };
+        let t = if span > 0.0 {
+            (value - stops[i]) / span
+        } else {
+            0.0
+        };
         (i, i + 1, t.clamp(0.0, 1.0))
     };
     with_entry(&target, |entry| {
@@ -257,7 +282,10 @@ pub(super) fn mesh_blend_space_impl(env: &mut Env, args: &[Value]) -> Result<Val
 
 /// web3d-M11 session 1: set the auto-crossfade length (seconds) `play()`
 /// uses when it changes this mesh's clip. 0 = hard switch.
-pub(super) fn mesh_set_crossfade_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn mesh_set_crossfade_impl(
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 2, "mesh.set_crossfade")?;
     let target = anim_handle(env, &args[0], "mesh_anim.set_crossfade")?;
     let secs = (number(&args[1], "mesh.set_crossfade.seconds")? as f32).max(0.0);
@@ -310,4 +338,3 @@ pub(crate) fn mesh_anim_state(handle: u32) -> crate::render3d_types::AnimSnapsho
             .unwrap_or_default()
     })
 }
-

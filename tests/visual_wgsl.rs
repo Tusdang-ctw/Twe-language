@@ -152,7 +152,10 @@ fn material(src: &str) -> String {
 fn validate(label: &str, wgsl: &str) {
     let module = match naga::front::wgsl::parse_str(wgsl) {
         Ok(m) => m,
-        Err(e) => panic!("{label}: naga parse failed:\n{}\n--- WGSL ---\n{wgsl}", e.emit_to_string(wgsl)),
+        Err(e) => panic!(
+            "{label}: naga parse failed:\n{}\n--- WGSL ---\n{wgsl}",
+            e.emit_to_string(wgsl)
+        ),
     };
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -176,21 +179,38 @@ const ROCK: &str = "visual Rock:\n\
 #[test]
 fn surface_and_displace_compile_to_kernel_shaders_that_validate() {
     let wgsl = material(ROCK);
-    for needle in ["struct TweSurface", "fn twe_surface(", "fn twe_displace(", "select("] {
+    for needle in [
+        "struct TweSurface",
+        "fn twe_surface(",
+        "fn twe_displace(",
+        "select(",
+    ] {
         assert!(wgsl.contains(needle), "expected `{needle}` in:\n{wgsl}");
     }
     assert!(twec::kernel::render::material_displaces(&wgsl));
-    validate("material", &twec::kernel::render::material_shader_source(&wgsl));
-    validate("material depth", &twec::kernel::render::material_depth_source(&wgsl));
+    validate(
+        "material",
+        &twec::kernel::render::material_shader_source(&wgsl),
+    );
+    validate(
+        "material depth",
+        &twec::kernel::render::material_depth_source(&wgsl),
+    );
 }
 
 #[test]
 fn pixel_visual_is_a_material_without_displacement() {
     let src = std::fs::read_to_string("tests/programs/visual_fire.twe").unwrap();
     let wgsl = material(&src);
-    assert!(wgsl.contains("fn twe_surface("), "pixel wraps as a surface:\n{wgsl}");
+    assert!(
+        wgsl.contains("fn twe_surface("),
+        "pixel wraps as a surface:\n{wgsl}"
+    );
     assert!(!twec::kernel::render::material_displaces(&wgsl));
-    validate("fire material", &twec::kernel::render::material_shader_source(&wgsl));
+    validate(
+        "fire material",
+        &twec::kernel::render::material_shader_source(&wgsl),
+    );
 }
 
 #[test]
@@ -218,7 +238,10 @@ fn math_mod_matches_rem_euclid() {
          \x20   surface(uv, time) -> material:\n\
          \x20       return material(roughness: math.mod(time, 2))\n",
     );
-    assert!(wgsl.contains("(v_time - abs(2.0) * floor(v_time / abs(2.0)))"), "got:\n{wgsl}");
+    assert!(
+        wgsl.contains("(v_time - abs(2.0) * floor(v_time / abs(2.0)))"),
+        "got:\n{wgsl}"
+    );
 }
 
 /// Lanternfall G0: a visual may name a value anything — a WGSL keyword or
@@ -238,7 +261,10 @@ fn any_local_name_compiles() {
     assert!(wgsl.contains("let v_patch"), "got:\n{wgsl}");
     let module = naga::front::wgsl::parse_str(&twec::kernel::render::material_shader_source(&wgsl))
         .unwrap_or_else(|e| panic!("WGSL parse: {e}"));
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-        .validate(&module)
-        .expect("validates");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("validates");
 }

@@ -368,7 +368,9 @@ pub fn verify_program_with_options(
                 severity: Severity::Error,
                 line,
                 col,
-                message: format!("a second top-level `on {name}` replaces the first, which then never runs"),
+                message: format!(
+                    "a second top-level `on {name}` replaces the first, which then never runs"
+                ),
                 help: Some(format!("put both bodies in one `on {name}:` handler")),
                 fix: None,
             });
@@ -1322,7 +1324,11 @@ mod tests {
     #[test]
     fn return_is_only_allowed_in_functions_and_methods() {
         let kinds = |src: &str| -> Vec<(u32, String)> {
-            verify_program(src).diagnostics.into_iter().map(|d| (d.line, d.kind)).collect()
+            verify_program(src)
+                .diagnostics
+                .into_iter()
+                .map(|d| (d.line, d.kind))
+                .collect()
         };
         let handler = "var dead = true\non update(dt):\n    if dead:\n        return\n";
         assert_eq!(kinds(handler), vec![(4, "scope-error.return".to_string())]);
@@ -1340,28 +1346,39 @@ mod tests {
     fn unknown_list_members_are_reported() {
         let report = verify_program("var l = [1, 2]\nprint(l.len())\n");
         assert_eq!(report.errors(), 1);
-        assert!(report.diagnostics[0].message.contains("list has no field 'len'"));
+        assert!(report.diagnostics[0]
+            .message
+            .contains("list has no field 'len'"));
         let fine = "var l = [1, 2]\nl.append(3)\nl.set(0, 5)\nprint(l.length)\nprint(l.contains(2))\nprint(2 in l)\n";
-        assert!(verify_program(fine).ok(), "{}", verify_program(fine).to_json());
+        assert!(
+            verify_program(fine).ok(),
+            "{}",
+            verify_program(fine).to_json()
+        );
     }
 
     /// web3d-M5: a second top-level `on update` would silently replace
     /// the first.
     #[test]
     fn a_second_top_level_handler_is_reported() {
-        let report = verify_program("var a = 0
+        let report = verify_program(
+            "var a = 0
 on update(dt):
     a += 1
 on update(dt):
     a += 2
-");
+",
+        );
         assert_eq!(report.errors(), 1);
         assert_eq!(report.diagnostics[0].kind, "duplicate-handler");
         assert_eq!(report.diagnostics[0].line, 4);
-        assert!(verify_program("on update(dt):
+        assert!(verify_program(
+            "on update(dt):
     print(1)
 on render():
     print(2)
-").ok());
+"
+        )
+        .ok());
     }
 }

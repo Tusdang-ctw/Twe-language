@@ -580,7 +580,11 @@ fn handle_debug(args: &[String]) -> i32 {
                 breakpoints = cmd
                     .get("lines")
                     .and_then(|l| l.as_array())
-                    .map(|a| a.iter().filter_map(|v| v.as_i64().map(|n| n as u32)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_i64().map(|n| n as u32))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 emit(json::obj([("event", Value::Str("ok".into()))]));
             }
@@ -676,7 +680,10 @@ fn handle_debug(args: &[String]) -> i32 {
             emit(json::obj([
                 ("event", Value::Str("exited".into())),
                 ("ok", Value::Bool(false)),
-                ("error", Value::Str(format!("{}:{}: {}", e.line, e.col, e.message))),
+                (
+                    "error",
+                    Value::Str(format!("{}:{}: {}", e.line, e.col, e.message)),
+                ),
             ]));
             1
         }
@@ -780,9 +787,9 @@ fn handle_asset_transcode(args: &[String]) -> i32 {
         return 2;
     };
     let in_path = std::path::Path::new(input);
-    let out_path = out.map(std::path::PathBuf::from).unwrap_or_else(|| {
-        in_path.with_extension("").with_extension("transcoded.glb")
-    });
+    let out_path = out
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| in_path.with_extension("").with_extension("transcoded.glb"));
     match crate::asset_transcode::transcode(in_path, &out_path) {
         Ok(report) => {
             println!("{} -> {}", input, out_path.display());
@@ -1222,7 +1229,10 @@ fn take_lang_flags(args: &[String]) -> Result<LangFlags, i32> {
 /// The grader for `lang`: this binary for Twe; for Python, the
 /// interpreter (`--python`, else `bench/python/.venv`, else the path's)
 /// and `bench/python/harness.py`.
-fn make_grader(lang: crate::bench::Lang, python: Option<std::path::PathBuf>) -> Result<crate::bench::Grader, i32> {
+fn make_grader(
+    lang: crate::bench::Lang,
+    python: Option<std::path::PathBuf>,
+) -> Result<crate::bench::Grader, i32> {
     let exe = std::env::current_exe().map_err(|e| {
         eprintln!("error: cannot find twec itself: {e}");
         2
@@ -1232,7 +1242,10 @@ fn make_grader(lang: crate::bench::Lang, python: Option<std::path::PathBuf>) -> 
         crate::bench::Lang::Python => {
             let harness = std::path::Path::new(crate::bench::PYTHON_HARNESS);
             if !harness.exists() {
-                eprintln!("error: {} not found (run from the repository root)", harness.display());
+                eprintln!(
+                    "error: {} not found (run from the repository root)",
+                    harness.display()
+                );
                 return Err(2);
             }
             let python = python.unwrap_or_else(crate::bench::default_python);
@@ -1242,7 +1255,12 @@ fn make_grader(lang: crate::bench::Lang, python: Option<std::path::PathBuf>) -> 
 }
 
 fn bench_grade(args: &[String]) -> i32 {
-    let LangFlags { rest: args, lang, python, .. } = match take_lang_flags(args) {
+    let LangFlags {
+        rest: args,
+        lang,
+        python,
+        ..
+    } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
@@ -1299,7 +1317,12 @@ fn bench_grade(args: &[String]) -> i32 {
             println!("  error: {e}");
         }
         for c in &grade.checks {
-            println!("  [{}] {} = {}", if c.passed { "x" } else { " " }, c.name, c.detail);
+            println!(
+                "  [{}] {} = {}",
+                if c.passed { "x" } else { " " },
+                c.name,
+                c.detail
+            );
         }
     }
     if grade.passed {
@@ -1312,7 +1335,12 @@ fn bench_grade(args: &[String]) -> i32 {
 /// web3d-M5 session 4: `twec bench run` — models write programs for
 /// the tasks, which are graded on behaviour (`src/bench_run.rs`).
 fn bench_run(args: &[String]) -> i32 {
-    let LangFlags { rest: args, lang, python, tasks_root } = match take_lang_flags(args) {
+    let LangFlags {
+        rest: args,
+        lang,
+        python,
+        tasks_root,
+    } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
@@ -1358,7 +1386,9 @@ fn bench_run(args: &[String]) -> i32 {
                             _ => options.grade_limit = std::time::Duration::from_secs(u64::from(n)),
                         }
                     }
-                    "--tasks" => only = Some(value.split(',').map(|s| s.trim().to_string()).collect()),
+                    "--tasks" => {
+                        only = Some(value.split(',').map(|s| s.trim().to_string()).collect())
+                    }
                     "--out" => out = Some(value.into()),
                     "--cache" => options.cache_dir = Some(value.into()),
                     _ => {
@@ -1385,21 +1415,34 @@ fn bench_run(args: &[String]) -> i32 {
     };
     let root = tasks_root.as_path();
     let mut dirs: Vec<std::path::PathBuf> = match fs::read_dir(root) {
-        Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.join("task.toml").exists()).collect(),
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("task.toml").exists())
+            .collect(),
         Err(e) => {
-            eprintln!("error: {}: {e} (run from the repository root)", root.display());
+            eprintln!(
+                "error: {}: {e} (run from the repository root)",
+                root.display()
+            );
             return 2;
         }
     };
     dirs.sort();
     if let Some(only) = &only {
         for name in only {
-            if !dirs.iter().any(|d| d.file_name().is_some_and(|f| f == name.as_str())) {
+            if !dirs
+                .iter()
+                .any(|d| d.file_name().is_some_and(|f| f == name.as_str()))
+            {
                 eprintln!("error: no task `{name}` in {}", root.display());
                 return 2;
             }
         }
-        dirs.retain(|d| only.iter().any(|n| d.file_name().is_some_and(|f| f == n.as_str())));
+        dirs.retain(|d| {
+            only.iter()
+                .any(|n| d.file_name().is_some_and(|f| f == n.as_str()))
+        });
     }
     let mut tasks = Vec::new();
     for d in &dirs {
@@ -1414,13 +1457,22 @@ fn bench_run(args: &[String]) -> i32 {
     options.out_dir = out.unwrap_or_else(|| {
         let label: String = provider_id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let lang = match options.grader.lang {
             crate::bench::Lang::Twe => String::new(),
             other => format!("{}-", other.as_str()),
         };
-        std::path::PathBuf::from(format!("bench/runs/{}-{lang}{label}", crate::bench_run::today()))
+        std::path::PathBuf::from(format!(
+            "bench/runs/{}-{lang}{label}",
+            crate::bench_run::today()
+        ))
     });
     eprintln!(
         "[bench] {} tasks × {} samples, {} with {} → {}",
@@ -1449,7 +1501,12 @@ fn bench_run(args: &[String]) -> i32 {
 /// `twec bench regrade <run-dir>`: grade a run's programs again with
 /// the current grader and tasks (no model calls).
 fn bench_regrade(args: &[String]) -> i32 {
-    let LangFlags { rest, python, tasks_root, .. } = match take_lang_flags(args) {
+    let LangFlags {
+        rest,
+        python,
+        tasks_root,
+        ..
+    } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
@@ -1471,7 +1528,9 @@ fn bench_regrade(args: &[String]) -> i32 {
         Ok(g) => g,
         Err(code) => return code,
     };
-    let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let jobs = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     match crate::bench_run::regrade(
         &grader,
         std::path::Path::new(dir),
@@ -1493,13 +1552,20 @@ fn bench_regrade(args: &[String]) -> i32 {
 }
 
 fn bench_check(args: &[String]) -> i32 {
-    let LangFlags { rest: args, lang, python, tasks_root } = match take_lang_flags(args) {
+    let LangFlags {
+        rest: args,
+        lang,
+        python,
+        tasks_root,
+    } = match take_lang_flags(args) {
         Ok(f) => f,
         Err(code) => return code,
     };
     let args = &args[..];
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    let mut jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let mut jobs = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     let mut timeout = 20.0_f64;
     let mut i = 0;
     while i < args.len() {
@@ -1508,7 +1574,11 @@ fn bench_check(args: &[String]) -> i32 {
                 let root = tasks_root.as_path();
                 match fs::read_dir(root) {
                     Ok(rd) => {
-                        let mut found: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.join("task.toml").exists()).collect();
+                        let mut found: Vec<_> = rd
+                            .flatten()
+                            .map(|e| e.path())
+                            .filter(|p| p.join("task.toml").exists())
+                            .collect();
                         found.sort();
                         dirs.extend(found);
                     }
@@ -1559,7 +1629,11 @@ fn bench_check(args: &[String]) -> i32 {
         };
         match crate::bench::validate(&grader, &task, limit, jobs) {
             Ok(v) => {
-                let strengths: Vec<String> = v.strengths.iter().map(|s| format!("{} ({})", s.name, s.killed)).collect();
+                let strengths: Vec<String> = v
+                    .strengths
+                    .iter()
+                    .map(|s| format!("{} ({})", s.name, s.killed))
+                    .collect();
                 println!(
                     "{}: {} — {} checks, {} of {} mutants run; caught by: {}",
                     v.task,
@@ -1631,7 +1705,8 @@ impl ProviderFlags {
             (None, Some(_)) => "command".to_string(),
             (None, None) => {
                 return Err(
-                    "choose a model: --provider anthropic|openai --model M, or --command CMD".into(),
+                    "choose a model: --provider anthropic|openai --model M, or --command CMD"
+                        .into(),
                 )
             }
         };
@@ -1658,10 +1733,15 @@ impl ProviderFlags {
                 Ok(Box::new(p))
             }
             "command" => match &self.command {
-                Some(c) => Ok(Box::new(twe_llm::CommandProvider::new(c.clone(), self.args.clone()))),
+                Some(c) => Ok(Box::new(twe_llm::CommandProvider::new(
+                    c.clone(),
+                    self.args.clone(),
+                ))),
                 None => Err("--provider command needs --command CMD".into()),
             },
-            other => Err(format!("unknown provider `{other}` (anthropic, openai, command)")),
+            other => Err(format!(
+                "unknown provider `{other}` (anthropic, openai, command)"
+            )),
         }
     }
 }
@@ -1984,7 +2064,8 @@ fn handle_mutate(args: &[String]) -> i32 {
         eprintln!("error: cannot create `{}`: {e}", out_p.display());
         return 1;
     }
-    let report = crate::mutator::run_roots(&root_ps, &out_p, crate::mutator::RuleSet::parse(&rules));
+    let report =
+        crate::mutator::run_roots(&root_ps, &out_p, crate::mutator::RuleSet::parse(&rules));
     println!("{}", report.summary());
     if report.triples_emitted == 0 {
         1

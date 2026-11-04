@@ -227,7 +227,8 @@ impl MaterialData {
                 tex_slot(
                     &t.texture(),
                     t.tex_coord(),
-                    x.as_ref().map(|x| (x.offset(), x.rotation(), x.scale(), x.tex_coord())),
+                    x.as_ref()
+                        .map(|x| (x.offset(), x.rotation(), x.scale(), x.tex_coord())),
                 )
             })
         };
@@ -298,11 +299,36 @@ impl MaterialData {
         MaterialUniform {
             ext: [
                 [x.ior, x.specular, x.clearcoat, x.clearcoat_roughness],
-                [x.specular_color[0], x.specular_color[1], x.specular_color[2], x.clearcoat_normal_scale],
-                [x.sheen_color[0], x.sheen_color[1], x.sheen_color[2], x.sheen_roughness],
-                [x.transmission, x.thickness, x.attenuation_distance, x.iridescence],
-                [x.attenuation_color[0], x.attenuation_color[1], x.attenuation_color[2], x.iridescence_ior],
-                [x.iridescence_thickness[0], x.iridescence_thickness[1], 0.0, 0.0],
+                [
+                    x.specular_color[0],
+                    x.specular_color[1],
+                    x.specular_color[2],
+                    x.clearcoat_normal_scale,
+                ],
+                [
+                    x.sheen_color[0],
+                    x.sheen_color[1],
+                    x.sheen_color[2],
+                    x.sheen_roughness,
+                ],
+                [
+                    x.transmission,
+                    x.thickness,
+                    x.attenuation_distance,
+                    x.iridescence,
+                ],
+                [
+                    x.attenuation_color[0],
+                    x.attenuation_color[1],
+                    x.attenuation_color[2],
+                    x.iridescence_ior,
+                ],
+                [
+                    x.iridescence_thickness[0],
+                    x.iridescence_thickness[1],
+                    0.0,
+                    0.0,
+                ],
                 [
                     x.anisotropy_strength,
                     x.anisotropy_rotation.cos(),
@@ -371,7 +397,10 @@ fn tex_slot(texture: &gltf::Texture<'_>, tex_coord: u32, xf: Option<Transform>) 
 /// web3d-M7: read the material extensions from the raw glTF JSON (the
 /// `gltf` crate doesn't model most of them), and assign each extension
 /// texture an extension slot.
-fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions, [Option<TexSlot>; EXT_SLOTS]) {
+fn read_extensions(
+    m: &gltf::Material<'_>,
+    doc: &gltf::Document,
+) -> (Extensions, [Option<TexSlot>; EXT_SLOTS]) {
     use gltf::json::Value;
     let mut x = Extensions::default();
     let mut slots: [Option<TexSlot>; EXT_SLOTS] = [None; EXT_SLOTS];
@@ -379,12 +408,15 @@ fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions,
         return (x, slots);
     };
     let doc_textures: Vec<gltf::Texture<'_>> = doc.textures().collect();
-    let num = |v: &Value, k: &str, d: f32| v.get(k).and_then(|x| x.as_f64()).map_or(d, |x| x as f32);
+    let num =
+        |v: &Value, k: &str, d: f32| v.get(k).and_then(|x| x.as_f64()).map_or(d, |x| x as f32);
     let rgb = |v: &Value, k: &str, d: [f32; 3]| {
         v.get(k)
             .and_then(|x| x.as_array())
             .filter(|a| a.len() >= 3)
-            .map_or(d, |a| std::array::from_fn(|i| a[i].as_f64().unwrap_or(d[i] as f64) as f32))
+            .map_or(d, |a| {
+                std::array::from_fn(|i| a[i].as_f64().unwrap_or(d[i] as f64) as f32)
+            })
     };
     // A texture reference -> its slot description.
     let texture = |v: &Value, k: &str, srgb: bool| -> Option<(TexSlot, f32)> {
@@ -392,9 +424,18 @@ fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions,
         let index = info.get("index")?.as_u64()? as usize;
         let tex = doc_textures.get(index)?;
         let coord = info.get("texCoord").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-        let xf = raw_transform(info.get("extensions").and_then(|e| e.get("KHR_texture_transform")));
+        let xf = raw_transform(
+            info.get("extensions")
+                .and_then(|e| e.get("KHR_texture_transform")),
+        );
         let scale = info.get("scale").and_then(|s| s.as_f64()).unwrap_or(1.0) as f32;
-        Some((TexSlot { srgb, ..tex_slot(tex, coord, xf) }, scale))
+        Some((
+            TexSlot {
+                srgb,
+                ..tex_slot(tex, coord, xf)
+            },
+            scale,
+        ))
     };
     let mut refs: Vec<(usize, TexSlot)> = Vec::new();
     if let Some(e) = all.get("KHR_materials_ior") {
@@ -410,7 +451,9 @@ fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions,
         x.clearcoat = num(e, "clearcoatFactor", 0.0);
         x.clearcoat_roughness = num(e, "clearcoatRoughnessFactor", 0.0);
         refs.extend(texture(e, "clearcoatTexture", false).map(|t| (ROLE_CLEARCOAT, t.0)));
-        refs.extend(texture(e, "clearcoatRoughnessTexture", false).map(|t| (ROLE_CLEARCOAT_ROUGHNESS, t.0)));
+        refs.extend(
+            texture(e, "clearcoatRoughnessTexture", false).map(|t| (ROLE_CLEARCOAT_ROUGHNESS, t.0)),
+        );
         if let Some((t, scale)) = texture(e, "clearcoatNormalTexture", false) {
             x.clearcoat_normal_scale = scale;
             refs.push((ROLE_CLEARCOAT_NORMAL, t));
@@ -420,7 +463,9 @@ fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions,
         x.sheen_color = rgb(e, "sheenColorFactor", [0.0; 3]);
         x.sheen_roughness = num(e, "sheenRoughnessFactor", 0.0);
         refs.extend(texture(e, "sheenColorTexture", true).map(|t| (ROLE_SHEEN_COLOR, t.0)));
-        refs.extend(texture(e, "sheenRoughnessTexture", false).map(|t| (ROLE_SHEEN_ROUGHNESS, t.0)));
+        refs.extend(
+            texture(e, "sheenRoughnessTexture", false).map(|t| (ROLE_SHEEN_ROUGHNESS, t.0)),
+        );
     }
     if let Some(e) = all.get("KHR_materials_transmission") {
         x.transmission = num(e, "transmissionFactor", 0.0);
@@ -440,7 +485,10 @@ fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions,
             num(e, "iridescenceThicknessMaximum", 400.0),
         ];
         refs.extend(texture(e, "iridescenceTexture", false).map(|t| (ROLE_IRIDESCENCE, t.0)));
-        refs.extend(texture(e, "iridescenceThicknessTexture", false).map(|t| (ROLE_IRIDESCENCE_THICKNESS, t.0)));
+        refs.extend(
+            texture(e, "iridescenceThicknessTexture", false)
+                .map(|t| (ROLE_IRIDESCENCE_THICKNESS, t.0)),
+        );
     }
     // web3d-M9 s4: KHR_materials_anisotropy. The texture (linear) packs
     // direction in rg and a per-texel strength multiplier in b.
@@ -450,9 +498,15 @@ fn read_extensions(m: &gltf::Material<'_>, doc: &gltf::Document) -> (Extensions,
         refs.extend(texture(e, "anisotropyTexture", false).map(|t| (ROLE_ANISOTROPY, t.0)));
     }
     for (role, t) in refs {
-        let slot = match slots.iter().position(|s| s.is_some_and(|s| s.same_texels(&t))) {
+        let slot = match slots
+            .iter()
+            .position(|s| s.is_some_and(|s| s.same_texels(&t)))
+        {
             Some(i) => Some(i),
-            None => slots.iter().position(Option::is_none).inspect(|&i| slots[i] = Some(t)),
+            None => slots
+                .iter()
+                .position(Option::is_none)
+                .inspect(|&i| slots[i] = Some(t)),
         };
         match slot {
             Some(i) => x.roles[role] = i as i32,
@@ -772,7 +826,8 @@ pub(crate) fn upload_rgba(
                 .expect("rgba slice length should be width * height * 4");
         for level in 1..mip_level_count {
             let (mw, mh) = ((width >> level).max(1), (height >> level).max(1));
-            let mip = image::imageops::resize(&source, mw, mh, image::imageops::FilterType::Triangle);
+            let mip =
+                image::imageops::resize(&source, mw, mh, image::imageops::FilterType::Triangle);
             write(level, &mip, mw, mh);
         }
     }
@@ -793,9 +848,19 @@ mod tests {
         }
         // Four vec4 of factors, the transforms, seven of extension
         // parameters (web3d-M9 s4 added anisotropy) and three of roles.
-        assert_eq!(std::mem::size_of::<MaterialUniform>(), (4 + 2 * SLOTS + 7 + 3) * 16);
-        assert_eq!(u.ext[0], [1.5, 1.0, 0.0, 0.0], "IOR 1.5, full specular, no clearcoat");
-        assert!(u.roles.iter().flatten().all(|r| *r == -1.0), "no extension textures");
+        assert_eq!(
+            std::mem::size_of::<MaterialUniform>(),
+            (4 + 2 * SLOTS + 7 + 3) * 16
+        );
+        assert_eq!(
+            u.ext[0],
+            [1.5, 1.0, 0.0, 0.0],
+            "IOR 1.5, full specular, no clearcoat"
+        );
+        assert!(
+            u.roles.iter().flatten().all(|r| *r == -1.0),
+            "no extension textures"
+        );
     }
 
     /// web3d-M7: extension parameters and textures. Two roles reading
@@ -821,23 +886,41 @@ mod tests {
         let data = MaterialData::from_gltf(&m, &gltf.document);
         let x = &data.ext;
         assert_eq!(x.ior, 1.4);
-        assert_eq!((x.clearcoat, x.clearcoat_roughness, x.clearcoat_normal_scale), (1.0, 0.2, 0.5));
+        assert_eq!(
+            (x.clearcoat, x.clearcoat_roughness, x.clearcoat_normal_scale),
+            (1.0, 0.2, 0.5)
+        );
         assert_eq!(x.sheen_color, [0.5, 0.25, 0.1]);
-        assert_eq!((x.transmission, x.thickness, x.attenuation_distance), (0.9, 0.1, 2.0));
-        assert_eq!(x.iridescence_thickness, [100.0, 400.0], "the spec's default range");
+        assert_eq!(
+            (x.transmission, x.thickness, x.attenuation_distance),
+            (0.9, 0.1, 2.0)
+        );
+        assert_eq!(
+            x.iridescence_thickness,
+            [100.0, 400.0],
+            "the spec's default range"
+        );
         // Clearcoat and its roughness share slot 0; the normal takes 1.
         assert_eq!(x.roles[ROLE_CLEARCOAT], x.roles[ROLE_CLEARCOAT_ROUGHNESS]);
         assert_ne!(x.roles[ROLE_CLEARCOAT], x.roles[ROLE_CLEARCOAT_NORMAL]);
         // Five distinct textures, four slots: exactly one role lost.
         let assigned = x.roles.iter().filter(|r| **r >= 0).count();
-        assert_eq!(assigned, 5, "six roles referenced, one dropped: {:?}", x.roles);
+        assert_eq!(
+            assigned, 5,
+            "six roles referenced, one dropped: {:?}",
+            x.roles
+        );
         assert!(data.slots[EXT..].iter().all(Option::is_some));
         // Specular colour is colour data; the rest are linear.
         let colour_slot = x.roles[ROLE_SPECULAR_COLOR];
         if colour_slot >= 0 {
             assert!(data.slots[EXT + colour_slot as usize].unwrap().srgb);
         }
-        assert!(!data.slots[EXT + x.roles[ROLE_CLEARCOAT] as usize].unwrap().srgb);
+        assert!(
+            !data.slots[EXT + x.roles[ROLE_CLEARCOAT] as usize]
+                .unwrap()
+                .srgb
+        );
     }
 
     /// web3d-M9 s4: KHR_materials_anisotropy — strength, rotation, and
@@ -855,7 +938,10 @@ mod tests {
         let data = MaterialData::from_gltf(&m, &gltf.document);
         assert_eq!(data.ext.anisotropy_strength, 0.6);
         assert!((data.ext.anisotropy_rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
-        assert!(data.ext.roles[ROLE_ANISOTROPY] >= 0, "anisotropy texture assigned a slot");
+        assert!(
+            data.ext.roles[ROLE_ANISOTROPY] >= 0,
+            "anisotropy texture assigned a slot"
+        );
         // The uniform packs (strength, cos, sin) into ext[6]; rotation
         // is ~90°, so cos≈0, sin≈1.
         let u = data.uniform();

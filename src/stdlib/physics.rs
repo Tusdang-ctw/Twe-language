@@ -29,51 +29,80 @@ pub(super) fn joint_result(h: Option<u32>, what: &str) -> Result<Value, RuntimeE
         None => Err(RuntimeError {
             line: 0,
             col: 0,
-            message: format!("{what}: unknown body handle (pass handles from physics.body / static_*)"),
+            message: format!(
+                "{what}: unknown body handle (pass handles from physics.body / static_*)"
+            ),
             help: None,
         }),
     }
 }
 
-pub(super) fn physics_fixed_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_fixed_joint_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 4, "physics.fixed_joint")?;
     let a = handle_int(&args[0], "physics.fixed_joint.a")?;
     let b = handle_int(&args[1], "physics.fixed_joint.b")?;
     let aa = xyz_of(&args[2], "physics.fixed_joint.anchor_a")?;
     let ab = xyz_of(&args[3], "physics.fixed_joint.anchor_b")?;
-    joint_result(crate::physics3d::fixed_joint(a, b, aa, ab), "physics.fixed_joint")
+    joint_result(
+        crate::physics3d::fixed_joint(a, b, aa, ab),
+        "physics.fixed_joint",
+    )
 }
 
-pub(super) fn physics_spherical_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_spherical_joint_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 4, "physics.spherical_joint")?;
     let a = handle_int(&args[0], "physics.spherical_joint.a")?;
     let b = handle_int(&args[1], "physics.spherical_joint.b")?;
     let aa = xyz_of(&args[2], "physics.spherical_joint.anchor_a")?;
     let ab = xyz_of(&args[3], "physics.spherical_joint.anchor_b")?;
-    joint_result(crate::physics3d::spherical_joint(a, b, aa, ab), "physics.spherical_joint")
+    joint_result(
+        crate::physics3d::spherical_joint(a, b, aa, ab),
+        "physics.spherical_joint",
+    )
 }
 
-pub(super) fn physics_revolute_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_revolute_joint_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 5, "physics.revolute_joint")?;
     let a = handle_int(&args[0], "physics.revolute_joint.a")?;
     let b = handle_int(&args[1], "physics.revolute_joint.b")?;
     let aa = xyz_of(&args[2], "physics.revolute_joint.anchor_a")?;
     let ab = xyz_of(&args[3], "physics.revolute_joint.anchor_b")?;
     let axis = xyz_of(&args[4], "physics.revolute_joint.axis")?;
-    joint_result(crate::physics3d::revolute_joint(a, b, aa, ab, axis), "physics.revolute_joint")
+    joint_result(
+        crate::physics3d::revolute_joint(a, b, aa, ab, axis),
+        "physics.revolute_joint",
+    )
 }
 
-pub(super) fn physics_prismatic_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_prismatic_joint_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 5, "physics.prismatic_joint")?;
     let a = handle_int(&args[0], "physics.prismatic_joint.a")?;
     let b = handle_int(&args[1], "physics.prismatic_joint.b")?;
     let aa = xyz_of(&args[2], "physics.prismatic_joint.anchor_a")?;
     let ab = xyz_of(&args[3], "physics.prismatic_joint.anchor_b")?;
     let axis = xyz_of(&args[4], "physics.prismatic_joint.axis")?;
-    joint_result(crate::physics3d::prismatic_joint(a, b, aa, ab, axis), "physics.prismatic_joint")
+    joint_result(
+        crate::physics3d::prismatic_joint(a, b, aa, ab, axis),
+        "physics.prismatic_joint",
+    )
 }
 
-pub(super) fn physics_remove_joint_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_remove_joint_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 1, "physics.remove_joint")?;
     let h = handle_int(&args[0], "physics.remove_joint.handle")?;
     Ok(Value::from_bool(crate::physics3d::remove_joint(h)))
@@ -86,7 +115,10 @@ pub(super) fn physics_set_ccd_impl(_env: &mut Env, args: &[Value]) -> Result<Val
     Ok(Value::from_bool(crate::physics3d::set_ccd(h, on)))
 }
 
-pub(super) fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_static_box_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_box")?;
     let at = xyz_of(&args[0], "physics.static_box.at")?;
     let size = xyz_of(&args[1], "physics.static_box.size")?;
@@ -95,7 +127,10 @@ pub(super) fn physics_static_box_impl(_env: &mut Env, args: &[Value]) -> Result<
     ))
 }
 
-pub(super) fn physics_static_sphere_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_static_sphere_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_sphere")?;
     let at = xyz_of(&args[0], "physics.static_sphere.at")?;
     let radius = number(&args[1], "physics.static_sphere.radius")? as f32;
@@ -153,7 +188,10 @@ pub(super) fn physics_gravity_impl(_env: &mut Env, args: &[Value]) -> Result<Val
     Ok(Value::NIL)
 }
 
-pub(super) fn physics_character_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_character_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.character")?;
     let at = xyz_of(&args[0], "physics.character.at")?;
     let height = number(&args[1], "physics.character.height")? as f32;
@@ -163,7 +201,10 @@ pub(super) fn physics_character_impl(_env: &mut Env, args: &[Value]) -> Result<V
     ))
 }
 
-pub(super) fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_character_move_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 3, "physics.character_move")?;
     let handle = handle_int(&args[0], "physics.character_move")?;
     let dir = xyz_of(&args[1], "physics.character_move.dir")?;
@@ -191,7 +232,10 @@ pub(super) fn physics_character_move_impl(_env: &mut Env, args: &[Value]) -> Res
     }))))
 }
 
-pub(super) fn physics_collisions_impl(_env: &mut Env, _args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_collisions_impl(
+    _env: &mut Env,
+    _args: &[Value],
+) -> Result<Value, RuntimeError> {
     let events = crate::physics3d::drain_collisions();
     let list: Vec<Value> = events
         .into_iter()
@@ -226,7 +270,10 @@ pub(super) fn physics_reset_impl(_env: &mut Env, _args: &[Value]) -> Result<Valu
 /// transforms are flattened into the positions at load time.
 /// Returns the body handle (mostly for record-keeping; static
 /// bodies rarely need post-creation lookup).
-pub(super) fn physics_static_mesh_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+pub(super) fn physics_static_mesh_impl(
+    _env: &mut Env,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
     arity(args, 2, "physics.static_mesh")?;
     let path = string_arg(&args[0], "physics.static_mesh", "path")?;
     let at = xyz_of(&args[1], "physics.static_mesh.at")?;

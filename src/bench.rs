@@ -101,7 +101,9 @@ pub struct Check {
 
 pub fn load_task(dir: &Path) -> Result<Task, String> {
     if let Some(ticks) = dir.to_str().and_then(|s| s.strip_prefix(SMOKE_PREFIX)) {
-        let ticks = ticks.parse().map_err(|_| format!("bad smoke task `{}`", dir.display()))?;
+        let ticks = ticks
+            .parse()
+            .map_err(|_| format!("bad smoke task `{}`", dir.display()))?;
         return Ok(smoke_task(ticks));
     }
     let id = dir
@@ -135,7 +137,12 @@ pub fn smoke_task(ticks: u32) -> Task {
         canary: None,
         ticks,
         inputs: Vec::new(),
-        checks: vec![Check { name: "runs".into(), at: ticks, expr: "true".into(), py: Some("True".into()) }],
+        checks: vec![Check {
+            name: "runs".into(),
+            at: ticks,
+            expr: "true".into(),
+            py: Some("True".into()),
+        }],
     }
 }
 
@@ -167,10 +174,20 @@ pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
         Some(_) => return Err("`tier` must be 1, 2 or 3".into()),
     };
     let mut inputs = Vec::new();
-    for (i, v) in table.get("input").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+    for (i, v) in table
+        .get("input")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         let t = v.as_table().ok_or(format!("input {i}: not a table"))?;
         let ctx = |e: String| format!("input {}: {e}", i + 1);
-        let (from, to) = match (int(t, "at").map_err(ctx)?, int(t, "from").map_err(ctx)?, int(t, "to").map_err(ctx)?) {
+        let (from, to) = match (
+            int(t, "at").map_err(ctx)?,
+            int(t, "from").map_err(ctx)?,
+            int(t, "to").map_err(ctx)?,
+        ) {
             (Some(at), None, None) => (at, at + 1),
             (None, Some(from), Some(to)) if to > from => (from, to),
             _ => return Err(ctx("give `at`, or `from` and `to` (to > from)".into())),
@@ -179,7 +196,9 @@ pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
             None => None,
             Some(v) => {
                 let xy: Option<Vec<f64>> = v.as_array().and_then(|a| {
-                    a.iter().map(|n| n.as_float().or_else(|| n.as_integer().map(|i| i as f64))).collect()
+                    a.iter()
+                        .map(|n| n.as_float().or_else(|| n.as_integer().map(|i| i as f64)))
+                        .collect()
                 });
                 match xy.as_deref() {
                     Some([x, y]) => Some((*x, *y)),
@@ -197,7 +216,9 @@ pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
             click: strings(t, "click").map_err(ctx)?,
         };
         if (!span.press.is_empty() || !span.click.is_empty()) && span.to != span.from + 1 {
-            return Err(ctx("`press` and `click` happen on one tick: use `at`".into()));
+            return Err(ctx(
+                "`press` and `click` happen on one tick: use `at`".into()
+            ));
         }
         if span.to > ticks {
             return Err(ctx(format!("runs past the last tick ({ticks})")));
@@ -205,23 +226,52 @@ pub fn parse_task(id: &str, dir: &Path, text: &str) -> Result<Task, String> {
         inputs.push(span);
     }
     let mut checks = Vec::new();
-    for (i, v) in table.get("check").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+    for (i, v) in table
+        .get("check")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         let t = v.as_table().ok_or(format!("check {i}: not a table"))?;
         let ctx = |e: String| format!("check {}: {e}", i + 1);
-        let expr = t.get("expr").and_then(|v| v.as_str()).ok_or_else(|| ctx("missing `expr`".into()))?;
+        let expr = t
+            .get("expr")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ctx("missing `expr`".into()))?;
         let at = int(t, "at").map_err(ctx)?.unwrap_or(ticks);
         if at > ticks {
             return Err(ctx(format!("`at` is past the last tick ({ticks})")));
         }
-        let name = t.get("name").and_then(|v| v.as_str()).unwrap_or(expr).to_string();
+        let name = t
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(expr)
+            .to_string();
         let py = t.get("py").and_then(|v| v.as_str()).map(str::to_string);
-        checks.push(Check { name, at, expr: expr.to_string(), py });
+        checks.push(Check {
+            name,
+            at,
+            expr: expr.to_string(),
+            py,
+        });
     }
     if checks.is_empty() {
         return Err("a task needs at least one [[check]]".into());
     }
-    let canary = table.get("canary").and_then(|v| v.as_str()).map(str::to_string);
-    Ok(Task { id: id.to_string(), dir: dir.to_path_buf(), tier, canary, ticks, inputs, checks })
+    let canary = table
+        .get("canary")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Ok(Task {
+        id: id.to_string(),
+        dir: dir.to_path_buf(),
+        tier,
+        canary,
+        ticks,
+        inputs,
+        checks,
+    })
 }
 
 /// The input command for `tick`. The mouse stays where the latest
@@ -235,7 +285,11 @@ pub fn command_at(task: &Task, tick: u32) -> InputCommand {
             }
         }
     };
-    for s in task.inputs.iter().filter(|s| (s.from..s.to).contains(&tick)) {
+    for s in task
+        .inputs
+        .iter()
+        .filter(|s| (s.from..s.to).contains(&tick))
+    {
         add(&mut cmd.keys_held, &s.hold);
         add(&mut cmd.keys_held, &s.press);
         add(&mut cmd.keys_pressed, &s.press);
@@ -329,7 +383,11 @@ impl Grade {
             checks: task
                 .checks
                 .iter()
-                .map(|c| CheckOutcome { name: c.name.clone(), passed: false, detail: "not reached".into() })
+                .map(|c| CheckOutcome {
+                    name: c.name.clone(),
+                    passed: false,
+                    detail: "not reached".into(),
+                })
                 .collect(),
             error: Some(error),
             ticks_run: 0,
@@ -373,7 +431,11 @@ impl Grade {
 
     /// The names of the checks that failed.
     pub fn failed_checks(&self) -> Vec<&str> {
-        self.checks.iter().filter(|c| !c.passed).map(|c| c.name.as_str()).collect()
+        self.checks
+            .iter()
+            .filter(|c| !c.passed)
+            .map(|c| c.name.as_str())
+            .collect()
     }
 }
 
@@ -406,7 +468,11 @@ pub fn grade(task: &Task, source: &str) -> Grade {
                 Err(e) => (false, e),
             };
             probe_id += 1;
-            outcomes[i] = Some(CheckOutcome { name: c.name.clone(), passed, detail });
+            outcomes[i] = Some(CheckOutcome {
+                name: c.name.clone(),
+                passed,
+                detail,
+            });
         }
     };
     run_checks(&mut env, 0, &mut outcomes);
@@ -414,7 +480,8 @@ pub fn grade(task: &Task, source: &str) -> Grade {
     let mut ticks_run = 0;
     for tick in 0..task.ticks {
         crate::host3d::apply_command(&mut env, &command_at(task, tick));
-        let result = eval::tick_frame(&mut env, eval::PHYSICS_DT).and_then(|_| eval::render_frame3d(&mut env));
+        let result = eval::tick_frame(&mut env, eval::PHYSICS_DT)
+            .and_then(|_| eval::render_frame3d(&mut env));
         if env.out.len() > STDOUT_CAP * 2 {
             let mut keep = STDOUT_CAP;
             while !env.out.is_char_boundary(keep) {
@@ -433,7 +500,11 @@ pub fn grade(task: &Task, source: &str) -> Grade {
         .into_iter()
         .zip(&task.checks)
         .map(|(o, c)| {
-            o.unwrap_or_else(|| CheckOutcome { name: c.name.clone(), passed: false, detail: "not reached".into() })
+            o.unwrap_or_else(|| CheckOutcome {
+                name: c.name.clone(),
+                passed: false,
+                detail: "not reached".into(),
+            })
         })
         .collect();
     let mut stdout = std::mem::take(&mut env.out);
@@ -446,7 +517,11 @@ pub fn grade(task: &Task, source: &str) -> Grade {
     }
     Grade {
         passed: error.is_none() && checks.iter().all(|c| c.passed),
-        stage: if error.is_some() { Stage::Run } else { Stage::Checks },
+        stage: if error.is_some() {
+            Stage::Run
+        } else {
+            Stage::Checks
+        },
         error,
         checks,
         ticks_run,
@@ -461,7 +536,8 @@ fn probe(env: &mut Env, expr: &str, id: usize) -> Result<(bool, String), String>
     let name = format!("__twe_probe_{id}");
     let source = format!("let {name} = ({expr})\n");
     let tokens = crate::lexer::lex(&source).map_err(|e| format!("check does not lex: {e}"))?;
-    let program = crate::parser::parse(&tokens).map_err(|e| format!("check does not parse: {e}"))?;
+    let program =
+        crate::parser::parse(&tokens).map_err(|e| format!("check does not parse: {e}"))?;
     let out_before = env.out.len();
     let result = eval::run_top_level(env, &program);
     env.out.truncate(out_before);
@@ -557,17 +633,27 @@ impl Grader {
                 let mut cmd = Command::new(&self.python);
                 cmd.arg(&self.harness).arg("grade");
                 match run_child(cmd, job.to_string().as_bytes(), limit) {
-                    Ok(out) => match serde_json::from_str::<Json>(&out.stdout).ok().as_ref().and_then(Grade::from_json) {
+                    Ok(out) => match serde_json::from_str::<Json>(&out.stdout)
+                        .ok()
+                        .as_ref()
+                        .and_then(Grade::from_json)
+                    {
                         Some(g) => g,
                         None => Grade::failed(
                             Stage::Crash,
-                            format!("the Python harness exited with {}: {}", out.status, out.stderr_head()),
+                            format!(
+                                "the Python harness exited with {}: {}",
+                                out.status,
+                                out.stderr_head()
+                            ),
                             task,
                         ),
                     },
-                    Err(ChildFail::Timeout) => {
-                        Grade::failed(Stage::Timeout, format!("killed after {:.0} s", limit.as_secs_f64()), task)
-                    }
+                    Err(ChildFail::Timeout) => Grade::failed(
+                        Stage::Timeout,
+                        format!("killed after {:.0} s", limit.as_secs_f64()),
+                        task,
+                    ),
                     Err(ChildFail::Spawn(e)) => Grade::failed(Stage::Crash, e, task),
                 }
             }
@@ -605,7 +691,10 @@ impl Grader {
 /// (`bench/python/.venv`, made from `bench/python/requirements.txt`)
 /// when there is one, else `python3` / `python` on the path.
 pub fn default_python() -> PathBuf {
-    for venv in ["bench/python/.venv/Scripts/python.exe", "bench/python/.venv/bin/python"] {
+    for venv in [
+        "bench/python/.venv/Scripts/python.exe",
+        "bench/python/.venv/bin/python",
+    ] {
         if Path::new(venv).exists() {
             return PathBuf::from(venv);
         }
@@ -682,8 +771,18 @@ fn run_child(mut cmd: Command, input: &[u8], limit: Duration) -> Result<ChildOut
             String::from_utf8_lossy(&bytes).into_owned()
         })
     };
-    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
-    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let out = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let err = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
     let start = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -694,14 +793,22 @@ fn run_child(mut cmd: Command, input: &[u8], limit: Duration) -> Result<ChildOut
                 break None;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => return Err(ChildFail::Spawn(format!("waiting on the grader failed: {e}"))),
+            Err(e) => {
+                return Err(ChildFail::Spawn(format!(
+                    "waiting on the grader failed: {e}"
+                )))
+            }
         }
     };
     let _ = writer.join();
     let stdout = out.join().unwrap_or_default();
     let stderr = err.join().unwrap_or_default();
     match status {
-        Some(status) => Ok(ChildOutput { status, stdout, stderr }),
+        Some(status) => Ok(ChildOutput {
+            status,
+            stdout,
+            stderr,
+        }),
         None => Err(ChildFail::Timeout),
     }
 }
@@ -711,9 +818,15 @@ fn run_child(mut cmd: Command, input: &[u8], limit: Duration) -> Result<ChildOut
 /// crash is a failed grade, not an error.
 pub fn grade_in_child(exe: &Path, task: &Task, source: &str, limit: Duration) -> Grade {
     let mut cmd = Command::new(exe);
-    cmd.args(["bench", "grade"]).arg(&task.dir).args(["-", "--json"]);
+    cmd.args(["bench", "grade"])
+        .arg(&task.dir)
+        .args(["-", "--json"]);
     match run_child(cmd, source.as_bytes(), limit) {
-        Ok(out) => match serde_json::from_str::<Json>(&out.stdout).ok().as_ref().and_then(Grade::from_json) {
+        Ok(out) => match serde_json::from_str::<Json>(&out.stdout)
+            .ok()
+            .as_ref()
+            .and_then(Grade::from_json)
+        {
             Some(g) => g,
             None => Grade::failed(
                 Stage::Crash,
@@ -721,7 +834,11 @@ pub fn grade_in_child(exe: &Path, task: &Task, source: &str, limit: Duration) ->
                 task,
             ),
         },
-        Err(ChildFail::Timeout) => Grade::failed(Stage::Timeout, format!("killed after {:.0} s", limit.as_secs_f64()), task),
+        Err(ChildFail::Timeout) => Grade::failed(
+            Stage::Timeout,
+            format!("killed after {:.0} s", limit.as_secs_f64()),
+            task,
+        ),
         Err(ChildFail::Spawn(e)) => Grade::failed(Stage::Crash, e, task),
     }
 }
@@ -789,11 +906,16 @@ pub fn mutants_for(source: &str, lang: Lang) -> Vec<Mutant> {
         }
         let n = i + 1;
         if !t.ends_with(':') {
-            out.push(Mutant { what: format!("line {n}: deleted"), source: with_line(i, None) });
+            out.push(Mutant {
+                what: format!("line {n}: deleted"),
+                source: with_line(i, None),
+            });
         }
         let code = code_ranges(line, lang);
         let mut taken: Vec<(usize, usize)> = Vec::new();
-        let flips = FLIPS.iter().filter(|(f, _)| lang == Lang::Twe || (*f != "true" && *f != "false"));
+        let flips = FLIPS
+            .iter()
+            .filter(|(f, _)| lang == Lang::Twe || (*f != "true" && *f != "false"));
         let py = PY_FLIPS.iter().filter(|_| lang == Lang::Python);
         for (from, to) in flips.chain(py) {
             let mut start = 0;
@@ -806,8 +928,12 @@ pub fn mutants_for(source: &str, lang: Lang) -> Vec<Mutant> {
                     continue;
                 }
                 let word = from.chars().all(|c| c.is_ascii_alphabetic());
-                let boundary = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-                if word && !(boundary(line[..at].chars().last()) && boundary(line[end..].chars().next())) {
+                let boundary =
+                    |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+                if word
+                    && !(boundary(line[..at].chars().last())
+                        && boundary(line[end..].chars().next()))
+                {
                     continue;
                 }
                 // `->` (transitions, return types) is not a comparison.
@@ -826,13 +952,24 @@ pub fn mutants_for(source: &str, lang: Lang) -> Vec<Mutant> {
             let lit = &line[at..end];
             let new = if lit.contains('.') {
                 let v: f64 = lit.parse().unwrap_or(0.0);
-                if v == 0.0 { "1.0".to_string() } else { format!("{:?}", v * 2.0) }
+                if v == 0.0 {
+                    "1.0".to_string()
+                } else {
+                    format!("{:?}", v * 2.0)
+                }
             } else {
                 let v: i64 = lit.parse().unwrap_or(0);
-                if v == 0 { "1".to_string() } else { (v * 2).to_string() }
+                if v == 0 {
+                    "1".to_string()
+                } else {
+                    (v * 2).to_string()
+                }
             };
             let mutated = format!("{}{}{}", &line[..at], new, &line[end..]);
-            out.push(Mutant { what: format!("line {n}: {lit} → {new}"), source: with_line(i, Some(&mutated)) });
+            out.push(Mutant {
+                what: format!("line {n}: {lit} → {new}"),
+                source: with_line(i, Some(&mutated)),
+            });
         }
     }
     if lang == Lang::Twe {
@@ -886,13 +1023,19 @@ fn numbers(line: &str, code: &[(usize, usize)]) -> Vec<(usize, usize)> {
         let mut i = a;
         while i < b {
             let starts = bytes[i].is_ascii_digit()
-                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'.'));
+                && (i == 0
+                    || !(bytes[i - 1].is_ascii_alphanumeric()
+                        || bytes[i - 1] == b'_'
+                        || bytes[i - 1] == b'.'));
             if !starts {
                 i += 1;
                 continue;
             }
             let mut j = i;
-            while j < b && (bytes[j].is_ascii_digit() || (bytes[j] == b'.' && j + 1 < b && bytes[j + 1].is_ascii_digit())) {
+            while j < b
+                && (bytes[j].is_ascii_digit()
+                    || (bytes[j] == b'.' && j + 1 < b && bytes[j + 1].is_ascii_digit()))
+            {
                 j += 1;
             }
             out.push((i, j));
@@ -932,23 +1075,35 @@ impl Validation {
 /// any) fails, and every check is failed by at least one mutant of the
 /// solution that runs to completion — so no check passes vacuously.
 /// Mutants are graded in child processes `jobs` at a time.
-pub fn validate(grader: &Grader, task: &Task, limit: Duration, jobs: usize) -> Result<Validation, String> {
+pub fn validate(
+    grader: &Grader,
+    task: &Task,
+    limit: Duration,
+    jobs: usize,
+) -> Result<Validation, String> {
     let ext = grader.lang.ext();
     if grader.lang == Lang::Python {
         if let Some(c) = task.checks.iter().find(|c| c.py.is_none()) {
-            return Err(format!("{}: check `{}` has no `py` expression", task.id, c.name));
+            return Err(format!(
+                "{}: check `{}` has no `py` expression",
+                task.id, c.name
+            ));
         }
     }
     let read = |name: &str| std::fs::read_to_string(task.dir.join(name));
-    let solution_src =
-        read(&format!("solution.{ext}")).map_err(|e| format!("{}: solution.{ext}: {e}", task.id))?;
+    let solution_src = read(&format!("solution.{ext}"))
+        .map_err(|e| format!("{}: solution.{ext}: {e}", task.id))?;
     let mut problems = Vec::new();
     let solution = grader.grade(task, &solution_src, limit);
     if !solution.passed {
         problems.push(format!(
             "the solution fails ({}{}): {}",
             solution.stage.as_str(),
-            solution.error.as_deref().map(|e| format!(", {e}")).unwrap_or_default(),
+            solution
+                .error
+                .as_deref()
+                .map(|e| format!(", {e}"))
+                .unwrap_or_default(),
             solution.failed_checks().join("; ")
         ));
     }
@@ -964,11 +1119,22 @@ pub fn validate(grader: &Grader, task: &Task, limit: Duration, jobs: usize) -> R
     };
     let mut all = mutants_for(&solution_src, grader.lang);
     if let Ok(dir) = std::fs::read_dir(task.dir.join("mutants")) {
-        let mut hand: Vec<PathBuf> = dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == ext)).collect();
+        let mut hand: Vec<PathBuf> = dir
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == ext))
+            .collect();
         hand.sort();
         for p in hand {
-            let source = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-            all.push(Mutant { what: format!("mutants/{}", p.file_name().unwrap_or_default().to_string_lossy()), source });
+            let source =
+                std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            all.push(Mutant {
+                what: format!(
+                    "mutants/{}",
+                    p.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                source,
+            });
         }
     }
     let grades = grade_many(grader, task, &all, limit, jobs);
@@ -979,7 +1145,10 @@ pub fn validate(grader: &Grader, task: &Task, limit: Duration, jobs: usize) -> R
         .enumerate()
         .map(|(i, c)| CheckStrength {
             name: c.name.clone(),
-            killed: runnable.iter().filter(|g| g.checks.get(i).is_some_and(|o| !o.passed)).count(),
+            killed: runnable
+                .iter()
+                .filter(|g| g.checks.get(i).is_some_and(|o| !o.passed))
+                .count(),
         })
         .collect();
     for s in &strengths {
@@ -1002,7 +1171,13 @@ pub fn validate(grader: &Grader, task: &Task, limit: Duration, jobs: usize) -> R
 }
 
 /// Grade many programs in child processes, `jobs` at a time, in order.
-pub fn grade_many(grader: &Grader, task: &Task, programs: &[Mutant], limit: Duration, jobs: usize) -> Vec<Grade> {
+pub fn grade_many(
+    grader: &Grader,
+    task: &Task,
+    programs: &[Mutant],
+    limit: Duration,
+    jobs: usize,
+) -> Vec<Grade> {
     let jobs = jobs.max(1);
     let mut grades: Vec<Option<Grade>> = vec![None; programs.len()];
     for (chunk_i, chunk) in programs.chunks(jobs).enumerate() {
@@ -1013,14 +1188,21 @@ pub fn grade_many(grader: &Grader, task: &Task, programs: &[Mutant], limit: Dura
                 .collect();
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or_else(|_| Grade::failed(Stage::Crash, "grader thread panicked".into(), task)))
+                .map(|h| {
+                    h.join().unwrap_or_else(|_| {
+                        Grade::failed(Stage::Crash, "grader thread panicked".into(), task)
+                    })
+                })
                 .collect()
         });
         for (k, g) in done.into_iter().enumerate() {
             grades[chunk_i * jobs + k] = Some(g);
         }
     }
-    grades.into_iter().map(|g| g.expect("every program graded")).collect()
+    grades
+        .into_iter()
+        .map(|g| g.expect("every program graded"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1060,8 +1242,14 @@ mod tests {
     fn task_errors_name_the_entry() {
         let bad = |s: &str| parse_task("t", Path::new("."), s).unwrap_err();
         assert!(bad("ticks = 5\n").contains("at least one"));
-        assert!(bad("ticks = 5\n[[input]]\nfrom = 0\nto = 9\nhold = [\"a\"]\n[[check]]\nexpr = \"true\"\n").contains("input 1"));
-        assert!(bad("ticks = 5\n[[input]]\nfrom = 0\nto = 2\npress = [\"a\"]\n[[check]]\nexpr = \"true\"\n").contains("use `at`"));
+        assert!(bad(
+            "ticks = 5\n[[input]]\nfrom = 0\nto = 9\nhold = [\"a\"]\n[[check]]\nexpr = \"true\"\n"
+        )
+        .contains("input 1"));
+        assert!(bad(
+            "ticks = 5\n[[input]]\nfrom = 0\nto = 2\npress = [\"a\"]\n[[check]]\nexpr = \"true\"\n"
+        )
+        .contains("use `at`"));
         assert!(bad("ticks = 5\n[[check]]\nat = 6\nexpr = \"true\"\n").contains("check 1"));
     }
 
@@ -1104,8 +1292,15 @@ on update(dt):
         assert_eq!(grade(&t, "let x = \"open\n").stage, Stage::Lex);
         assert_eq!(grade(&t, "let = 1\n").stage, Stage::Parse);
         assert_eq!(grade(&t, "print(nope)\n").stage, Stage::Load);
-        let run = grade(&t, "var x = 1\non update(dt):\n    x = x / missing_thing()\n");
-        assert_eq!(run.stage, Stage::Load, "unknown names are caught before running");
+        let run = grade(
+            &t,
+            "var x = 1\non update(dt):\n    x = x / missing_thing()\n",
+        );
+        assert_eq!(
+            run.stage,
+            Stage::Load,
+            "unknown names are caught before running"
+        );
         let g = grade(&t, "var x = 1\nvar l = [1]\non update(dt):\n    x = l[5]\n");
         assert_eq!(g.stage, Stage::Run);
         assert!(g.error.as_deref().unwrap().starts_with("tick 0:"), "{g:?}");
@@ -1134,10 +1329,22 @@ on update(dt):
         assert!(whats.contains(&"line 4: `<` → `>=`"), "{whats:?}");
         assert!(whats.contains(&"line 4: `and` → `or`"), "{whats:?}");
         assert!(whats.contains(&"line 4: `true` → `false`"), "{whats:?}");
-        assert!(whats.contains(&"line 5: deleted") || !whats.iter().any(|w| w.starts_with("line 5")), "{whats:?}");
-        assert!(!whats.iter().any(|w| w.starts_with("line 2")), "comments are left alone");
-        assert!(!ms.iter().any(|m| m.source.contains("a - b") || m.source.contains("b >= c")), "strings are left alone");
+        assert!(
+            whats.contains(&"line 5: deleted") || !whats.iter().any(|w| w.starts_with("line 5")),
+            "{whats:?}"
+        );
+        assert!(
+            !whats.iter().any(|w| w.starts_with("line 2")),
+            "comments are left alone"
+        );
+        assert!(
+            !ms.iter()
+                .any(|m| m.source.contains("a - b") || m.source.contains("b >= c")),
+            "strings are left alone"
+        );
         // `->` is not a comparison.
-        assert!(!mutants("state a:\n    -> b\n").iter().any(|m| m.what.contains('>')));
+        assert!(!mutants("state a:\n    -> b\n")
+            .iter()
+            .any(|m| m.what.contains('>')));
     }
 }

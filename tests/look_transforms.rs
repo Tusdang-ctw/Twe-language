@@ -78,7 +78,11 @@ fn euler_yaw_matches_axis_angle_and_look_along_points_the_front() {
     let q = draws(&src).unwrap()[0].rotation;
     let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
     // q rotates +Z to (2(xz + wy), 2(yz - wx), 1 - 2(x² + y²)).
-    let front = [2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y)];
+    let front = [
+        2.0 * (x * z + w * y),
+        2.0 * (y * z - w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    ];
     assert!(close(&front, &[0.0, -1.0, 0.0]), "{front:?}");
 }
 

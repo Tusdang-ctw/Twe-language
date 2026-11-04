@@ -43,7 +43,10 @@ impl Builder {
 }
 
 fn nums(xs: &[f32]) -> String {
-    xs.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(",")
+    xs.iter()
+        .map(|x| format!("{x}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn build() -> Vec<u8> {
@@ -66,13 +69,22 @@ fn build() -> Vec<u8> {
     let mmax = [0.0, 1.0, 0.0];
 
     let mut b = Builder::default();
-    let a_pos = b.floats(&pos, 3, "VEC3", &format!(r#","min":[{}],"max":[{}]"#, nums(&min), nums(&max)));
+    let a_pos = b.floats(
+        &pos,
+        3,
+        "VEC3",
+        &format!(r#","min":[{}],"max":[{}]"#, nums(&min), nums(&max)),
+    );
     let a_nrm = b.floats(&nrm, 3, "VEC3", "");
     let a_uv = b.floats(&uv, 2, "VEC2", "");
     let idx_bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
     let a_idx = b.accessor(&idx_bytes, 5125, idx.len(), "SCALAR", "");
-    let a_morph =
-        b.floats(&morph_pos, 3, "VEC3", &format!(r#","min":[{}],"max":[{}]"#, nums(&mmin), nums(&mmax)));
+    let a_morph = b.floats(
+        &morph_pos,
+        3,
+        "VEC3",
+        &format!(r#","min":[{}],"max":[{}]"#, nums(&mmin), nums(&mmax)),
+    );
 
     // Morph-weight animation "pulse": weight 0 → 1 → 0 over 2 s.
     let times: [f32; 3] = [0.0, 1.0, 2.0];

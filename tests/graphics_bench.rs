@@ -31,7 +31,12 @@ const SETTLE_FRAMES: u32 = 24;
 /// (`TWE_BENCH_AO`, default 1; 0 turns it off) and radius as a fraction
 /// of the model's bounding radius (`TWE_BENCH_AO_RADIUS`, default 0.4).
 fn bench_ao() -> (f32, f32) {
-    let var = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let var = |k: &str, d: f32| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
     (var("TWE_BENCH_AO", 1.0), var("TWE_BENCH_AO_RADIUS", 0.4))
 }
 
@@ -72,7 +77,10 @@ fn read_scene(dir: &Path) -> Scene {
         theta: num(o, "theta").to_radians(),
         phi: num(o, "phi").to_radians(),
         radius: num(o, "radius"),
-        environment: get("environment").as_str().expect("environment").to_string(),
+        environment: get("environment")
+            .as_str()
+            .expect("environment")
+            .to_string(),
         backdrop: matches!(v.get("renderSkybox"), Some(Value::Bool(true))),
         fov_y: match v.get("verticalFoV") {
             Some(Value::Int(i)) => (*i as f32).to_radians(),
@@ -157,7 +165,10 @@ fn render(scene: &Scene) -> Result<Vec<u8>, String> {
                 ao_radius: bench_ao().1 * sphere_r,
                 // Session 14: screen-space reflections (`TWE_BENCH_SSR`,
                 // default 1; 0 turns them off).
-                ssr: std::env::var("TWE_BENCH_SSR").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
+                ssr: std::env::var("TWE_BENCH_SSR")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1.0),
                 ..PostFx::default()
             },
             draws: &draws,
@@ -235,5 +246,8 @@ fn render_the_graphics_suite() {
             }
         }
     }
-    assert!(failures.is_empty(), "scenes Twe could not render: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "scenes Twe could not render: {failures:?}"
+    );
 }

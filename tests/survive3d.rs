@@ -223,7 +223,10 @@ fn survive3d_replays_a_recorded_run() {
     }
     twec::replay::stop();
     assert!(
-        live.fingerprint().split(' ').nth(4).is_some_and(|k| k != "0"),
+        live.fingerprint()
+            .split(' ')
+            .nth(4)
+            .is_some_and(|k| k != "0"),
         "the recorded run should fight: {}",
         live.fingerprint()
     );
@@ -250,7 +253,8 @@ fn survive3d_plays_with_a_gamepad() {
     let mut g = Game::new();
     let mut buttons = [false; 14];
     for _ in 0..60 {
-        g.input.set_gamepad(Some((&buttons, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0])));
+        g.input
+            .set_gamepad(Some((&buttons, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0])));
         g.frame(&[], &[]);
     }
     let x = g.fingerprint();

@@ -335,7 +335,11 @@ impl AutoQuality {
             // Start the next judgement from the target, not the bad
             // average this step is answering.
             self.ema = self.target;
-            let floor = if self.step(-1).is_some() { TIER_FLOOR } else { 0.5 };
+            let floor = if self.step(-1).is_some() {
+                TIER_FLOOR
+            } else {
+                0.5
+            };
             if self.scale > floor + 0.05 {
                 self.scale = (self.scale - 0.1).max(floor);
             } else if let Some(lower) = self.step(-1) {
@@ -503,7 +507,13 @@ mod tests {
     /// A GPU that manages `high_fps` on High (at any scale) and 60 on
     /// anything cheaper.
     fn igpu(high_fps: f32) -> impl Fn(Quality) -> f32 {
-        move |q: Quality| if q.tier >= Tier::High { 1.0 / high_fps } else { 1.0 / 60.0 }
+        move |q: Quality| {
+            if q.tier >= Tier::High {
+                1.0 / high_fps
+            } else {
+                1.0 / 60.0
+            }
+        }
     }
 
     #[test]

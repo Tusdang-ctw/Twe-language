@@ -75,7 +75,9 @@ fn audit_warns_about_draco_and_vram() {
     let project = discover_project(&dir).expect("discover");
     let warnings = twec::build::audit_assets(&project);
     assert!(
-        warnings.iter().any(|w| w.contains("KHR_draco_mesh_compression")),
+        warnings
+            .iter()
+            .any(|w| w.contains("KHR_draco_mesh_compression")),
         "flags the Draco asset: {warnings:?}"
     );
     assert!(
@@ -1150,7 +1152,10 @@ fn web_build_writes_a_servable_folder() {
     let wasm = named("twe_web_bg", "wasm");
     let game = named("game", "twebundle");
     assert_ne!(game, "game.0123456789ab.twebundle");
-    assert_eq!(fs::read_to_string(out.join(&js)).unwrap(), "runtime twe_web.js");
+    assert_eq!(
+        fs::read_to_string(out.join(&js)).unwrap(),
+        "runtime twe_web.js"
+    );
     assert_eq!(
         fs::read_to_string(out.join(&wasm)).unwrap(),
         "runtime twe_web_bg.wasm"
@@ -1158,11 +1163,16 @@ fn web_build_writes_a_servable_folder() {
     let page = fs::read_to_string(out.join("index.html")).unwrap();
     assert!(page.contains("<title>orbit_game</title>"), "{page}");
     assert!(
-        page.contains(&format!(r#"js: "./{js}", wasm: "{wasm}", bundle: "{game}""#)),
+        page.contains(&format!(
+            r#"js: "./{js}", wasm: "{wasm}", bundle: "{game}""#
+        )),
         "file names in the page"
     );
     // web3d-M6: macroquad is gone, so there is no env.js shim.
-    assert!(!out.join("index.html").exists() || !page.contains("importmap"), "no env import map");
+    assert!(
+        !out.join("index.html").exists() || !page.contains("importmap"),
+        "no env import map"
+    );
     // web3d-M4: the script and assets travel in one bundle the shell mounts.
     let mut bundle = twec::bundle::BundleReader::from_bytes(fs::read(out.join(&game)).unwrap())
         .expect("a readable bundle");
@@ -1200,7 +1210,10 @@ fn web_target_parses_with_legacy_alias() {
     assert_eq!(BuildTarget::Web.label(), "web");
     // web3d-M6: `wasm32` is a legacy alias for the one browser target.
     assert_eq!(BuildTarget::parse("wasm32"), Some(BuildTarget::Web));
-    assert_eq!(BuildTarget::parse("wasm32-unknown-unknown"), Some(BuildTarget::Web));
+    assert_eq!(
+        BuildTarget::parse("wasm32-unknown-unknown"),
+        Some(BuildTarget::Web)
+    );
 }
 
 /// web3d-M2 (M0 carry-over): scaffolding targets are behind
@@ -1279,7 +1292,10 @@ fn multi_file_game_runs_from_its_bundle() {
     let reader = BundleReader::from_bytes(bytes).expect("read bundle");
     let keys: Vec<String> = reader.keys().map(str::to_string).collect();
     for key in ["main.twe", "ai/brain.twe", "ai/helpers.twe", "units.twe"] {
-        assert!(keys.iter().any(|k| k == key), "bundle lacks {key}: {keys:?}");
+        assert!(
+            keys.iter().any(|k| k == key),
+            "bundle lacks {key}: {keys:?}"
+        );
     }
     // The project folder is gone: everything must come from the bundle,
     // as in the browser or a shipped .exe.

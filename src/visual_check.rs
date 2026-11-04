@@ -223,7 +223,8 @@ fn check_visual_members(members: &[DeclMember], errors: &mut Vec<VisualError>) {
         errors.push(VisualError {
             message: "a visual has `pixel` or `surface`, not both".to_string(),
             help: Some(
-                "move the colour into `surface`'s `material(albedo: ...)` and delete `pixel`".to_string(),
+                "move the colour into `surface`'s `material(albedo: ...)` and delete `pixel`"
+                    .to_string(),
             ),
             line,
             col,

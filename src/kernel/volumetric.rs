@@ -297,7 +297,8 @@ impl Volumetric {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D3,
                     format: wgpu::TextureFormat::Rgba16Float,
-                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 })
                 .create_view(&wgpu::TextureViewDescriptor::default())
@@ -330,16 +331,17 @@ impl Volumetric {
             },
             count: None,
         };
-        let texture_entry = |binding, visibility, sample_type, dim, multisampled| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: wgpu::BindingType::Texture {
-                sample_type,
-                view_dimension: dim,
-                multisampled,
-            },
-            count: None,
-        };
+        let texture_entry =
+            |binding, visibility, sample_type, dim, multisampled| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility,
+                ty: wgpu::BindingType::Texture {
+                    sample_type,
+                    view_dimension: dim,
+                    multisampled,
+                },
+                count: None,
+            };
         let compute = wgpu::ShaderStages::COMPUTE;
         let scatter_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("twe-kernel fog scatter bgl"),
@@ -377,7 +379,13 @@ impl Volumetric {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                texture_entry(3, fragment, wgpu::TextureSampleType::Depth, wgpu::TextureViewDimension::D2, true),
+                texture_entry(
+                    3,
+                    fragment,
+                    wgpu::TextureSampleType::Depth,
+                    wgpu::TextureViewDimension::D2,
+                    true,
+                ),
             ],
         });
         let module = |label, body: &str| {
@@ -386,7 +394,10 @@ impl Volumetric {
                 source: wgpu::ShaderSource::Wgsl(format!("{COMMON}{body}").into()),
             })
         };
-        let compute_pipeline = |label, layouts: &[Option<&wgpu::BindGroupLayout>], module: &wgpu::ShaderModule, entry| {
+        let compute_pipeline = |label,
+                                layouts: &[Option<&wgpu::BindGroupLayout>],
+                                module: &wgpu::ShaderModule,
+                                entry| {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: layouts,
@@ -403,7 +414,11 @@ impl Volumetric {
         };
         let scatter_pipeline = compute_pipeline(
             "twe-kernel fog scatter",
-            &[Some(frame_layout), Some(shadow_layout), Some(&scatter_layout)],
+            &[
+                Some(frame_layout),
+                Some(shadow_layout),
+                Some(&scatter_layout),
+            ],
             &module("twe-kernel fog scatter", SCATTER),
             "cs_scatter",
         );
@@ -510,7 +525,12 @@ impl Volumetric {
         let u = VolumeUniform {
             inv_view_proj: f.inv_view_proj,
             eye: [f.eye[0], f.eye[1], f.eye[2], 1.0],
-            forward: [f.forward[0], f.forward[1], f.forward[2], NEAR.min(f.far * 0.5)],
+            forward: [
+                f.forward[0],
+                f.forward[1],
+                f.forward[2],
+                NEAR.min(f.far * 0.5),
+            ],
             params: [f.density, f.falloff, 0.0, f.far],
             color: [f.color[0], f.color[1], f.color[2], f.glow],
             screen: [f.screen.0 as f32, f.screen.1 as f32, 0.0, 0.0],
@@ -597,10 +617,14 @@ mod tests {
     use super::*;
 
     fn validate(label: &str, src: &str) {
-        let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(src)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())
-            .validate(&module)
-            .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+        let module = naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(src)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{label}: {e:?}"));
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub(crate) fn is_ktx2(bytes: &[u8]) -> bool {
 /// 146); `ktx2::Format::value()` returns them.
 pub(crate) fn vk_bc_to_wgpu(vk: u32) -> Option<TextureFormat> {
     Some(match vk {
-        131 | 133 => TextureFormat::Bc1RgbaUnorm,     // BC1_RGB / BC1_RGBA UNORM
+        131 | 133 => TextureFormat::Bc1RgbaUnorm, // BC1_RGB / BC1_RGBA UNORM
         132 | 134 => TextureFormat::Bc1RgbaUnormSrgb, // BC1_RGB / BC1_RGBA SRGB
         135 => TextureFormat::Bc2RgbaUnorm,
         136 => TextureFormat::Bc2RgbaUnormSrgb,
@@ -113,7 +113,10 @@ pub(crate) fn upload_ktx2_bc(
     label: &str,
     bc: &Ktx2Bc,
 ) -> Result<wgpu::Texture, String> {
-    if !device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
+    if !device
+        .features()
+        .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+    {
         return Err(
             "this GPU has no BC texture support; run `twec asset transcode` to ship RGBA8 instead"
                 .to_string(),
@@ -190,15 +193,15 @@ mod tests {
         push32(&mut b, 1); // faces
         push32(&mut b, 1); // levels
         push32(&mut b, 0); // supercompression = none
-        // index: dfdOffset, dfdLen, kvdOffset, kvdLen, sgdOffset(u64), sgdLen(u64)
-        // layout: id(12)+header(36)+index(32)=80, levelIndex(24)=104, dfd(4)=108, level(8)=116
+                           // index: dfdOffset, dfdLen, kvdOffset, kvdLen, sgdOffset(u64), sgdLen(u64)
+                           // layout: id(12)+header(36)+index(32)=80, levelIndex(24)=104, dfd(4)=108, level(8)=116
         push32(&mut b, 104); // dfdByteOffset
         push32(&mut b, 4); // dfdByteLength (just the total-size field)
         push32(&mut b, 0); // kvdByteOffset
         push32(&mut b, 0); // kvdByteLength
         push64(&mut b, 0); // sgdByteOffset
         push64(&mut b, 0); // sgdByteLength
-        // level index (one level): byteOffset, byteLength, uncompressedByteLength
+                           // level index (one level): byteOffset, byteLength, uncompressedByteLength
         push64(&mut b, 108);
         push64(&mut b, 8);
         push64(&mut b, 8);
@@ -264,14 +267,14 @@ mod tests {
     #[test]
     fn uploads_a_bc1_texture_on_a_real_gpu() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let Ok(adapter) = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: None,
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
-            },
-        )) else {
+            }))
+        else {
             eprintln!("skipping BC upload test: no wgpu adapter");
             return;
         };
@@ -299,7 +302,10 @@ mod tests {
         let _view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let err = pollster::block_on(scope.pop());
-        assert!(err.is_none(), "BC upload produced a validation error: {err:?}");
+        assert!(
+            err.is_none(),
+            "BC upload produced a validation error: {err:?}"
+        );
         assert_eq!(texture.format(), TextureFormat::Bc1RgbaUnorm);
         assert_eq!(texture.width(), 4);
     }

@@ -225,10 +225,18 @@ spawn Box
 "#
         )
     };
-    let red = render_source(&mut renderer, "surface_albedo", &scene("material(albedo: (0.8, 0.1, 0.1))"));
+    let red = render_source(
+        &mut renderer,
+        "surface_albedo",
+        &scene("material(albedo: (0.8, 0.1, 0.1))"),
+    );
     save_png("surface_albedo", &red);
     let [r, g, b] = pixel(&red, W / 2, H / 2).map(i32::from);
-    assert!(r > g + 60 && r > b + 60, "albedo should be red, got {:?}", [r, g, b]);
+    assert!(
+        r > g + 60 && r > b + 60,
+        "albedo should be red, got {:?}",
+        [r, g, b]
+    );
 
     let glow = render_source(
         &mut renderer,
@@ -239,11 +247,19 @@ spawn Box
     let [r, g, b] = pixel(&glow, W / 2, H / 2).map(i32::from);
     // HDR emission this bright is pushed toward white by the tone curve
     // and bloom; blue still leads by ~70 (was an unseen u8 overflow).
-    assert!(b > 200 && b > r + 50 && b > g + 50, "emission should glow blue, got {:?}", [r, g, b]);
+    assert!(
+        b > 200 && b > r + 50 && b > g + 50,
+        "emission should glow blue, got {:?}",
+        [r, g, b]
+    );
 
     // The top face lit head-on by the sun, then with its normal turned
     // away from it.
-    let facing = render_source(&mut renderer, "surface_normal_up", &scene("material(albedo: (0.8, 0.8, 0.8))"));
+    let facing = render_source(
+        &mut renderer,
+        "surface_normal_up",
+        &scene("material(albedo: (0.8, 0.8, 0.8))"),
+    );
     let turned = render_source(
         &mut renderer,
         "surface_normal_turned",
@@ -252,7 +268,10 @@ spawn Box
     save_png("surface_normal_turned", &turned);
     let up = pixel(&facing, W / 2, H / 2)[1];
     let away = pixel(&turned, W / 2, H / 2)[1];
-    assert!(up > away + 40, "a normal turned from the sun is darker: {up} vs {away}");
+    assert!(
+        up > away + 40,
+        "a normal turned from the sun is darker: {up} vs {away}"
+    );
 }
 
 /// web3d-M7: a visual's `displace` moves the vertices in the main pass
@@ -301,16 +320,27 @@ spawn Floor
     save_png("displace_still", &still);
     save_png("displace_moved", &moved);
     let centre = |rgba: &[u8]| pixel(rgba, W / 2, H / 2);
-    assert_ne!(centre(&still), centre(&empty), "the undisplaced cube covers the centre");
+    assert_ne!(
+        centre(&still),
+        centre(&empty),
+        "the undisplaced cube covers the centre"
+    );
     let (a, b) = (centre(&moved), centre(&empty));
     assert!(
         a.iter().zip(&b).all(|(x, y)| x.abs_diff(*y) <= 6),
         "displaced away, the cube leaves the floor as if it weren't there: {a:?} vs {b:?}"
     );
     // A small shift moves the cube's image.
-    let nudged = render_source(&mut renderer, "displace_nudged", &scene("(1.5, 0, 0)", true));
+    let nudged = render_source(
+        &mut renderer,
+        "displace_nudged",
+        &scene("(1.5, 0, 0)", true),
+    );
     save_png("displace_nudged", &nudged);
-    assert_ne!(pixel(&nudged, W / 2 - 30, H / 2), pixel(&still, W / 2 - 30, H / 2));
+    assert_ne!(
+        pixel(&nudged, W / 2 - 30, H / 2),
+        pixel(&still, W / 2 - 30, H / 2)
+    );
 }
 
 /// web3d-M3: `text()` / `rect()` in a 3D render draw a HUD over the
@@ -358,10 +388,27 @@ fn render_2d_draws_a_frame_through_the_canvas() {
     };
     // The 320x240 target is half the 640x480 canvas.
     let game = [
-        Draw2d::Rect { x: 0.0, y: 0.0, w: 320.0, h: 240.0, color: [0.1, 0.1, 0.4, 1.0] },
-        Draw2d::Circle { x: 320.0, y: 240.0, r: 60.0, color: [1.0, 1.0, 0.0, 1.0] },
+        Draw2d::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 320.0,
+            h: 240.0,
+            color: [0.1, 0.1, 0.4, 1.0],
+        },
+        Draw2d::Circle {
+            x: 320.0,
+            y: 240.0,
+            r: 60.0,
+            color: [1.0, 1.0, 0.0, 1.0],
+        },
     ];
-    let hud = [Draw2d::Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0, color: [1.0, 0.0, 0.0, 1.0] }];
+    let hud = [Draw2d::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 40.0,
+        h: 40.0,
+        color: [1.0, 0.0, 0.0, 1.0],
+    }];
     let mut assets = SyncAssets::default();
     renderer
         .render_2d(&[(&game, None), (&hud, None)], &mut assets)
@@ -376,7 +423,11 @@ fn render_2d_draws_a_frame_through_the_canvas() {
     assert!(b > r && b > g, "blue field: {:?}", [r, g, b]);
     // The yellow circle at the canvas centre (160,120 of the target).
     let [r, g, b] = pixel(&rgba, 160, 120);
-    assert!(r > 230 && g > 230 && b < 40, "circle yellow: {:?}", [r, g, b]);
+    assert!(
+        r > 230 && g > 230 && b < 40,
+        "circle yellow: {:?}",
+        [r, g, b]
+    );
 }
 
 /// web3d-M6: the 3D HUD draws every 2D primitive through the kernel
@@ -502,7 +553,9 @@ on render():
 /// Pack a glTF JSON (with `{bin_len}` for the buffer length) and a
 /// binary chunk into a .glb.
 fn glb(json: &str, bin: &[u8]) -> Vec<u8> {
-    let mut j = json.replace("{bin_len}", &bin.len().to_string()).into_bytes();
+    let mut j = json
+        .replace("{bin_len}", &bin.len().to_string())
+        .into_bytes();
     while !j.len().is_multiple_of(4) {
         j.push(b' ');
     }
@@ -575,8 +628,16 @@ on render():
     save_png("two_materials", &rgba);
     let [lr, lg, lb] = pixel(&rgba, W / 4, H / 2);
     let [rr, rg, rb] = pixel(&rgba, 3 * W / 4, H / 2);
-    assert!(lr > lg + 40 && lr > lb + 40, "left quad red: {:?}", [lr, lg, lb]);
-    assert!(rb > rr + 60 && rb > 150, "right quad glows blue: {:?}", [rr, rg, rb]);
+    assert!(
+        lr > lg + 40 && lr > lb + 40,
+        "left quad red: {:?}",
+        [lr, lg, lb]
+    );
+    assert!(
+        rb > rr + 60 && rb > 150,
+        "right quad glows blue: {:?}",
+        [rr, rg, rb]
+    );
 }
 
 /// A Radiance .hdr (flat RGBE scanlines) of `w × h`, colour per row.
@@ -620,7 +681,13 @@ fn environment_lights_and_backs_the_scene() {
     std::fs::create_dir_all(dir).expect("create output dir");
     std::fs::write(
         dir.join("sky.hdr"),
-        hdr_file(64, 32, |y| if y < 16 { [0.4, 0.7, 2.0] } else { [0.02, 0.02, 0.02] }),
+        hdr_file(64, 32, |y| {
+            if y < 16 {
+                [0.4, 0.7, 2.0]
+            } else {
+                [0.02, 0.02, 0.02]
+            }
+        }),
     )
     .expect("write hdr");
     let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
@@ -686,7 +753,10 @@ fn environment_lights_and_backs_the_scene() {
     let luma = |[r, g, b]: [u8; 3]| u32::from(r) + u32::from(g) + u32::from(b);
     let top = pixel(&rgba, W / 2, H / 2 - 50);
     let bottom = pixel(&rgba, W / 2, H / 2 + 50);
-    assert!(luma(top) > luma(bottom) + 150, "sky-lit top {top:?} vs ground-lit bottom {bottom:?}");
+    assert!(
+        luma(top) > luma(bottom) + 150,
+        "sky-lit top {top:?} vs ground-lit bottom {bottom:?}"
+    );
     assert!(top[2] > top[0], "the sky is blue: {top:?}");
     let sky = pixel(&rgba, W / 2, 5);
     assert!(sky[2] > 150, "the backdrop shows the sky: {sky:?}");
@@ -791,7 +861,10 @@ on render():
         .map(|(a, b)| f64::from(a.abs_diff(*b)))
         .sum::<f64>()
         / taa.len() as f64;
-    assert!(diff < 4.0, "TAA under camera motion is {diff:.2} away from the plain frame");
+    assert!(
+        diff < 4.0,
+        "TAA under camera motion is {diff:.2} away from the plain frame"
+    );
 }
 
 /// Render `src` once headless (after its top level), for the shadow
@@ -962,13 +1035,23 @@ fn aces_ref(x: f32) -> f32 {
         [-0.07367, -0.00605, 1.07602],
     ];
     let v = mat3(aces_in, [x / 0.6; 3]);
-    let fit = v.map(|v| (v * (v + 0.024_578_6) - 0.000_090_537) / (v * (0.983_729 * v + 0.432_951) + 0.238_081));
+    let fit = v.map(|v| {
+        (v * (v + 0.024_578_6) - 0.000_090_537) / (v * (0.983_729 * v + 0.432_951) + 0.238_081)
+    });
     mat3(aces_out, fit)[1].clamp(0.0, 1.0)
 }
 
 fn agx_ref(x: f32) -> f32 {
-    let to_2020 = [[0.6274, 0.0691, 0.0164], [0.3293, 0.9195, 0.0880], [0.0433, 0.0113, 0.8956]];
-    let from_2020 = [[1.6605, -0.1246, -0.0182], [-0.5876, 1.1329, -0.1006], [-0.0728, -0.0083, 1.1187]];
+    let to_2020 = [
+        [0.6274, 0.0691, 0.0164],
+        [0.3293, 0.9195, 0.0880],
+        [0.0433, 0.0113, 0.8956],
+    ];
+    let from_2020 = [
+        [1.6605, -0.1246, -0.0182],
+        [-0.5876, 1.1329, -0.1006],
+        [-0.0728, -0.0083, 1.1187],
+    ];
     let inset = [
         [0.856_627_2, 0.137_319, 0.111_898_2],
         [0.095_121_24, 0.761_242, 0.076_799_42],
@@ -983,7 +1066,8 @@ fn agx_ref(x: f32) -> f32 {
     let c = mat3(inset, mat3(to_2020, [x; 3])).map(|c| {
         let t = ((c.max(1e-10).log2() - min_ev) / (max_ev - min_ev)).clamp(0.0, 1.0);
         let (t2, t4) = (t * t, t * t * t * t);
-        15.5 * t4 * t2 - 40.14 * t4 * t + 31.96 * t4 - 6.868 * t2 * t + 0.4298 * t2 + 0.1191 * t - 0.00232
+        15.5 * t4 * t2 - 40.14 * t4 * t + 31.96 * t4 - 6.868 * t2 * t + 0.4298 * t2 + 0.1191 * t
+            - 0.00232
     });
     let c = mat3(outset, c).map(|c| c.max(0.0).powf(2.2));
     mat3(from_2020, c)[1].clamp(0.0, 1.0)
@@ -1040,7 +1124,10 @@ fn tonemap_curves_and_exposure() {
         ..PostFx::default()
     };
     let got = backdrop_pixel(&mut renderer, [0.25; 3], post, 1, 0.0);
-    assert!((f32::from(got[1]) - srgb8(0.5)).abs() <= 2.0, "exposure +1: {got:?}");
+    assert!(
+        (f32::from(got[1]) - srgb8(0.5)).abs() <= 2.0,
+        "exposure +1: {got:?}"
+    );
 }
 
 /// web3d-M7: auto exposure brings a dark and a bright scene to middle
@@ -1058,13 +1145,19 @@ fn auto_exposure_adapts() {
     };
     let grey = srgb8(0.18);
     let dark = backdrop_pixel(&mut renderer, [0.02; 3], post, 1, 0.0);
-    assert!((f32::from(dark[1]) - grey).abs() <= 4.0, "dark scene exposed to {dark:?}, want {grey:.0}");
+    assert!(
+        (f32::from(dark[1]) - grey).abs() <= 4.0,
+        "dark scene exposed to {dark:?}, want {grey:.0}"
+    );
     // The lights come on: the first frame is still exposed for the
     // dark (blown out); five seconds later it has adapted.
     let first = backdrop_pixel(&mut renderer, [2.0; 3], post, 1, 1.0 / 60.0);
     assert!(first[1] > 250, "adaptation eases, not snaps: {first:?}");
     let adapted = backdrop_pixel(&mut renderer, [2.0; 3], post, 300, 2.0 / 60.0);
-    assert!((f32::from(adapted[1]) - grey).abs() <= 4.0, "bright scene exposed to {adapted:?}, want {grey:.0}");
+    assert!(
+        (f32::from(adapted[1]) - grey).abs() <= 4.0,
+        "bright scene exposed to {adapted:?}, want {grey:.0}"
+    );
 }
 
 /// web3d-M7: multi-level bloom spreads a bright light well beyond the
@@ -1095,13 +1188,23 @@ on render():
     save_png("bloom", &on);
     let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
     // The sphere faces its light (it once drew inside-out, dark).
-    assert!(luma(pixel(&off, W / 2, H / 2)) > 600, "lit sphere: {:?}", pixel(&off, W / 2, H / 2));
+    assert!(
+        luma(pixel(&off, W / 2, H / 2)) > 600,
+        "lit sphere: {:?}",
+        pixel(&off, W / 2, H / 2)
+    );
     for dx in [20, 40] {
-        let (a, b) = (pixel(&off, W / 2 + dx, H / 2), pixel(&on, W / 2 + dx, H / 2));
+        let (a, b) = (
+            pixel(&off, W / 2 + dx, H / 2),
+            pixel(&on, W / 2 + dx, H / 2),
+        );
         assert!(luma(b) > luma(a) + 6, "{dx} px out: off {a:?}, on {b:?}");
     }
     let corner = (pixel(&off, 5, 5), pixel(&on, 5, 5));
-    assert!((luma(corner.0) - luma(corner.1)).abs() <= 6, "far corner: {corner:?}");
+    assert!(
+        (luma(corner.0) - luma(corner.1)).abs() <= 6,
+        "far corner: {corner:?}"
+    );
 }
 
 /// web3d-M7: GTAO darkens the floor where it meets a block, and leaves
@@ -1137,7 +1240,10 @@ on render():
     let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
     for (x, y) in [(30, 225), (290, 225), (160, 230)] {
         let (a, b) = (pixel(&off, x, y), pixel(&on, x, y));
-        assert!((luma(a) - luma(b)).abs() <= 6, "open floor at ({x}, {y}): off {a:?}, on {b:?}");
+        assert!(
+            (luma(a) - luma(b)).abs() <= 6,
+            "open floor at ({x}, {y}): off {a:?}, on {b:?}"
+        );
     }
 }
 
@@ -1195,17 +1301,37 @@ fn color_lut_grades_the_frame() {
     let _root = ASSET_ROOT.lock().unwrap_or_else(|e| e.into_inner());
     twec::bundle::set_asset_root(Some(dir.into()));
     let scene = |strength: f32| {
-        format!("light.clear()\npostfx.tonemap(\"none\")\npostfx.lut(\"invert.cube\", {strength})\n")
+        format!(
+            "light.clear()\npostfx.tonemap(\"none\")\npostfx.lut(\"invert.cube\", {strength})\n"
+        )
     };
-    let plain = pixel(&render_source(&mut renderer, "lut_off", &scene(0.0)), W / 2, H / 2);
-    let full = pixel(&render_source(&mut renderer, "lut_full", &scene(1.0)), W / 2, H / 2);
-    let half = pixel(&render_source(&mut renderer, "lut_half", &scene(0.5)), W / 2, H / 2);
+    let plain = pixel(
+        &render_source(&mut renderer, "lut_off", &scene(0.0)),
+        W / 2,
+        H / 2,
+    );
+    let full = pixel(
+        &render_source(&mut renderer, "lut_full", &scene(1.0)),
+        W / 2,
+        H / 2,
+    );
+    let half = pixel(
+        &render_source(&mut renderer, "lut_half", &scene(0.5)),
+        W / 2,
+        H / 2,
+    );
     twec::bundle::set_asset_root(None);
     for c in 0..3 {
         let v = f32::from(plain[c]);
-        assert!((f32::from(full[c]) - (255.0 - v)).abs() <= 3.0, "inverted {full:?} vs plain {plain:?}");
+        assert!(
+            (f32::from(full[c]) - (255.0 - v)).abs() <= 3.0,
+            "inverted {full:?} vs plain {plain:?}"
+        );
         let mixed = 0.5 * inverse_srgb8(v) + 0.5 * inverse_srgb8(255.0 - v);
-        assert!((f32::from(half[c]) - srgb8(mixed)).abs() <= 3.0, "half {half:?} vs plain {plain:?}");
+        assert!(
+            (f32::from(half[c]) - srgb8(mixed)).abs() <= 3.0,
+            "half {half:?} vs plain {plain:?}"
+        );
     }
 }
 
@@ -1248,7 +1374,10 @@ on render():
             }
         }
     }
-    assert!(far > 60, "the far block's edges barely changed: {far} pixels");
+    assert!(
+        far > 60,
+        "the far block's edges barely changed: {far} pixels"
+    );
     assert!(near < 10, "the focused block changed: {near} pixels");
 }
 
@@ -1279,7 +1408,11 @@ on render():
     let changed = |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
     let still_off = render_frames(&scene(0.0, 0.0), 3);
     let still_on = render_frames(&scene(1.0, 0.0), 3);
-    assert_eq!(changed(&still_off, &still_on), 0, "a still camera blurs nothing");
+    assert_eq!(
+        changed(&still_off, &still_on),
+        0,
+        "a still camera blurs nothing"
+    );
     let moving_off = render_frames(&scene(0.0, 20.0), 3);
     let moving_on = render_frames(&scene(1.0, 20.0), 3);
     save_png("motion_blur", &moving_on);
@@ -1288,10 +1421,17 @@ on render():
     // x = 118 with the camera 1 unit right) stay sharp.
     let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
     let differ = |a: [u8; 3], b: [u8; 3]| (luma(a) - luma(b)).abs() > 30;
-    let row = (0..W).filter(|&x| differ(pixel(&moving_off, x, H / 2), pixel(&moving_on, x, H / 2))).count();
-    let column = (0..H).filter(|&y| differ(pixel(&moving_off, 118, y), pixel(&moving_on, 118, y))).count();
+    let row = (0..W)
+        .filter(|&x| differ(pixel(&moving_off, x, H / 2), pixel(&moving_on, x, H / 2)))
+        .count();
+    let column = (0..H)
+        .filter(|&y| differ(pixel(&moving_off, 118, y), pixel(&moving_on, 118, y)))
+        .count();
     assert!(row >= 8, "only {row} pixels of the centre row streaked");
-    assert!(column <= 2, "{column} pixels of the block's top and bottom edges blurred");
+    assert!(
+        column <= 2,
+        "{column} pixels of the block's top and bottom edges blurred"
+    );
 }
 
 /// web3d-M7: a tint with alpha below 1 is translucent, and translucent
@@ -1322,13 +1462,25 @@ on render():
     let blended = render_once(&scene(0.5));
     save_png("translucent", &blended);
     let [r, g, _] = pixel(&opaque, W / 2, H / 2);
-    assert!(g > r + 100, "the opaque front block hides the back one: {:?}", [r, g]);
+    assert!(
+        g > r + 100,
+        "the opaque front block hides the back one: {:?}",
+        [r, g]
+    );
     let [r, g, b] = pixel(&blended, W / 2, H / 2);
     assert!(r > 60, "the red block shows through: {:?}", [r, g, b]);
-    assert!(g > r + 30, "green is in front (blended last): {:?}", [r, g, b]);
+    assert!(
+        g > r + 30,
+        "green is in front (blended last): {:?}",
+        [r, g, b]
+    );
     // Beside the front block only the back one (and the background).
     let [r2, g2, _] = pixel(&blended, W / 2 + 32, H / 2);
-    assert!(r2 > g2 + 40, "the back block alone beside it: {:?}", [r2, g2]);
+    assert!(
+        r2 > g2 + 40,
+        "the back block alone beside it: {:?}",
+        [r2, g2]
+    );
 }
 
 /// web3d-M7: a glTF BLEND material is translucent: the background
@@ -1338,7 +1490,9 @@ fn gltf_blend_materials_are_translucent() {
     let Some(mut renderer) = headless() else {
         return;
     };
-    let positions: [f32; 12] = [-1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0, 0.0];
+    let positions: [f32; 12] = [
+        -1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0, 0.0,
+    ];
     let normals: Vec<f32> = [0.0f32, 0.0, 1.0].repeat(4);
     let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
     let mut bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -1380,8 +1534,17 @@ on render():
     let [br, bg, _] = pixel(&rgba, 5, 5);
     // Half of an emissive blue over the background: bluish, not the
     // opaque quad's full blue, with the background's red and green.
-    assert!((150..240).contains(&b), "half-transparent blue: {:?}", [r, g, b]);
-    assert!(r > 10 && g > 20, "the background shows through: {:?} over {:?}", [r, g, b], [br, bg]);
+    assert!(
+        (150..240).contains(&b),
+        "half-transparent blue: {:?}",
+        [r, g, b]
+    );
+    assert!(
+        r > 10 && g > 20,
+        "the background shows through: {:?} over {:?}",
+        [r, g, b],
+        [br, bg]
+    );
 }
 
 /// web3d-M7: height fog thickens with distance and toward the ground,
@@ -1409,13 +1572,22 @@ on render():
     assert!(ng > 180, "the near block is barely fogged: {:?}", [nr, ng]);
     let high = pixel(&rgba, 200, 60);
     let low = pixel(&rgba, 200, 175);
-    assert!(low[0] > low[1] + 40, "the far low block is fogged red: {low:?}");
-    assert!(high[1] > low[1] + 30, "fog thins with height: high {high:?} vs low {low:?}");
+    assert!(
+        low[0] > low[1] + 40,
+        "the far low block is fogged red: {low:?}"
+    );
+    assert!(
+        high[1] > low[1] + 30,
+        "fog thins with height: high {high:?} vs low {low:?}"
+    );
     // The background fogs too: fully looking down into the fog,
     // partly looking up out of it.
     let (down, up) = (pixel(&rgba, 5, 230), pixel(&rgba, 160, 3));
     assert!(down[0] > 200 && down[1] < 60, "looking down: {down:?}");
-    assert!(up[0] < down[0] - 40, "looking up escapes the fog: {up:?} vs {down:?}");
+    assert!(
+        up[0] < down[0] - 40,
+        "looking up escapes the fog: {up:?} vs {down:?}"
+    );
 }
 
 /// web3d-M7: a glTF with one quad per material, side by side across
@@ -1423,7 +1595,8 @@ on render():
 fn quads_glb(materials: &[&str]) -> Vec<u8> {
     let n = materials.len();
     let width = 3.6 / n as f32;
-    let (mut positions, mut normals, mut indices) = (Vec::<f32>::new(), Vec::<f32>::new(), Vec::<u16>::new());
+    let (mut positions, mut normals, mut indices) =
+        (Vec::<f32>::new(), Vec::<f32>::new(), Vec::<u16>::new());
     for i in 0..n {
         let x0 = -1.8 + i as f32 * width + 0.05;
         let x1 = x0 + width - 0.1;
@@ -1437,7 +1610,12 @@ fn quads_glb(materials: &[&str]) -> Vec<u8> {
     bin.extend(indices.iter().flat_map(|i| i.to_le_bytes()));
     let vbytes = positions.len() * 4;
     let primitives: Vec<String> = (0..n)
-        .map(|i| format!(r#"{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":{},"material":{i}}}"#, 2 + i))
+        .map(|i| {
+            format!(
+                r#"{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":{},"material":{i}}}"#,
+                2 + i
+            )
+        })
         .collect();
     let index_accessors: Vec<String> = (0..n)
         .map(|i| format!(r#"{{"bufferView":2,"byteOffset":{},"componentType":5123,"count":6,"type":"SCALAR"}}"#, i * 12))
@@ -1517,8 +1695,16 @@ on render():
     let at = |i: u32| pixel(&rgba, W / 8 + i * W / 4, H / 2);
     let plain = at(0);
     // Sheen is a grazing lobe: faint head-on, but there.
-    assert!(luma(at(1)) > luma(plain) + 30, "sheen adds light: {:?} vs {plain:?}", at(1));
-    assert!(luma(at(2)) > luma(plain) + 20, "clearcoat adds a reflection: {:?} vs {plain:?}", at(2));
+    assert!(
+        luma(at(1)) > luma(plain) + 30,
+        "sheen adds light: {:?} vs {plain:?}",
+        at(1)
+    );
+    assert!(
+        luma(at(2)) > luma(plain) + 20,
+        "clearcoat adds a reflection: {:?} vs {plain:?}",
+        at(2)
+    );
     let film = at(3);
     let spread = film.iter().max().unwrap() - film.iter().min().unwrap();
     // A plain grey metal is exactly grey (spread 0).
@@ -1557,9 +1743,18 @@ on render():
     let rgba = render_glb("transmission", glb_bytes, src);
     let at = |i: u32| pixel(&rgba, W / 6 + i * W / 3, H / 2);
     let (opaque, clear, absorbed) = (at(0), at(1), at(2));
-    assert!(opaque[0].abs_diff(opaque[1]) < 20, "the opaque quad is white-grey: {opaque:?}");
-    assert!(clear[0] > clear[1] + 60, "the red block shows through: {clear:?}");
-    assert!(absorbed[0] + 40 < clear[0], "the blue volume absorbs the red: {absorbed:?} vs {clear:?}");
+    assert!(
+        opaque[0].abs_diff(opaque[1]) < 20,
+        "the opaque quad is white-grey: {opaque:?}"
+    );
+    assert!(
+        clear[0] > clear[1] + 60,
+        "the red block shows through: {clear:?}"
+    );
+    assert!(
+        absorbed[0] + 40 < clear[0],
+        "the blue volume absorbs the red: {absorbed:?} vs {clear:?}"
+    );
 }
 
 /// web3d-M7: GPU culling changes no pixels, and it culls: 6400 cubes
@@ -1591,7 +1786,11 @@ fn gpu_culling_is_invisible_and_culls() {
     for i in 0..80 {
         for j in 0..80 {
             let (x, z) = ((i as f32 - 40.0) * 2.0, -(j as f32) * 2.0 - 10.0);
-            draws.push(cube([x, 0.5, z], 1.0, [0.2 + (i % 5) as f32 * 0.15, 0.6, 0.3, 1.0]));
+            draws.push(cube(
+                [x, 0.5, z],
+                1.0,
+                [0.2 + (i % 5) as f32 * 0.15, 0.6, 0.3, 1.0],
+            ));
         }
     }
     // The wall covers the middle of the view; cubes to its sides stay
@@ -1637,26 +1836,41 @@ fn gpu_culling_is_invisible_and_culls() {
             };
             renderer.render(&snap, &mut assets).expect("render");
         }
-        (renderer.read_pixels().expect("pixels"), renderer.gpu_cull_counts())
+        (
+            renderer.read_pixels().expect("pixels"),
+            renderer.gpu_cull_counts(),
+        )
     };
     let (plain, _) = render(false);
     let (culled, counts) = render(true);
     save_png("gpu_cull", &culled);
-    let differing = plain.chunks(4).zip(culled.chunks(4)).filter(|(a, b)| a != b).count();
+    let differing = plain
+        .chunks(4)
+        .zip(culled.chunks(4))
+        .filter(|(a, b)| a != b)
+        .count();
     assert!(differing < 20, "{differing} pixels differ with GPU culling");
     let (early, late, total) = counts.expect("the frame was GPU-culled");
     assert_eq!(total, draws.len() as u32);
     let drawn = early + late;
     eprintln!("gpu cull: {early} early + {late} late of {total}; {differing} pixels differ");
     assert!(drawn > 50, "the cubes beside the wall are drawn: {drawn}");
-    assert!(drawn < total / 3, "most cubes are culled: {drawn} of {total} drawn");
-    assert!(early > late, "after a few frames the early set carries the scene: {early} early, {late} late");
+    assert!(
+        drawn < total / 3,
+        "most cubes are culled: {drawn} of {total} drawn"
+    );
+    assert!(
+        early > late,
+        "after a few frames the early set carries the scene: {early} early, {late} late"
+    );
 }
 
 /// web3d-M7: render a floor seen from straight above with only the given
 /// point / spot lights (no sun, no ambient). Returns the pixels and a
 /// world (x, z) → pixel mapping.
-fn floor_with_lights(lights: &[twec::kernel::render::PointLightU]) -> (Vec<u8>, impl Fn(f32, f32) -> (u32, u32)) {
+fn floor_with_lights(
+    lights: &[twec::kernel::render::PointLightU],
+) -> (Vec<u8>, impl Fn(f32, f32) -> (u32, u32)) {
     use twec::kernel::render::{Camera3d, PostFx, RenderSnapshot, ShadowSettings, Tonemapper};
     use twec::render3d_types::{DrawCall3d, Primitive};
     let mut renderer = headless().expect("gpu");
@@ -1731,7 +1945,11 @@ fn hundreds_of_lights_all_shine() {
     for i in 0..20 {
         for j in 0..15 {
             let (x, z) = ((i as f32 - 9.5) * spacing, (j as f32 - 7.0) * spacing);
-            let color = [4.0 * (i % 3) as f32 / 2.0 + 1.0, 4.0 * (j % 2) as f32 + 1.0, 3.0];
+            let color = [
+                4.0 * (i % 3) as f32 / 2.0 + 1.0,
+                4.0 * (j % 2) as f32 + 1.0,
+                3.0,
+            ];
             lights.push(PointLightU::point([x, 0.3, z], color, 0.6));
         }
     }
@@ -1745,10 +1963,19 @@ fn hundreds_of_lights_all_shine() {
             dark.push((l.pos[0], l.pos[2]));
         }
     }
-    assert!(dark.is_empty(), "{} of 300 lights didn't light their patch: {:?}", dark.len(), &dark[..dark.len().min(5)]);
+    assert!(
+        dark.is_empty(),
+        "{} of 300 lights didn't light their patch: {:?}",
+        dark.len(),
+        &dark[..dark.len().min(5)]
+    );
     // Diagonally between four lights, beyond every radius.
     let (px, py) = to_pixel(0.0, 0.6);
-    assert!(luma(pixel(&rgba, px, py)) < 30, "between lights: {:?}", pixel(&rgba, px, py));
+    assert!(
+        luma(pixel(&rgba, px, py)) < 30,
+        "between lights: {:?}",
+        pixel(&rgba, px, py)
+    );
 }
 
 /// web3d-M7: a spot light lights inside its cone and not outside it,
@@ -1769,8 +1996,16 @@ fn spot_lights_light_their_cone() {
     let (cx, cy) = to_pixel(0.0, 0.0);
     // The cone reaches the floor within tan(20°) · 4 ≈ 1.46 of the centre.
     let (ox, oy) = to_pixel(3.0, 0.0);
-    assert!(luma(pixel(&rgba, cx, cy)) > 300, "under the spot: {:?}", pixel(&rgba, cx, cy));
-    assert!(luma(pixel(&rgba, ox, oy)) < 10, "outside the cone: {:?}", pixel(&rgba, ox, oy));
+    assert!(
+        luma(pixel(&rgba, cx, cy)) > 300,
+        "under the spot: {:?}",
+        pixel(&rgba, cx, cy)
+    );
+    assert!(
+        luma(pixel(&rgba, ox, oy)) < 10,
+        "outside the cone: {:?}",
+        pixel(&rgba, ox, oy)
+    );
 }
 
 /// web3d-M7: a fountain of sparks over a floor, seen from above. The
@@ -1827,14 +2062,21 @@ fn gpu_particles_draw_and_bounce() {
     let (early, env) = render_frames_env(&spark_scene(true, "0.06"), 10);
     save_png("particles_early", &early);
     assert_eq!(env.particle_programs.len(), 1, "the block runs on the GPU");
-    assert!(orange_pixels(&early) > 200, "sparks in the air: {}", orange_pixels(&early));
+    assert!(
+        orange_pixels(&early) > 200,
+        "sparks in the air: {}",
+        orange_pixels(&early)
+    );
     let bounced = render_frames(&spark_scene(true, "0.06"), 70);
     let fell = render_frames(&spark_scene(false, "0.06"), 70);
     save_png("particles_bounced", &bounced);
     save_png("particles_fell", &fell);
     let (on_floor, through) = (orange_pixels(&bounced), orange_pixels(&fell));
     assert!(on_floor > 500, "sparks resting on the floor: {on_floor}");
-    assert!(through < on_floor / 20, "without collide they fall through: {through} vs {on_floor}");
+    assert!(
+        through < on_floor / 20,
+        "without collide they fall through: {through} vs {on_floor}"
+    );
 }
 
 /// web3d-M7: a block that can't compile (it reads a global) runs on the
@@ -1846,8 +2088,15 @@ fn cpu_particles_still_draw_in_3d() {
     }
     let (rgba, env) = render_frames_env(&spark_scene(true, "big"), 10);
     save_png("particles_cpu", &rgba);
-    assert!(env.particle_programs.is_empty(), "the block runs on the CPU");
-    assert!(orange_pixels(&rgba) > 200, "CPU sparks draw: {}", orange_pixels(&rgba));
+    assert!(
+        env.particle_programs.is_empty(),
+        "the block runs on the CPU"
+    );
+    assert!(
+        orange_pixels(&rgba) > 200,
+        "CPU sparks draw: {}",
+        orange_pixels(&rgba)
+    );
 }
 
 /// web3d-M7: a million particles fit the pool and draw.
@@ -1887,13 +2136,18 @@ spawn Cloud at vec3(0, 0, 0)
     // The cloud covers the middle of the view, blue; the corners don't.
     let centre = pixel(&rgba, W / 2, H / 2);
     let corner = pixel(&rgba, 4, 4);
-    assert!(centre[2] > corner[2] + 20, "cloud {centre:?} vs corner {corner:?}");
+    assert!(
+        centre[2] > corner[2] + 20,
+        "cloud {centre:?} vs corner {corner:?}"
+    );
 }
 
 /// web3d-M7: a glTF with one square in the y = 0 plane, x, z ∈ [-4, 4],
 /// facing up, with `material`.
 fn floor_glb(material: &str) -> Vec<u8> {
-    let positions = [-4.0f32, 0.0, -4.0, -4.0, 0.0, 4.0, 4.0, 0.0, 4.0, 4.0, 0.0, -4.0];
+    let positions = [
+        -4.0f32, 0.0, -4.0, -4.0, 0.0, 4.0, 4.0, 0.0, 4.0, 4.0, 0.0, -4.0,
+    ];
     let normals = [0.0f32, 1.0, 0.0].repeat(4);
     let indices = [0u16, 1, 2, 0, 2, 3];
     let mut bin: Vec<u8> = positions.iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -1955,7 +2209,10 @@ on render():
             changed_above += 1;
         }
     }
-    assert!(reflected > 800, "the floor reflects the block: {reflected} pixels");
+    assert!(
+        reflected > 800,
+        "the floor reflects the block: {reflected} pixels"
+    );
     assert_eq!(changed_above, 0, "the backdrop is untouched");
 }
 
@@ -1994,7 +2251,8 @@ on render():
     save_png("fog_closed", &closed);
     save_png("fog_volume", &volume);
     save_png("fog_volume_shadowed", &volume_shadowed);
-    let mean = |rgba: &[u8]| rgba.chunks_exact(4).map(|p| f64::from(p[0])).sum::<f64>() / f64::from(W * H);
+    let mean =
+        |rgba: &[u8]| rgba.chunks_exact(4).map(|p| f64::from(p[0])).sum::<f64>() / f64::from(W * H);
     assert!(
         (mean(&closed) - mean(&volume)).abs() < 3.0,
         "unshadowed, the volume matches the closed form: {} vs {}",
@@ -2006,7 +2264,10 @@ on render():
         .zip(volume_shadowed.chunks_exact(4))
         .filter(|(a, b)| i32::from(a[0]) - i32::from(b[0]) > 8)
         .count();
-    assert!(darker as u32 > W * H / 50, "the wall's shadow darkens the fog: {darker} pixels");
+    assert!(
+        darker as u32 > W * H / 50,
+        "the wall's shadow darkens the fog: {darker} pixels"
+    );
 }
 
 /// web3d-M7 session 16: `camera.far` is the view distance. A block
@@ -2030,9 +2291,17 @@ on render():
     let near = render_once(&scene(""));
     let far = render_once(&scene("camera.far = 300.0"));
     let centre = |rgba: &[u8]| pixel(rgba, W / 2, H / 2);
-    assert_eq!(centre(&near), pixel(&near, 2, 2), "clipped at the default 100 m");
+    assert_eq!(
+        centre(&near),
+        pixel(&near, 2, 2),
+        "clipped at the default 100 m"
+    );
     let [r, g, b] = centre(&far);
-    assert!(r > g + 60 && r > b + 60, "drawn with camera.far = 300: {:?}", [r, g, b]);
+    assert!(
+        r > g + 60 && r > b + 60,
+        "drawn with camera.far = 300: {:?}",
+        [r, g, b]
+    );
 }
 
 /// web3d-M7 session 16: looks that read nothing of their entity are
@@ -2073,13 +2342,25 @@ spawn Block at vec3(-3, 0, 0)
     let (left, middle, right) = (W / 2 - 60, W / 2, W / 2 + 60);
     let a = frame(&mut env, "");
     let b = frame(&mut env, "");
-    assert!(red(&a, left) && red(&b, left), "drawn on the left, and again from the cache");
-    let moved = frame(&mut env, "for e in entities.of(Block):\n    e.pos = vec3(3, 0, 0)\n");
+    assert!(
+        red(&a, left) && red(&b, left),
+        "drawn on the left, and again from the cache"
+    );
+    let moved = frame(
+        &mut env,
+        "for e in entities.of(Block):\n    e.pos = vec3(3, 0, 0)\n",
+    );
     assert!(red(&moved, right) && !red(&moved, left), "the move shows");
     let spawned = frame(&mut env, "spawn Block at vec3(0, 0, 0)\n");
-    assert!(red(&spawned, middle) && red(&spawned, right), "the spawn shows");
+    assert!(
+        red(&spawned, middle) && red(&spawned, right),
+        "the spawn shows"
+    );
     let gone = frame(&mut env, "for e in entities.of(Block):\n    despawn e\n");
-    assert!(!red(&gone, middle) && !red(&gone, right), "the despawns show");
+    assert!(
+        !red(&gone, middle) && !red(&gone, right),
+        "the despawns show"
+    );
 }
 
 /// web3d-M7 follow-up: a static look whose mesh loads after its draws
@@ -2107,7 +2388,11 @@ spawn Floor
     let rgba = render_source(&mut renderer, "kept_mesh_arrives", src);
     save_png("kept_mesh_arrives", &rgba);
     let [r, g, b] = pixel(&rgba, W / 2, H / 2);
-    assert!(r > g + 60 && r > b + 60, "the loaded mesh draws: {:?}", [r, g, b]);
+    assert!(
+        r > g + 60 && r > b + 60,
+        "the loaded mesh draws: {:?}",
+        [r, g, b]
+    );
 }
 
 /// Low-end track (G2/G3): the `low` tier renders the scene at 70 % of
@@ -2123,7 +2408,11 @@ fn low_tier_scales_the_scene_to_the_window() {
     // Same frame count both times (hello_3d animates).
     let src = std::fs::read_to_string("examples/hello_3d.twe").expect("read");
     let ultra = render_source(&mut renderer, "hello_3d_ultra", &src);
-    let low = render_source(&mut renderer, "hello_3d_low", &(src + "\ngraphics.quality(\"low\")\n"));
+    let low = render_source(
+        &mut renderer,
+        "hello_3d_low",
+        &(src + "\ngraphics.quality(\"low\")\n"),
+    );
     save_png("hello_3d_low", &low);
     assert_eq!(renderer.quality().tier, twec::kernel::quality::Tier::Low);
     let diff: u64 = ultra
@@ -2132,7 +2421,10 @@ fn low_tier_scales_the_scene_to_the_window() {
         .map(|(&a, &b)| u64::from(a.abs_diff(b)))
         .sum();
     let mean = diff as f64 / ultra.len() as f64;
-    assert!(mean < 8.0, "low tier differs from ultra by {mean:.2}/255 on average");
+    assert!(
+        mean < 8.0,
+        "low tier differs from ultra by {mean:.2}/255 on average"
+    );
     let brightness = |p: [u8; 3]| p.iter().map(|&c| u32::from(c)).sum::<u32>();
     assert!(
         brightness(pixel(&low, W / 2, H / 2)) > brightness(pixel(&low, 2, 2)) + 100,
@@ -2175,7 +2467,10 @@ on render():
     let luma = |p: [u8; 3]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
     for (x, y) in [(30, 225), (290, 225), (160, 230)] {
         let (a, b) = (pixel(&off, x, y), pixel(&on, x, y));
-        assert!((luma(a) - luma(b)).abs() <= 6, "open floor at ({x}, {y}): off {a:?}, on {b:?}");
+        assert!(
+            (luma(a) - luma(b)).abs() <= 6,
+            "open floor at ({x}, {y}): off {a:?}, on {b:?}"
+        );
     }
 }
 
@@ -2221,7 +2516,13 @@ on render():
     twec::eval::run_top_level(&mut env, &program).expect("top level");
     let mut assets = twec::play3d::NativeAssets::default();
     let mut steps: Vec<Quality> = Vec::new();
-    for tier in [Tier::Ultra, Tier::High, Tier::Medium, Tier::Low, Tier::Ultra] {
+    for tier in [
+        Tier::Ultra,
+        Tier::High,
+        Tier::Medium,
+        Tier::Low,
+        Tier::Ultra,
+    ] {
         for scale in [1.0, 0.8, 0.55] {
             let mut q = Quality::tier(tier);
             q.render_scale *= scale;
@@ -2321,7 +2622,11 @@ fn look_rotation_and_per_axis_scale() {
         "bar_rotation",
         &scene("        rotation: quat.from_axis_angle(vec3(0, 1, 0), 1.5707964)\n"),
     );
-    let faced = render_source(&mut renderer, "bar_facing", &scene("        facing: 1.5707964\n"));
+    let faced = render_source(
+        &mut renderer,
+        "bar_facing",
+        &scene("        facing: 1.5707964\n"),
+    );
     save_png("bar_rotation", &turned);
     let lum = |rgba: &[u8], x: u32, y: u32| {
         let p = pixel(rgba, x, y);
@@ -2334,14 +2639,20 @@ fn look_rotation_and_per_axis_scale() {
     assert!(lum(&flat, cx, cy + 50) < sky + 20, "bar is thin in z");
     // Turned a quarter: along z instead.
     assert!(lum(&turned, cx, cy + 50) > sky + 60, "turned bar along z");
-    assert!(lum(&turned, cx + 50, cy) < sky + 20, "turned bar is thin in x");
+    assert!(
+        lum(&turned, cx + 50, cy) < sky + 20,
+        "turned bar is thin in x"
+    );
     // `rotation` and `facing` agree.
     let differing = turned
         .chunks(4)
         .zip(faced.chunks(4))
         .filter(|(p, q)| p[..3].iter().zip(&q[..3]).any(|(a, b)| a.abs_diff(*b) > 8))
         .count();
-    assert!(differing < (W * H / 500) as usize, "{differing} pixels differ");
+    assert!(
+        differing < (W * H / 500) as usize,
+        "{differing} pixels differ"
+    );
 }
 
 /// Lanternfall E3: a look's `glow:` adds emission — a dark cube in a dark
@@ -2365,7 +2676,10 @@ fn look_glow_lights_up_a_dark_mesh() {
     let (cx, cy) = (W / 2, H / 2);
     let off = pixel(&dark, cx, cy);
     let on = pixel(&lit, cx, cy);
-    assert!(on[0] > off[0] + 80, "glow should light the cube: {off:?} -> {on:?}");
+    assert!(
+        on[0] > off[0] + 80,
+        "glow should light the cube: {off:?} -> {on:?}"
+    );
     assert!(on[0] > on[2] + 40, "an orange glow stays orange: {on:?}");
 }
 
@@ -2404,8 +2718,14 @@ fn entities_sharing_a_mesh_animate_apart() {
     };
     let left = differing(&both_idle, &left_attacks, 0..W / 2);
     let right = differing(&both_idle, &left_attacks, W / 2..W);
-    assert!(left > 150, "the left hero should change pose: {left} pixels differ");
-    assert!(right < 20, "the right hero should not: {right} pixels differ");
+    assert!(
+        left > 150,
+        "the left hero should change pose: {left} pixels differ"
+    );
+    assert!(
+        right < 20,
+        "the right hero should not: {right} pixels differ"
+    );
 }
 
 /// Lanternfall E6: `light.background` is what a 3D frame shows where
@@ -2421,5 +2741,8 @@ fn light_background_sets_the_sky() {
         "light.background((0.6, 0.1, 0.1))\non render():\n    cube(at: vec3(0, 0, 0), color: color.white, size: 0.5)\n",
     );
     let sky = pixel(&rgba, 2, 2);
-    assert!(sky[0] > sky[1] + 40 && sky[0] > sky[2] + 40, "a red sky: {sky:?}");
+    assert!(
+        sky[0] > sky[1] + 40 && sky[0] > sky[2] + 40,
+        "a red sky: {sky:?}"
+    );
 }

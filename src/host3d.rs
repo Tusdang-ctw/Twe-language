@@ -92,21 +92,27 @@ pub fn render_frame_dt(
             cpu: &cpu_particles,
         },
         point_lights: &point_lights,
-        fog: crate::stdlib::fog_settings().map(|(density, falloff, color)| crate::kernel::render::FogSettings {
-            density,
-            falloff,
-            color,
-            volumetric: crate::stdlib::fog_volumetric(),
+        fog: crate::stdlib::fog_settings().map(|(density, falloff, color)| {
+            crate::kernel::render::FogSettings {
+                density,
+                falloff,
+                color,
+                volumetric: crate::stdlib::fog_volumetric(),
+            }
         }),
         camera,
-        lut: lut.as_ref().map(|(path, strength)| crate::kernel::render::LutSettings {
-            path,
-            strength: *strength,
-        }),
-        environment: environment.as_ref().map(|(path, intensity)| crate::kernel::render::EnvironmentSettings {
-            path,
-            intensity: *intensity,
-            backdrop: false,
+        lut: lut
+            .as_ref()
+            .map(|(path, strength)| crate::kernel::render::LutSettings {
+                path,
+                strength: *strength,
+            }),
+        environment: environment.as_ref().map(|(path, intensity)| {
+            crate::kernel::render::EnvironmentSettings {
+                path,
+                intensity: *intensity,
+                backdrop: false,
+            }
         }),
         background: crate::stdlib::background_color(),
         lights: crate::stdlib::lights_snapshot(),
@@ -479,7 +485,10 @@ fn apply_view(env: &mut Env, width: u32, height: u32) {
             "center",
             Value::from_tuple(vec![Value::from_float(w * 0.5), Value::from_float(h * 0.5)]),
         );
-        o.insert_field("aspect", Value::from_float(f64::from(width) / f64::from(height)));
+        o.insert_field(
+            "aspect",
+            Value::from_float(f64::from(width) / f64::from(height)),
+        );
     }
 }
 

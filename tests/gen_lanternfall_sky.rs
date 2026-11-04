@@ -20,7 +20,11 @@ fn moon_dir() -> [f32; 3] {
 }
 
 fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
 }
 
 /// A cheap integer hash for the stars.
@@ -102,6 +106,10 @@ fn lanternfall_sky_exists_and_is_an_hdr() {
         .windows(header.len())
         .position(|w| w == header.as_bytes())
         .expect("resolution line");
-    assert_eq!(bytes.len() - (at + header.len()), W * H * 4, "flat RGBE pixels");
+    assert_eq!(
+        bytes.len() - (at + header.len()),
+        W * H * 4,
+        "flat RGBE pixels"
+    );
     assert_eq!(bytes, image(), "night.hdr is stale: delete it and rerun");
 }

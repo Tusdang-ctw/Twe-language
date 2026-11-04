@@ -262,7 +262,8 @@ fn headless_frame(path: &str, frame: u32) -> Result<(Vec<Draw2d>, Option<Camera2
     let dt = twec::eval::PHYSICS_DT;
     let mut accumulator = 0.0;
     for n in 1..=frame {
-        twec::frame2d::tick(&mut env, None, &mut accumulator, dt).map_err(|e| format!("tick: {e}"))?;
+        twec::frame2d::tick(&mut env, None, &mut accumulator, dt)
+            .map_err(|e| format!("tick: {e}"))?;
         let (camera, result) = twec::frame2d::render(&mut env, dt, W as f32, H as f32);
         result.map_err(|e| format!("render: {e}"))?;
         if n == frame {

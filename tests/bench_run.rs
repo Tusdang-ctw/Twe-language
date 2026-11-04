@@ -57,7 +57,10 @@ impl Provider for Solutions {
 }
 
 fn tasks() -> Vec<twec::bench::Task> {
-    TASKS.iter().map(|t| load_task(&Path::new("bench/tasks").join(t)).unwrap()).collect()
+    TASKS
+        .iter()
+        .map(|t| load_task(&Path::new("bench/tasks").join(t)).unwrap())
+        .collect()
 }
 
 #[test]
@@ -73,41 +76,88 @@ fn a_run_grades_resumes_and_regrades() {
         grade_limit: Duration::from_secs(30),
         ..Default::default()
     };
-    let make = || Ok(Box::new(Solutions { typo_first: true, calls: &CALLS }) as Box<dyn Provider>);
+    let make = || {
+        Ok(Box::new(Solutions {
+            typo_first: true,
+            calls: &CALLS,
+        }) as Box<dyn Provider>)
+    };
     let records = run(&tasks(), &make, "stand-in-typo", &options).unwrap();
     assert_eq!(records.len(), 6);
-    assert!(records.iter().all(|r| r.passed() && r.rounds == 2), "{records:#?}");
-    assert!(records.iter().all(|r| r.first_verify_errors > 0 && r.final_verify_errors == 0));
+    assert!(
+        records.iter().all(|r| r.passed() && r.rounds == 2),
+        "{records:#?}"
+    );
+    assert!(records
+        .iter()
+        .all(|r| r.first_verify_errors > 0 && r.final_verify_errors == 0));
     assert_eq!(CALLS.load(Ordering::SeqCst), 12);
 
     let summary: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("run/summary.json")).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(dir.join("run/summary.json")).unwrap())
+            .unwrap();
     assert_eq!(summary["pass_at_k"][0]["mean"], 1.0);
     assert_eq!(summary["first_round_verify_clean_rate"], 0.0);
     assert_eq!(summary["mean_rounds"], 2.0);
-    assert!(std::fs::read_to_string(dir.join("run/summary.md")).unwrap().contains("| pass@1 | 100.0%"));
+    assert!(std::fs::read_to_string(dir.join("run/summary.md"))
+        .unwrap()
+        .contains("| pass@1 | 100.0%"));
     assert!(dir.join("run/programs/door/1.twe").exists());
-    assert!(std::fs::read_dir(dir.join("run/transcripts/door/0")).unwrap().count() == 1);
+    assert!(
+        std::fs::read_dir(dir.join("run/transcripts/door/0"))
+            .unwrap()
+            .count()
+            == 1
+    );
 
     // Resuming a finished run does nothing; a fresh run directory with
     // the same cache answers from the cache.
     run(&tasks(), &make, "stand-in-typo", &options).unwrap();
     assert_eq!(CALLS.load(Ordering::SeqCst), 12);
-    let again = RunOptions { out_dir: dir.join("run2"), ..options.clone() };
+    let again = RunOptions {
+        out_dir: dir.join("run2"),
+        ..options.clone()
+    };
     let records = run(&tasks(), &make, "stand-in-typo", &again).unwrap();
-    assert_eq!(CALLS.load(Ordering::SeqCst), 12, "every reply came from the cache");
+    assert_eq!(
+        CALLS.load(Ordering::SeqCst),
+        12,
+        "every reply came from the cache"
+    );
     assert!(records.iter().all(|r| r.cache_hits == 2));
 
     // A run directory refuses different settings.
-    let other = RunOptions { max_rounds: 1, ..options.clone() };
-    assert!(run(&tasks(), &make, "stand-in-typo", &other).unwrap_err().contains("different settings"));
+    let other = RunOptions {
+        max_rounds: 1,
+        ..options.clone()
+    };
+    assert!(run(&tasks(), &make, "stand-in-typo", &other)
+        .unwrap_err()
+        .contains("different settings"));
 
     // Re-grading reads the programs, not the model: break one program
     // and its sample fails.
-    std::fs::write(dir.join("run/programs/door/0.twe"), "var door_state = \"closed\"\n").unwrap();
-    let records = regrade(&Grader::twe(exe()), &dir.join("run"), Path::new("bench/tasks"), Duration::from_secs(30), 4).unwrap();
+    std::fs::write(
+        dir.join("run/programs/door/0.twe"),
+        "var door_state = \"closed\"\n",
+    )
+    .unwrap();
+    let records = regrade(
+        &Grader::twe(exe()),
+        &dir.join("run"),
+        Path::new("bench/tasks"),
+        Duration::from_secs(30),
+        4,
+    )
+    .unwrap();
     assert_eq!(records.iter().filter(|r| !r.passed()).count(), 1);
-    assert_eq!(read_samples(&dir.join("run/samples.jsonl")).iter().filter(|r| r.passed()).count(), 5);
+    assert_eq!(
+        read_samples(&dir.join("run/samples.jsonl"))
+            .iter()
+            .filter(|r| r.passed())
+            .count(),
+        5
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -124,10 +174,17 @@ fn without_feedback_a_broken_first_answer_fails() {
         cache_dir: None,
         ..Default::default()
     };
-    let make = || Ok(Box::new(Solutions { typo_first: true, calls: &CALLS }) as Box<dyn Provider>);
+    let make = || {
+        Ok(Box::new(Solutions {
+            typo_first: true,
+            calls: &CALLS,
+        }) as Box<dyn Provider>)
+    };
     let records = run(&tasks(), &make, "stand-in-typo", &options).unwrap();
     assert!(records.iter().all(|r| !r.passed() && r.rounds == 1));
-    assert!(records.iter().all(|r| r.grade.as_ref().unwrap().stage == twec::bench::Stage::Load));
+    assert!(records
+        .iter()
+        .all(|r| r.grade.as_ref().unwrap().stage == twec::bench::Stage::Load));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -143,7 +200,14 @@ fn a_failing_provider_stops_the_run() {
         }
     }
     let dir = temp_dir("down");
-    let options = RunOptions { grader: Grader::twe(exe()), samples: 3, jobs: 1, out_dir: dir.join("run"), cache_dir: None, ..Default::default() };
+    let options = RunOptions {
+        grader: Grader::twe(exe()),
+        samples: 3,
+        jobs: 1,
+        out_dir: dir.join("run"),
+        cache_dir: None,
+        ..Default::default()
+    };
     let make = || Ok(Box::new(Down) as Box<dyn Provider>);
     let err = run(&tasks(), &make, "down", &options).unwrap_err();
     assert!(err.contains("connection refused"), "{err}");

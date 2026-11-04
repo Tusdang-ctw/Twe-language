@@ -49,7 +49,10 @@ fn soak_ten_ten_minute_runs() {
     for i in 0..10 {
         let r = soak(10 * MINUTE, i);
         eprintln!("soak {}: {}", i + 1, r.to_json());
-        assert!(r.deaths >= 1, "a 10-minute session should see deaths and restarts");
+        assert!(
+            r.deaths >= 1,
+            "a 10-minute session should see deaths and restarts"
+        );
         assert_no_growth(&r);
     }
 }

@@ -161,7 +161,13 @@ fn pseudo_noise(time: f32, salt: f32) -> f32 {
 /// `(view_x, view_y, view_w, view_h)` is the world-space rectangle
 /// the ambient darkness should cover — typically the on-screen
 /// portion of the world under the current camera transform.
-pub fn draw_overlay(out: &mut Vec<crate::draw2d::Draw2d>, view_x: f32, view_y: f32, view_w: f32, view_h: f32) {
+pub fn draw_overlay(
+    out: &mut Vec<crate::draw2d::Draw2d>,
+    view_x: f32,
+    view_y: f32,
+    view_w: f32,
+    view_h: f32,
+) {
     // web3d-M6: commands, drawn by whichever renderer runs the game.
     use crate::draw2d::{circle as draw_circle, rect as draw_rectangle};
 

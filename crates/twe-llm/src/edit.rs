@@ -65,9 +65,14 @@ pub fn apply(source: &str, edit: &Edit) -> Result<String, EditError> {
 pub enum EditError {
     NoEdit,
     /// Block `index` (0-based) matched nothing.
-    NoMatch { index: usize },
+    NoMatch {
+        index: usize,
+    },
     /// Block `index` matched `count` places.
-    Ambiguous { index: usize, count: usize },
+    Ambiguous {
+        index: usize,
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for EditError {
@@ -190,7 +195,12 @@ pub fn apply_blocks(source: &str, blocks: &[SearchReplace]) -> Result<String, Ed
             Vec::new()
         } else {
             (0..=lines.len() - needle.len())
-                .filter(|&i| needle.iter().enumerate().all(|(k, n)| same(&lines[i + k], n)))
+                .filter(|&i| {
+                    needle
+                        .iter()
+                        .enumerate()
+                        .all(|(k, n)| same(&lines[i + k], n))
+                })
                 .collect()
         };
         match starts.as_slice() {
@@ -198,7 +208,12 @@ pub fn apply_blocks(source: &str, blocks: &[SearchReplace]) -> Result<String, Ed
             [start] => {
                 lines.splice(*start..*start + needle.len(), replace);
             }
-            many => return Err(EditError::Ambiguous { index, count: many.len() }),
+            many => {
+                return Err(EditError::Ambiguous {
+                    index,
+                    count: many.len(),
+                })
+            }
         }
     }
     Ok(lines.join("\n"))
@@ -235,7 +250,9 @@ mod tests {
     #[test]
     fn blocks_parse_and_apply() {
         let edit = parse_reply(REPLY, &["twe"]);
-        let Edit::Blocks(blocks) = &edit else { panic!("{edit:?}") };
+        let Edit::Blocks(blocks) = &edit else {
+            panic!("{edit:?}")
+        };
         assert_eq!(blocks.len(), 1);
         let out = apply("let a = 0\nlet speed = 1\nprint(a)", &edit).unwrap();
         assert_eq!(out, "let a = 0\nlet speed = 2\nprint(a)");
@@ -243,7 +260,9 @@ mod tests {
 
     #[test]
     fn trailing_whitespace_and_crlf_still_match() {
-        let blocks = parse_blocks("<<<<<<< SEARCH\nlet speed = 1  \n=======\nlet speed = 3\n>>>>>>> REPLACE");
+        let blocks = parse_blocks(
+            "<<<<<<< SEARCH\nlet speed = 1  \n=======\nlet speed = 3\n>>>>>>> REPLACE",
+        );
         let out = apply_blocks("let speed = 1\r\nprint(speed)", &blocks).unwrap();
         assert_eq!(out, "let speed = 3\nprint(speed)");
     }
@@ -285,8 +304,14 @@ mod tests {
     fn whole_files_by_tag_then_untagged() {
         let tagged = "```python\nx = 1\n```\n```twe\nlet x = 1\n```";
         assert_eq!(fenced_file(tagged, &["twe"]).as_deref(), Some("let x = 1"));
-        assert_eq!(fenced_file(tagged, &["python", "py"]).as_deref(), Some("x = 1"));
-        assert_eq!(fenced_file("```\nlet y = 2\n```", &["twe"]).as_deref(), Some("let y = 2"));
+        assert_eq!(
+            fenced_file(tagged, &["python", "py"]).as_deref(),
+            Some("x = 1")
+        );
+        assert_eq!(
+            fenced_file("```\nlet y = 2\n```", &["twe"]).as_deref(),
+            Some("let y = 2")
+        );
         assert_eq!(fenced_file("```twe\nunclosed", &["twe"]), None);
         assert_eq!(parse_reply("no code here", &["twe"]), Edit::Nothing);
         assert_eq!(

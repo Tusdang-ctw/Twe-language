@@ -23,9 +23,16 @@ type Part = ([f32; 3], [f32; 3], u16, usize);
 /// One animated property of one joint.
 enum Track {
     /// Rotation about `axis` (unit), degrees per key.
-    Rotate { joint: usize, axis: [f32; 3], deg: &'static [f32] },
+    Rotate {
+        joint: usize,
+        axis: [f32; 3],
+        deg: &'static [f32],
+    },
     /// Translation offset from the joint's rest position, per key.
-    Offset { joint: usize, by: &'static [[f32; 3]] },
+    Offset {
+        joint: usize,
+        by: &'static [[f32; 3]],
+    },
 }
 
 struct Clip {
@@ -114,8 +121,16 @@ fn character_clips() -> Vec<Clip> {
     // a hanging arm along +Z).
     let armed = |times: &'static [f32], l: &'static [f32], r: &'static [f32]| {
         vec![
-            Track::Rotate { joint: 3, axis: X, deg: l },
-            Track::Rotate { joint: 4, axis: X, deg: r },
+            Track::Rotate {
+                joint: 3,
+                axis: X,
+                deg: l,
+            },
+            Track::Rotate {
+                joint: 4,
+                axis: X,
+                deg: r,
+            },
         ]
         .into_iter()
         .chain(std::iter::once(Track::Rotate {
@@ -127,30 +142,67 @@ fn character_clips() -> Vec<Clip> {
     };
     let run_legs = || {
         vec![
-            Track::Rotate { joint: 1, axis: X, deg: &[0.0, 50.0, 0.0, -50.0, 0.0] },
-            Track::Rotate { joint: 2, axis: X, deg: &[0.0, -50.0, 0.0, 50.0, 0.0] },
+            Track::Rotate {
+                joint: 1,
+                axis: X,
+                deg: &[0.0, 50.0, 0.0, -50.0, 0.0],
+            },
+            Track::Rotate {
+                joint: 2,
+                axis: X,
+                deg: &[0.0, -50.0, 0.0, 50.0, 0.0],
+            },
             Track::Offset {
                 joint: 0,
-                by: &[[0.0, 0.07, 0.0], [0.0, 0.0, 0.0], [0.0, 0.07, 0.0], [0.0, 0.0, 0.0], [0.0, 0.07, 0.0]],
+                by: &[
+                    [0.0, 0.07, 0.0],
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.07, 0.0],
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.07, 0.0],
+                ],
             },
         ]
     };
     let mut run_armed = run_legs();
-    run_armed.extend(armed(RUN_T, &[-70.0, -74.0, -70.0, -74.0, -70.0], &[-82.0, -86.0, -82.0, -86.0, -82.0]));
+    run_armed.extend(armed(
+        RUN_T,
+        &[-70.0, -74.0, -70.0, -74.0, -70.0],
+        &[-82.0, -86.0, -82.0, -86.0, -82.0],
+    ));
     let mut idle_armed = vec![Track::Offset {
         joint: 0,
         by: &[[0.0, 0.0, 0.0], [0.0, 0.015, 0.0], [0.0, 0.0, 0.0]],
     }];
-    idle_armed.extend(armed(IDLE_T, &[-68.0, -70.0, -68.0], &[-80.0, -82.0, -80.0]));
+    idle_armed.extend(armed(
+        IDLE_T,
+        &[-68.0, -70.0, -68.0],
+        &[-80.0, -82.0, -80.0],
+    ));
     vec![
         Clip {
             name: "idle",
             times: IDLE_T,
             tracks: vec![
-                Track::Offset { joint: 0, by: &[[0.0, 0.0, 0.0], [0.0, 0.015, 0.0], [0.0, 0.0, 0.0]] },
-                Track::Rotate { joint: 3, axis: X, deg: &[0.0, 4.0, 0.0] },
-                Track::Rotate { joint: 4, axis: X, deg: &[0.0, -4.0, 0.0] },
-                Track::Rotate { joint: 5, axis: X, deg: &[0.0, 2.0, 0.0] },
+                Track::Offset {
+                    joint: 0,
+                    by: &[[0.0, 0.0, 0.0], [0.0, 0.015, 0.0], [0.0, 0.0, 0.0]],
+                },
+                Track::Rotate {
+                    joint: 3,
+                    axis: X,
+                    deg: &[0.0, 4.0, 0.0],
+                },
+                Track::Rotate {
+                    joint: 4,
+                    axis: X,
+                    deg: &[0.0, -4.0, 0.0],
+                },
+                Track::Rotate {
+                    joint: 5,
+                    axis: X,
+                    deg: &[0.0, 2.0, 0.0],
+                },
             ],
         },
         Clip {
@@ -158,21 +210,49 @@ fn character_clips() -> Vec<Clip> {
             times: RUN_T,
             tracks: {
                 let mut t = run_legs();
-                t.push(Track::Rotate { joint: 3, axis: X, deg: &[0.0, -42.0, 0.0, 42.0, 0.0] });
-                t.push(Track::Rotate { joint: 4, axis: X, deg: &[0.0, 42.0, 0.0, -42.0, 0.0] });
+                t.push(Track::Rotate {
+                    joint: 3,
+                    axis: X,
+                    deg: &[0.0, -42.0, 0.0, 42.0, 0.0],
+                });
+                t.push(Track::Rotate {
+                    joint: 4,
+                    axis: X,
+                    deg: &[0.0, 42.0, 0.0, -42.0, 0.0],
+                });
                 t
             },
         },
-        Clip { name: "idle_armed", times: IDLE_T, tracks: idle_armed },
-        Clip { name: "run_armed", times: RUN_T, tracks: run_armed },
+        Clip {
+            name: "idle_armed",
+            times: IDLE_T,
+            tracks: idle_armed,
+        },
+        Clip {
+            name: "run_armed",
+            times: RUN_T,
+            tracks: run_armed,
+        },
         // A one-shot swing: the right arm winds up overhead and comes down.
         Clip {
             name: "melee",
             times: &[0.0, 0.12, 0.32],
             tracks: vec![
-                Track::Rotate { joint: 4, axis: X, deg: &[0.0, -150.0, -20.0] },
-                Track::Rotate { joint: 3, axis: X, deg: &[0.0, 20.0, -10.0] },
-                Track::Rotate { joint: 1, axis: X, deg: &[0.0, -15.0, 0.0] },
+                Track::Rotate {
+                    joint: 4,
+                    axis: X,
+                    deg: &[0.0, -150.0, -20.0],
+                },
+                Track::Rotate {
+                    joint: 3,
+                    axis: X,
+                    deg: &[0.0, 20.0, -10.0],
+                },
+                Track::Rotate {
+                    joint: 1,
+                    axis: X,
+                    deg: &[0.0, -15.0, 0.0],
+                },
             ],
         },
         // Fall backwards onto the ground, arms flung up.
@@ -180,10 +260,26 @@ fn character_clips() -> Vec<Clip> {
             name: "death",
             times: &[0.0, 0.18, 0.45, 0.6],
             tracks: vec![
-                Track::Rotate { joint: 0, axis: X, deg: &[0.0, -25.0, -88.0, -84.0] },
-                Track::Rotate { joint: 3, axis: X, deg: &[0.0, -100.0, -160.0, -150.0] },
-                Track::Rotate { joint: 4, axis: X, deg: &[0.0, -110.0, -170.0, -160.0] },
-                Track::Rotate { joint: 1, axis: X, deg: &[0.0, 20.0, 35.0, 30.0] },
+                Track::Rotate {
+                    joint: 0,
+                    axis: X,
+                    deg: &[0.0, -25.0, -88.0, -84.0],
+                },
+                Track::Rotate {
+                    joint: 3,
+                    axis: X,
+                    deg: &[0.0, -100.0, -160.0, -150.0],
+                },
+                Track::Rotate {
+                    joint: 4,
+                    axis: X,
+                    deg: &[0.0, -110.0, -170.0, -160.0],
+                },
+                Track::Rotate {
+                    joint: 1,
+                    axis: X,
+                    deg: &[0.0, 20.0, 35.0, 30.0],
+                },
             ],
         },
         // Gliding down from the barge: arms out to the sides.
@@ -191,10 +287,26 @@ fn character_clips() -> Vec<Clip> {
             name: "glide",
             times: &[0.0, 0.5, 1.0],
             tracks: vec![
-                Track::Rotate { joint: 3, axis: Z, deg: &[-80.0, -86.0, -80.0] },
-                Track::Rotate { joint: 4, axis: Z, deg: &[80.0, 86.0, 80.0] },
-                Track::Rotate { joint: 1, axis: X, deg: &[-25.0, -30.0, -25.0] },
-                Track::Rotate { joint: 2, axis: X, deg: &[-20.0, -15.0, -20.0] },
+                Track::Rotate {
+                    joint: 3,
+                    axis: Z,
+                    deg: &[-80.0, -86.0, -80.0],
+                },
+                Track::Rotate {
+                    joint: 4,
+                    axis: Z,
+                    deg: &[80.0, 86.0, 80.0],
+                },
+                Track::Rotate {
+                    joint: 1,
+                    axis: X,
+                    deg: &[-25.0, -30.0, -25.0],
+                },
+                Track::Rotate {
+                    joint: 2,
+                    axis: X,
+                    deg: &[-20.0, -15.0, -20.0],
+                },
             ],
         },
         // The winner's dance: both arms up, bouncing.
@@ -202,9 +314,20 @@ fn character_clips() -> Vec<Clip> {
             name: "victory",
             times: &[0.0, 0.25, 0.5],
             tracks: vec![
-                Track::Rotate { joint: 3, axis: X, deg: &[-170.0, -150.0, -170.0] },
-                Track::Rotate { joint: 4, axis: X, deg: &[-150.0, -170.0, -150.0] },
-                Track::Offset { joint: 0, by: &[[0.0, 0.0, 0.0], [0.0, 0.18, 0.0], [0.0, 0.0, 0.0]] },
+                Track::Rotate {
+                    joint: 3,
+                    axis: X,
+                    deg: &[-170.0, -150.0, -170.0],
+                },
+                Track::Rotate {
+                    joint: 4,
+                    axis: X,
+                    deg: &[-150.0, -170.0, -150.0],
+                },
+                Track::Offset {
+                    joint: 0,
+                    by: &[[0.0, 0.0, 0.0], [0.0, 0.18, 0.0], [0.0, 0.0, 0.0]],
+                },
             ],
         },
         // Channelling a shield cell: hands together in front, a slight bob.
@@ -212,24 +335,54 @@ fn character_clips() -> Vec<Clip> {
             name: "channel",
             times: &[0.0, 0.4, 0.8],
             tracks: vec![
-                Track::Rotate { joint: 3, axis: X, deg: &[-50.0, -56.0, -50.0] },
-                Track::Rotate { joint: 4, axis: X, deg: &[-50.0, -56.0, -50.0] },
-                Track::Rotate { joint: 5, axis: X, deg: &[12.0, 16.0, 12.0] },
+                Track::Rotate {
+                    joint: 3,
+                    axis: X,
+                    deg: &[-50.0, -56.0, -50.0],
+                },
+                Track::Rotate {
+                    joint: 4,
+                    axis: X,
+                    deg: &[-50.0, -56.0, -50.0],
+                },
+                Track::Rotate {
+                    joint: 5,
+                    axis: X,
+                    deg: &[12.0, 16.0, 12.0],
+                },
             ],
         },
         Clip {
             name: "hold",
             times: HOLD_T,
-            tracks: vec![Track::Rotate { joint: 0, axis: X, deg: &[0.0, 0.0] }],
+            tracks: vec![Track::Rotate {
+                joint: 0,
+                axis: X,
+                deg: &[0.0, 0.0],
+            }],
         },
     ]
 }
 
 /// A character in its colours: shirt, pants, hood, pack.
-fn character(name: &'static str, shirt: [u8; 3], pants: [u8; 3], hood: [u8; 3], pack: [u8; 3]) -> Model {
+fn character(
+    name: &'static str,
+    shirt: [u8; 3],
+    pants: [u8; 3],
+    hood: [u8; 3],
+    pack: [u8; 3],
+) -> Model {
     Model {
         name,
-        palette: vec![[236, 196, 158], shirt, pants, [34, 28, 30], hood, pack, [255, 214, 120]],
+        palette: vec![
+            [236, 196, 158],
+            shirt,
+            pants,
+            [34, 28, 30],
+            hood,
+            pack,
+            [255, 214, 120],
+        ],
         joints: character_joints(),
         parts: character_parts(),
         clips: character_clips(),
@@ -245,7 +398,10 @@ fn chest() -> Model {
     Model {
         name: "chest",
         palette: vec![[120, 74, 40], [60, 52, 60], [245, 196, 70]],
-        joints: vec![("base", None, [0.0, 0.0, 0.0]), ("lid", Some(0), [0.0, 0.5, -0.32])],
+        joints: vec![
+            ("base", None, [0.0, 0.0, 0.0]),
+            ("lid", Some(0), [0.0, 0.5, -0.32]),
+        ],
         parts: vec![
             ([-0.5, 0.0, -0.32], [0.5, 0.5, 0.32], 0, WOOD),
             ([-0.52, 0.18, -0.34], [0.52, 0.26, 0.34], 0, BAND),
@@ -258,19 +414,34 @@ fn chest() -> Model {
             Clip {
                 name: "shut",
                 times: HOLD_T,
-                tracks: vec![Track::Rotate { joint: 1, axis: X, deg: &[0.0, 0.0] }],
+                tracks: vec![Track::Rotate {
+                    joint: 1,
+                    axis: X,
+                    deg: &[0.0, 0.0],
+                }],
             },
             Clip {
                 name: "open",
                 times: &[0.0, 0.18, 0.3],
-                tracks: vec![Track::Rotate { joint: 1, axis: X, deg: &[0.0, -118.0, -105.0] }],
+                tracks: vec![Track::Rotate {
+                    joint: 1,
+                    axis: X,
+                    deg: &[0.0, -118.0, -105.0],
+                }],
             },
         ],
     }
 }
 
 fn prop(name: &'static str, palette: Vec<[u8; 3]>, parts: Vec<Part>) -> Model {
-    Model { name, palette, joints: Vec::new(), parts, clips: Vec::new(), tube: None }
+    Model {
+        name,
+        palette,
+        joints: Vec::new(),
+        parts,
+        clips: Vec::new(),
+        tube: None,
+    }
 }
 
 /// The lantern barge that carries everyone over the island: a hull, a
@@ -284,7 +455,14 @@ fn barge() -> Model {
     const DARK: usize = 5;
     prop(
         "barge",
-        vec![[120, 82, 54], [70, 50, 40], [228, 222, 206], [210, 120, 60], [255, 214, 120], [40, 34, 40]],
+        vec![
+            [120, 82, 54],
+            [70, 50, 40],
+            [228, 222, 206],
+            [210, 120, 60],
+            [255, 214, 120],
+            [40, 34, 40],
+        ],
         vec![
             // hull and deck
             ([-1.6, 0.0, -5.0], [1.6, 1.2, 5.0], 0, HULL),
@@ -338,37 +516,61 @@ fn guns() -> Vec<Model> {
     let dark = [36, 34, 40];
     let wood = [120, 80, 50];
     vec![
-        prop("gun_wrench", vec![metal, dark, [200, 120, 60]], vec![
-            ([-0.05, 0.0, -0.4], [0.05, 0.08, 0.25], 0, 0),
-            ([-0.14, 0.0, 0.2], [0.14, 0.08, 0.42], 0, 0),
-            ([-0.05, 0.0, -0.45], [0.05, 0.1, -0.25], 0, 2),
-        ]),
-        prop("gun_pistol", vec![metal, dark, [120, 220, 255]], vec![
-            ([-0.06, 0.0, -0.1], [0.06, 0.12, 0.32], 0, 0),
-            ([-0.05, -0.16, -0.12], [0.05, 0.0, 0.0], 0, 1),
-            ([-0.07, 0.05, 0.1], [0.07, 0.15, 0.2], 0, 2),
-        ]),
-        prop("gun_smg", vec![metal, dark, [80, 240, 255]], vec![
-            ([-0.07, 0.0, -0.3], [0.07, 0.14, 0.4], 0, 0),
-            ([-0.05, -0.2, 0.0], [0.05, 0.0, 0.1], 0, 1),
-            ([-0.05, -0.14, -0.22], [0.05, 0.0, -0.14], 0, 1),
-            ([-0.08, 0.06, -0.05], [0.08, 0.16, 0.25], 0, 2),
-        ]),
-        prop("gun_scatter", vec![wood, dark, [255, 160, 70]], vec![
-            ([-0.08, 0.0, -0.45], [0.08, 0.14, 0.0], 0, 0),
-            ([-0.1, 0.02, 0.0], [0.1, 0.16, 0.5], 0, 1),
-            ([-0.13, 0.0, 0.42], [0.13, 0.18, 0.55], 0, 2),
-        ]),
-        prop("gun_rifle", vec![wood, metal, [255, 210, 90]], vec![
-            ([-0.07, 0.0, -0.55], [0.07, 0.13, -0.05], 0, 0),
-            ([-0.05, 0.03, -0.05], [0.05, 0.11, 0.65], 0, 1),
-            ([-0.06, 0.13, -0.1], [0.06, 0.22, 0.2], 0, 2),
-        ]),
-        prop("gun_mortar", vec![[90, 70, 100], dark, [255, 120, 200]], vec![
-            ([-0.13, 0.0, -0.35], [0.13, 0.26, 0.35], 0, 0),
-            ([-0.16, 0.02, 0.3], [0.16, 0.28, 0.45], 0, 2),
-            ([-0.08, -0.15, -0.1], [0.08, 0.0, 0.05], 0, 1),
-        ]),
+        prop(
+            "gun_wrench",
+            vec![metal, dark, [200, 120, 60]],
+            vec![
+                ([-0.05, 0.0, -0.4], [0.05, 0.08, 0.25], 0, 0),
+                ([-0.14, 0.0, 0.2], [0.14, 0.08, 0.42], 0, 0),
+                ([-0.05, 0.0, -0.45], [0.05, 0.1, -0.25], 0, 2),
+            ],
+        ),
+        prop(
+            "gun_pistol",
+            vec![metal, dark, [120, 220, 255]],
+            vec![
+                ([-0.06, 0.0, -0.1], [0.06, 0.12, 0.32], 0, 0),
+                ([-0.05, -0.16, -0.12], [0.05, 0.0, 0.0], 0, 1),
+                ([-0.07, 0.05, 0.1], [0.07, 0.15, 0.2], 0, 2),
+            ],
+        ),
+        prop(
+            "gun_smg",
+            vec![metal, dark, [80, 240, 255]],
+            vec![
+                ([-0.07, 0.0, -0.3], [0.07, 0.14, 0.4], 0, 0),
+                ([-0.05, -0.2, 0.0], [0.05, 0.0, 0.1], 0, 1),
+                ([-0.05, -0.14, -0.22], [0.05, 0.0, -0.14], 0, 1),
+                ([-0.08, 0.06, -0.05], [0.08, 0.16, 0.25], 0, 2),
+            ],
+        ),
+        prop(
+            "gun_scatter",
+            vec![wood, dark, [255, 160, 70]],
+            vec![
+                ([-0.08, 0.0, -0.45], [0.08, 0.14, 0.0], 0, 0),
+                ([-0.1, 0.02, 0.0], [0.1, 0.16, 0.5], 0, 1),
+                ([-0.13, 0.0, 0.42], [0.13, 0.18, 0.55], 0, 2),
+            ],
+        ),
+        prop(
+            "gun_rifle",
+            vec![wood, metal, [255, 210, 90]],
+            vec![
+                ([-0.07, 0.0, -0.55], [0.07, 0.13, -0.05], 0, 0),
+                ([-0.05, 0.03, -0.05], [0.05, 0.11, 0.65], 0, 1),
+                ([-0.06, 0.13, -0.1], [0.06, 0.22, 0.2], 0, 2),
+            ],
+        ),
+        prop(
+            "gun_mortar",
+            vec![[90, 70, 100], dark, [255, 120, 200]],
+            vec![
+                ([-0.13, 0.0, -0.35], [0.13, 0.26, 0.35], 0, 0),
+                ([-0.16, 0.02, 0.3], [0.16, 0.28, 0.45], 0, 2),
+                ([-0.08, -0.15, -0.1], [0.08, 0.0, 0.05], 0, 1),
+            ],
+        ),
     ]
 }
 
@@ -381,103 +583,163 @@ fn dressing() -> Vec<Model> {
     let moss = [70, 104, 66];
     vec![
         // Lantern Docks: barrels, a rowing boat, a mooring post.
-        prop("barrel", vec![wood, iron], vec![
-            ([-0.32, 0.0, -0.32], [0.32, 0.9, 0.32], 0, 0),
-            ([-0.36, 0.12, -0.36], [0.36, 0.2, 0.36], 0, 1),
-            ([-0.36, 0.7, -0.36], [0.36, 0.78, 0.36], 0, 1),
-        ]),
-        prop("boat", vec![wood, dark_wood, [200, 190, 170]], vec![
-            ([-0.8, 0.0, -2.2], [0.8, 0.35, 2.2], 0, 1),
-            ([-0.9, 0.35, -2.4], [0.9, 0.7, 2.4], 0, 0),
-            ([-0.7, 0.35, -2.0], [0.7, 0.62, 2.0], 0, 1),
-            ([-0.6, 0.6, -0.2], [0.6, 0.7, 0.2], 0, 0),
-            ([-0.05, 0.7, 0.8], [0.05, 2.8, 0.9], 0, 1),
-            ([-0.04, 1.1, 0.9], [0.04, 2.6, 2.0], 0, 2),
-        ]),
-        prop("post", vec![dark_wood, iron], vec![
-            ([-0.14, 0.0, -0.14], [0.14, 1.1, 0.14], 0, 0),
-            ([-0.18, 0.9, -0.18], [0.18, 1.0, 0.18], 0, 1),
-        ]),
+        prop(
+            "barrel",
+            vec![wood, iron],
+            vec![
+                ([-0.32, 0.0, -0.32], [0.32, 0.9, 0.32], 0, 0),
+                ([-0.36, 0.12, -0.36], [0.36, 0.2, 0.36], 0, 1),
+                ([-0.36, 0.7, -0.36], [0.36, 0.78, 0.36], 0, 1),
+            ],
+        ),
+        prop(
+            "boat",
+            vec![wood, dark_wood, [200, 190, 170]],
+            vec![
+                ([-0.8, 0.0, -2.2], [0.8, 0.35, 2.2], 0, 1),
+                ([-0.9, 0.35, -2.4], [0.9, 0.7, 2.4], 0, 0),
+                ([-0.7, 0.35, -2.0], [0.7, 0.62, 2.0], 0, 1),
+                ([-0.6, 0.6, -0.2], [0.6, 0.7, 0.2], 0, 0),
+                ([-0.05, 0.7, 0.8], [0.05, 2.8, 0.9], 0, 1),
+                ([-0.04, 1.1, 0.9], [0.04, 2.6, 2.0], 0, 2),
+            ],
+        ),
+        prop(
+            "post",
+            vec![dark_wood, iron],
+            vec![
+                ([-0.14, 0.0, -0.14], [0.14, 1.1, 0.14], 0, 0),
+                ([-0.18, 0.9, -0.18], [0.18, 1.0, 0.18], 0, 1),
+            ],
+        ),
         // Glasshouse Observatory: a brass telescope on a tripod.
-        prop("telescope", vec![[200, 160, 80], iron, [120, 200, 255]], vec![
-            ([-0.4, 0.0, -0.4], [-0.3, 1.2, -0.3], 0, 1),
-            ([0.3, 0.0, -0.4], [0.4, 1.2, -0.3], 0, 1),
-            ([-0.05, 0.0, 0.3], [0.05, 1.2, 0.4], 0, 1),
-            ([-0.3, 1.2, -0.3], [0.3, 1.35, 0.3], 0, 1),
-            ([-0.16, 1.35, -0.9], [0.16, 1.67, 0.9], 0, 0),
-            ([-0.2, 1.31, 0.9], [0.2, 1.71, 1.1], 0, 0),
-            ([-0.14, 1.37, 1.1], [0.14, 1.65, 1.12], 0, 2),
-        ]),
+        prop(
+            "telescope",
+            vec![[200, 160, 80], iron, [120, 200, 255]],
+            vec![
+                ([-0.4, 0.0, -0.4], [-0.3, 1.2, -0.3], 0, 1),
+                ([0.3, 0.0, -0.4], [0.4, 1.2, -0.3], 0, 1),
+                ([-0.05, 0.0, 0.3], [0.05, 1.2, 0.4], 0, 1),
+                ([-0.3, 1.2, -0.3], [0.3, 1.35, 0.3], 0, 1),
+                ([-0.16, 1.35, -0.9], [0.16, 1.67, 0.9], 0, 0),
+                ([-0.2, 1.31, 0.9], [0.2, 1.71, 1.1], 0, 0),
+                ([-0.14, 1.37, 1.1], [0.14, 1.65, 1.12], 0, 2),
+            ],
+        ),
         // Rust Hangars: fuel drums and a stack of tyres.
-        prop("drum", vec![[170, 70, 46], [90, 40, 30], [220, 200, 80]], vec![
-            ([-0.3, 0.0, -0.3], [0.3, 0.95, 0.3], 0, 0),
-            ([-0.32, 0.3, -0.32], [0.32, 0.36, 0.32], 0, 1),
-            ([-0.32, 0.65, -0.32], [0.32, 0.71, 0.32], 0, 1),
-            ([-0.1, 0.4, 0.3], [0.1, 0.6, 0.32], 0, 2),
-        ]),
-        prop("tyres", vec![[34, 32, 36], [60, 58, 62]], vec![
-            ([-0.45, 0.0, -0.45], [0.45, 0.22, 0.45], 0, 0),
-            ([-0.42, 0.22, -0.42], [0.42, 0.44, 0.42], 0, 1),
-            ([-0.45, 0.44, -0.45], [0.45, 0.66, 0.45], 0, 0),
-        ]),
+        prop(
+            "drum",
+            vec![[170, 70, 46], [90, 40, 30], [220, 200, 80]],
+            vec![
+                ([-0.3, 0.0, -0.3], [0.3, 0.95, 0.3], 0, 0),
+                ([-0.32, 0.3, -0.32], [0.32, 0.36, 0.32], 0, 1),
+                ([-0.32, 0.65, -0.32], [0.32, 0.71, 0.32], 0, 1),
+                ([-0.1, 0.4, 0.3], [0.1, 0.6, 0.32], 0, 2),
+            ],
+        ),
+        prop(
+            "tyres",
+            vec![[34, 32, 36], [60, 58, 62]],
+            vec![
+                ([-0.45, 0.0, -0.45], [0.45, 0.22, 0.45], 0, 0),
+                ([-0.42, 0.22, -0.42], [0.42, 0.44, 0.42], 0, 1),
+                ([-0.45, 0.44, -0.45], [0.45, 0.66, 0.45], 0, 0),
+            ],
+        ),
         // Sunken Chapel: gravestones, a broken pillar, a candle.
-        prop("grave", vec![stone, moss], vec![
-            ([-0.35, 0.0, -0.1], [0.35, 0.75, 0.1], 0, 0),
-            ([-0.25, 0.75, -0.1], [0.25, 0.9, 0.1], 0, 0),
-            ([-0.36, 0.0, -0.11], [0.36, 0.15, 0.11], 0, 1),
-        ]),
-        prop("pillar", vec![stone, moss, [100, 104, 116]], vec![
-            ([-0.45, 0.0, -0.45], [0.45, 0.3, 0.45], 0, 2),
-            ([-0.32, 0.3, -0.32], [0.32, 2.4, 0.32], 0, 0),
-            ([-0.36, 2.4, -0.36], [0.2, 2.7, 0.28], 0, 2),
-            ([-0.33, 0.3, -0.33], [0.33, 0.5, 0.33], 0, 1),
-        ]),
-        prop("candle", vec![[236, 228, 210], [255, 200, 110]], vec![
-            ([-0.06, 0.0, -0.06], [0.06, 0.3, 0.06], 0, 0),
-            ([-0.025, 0.3, -0.025], [0.025, 0.38, 0.025], 0, 1),
-        ]),
+        prop(
+            "grave",
+            vec![stone, moss],
+            vec![
+                ([-0.35, 0.0, -0.1], [0.35, 0.75, 0.1], 0, 0),
+                ([-0.25, 0.75, -0.1], [0.25, 0.9, 0.1], 0, 0),
+                ([-0.36, 0.0, -0.11], [0.36, 0.15, 0.11], 0, 1),
+            ],
+        ),
+        prop(
+            "pillar",
+            vec![stone, moss, [100, 104, 116]],
+            vec![
+                ([-0.45, 0.0, -0.45], [0.45, 0.3, 0.45], 0, 2),
+                ([-0.32, 0.3, -0.32], [0.32, 2.4, 0.32], 0, 0),
+                ([-0.36, 2.4, -0.36], [0.2, 2.7, 0.28], 0, 2),
+                ([-0.33, 0.3, -0.33], [0.33, 0.5, 0.33], 0, 1),
+            ],
+        ),
+        prop(
+            "candle",
+            vec![[236, 228, 210], [255, 200, 110]],
+            vec![
+                ([-0.06, 0.0, -0.06], [0.06, 0.3, 0.06], 0, 0),
+                ([-0.025, 0.3, -0.025], [0.025, 0.38, 0.025], 0, 1),
+            ],
+        ),
         // Signal Vault: a standard on a pole.
-        prop("banner", vec![iron, [110, 70, 170], [235, 200, 110]], vec![
-            ([-0.06, 0.0, -0.06], [0.06, 3.4, 0.06], 0, 0),
-            ([0.06, 1.6, -0.03], [1.0, 3.2, 0.03], 0, 1),
-            ([0.06, 2.9, -0.04], [1.0, 3.0, 0.04], 0, 2),
-            ([0.4, 2.1, -0.04], [0.7, 2.5, 0.04], 0, 2),
-        ]),
+        prop(
+            "banner",
+            vec![iron, [110, 70, 170], [235, 200, 110]],
+            vec![
+                ([-0.06, 0.0, -0.06], [0.06, 3.4, 0.06], 0, 0),
+                ([0.06, 1.6, -0.03], [1.0, 3.2, 0.03], 0, 1),
+                ([0.06, 2.9, -0.04], [1.0, 3.0, 0.04], 0, 2),
+                ([0.4, 2.1, -0.04], [0.7, 2.5, 0.04], 0, 2),
+            ],
+        ),
         // The island's night growth: glowing mushrooms, bushes, flowers.
-        prop("mushrooms", vec![[220, 230, 240], [120, 230, 255], [70, 60, 80]], vec![
-            ([-0.05, 0.0, -0.05], [0.05, 0.28, 0.05], 0, 0),
-            ([-0.18, 0.26, -0.18], [0.18, 0.36, 0.18], 0, 1),
-            ([0.22, 0.0, 0.12], [0.28, 0.16, 0.18], 0, 0),
-            ([0.14, 0.15, 0.04], [0.36, 0.22, 0.26], 0, 1),
-            ([-0.3, 0.0, 0.2], [-0.25, 0.12, 0.25], 0, 0),
-            ([-0.36, 0.11, 0.14], [-0.19, 0.17, 0.31], 0, 1),
-        ]),
-        prop("bush", vec![[46, 92, 58], [36, 74, 50], [62, 112, 70]], vec![
-            ([-0.6, 0.0, -0.5], [0.6, 0.6, 0.5], 0, 0),
-            ([-0.4, 0.4, -0.35], [0.45, 0.9, 0.4], 0, 2),
-            ([0.2, 0.0, -0.7], [0.8, 0.45, -0.1], 0, 1),
-        ]),
-        prop("flowers", vec![[60, 110, 60], [240, 190, 90], [200, 120, 220]], vec![
-            ([-0.4, 0.0, -0.02], [-0.38, 0.3, 0.0], 0, 0),
-            ([-0.45, 0.3, -0.06], [-0.33, 0.38, 0.06], 0, 1),
-            ([0.1, 0.0, 0.2], [0.12, 0.25, 0.22], 0, 0),
-            ([0.05, 0.25, 0.15], [0.17, 0.33, 0.27], 0, 2),
-            ([0.3, 0.0, -0.3], [0.32, 0.35, -0.28], 0, 0),
-            ([0.25, 0.35, -0.35], [0.37, 0.43, -0.23], 0, 1),
-        ]),
+        prop(
+            "mushrooms",
+            vec![[220, 230, 240], [120, 230, 255], [70, 60, 80]],
+            vec![
+                ([-0.05, 0.0, -0.05], [0.05, 0.28, 0.05], 0, 0),
+                ([-0.18, 0.26, -0.18], [0.18, 0.36, 0.18], 0, 1),
+                ([0.22, 0.0, 0.12], [0.28, 0.16, 0.18], 0, 0),
+                ([0.14, 0.15, 0.04], [0.36, 0.22, 0.26], 0, 1),
+                ([-0.3, 0.0, 0.2], [-0.25, 0.12, 0.25], 0, 0),
+                ([-0.36, 0.11, 0.14], [-0.19, 0.17, 0.31], 0, 1),
+            ],
+        ),
+        prop(
+            "bush",
+            vec![[46, 92, 58], [36, 74, 50], [62, 112, 70]],
+            vec![
+                ([-0.6, 0.0, -0.5], [0.6, 0.6, 0.5], 0, 0),
+                ([-0.4, 0.4, -0.35], [0.45, 0.9, 0.4], 0, 2),
+                ([0.2, 0.0, -0.7], [0.8, 0.45, -0.1], 0, 1),
+            ],
+        ),
+        prop(
+            "flowers",
+            vec![[60, 110, 60], [240, 190, 90], [200, 120, 220]],
+            vec![
+                ([-0.4, 0.0, -0.02], [-0.38, 0.3, 0.0], 0, 0),
+                ([-0.45, 0.3, -0.06], [-0.33, 0.38, 0.06], 0, 1),
+                ([0.1, 0.0, 0.2], [0.12, 0.25, 0.22], 0, 0),
+                ([0.05, 0.25, 0.15], [0.17, 0.33, 0.27], 0, 2),
+                ([0.3, 0.0, -0.3], [0.32, 0.35, -0.28], 0, 0),
+                ([0.25, 0.35, -0.35], [0.37, 0.43, -0.23], 0, 1),
+            ],
+        ),
     ]
 }
 
 fn loot_bits() -> Vec<Model> {
     vec![
-        prop("cell", vec![[120, 200, 255], [40, 90, 160]], vec![
-            ([-0.12, 0.0, -0.12], [0.12, 0.36, 0.12], 0, 0),
-            ([-0.15, 0.08, -0.15], [0.15, 0.28, 0.15], 0, 1),
-        ]),
-        prop("ammo", vec![[200, 170, 70], [90, 76, 40]], vec![
-            ([-0.2, 0.0, -0.14], [0.2, 0.2, 0.14], 0, 0),
-            ([-0.21, 0.08, -0.15], [0.21, 0.12, 0.15], 0, 1),
-        ]),
+        prop(
+            "cell",
+            vec![[120, 200, 255], [40, 90, 160]],
+            vec![
+                ([-0.12, 0.0, -0.12], [0.12, 0.36, 0.12], 0, 0),
+                ([-0.15, 0.08, -0.15], [0.15, 0.28, 0.15], 0, 1),
+            ],
+        ),
+        prop(
+            "ammo",
+            vec![[200, 170, 70], [90, 76, 40]],
+            vec![
+                ([-0.2, 0.0, -0.14], [0.2, 0.2, 0.14], 0, 0),
+                ([-0.21, 0.08, -0.15], [0.21, 0.12, 0.15], 0, 1),
+            ],
+        ),
     ]
 }
 
@@ -540,12 +802,42 @@ fn crate_box() -> Model {
 fn models() -> Vec<Model> {
     vec![
         // The player: lantern-orange shirt, teal hood.
-        character("keeper", [236, 132, 52], [52, 58, 84], [40, 150, 150], [110, 82, 56]),
+        character(
+            "keeper",
+            [236, 132, 52],
+            [52, 58, 84],
+            [40, 150, 150],
+            [110, 82, 56],
+        ),
         // Bots, in four colourways.
-        character("folk_moss", [92, 160, 84], [60, 54, 46], [62, 102, 56], [96, 74, 52]),
-        character("folk_dusk", [120, 90, 190], [44, 44, 70], [78, 58, 140], [90, 70, 60]),
-        character("folk_ember", [200, 70, 70], [60, 40, 44], [140, 44, 50], [100, 72, 50]),
-        character("folk_tide", [64, 140, 210], [40, 52, 76], [40, 92, 150], [86, 70, 58]),
+        character(
+            "folk_moss",
+            [92, 160, 84],
+            [60, 54, 46],
+            [62, 102, 56],
+            [96, 74, 52],
+        ),
+        character(
+            "folk_dusk",
+            [120, 90, 190],
+            [44, 44, 70],
+            [78, 58, 140],
+            [90, 70, 60],
+        ),
+        character(
+            "folk_ember",
+            [200, 70, 70],
+            [60, 40, 44],
+            [140, 44, 50],
+            [100, 72, 50],
+        ),
+        character(
+            "folk_tide",
+            [64, 140, 210],
+            [40, 52, 76],
+            [40, 92, 150],
+            [86, 70, 58],
+        ),
         chest(),
         lantern_post(),
         tree(),
@@ -621,12 +913,20 @@ impl Builder {
 }
 
 fn nums(xs: &[f32]) -> String {
-    xs.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(",")
+    xs.iter()
+        .map(|x| format!("{x}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn quat_axis(axis: [f32; 3], deg: f32) -> [f32; 4] {
     let h = deg.to_radians() / 2.0;
-    [axis[0] * h.sin(), axis[1] * h.sin(), axis[2] * h.sin(), h.cos()]
+    [
+        axis[0] * h.sin(),
+        axis[1] * h.sin(),
+        axis[2] * h.sin(),
+        h.cos(),
+    ]
 }
 
 fn build(m: &Model) -> Vec<u8> {
@@ -639,12 +939,60 @@ fn build(m: &Model) -> Vec<u8> {
     for &(lo, hi, joint, cell) in &m.parts {
         let u = (cell as f32 + 0.5) / m.palette.len() as f32;
         let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-            ([1.0, 0.0, 0.0], [[hi[0], lo[1], hi[2]], [hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [hi[0], hi[1], hi[2]]]),
-            ([-1.0, 0.0, 0.0], [[lo[0], lo[1], lo[2]], [lo[0], lo[1], hi[2]], [lo[0], hi[1], hi[2]], [lo[0], hi[1], lo[2]]]),
-            ([0.0, 1.0, 0.0], [[lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]], [hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]]]),
-            ([0.0, -1.0, 0.0], [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], lo[1], hi[2]], [lo[0], lo[1], hi[2]]]),
-            ([0.0, 0.0, 1.0], [[lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]]),
-            ([0.0, 0.0, -1.0], [[hi[0], lo[1], lo[2]], [lo[0], lo[1], lo[2]], [lo[0], hi[1], lo[2]], [hi[0], hi[1], lo[2]]]),
+            (
+                [1.0, 0.0, 0.0],
+                [
+                    [hi[0], lo[1], hi[2]],
+                    [hi[0], lo[1], lo[2]],
+                    [hi[0], hi[1], lo[2]],
+                    [hi[0], hi[1], hi[2]],
+                ],
+            ),
+            (
+                [-1.0, 0.0, 0.0],
+                [
+                    [lo[0], lo[1], lo[2]],
+                    [lo[0], lo[1], hi[2]],
+                    [lo[0], hi[1], hi[2]],
+                    [lo[0], hi[1], lo[2]],
+                ],
+            ),
+            (
+                [0.0, 1.0, 0.0],
+                [
+                    [lo[0], hi[1], hi[2]],
+                    [hi[0], hi[1], hi[2]],
+                    [hi[0], hi[1], lo[2]],
+                    [lo[0], hi[1], lo[2]],
+                ],
+            ),
+            (
+                [0.0, -1.0, 0.0],
+                [
+                    [lo[0], lo[1], lo[2]],
+                    [hi[0], lo[1], lo[2]],
+                    [hi[0], lo[1], hi[2]],
+                    [lo[0], lo[1], hi[2]],
+                ],
+            ),
+            (
+                [0.0, 0.0, 1.0],
+                [
+                    [lo[0], lo[1], hi[2]],
+                    [hi[0], lo[1], hi[2]],
+                    [hi[0], hi[1], hi[2]],
+                    [lo[0], hi[1], hi[2]],
+                ],
+            ),
+            (
+                [0.0, 0.0, -1.0],
+                [
+                    [hi[0], lo[1], lo[2]],
+                    [lo[0], lo[1], lo[2]],
+                    [lo[0], hi[1], lo[2]],
+                    [hi[0], hi[1], lo[2]],
+                ],
+            ),
         ];
         for (n, corners) in faces {
             let base = (pos.len() / 3) as u32;
@@ -668,7 +1016,12 @@ fn build(m: &Model) -> Vec<u8> {
     }
 
     let mut b = Builder::default();
-    let a_pos = b.floats(&pos, 3, "VEC3", &format!(r#","min":[{}],"max":[{}]"#, nums(&min), nums(&max)));
+    let a_pos = b.floats(
+        &pos,
+        3,
+        "VEC3",
+        &format!(r#","min":[{}],"max":[{}]"#, nums(&min), nums(&max)),
+    );
     let a_nrm = b.floats(&nrm, 3, "VEC3", "");
     let a_uv = b.floats(&uv, 2, "VEC2", "");
     let idx_bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
@@ -681,7 +1034,10 @@ fn build(m: &Model) -> Vec<u8> {
         let joint_bytes: Vec<u8> = joints.iter().flat_map(|j| j.to_le_bytes()).collect();
         let a_joints = b.accessor(&joint_bytes, 5123, joints.len() / 4, "VEC4", "");
         let a_weights = b.floats(&weights, 4, "VEC4", "");
-        let _ = write!(attributes, r#","JOINTS_0":{a_joints},"WEIGHTS_0":{a_weights}"#);
+        let _ = write!(
+            attributes,
+            r#","JOINTS_0":{a_joints},"WEIGHTS_0":{a_weights}"#
+        );
         // Bind poses are translations by each joint's world position.
         let world = |j: usize| {
             let mut w = [0.0f32; 3];
@@ -706,7 +1062,12 @@ fn build(m: &Model) -> Vec<u8> {
         let mut anims = Vec::new();
         for clip in &m.clips {
             let t_last = *clip.times.last().unwrap();
-            let a_t = b.floats(clip.times, 1, "SCALAR", &format!(r#","min":[0],"max":[{t_last}]"#));
+            let a_t = b.floats(
+                clip.times,
+                1,
+                "SCALAR",
+                &format!(r#","min":[0],"max":[{t_last}]"#),
+            );
             let mut samplers = Vec::new();
             let mut channels = Vec::new();
             for track in &clip.tracks {
@@ -727,7 +1088,9 @@ fn build(m: &Model) -> Vec<u8> {
                     }
                 };
                 let a_out = b.floats(&data, per, ty, "");
-                samplers.push(format!(r#"{{"input":{a_t},"output":{a_out},"interpolation":"LINEAR"}}"#));
+                samplers.push(format!(
+                    r#"{{"input":{a_t},"output":{a_out},"interpolation":"LINEAR"}}"#
+                ));
                 channels.push(format!(
                     r#"{{"sampler":{},"target":{{"node":{},"path":"{path}"}}}}"#,
                     samplers.len() - 1,
@@ -792,7 +1155,11 @@ fn build(m: &Model) -> Vec<u8> {
         attrs = attributes,
         i = a_idx,
         extra = extra,
-        double = if m.tube.is_some() { r#","doubleSided":true"# } else { "" },
+        double = if m.tube.is_some() {
+            r#","doubleSided":true"#
+        } else {
+            ""
+        },
         img = img_view,
         len = b.bin.len().next_multiple_of(4),
         views = b.views.join(","),
@@ -867,7 +1234,11 @@ fn crc32(data: &[u8]) -> u32 {
     for byte in data {
         crc ^= u32::from(*byte);
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -885,12 +1256,22 @@ fn lanternfall_models_exist_and_load() {
         }
         let on_disk = std::fs::read(&path).expect("read model");
         assert_eq!(on_disk, bytes, "{} differs from its recipe", path.display());
-        let (doc, _, images) = gltf::import_slice(&bytes).unwrap_or_else(|e| panic!("{}: {e}", m.name));
+        let (doc, _, images) =
+            gltf::import_slice(&bytes).unwrap_or_else(|e| panic!("{}: {e}", m.name));
         assert_eq!(images.len(), 1, "{}", m.name);
-        let clips: Vec<String> = doc.animations().filter_map(|a| a.name().map(str::to_string)).collect();
+        let clips: Vec<String> = doc
+            .animations()
+            .filter_map(|a| a.name().map(str::to_string))
+            .collect();
         let want: Vec<String> = m.clips.iter().map(|c| c.name.to_string()).collect();
         assert_eq!(clips, want, "{}", m.name);
-        assert_eq!(doc.skins().count(), usize::from(!m.joints.is_empty()), "{}", m.name);
-        twec::kernel::render::parse_glb_bytes(&bytes).unwrap_or_else(|e| panic!("engine loads {}: {e}", m.name));
+        assert_eq!(
+            doc.skins().count(),
+            usize::from(!m.joints.is_empty()),
+            "{}",
+            m.name
+        );
+        twec::kernel::render::parse_glb_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("engine loads {}: {e}", m.name));
     }
 }

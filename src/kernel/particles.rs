@@ -418,12 +418,19 @@ pub fn sim_source(programs: &[ParticleProgram]) -> String {
             p.update
         ));
     }
-    let mut spawn = String::from("fn twe_run_spawn(p: Particle) -> Particle {\n    switch p.program {\n");
-    let mut update = String::from("fn twe_run_update(p: Particle, dt: f32) -> Particle {\n    switch p.program {\n");
+    let mut spawn =
+        String::from("fn twe_run_spawn(p: Particle) -> Particle {\n    switch p.program {\n");
+    let mut update = String::from(
+        "fn twe_run_update(p: Particle, dt: f32) -> Particle {\n    switch p.program {\n",
+    );
     let mut collides = Vec::new();
     for (k, p) in programs.iter().enumerate() {
-        spawn.push_str(&format!("        case {k}u: {{ return twe_spawn_{k}(p); }}\n"));
-        update.push_str(&format!("        case {k}u: {{ return twe_update_{k}(p, dt); }}\n"));
+        spawn.push_str(&format!(
+            "        case {k}u: {{ return twe_spawn_{k}(p); }}\n"
+        ));
+        update.push_str(&format!(
+            "        case {k}u: {{ return twe_update_{k}(p, dt); }}\n"
+        ));
         if p.collide {
             collides.push(format!("program == {k}u"));
         }
@@ -444,29 +451,37 @@ pub fn sim_source(programs: &[ParticleProgram]) -> String {
     // age and its ratio, and the fields some program's update assigns —
     // not the whole 64-byte particle: the simulation of a million
     // particles is bound by this traffic.
-    let mut write_back = String::from("pool[i].age = p.age;
+    let mut write_back = String::from(
+        "pool[i].age = p.age;
     pool[i].age_ratio = p.age_ratio;
-");
+",
+    );
     let collide_any = programs.iter().any(|p| p.collide);
     for field in ["pos", "velocity", "color", "size"] {
         let assigned = programs.iter().any(|p| assigns(&p.update, field));
         // A bounce moves the particle and turns its velocity.
         if assigned || (collide_any && (field == "pos" || field == "velocity")) {
-            write_back.push_str(&format!("    pool[i].{field} = p.{field};
-"));
+            write_back.push_str(&format!(
+                "    pool[i].{field} = p.{field};
+"
+            ));
         }
     }
     // web3d-M7 follow-up: likewise read only what the runtime needs and
     // what some program's update mentions (a bounce needs position and
     // velocity).
-    let mut read = String::from("p.program = pool[i].program;
+    let mut read = String::from(
+        "p.program = pool[i].program;
     p.seed = pool[i].seed;
-");
+",
+    );
     for field in ["pos", "velocity", "color", "size", "age_ratio"] {
         let used = programs.iter().any(|p| mentions(&p.update, field));
         if used || (collide_any && (field == "pos" || field == "velocity")) {
-            read.push_str(&format!("    p.{field} = pool[i].{field};
-"));
+            read.push_str(&format!(
+                "    p.{field} = pool[i].{field};
+"
+            ));
         }
     }
     src.push_str(
@@ -852,7 +867,9 @@ impl Particles {
             queue.write_buffer(&self.emissions, 0, bytemuck::cast_slice(&uploads));
         }
         // Keep the batches in dying order (emissions differ in lifetime).
-        self.batches.make_contiguous().sort_by(|a, b| a.dies.total_cmp(&b.dies));
+        self.batches
+            .make_contiguous()
+            .sort_by(|a, b| a.dies.total_cmp(&b.dies));
         self.cpu_count = frame.cpu.len().min(MAX_PARTICLES as usize) as u32;
         if self.cpu_count > self.cpu_capacity {
             self.cpu_capacity = self.cpu_count.next_power_of_two();
@@ -860,7 +877,11 @@ impl Particles {
             self.cpu_bg = draw_bind_group(device, &self.draw_layout, &self.cpu, &self.params);
         }
         if self.cpu_count > 0 {
-            queue.write_buffer(&self.cpu, 0, bytemuck::cast_slice(&frame.cpu[..self.cpu_count as usize]));
+            queue.write_buffer(
+                &self.cpu,
+                0,
+                bytemuck::cast_slice(&frame.cpu[..self.cpu_count as usize]),
+            );
         }
         let params = Params {
             view_proj: camera.view_proj,
@@ -926,7 +947,12 @@ impl Particles {
 
     /// Spawn and update, after the opaque scene (its depth is what
     /// `collide` programs bounce off).
-    pub(crate) fn record_sim(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, depth: &wgpu::TextureView) {
+    pub(crate) fn record_sim(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::TextureView,
+    ) {
         let (Some(spawn), Some(update)) = (&self.spawn, &self.update) else {
             return;
         };
@@ -1075,7 +1101,9 @@ fn particle_buffer(device: &wgpu::Device, label: &str, count: u32) -> wgpu::Buff
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: particle_bytes(count.max(1)),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     })
 }
@@ -1120,18 +1148,24 @@ pub(crate) mod tests {
     pub(crate) fn validate(program: &ParticleProgram) -> Result<(), String> {
         let src = sim_source(std::slice::from_ref(program));
         let module = naga::front::wgsl::parse_str(&src).map_err(|e| e.emit_to_string(&src))?;
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())
-            .validate(&module)
-            .map_err(|e| format!("{e:?}"))?;
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .map_err(|e| format!("{e:?}"))?;
         Ok(())
     }
 
     fn validate_src(label: &str, src: &str) {
         let module = naga::front::wgsl::parse_str(src)
             .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(src)));
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())
-            .validate(&module)
-            .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{label}: {e:?}"));
     }
 
     #[test]

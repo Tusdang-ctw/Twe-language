@@ -20,7 +20,11 @@ pub struct OpenAiCompatible {
 
 impl OpenAiCompatible {
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
-        OpenAiCompatible { base_url: base_url.into(), model: model.into(), grammar: None }
+        OpenAiCompatible {
+            base_url: base_url.into(),
+            model: model.into(),
+            grammar: None,
+        }
     }
 
     pub fn ollama(model: impl Into<String>) -> Self {
@@ -36,7 +40,8 @@ pub fn request_body(model: &str, grammar: Option<&str>, request: &Request) -> Va
     for m in &request.messages {
         messages.push(json!({ "role": m.role.as_str(), "content": m.text }));
     }
-    let mut body = json!({ "model": model, "messages": messages, "max_tokens": request.max_tokens });
+    let mut body =
+        json!({ "model": model, "messages": messages, "max_tokens": request.max_tokens });
     if let Some(g) = grammar {
         body["grammar"] = json!(g);
     }
@@ -46,12 +51,17 @@ pub fn request_body(model: &str, grammar: Option<&str>, request: &Request) -> Va
 pub fn parse_response(body: &str) -> Result<Reply, Error> {
     let v: Value = serde_json::from_str(body).map_err(|e| Error::Malformed(e.to_string()))?;
     let choice = &v["choices"][0];
-    let text = choice["message"]["content"]
-        .as_str()
-        .ok_or_else(|| Error::Malformed(format!("no choices[0].message.content in {}", body.chars().take(200).collect::<String>())))?;
+    let text = choice["message"]["content"].as_str().ok_or_else(|| {
+        Error::Malformed(format!(
+            "no choices[0].message.content in {}",
+            body.chars().take(200).collect::<String>()
+        ))
+    })?;
     let u = &v["usage"];
     let prompt = u["prompt_tokens"].as_u64().unwrap_or(0);
-    let cached = u["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0);
+    let cached = u["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0);
     let usage = Usage {
         input: prompt.saturating_sub(cached),
         output: u["completion_tokens"].as_u64().unwrap_or(0),
@@ -104,7 +114,11 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["content"], "task");
         assert!(body.get("grammar").is_none());
-        let constrained = request_body("llama3.1", Some("root ::= \"x\""), &Request::new("", "task"));
+        let constrained = request_body(
+            "llama3.1",
+            Some("root ::= \"x\""),
+            &Request::new("", "task"),
+        );
         assert_eq!(constrained["grammar"], "root ::= \"x\"");
     }
 

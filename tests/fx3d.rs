@@ -42,19 +42,28 @@ fn physics_holds_still_while_paused() {
     for _ in 0..20 {
         sim_tick(&mut env, &mut input, 1.0 / 60.0).expect("tick");
     }
-    assert_eq!(probe(&mut env, "print(math.floor(physics.position(b).y * 100))"), "1000");
+    assert_eq!(
+        probe(&mut env, "print(math.floor(physics.position(b).y * 100))"),
+        "1000"
+    );
     probe(&mut env, "pause(false)");
     for _ in 0..20 {
         sim_tick(&mut env, &mut input, 1.0 / 60.0).expect("tick");
     }
-    let y: i64 = probe(&mut env, "print(math.floor(physics.position(b).y * 100))").parse().unwrap();
+    let y: i64 = probe(&mut env, "print(math.floor(physics.position(b).y * 100))")
+        .parse()
+        .unwrap();
     assert!(y < 1000, "falls once unpaused: {y}");
 }
 
 #[test]
 fn screen_shake_leaves_the_scripts_random_numbers_alone() {
     let draw = |shake: bool| {
-        let mut env = load(if shake { "fx.screen_shake(8.0, 1.0)\n" } else { "let x = 1\n" });
+        let mut env = load(if shake {
+            "fx.screen_shake(8.0, 1.0)\n"
+        } else {
+            "let x = 1\n"
+        });
         for _ in 0..10 {
             let (_, r) = twec::frame2d::render(&mut env, 1.0 / 60.0, 640.0, 480.0);
             r.expect("render");
@@ -80,7 +89,10 @@ fn a_vec3_anchors_an_effect_in_the_world() {
             _ => None,
         })
         .collect();
-    assert!(texts.contains(&("42".to_string(), 300.0, 200.0)), "{texts:?}");
+    assert!(
+        texts.contains(&("42".to_string(), 300.0, 200.0)),
+        "{texts:?}"
+    );
     // A 2-tuple position is a canvas point, as in 2D.
     assert!(texts.contains(&("7".to_string(), 10.0, 20.0)), "{texts:?}");
     // Behind the camera: not drawn.
@@ -92,15 +104,24 @@ fn a_vec3_anchors_an_effect_in_the_world() {
 #[test]
 fn camera_project_follows_the_shake() {
     let mut env = load("camera.eye = vec3(0, 10, 10)\ncamera.target = vec3(0, 0, 0)\n");
-    let still = probe(&mut env, "print(math.floor(camera.project(vec3(0, 0, 0)).x))");
+    let still = probe(
+        &mut env,
+        "print(math.floor(camera.project(vec3(0, 0, 0)).x))",
+    );
     let cam = twec::camera3d::read_camera(&env);
     twec::camera3d::set_shake(twec::camera3d::shake_offset(&cam, 6.0, 0.0));
-    let shaken = probe(&mut env, "print(math.floor(camera.project(vec3(0, 0, 0)).x))");
+    let shaken = probe(
+        &mut env,
+        "print(math.floor(camera.project(vec3(0, 0, 0)).x))",
+    );
     // A 6-unit shake to the right moves the world 6 units left on screen.
     assert_eq!(still, "320");
     assert_eq!(shaken, "314");
     // Aiming ignores the shake.
-    let aim = probe(&mut env, "print(math.floor(camera.ground_point((320, 240), 0.0).x * 100))");
+    let aim = probe(
+        &mut env,
+        "print(math.floor(camera.ground_point((320, 240), 0.0).x * 100))",
+    );
     assert_eq!(aim, "0");
     twec::camera3d::set_shake([0.0; 3]);
 }
@@ -118,16 +139,25 @@ fn time_scale_slows_the_game_and_its_physics() {
     };
     run(&mut env, &mut input, 60);
     let normal_t: f64 = probe(&mut env, "print(t)").parse().unwrap();
-    let y1: f64 = probe(&mut env, "print(physics.position(b).y)").parse().unwrap();
+    let y1: f64 = probe(&mut env, "print(physics.position(b).y)")
+        .parse()
+        .unwrap();
     probe(&mut env, "time.set_scale(0.25)");
     assert_eq!(probe(&mut env, "print(time.scale)"), "0.25");
     run(&mut env, &mut input, 60);
     let slow_t: f64 = probe(&mut env, "print(t)").parse().unwrap();
-    let y2: f64 = probe(&mut env, "print(physics.position(b).y)").parse().unwrap();
+    let y2: f64 = probe(&mut env, "print(physics.position(b).y)")
+        .parse()
+        .unwrap();
     // A second of ticks at a quarter speed is a quarter second of game.
     assert!((normal_t - 1.0).abs() < 1e-6, "{normal_t}");
     assert!((slow_t - 1.25).abs() < 1e-6, "{slow_t}");
     // The box fell less in that second than in the first one at speed.
-    assert!(50.0 - y1 > (y1 - y2) * 1.5, "fell {} then {}", 50.0 - y1, y1 - y2);
+    assert!(
+        50.0 - y1 > (y1 - y2) * 1.5,
+        "fell {} then {}",
+        50.0 - y1,
+        y1 - y2
+    );
     probe(&mut env, "time.set_scale(1.0)");
 }

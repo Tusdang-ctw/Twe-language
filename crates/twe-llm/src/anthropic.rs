@@ -29,7 +29,12 @@ pub struct Anthropic {
 
 impl Anthropic {
     pub fn new(model: impl Into<String>) -> Self {
-        Anthropic { model: model.into(), effort: None, base_url: None, api_key: None }
+        Anthropic {
+            model: model.into(),
+            effort: None,
+            base_url: None,
+            api_key: None,
+        }
     }
 }
 
@@ -96,7 +101,11 @@ impl Provider for Anthropic {
     #[cfg(feature = "http")]
     fn complete(&mut self, request: &Request) -> Result<Reply, Error> {
         let mut headers = vec![("anthropic-version", "2023-06-01".to_string())];
-        if let Some(key) = self.api_key.clone().or_else(|| env_nonempty("ANTHROPIC_API_KEY")) {
+        if let Some(key) = self
+            .api_key
+            .clone()
+            .or_else(|| env_nonempty("ANTHROPIC_API_KEY"))
+        {
             headers.push(("x-api-key", key));
         } else if let Some(token) = env_nonempty("ANTHROPIC_AUTH_TOKEN") {
             headers.push(("authorization", format!("Bearer {token}")));

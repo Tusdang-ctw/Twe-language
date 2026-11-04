@@ -74,8 +74,19 @@ impl TextureDesc {
 
     /// Whether two descriptions can share one allocation (labels aside).
     fn compatible(&self, other: &TextureDesc) -> bool {
-        (self.extent, self.format, self.mips, self.layers, self.samples)
-            == (other.extent, other.format, other.mips, other.layers, other.samples)
+        (
+            self.extent,
+            self.format,
+            self.mips,
+            self.layers,
+            self.samples,
+        ) == (
+            other.extent,
+            other.format,
+            other.mips,
+            other.layers,
+            other.samples,
+        )
     }
 }
 
@@ -108,7 +119,10 @@ enum Kind {
     Transient(TextureDesc),
     /// Owned by the renderer. `output` marks what the frame is *for*
     /// (the swapchain image): passes feeding it are never culled.
-    Imported { name: &'static str, output: bool },
+    Imported {
+        name: &'static str,
+        output: bool,
+    },
 }
 
 struct ResourceDecl {
@@ -399,12 +413,16 @@ impl TexturePool {
 
     /// The view behind transient `r` (after [`prepare`](Self::prepare)).
     pub fn view<P>(&self, plan: &Plan<P>, r: Res) -> Option<&wgpu::TextureView> {
-        plan.slot(r).and_then(|s| self.entries.get(s)).map(|e| &e.view)
+        plan.slot(r)
+            .and_then(|s| self.entries.get(s))
+            .map(|e| &e.view)
     }
 
     /// The texture behind transient `r`.
     pub fn texture<P>(&self, plan: &Plan<P>, r: Res) -> Option<&wgpu::Texture> {
-        plan.slot(r).and_then(|s| self.entries.get(s)).map(|e| &e.texture)
+        plan.slot(r)
+            .and_then(|s| self.entries.get(s))
+            .map(|e| &e.texture)
     }
 
     /// Changes whenever `r`'s allocation is replaced.
@@ -431,8 +449,18 @@ mod tests {
         let color = g.create(hdr("color"));
         let unused = g.create(hdr("debug view"));
         g.add_pass("main", "main", &[], &[(color, Access::Attach)]);
-        g.add_pass("debug", "debug", &[(color, Access::Sample)], &[(unused, Access::Attach)]);
-        g.add_pass("tonemap", "tonemap", &[(color, Access::Sample)], &[(target, Access::Attach)]);
+        g.add_pass(
+            "debug",
+            "debug",
+            &[(color, Access::Sample)],
+            &[(unused, Access::Attach)],
+        );
+        g.add_pass(
+            "tonemap",
+            "tonemap",
+            &[(color, Access::Sample)],
+            &[(target, Access::Attach)],
+        );
         let plan = g.compile().unwrap();
         assert_eq!(plan.passes, ["main", "tonemap"]);
         assert_eq!(plan.slot(unused), None, "a culled texture gets no memory");
@@ -449,8 +477,18 @@ mod tests {
         let shadow = g.import("shadow map", false);
         let a = g.create(hdr("a"));
         g.add_pass(0, "shadow", &[], &[(shadow, Access::Attach)]);
-        g.add_pass(1, "main", &[(shadow, Access::Sample)], &[(a, Access::Attach)]);
-        g.add_pass(2, "out", &[(a, Access::Sample)], &[(target, Access::Attach)]);
+        g.add_pass(
+            1,
+            "main",
+            &[(shadow, Access::Sample)],
+            &[(a, Access::Attach)],
+        );
+        g.add_pass(
+            2,
+            "out",
+            &[(a, Access::Sample)],
+            &[(target, Access::Attach)],
+        );
         assert_eq!(g.compile().unwrap().passes, [0, 1, 2]);
 
         // Nothing reads the shadow map: its pass goes.
@@ -467,7 +505,12 @@ mod tests {
         let mut g = FrameGraph::new();
         let target = g.import("target", true);
         let bloom = g.create(hdr("bloom"));
-        g.add_pass((), "tonemap", &[(bloom, Access::Sample)], &[(target, Access::Attach)]);
+        g.add_pass(
+            (),
+            "tonemap",
+            &[(bloom, Access::Sample)],
+            &[(target, Access::Attach)],
+        );
         assert_eq!(
             g.compile().err(),
             Some(GraphError::ReadBeforeWrite {
@@ -479,7 +522,12 @@ mod tests {
         let mut g = FrameGraph::new();
         let target = g.import("target", true);
         let history = g.import("taa history", false);
-        g.add_pass((), "resolve", &[(history, Access::Sample)], &[(target, Access::Attach)]);
+        g.add_pass(
+            (),
+            "resolve",
+            &[(history, Access::Sample)],
+            &[(target, Access::Attach)],
+        );
         assert!(g.compile().is_ok());
     }
 
@@ -493,14 +541,23 @@ mod tests {
         let b = g.create(hdr("b"));
         let c = g.create(hdr("c"));
         let depth = g.create(TextureDesc::new("depth", Extent::FULL, F::Depth32Float));
-        g.add_pass(0, "p0", &[], &[(a, Access::Attach), (depth, Access::Attach)]);
+        g.add_pass(
+            0,
+            "p0",
+            &[],
+            &[(a, Access::Attach), (depth, Access::Attach)],
+        );
         g.add_pass(1, "p1", &[(a, Access::Sample)], &[(b, Access::Attach)]);
         g.add_pass(2, "p2", &[(b, Access::Sample)], &[(c, Access::Attach)]);
         g.add_pass(3, "p3", &[(c, Access::Sample)], &[(target, Access::Attach)]);
         let plan = g.compile().unwrap();
         assert_eq!(plan.slot(a), plan.slot(c), "c reuses a's texture");
         assert_ne!(plan.slot(a), plan.slot(b), "b overlaps both");
-        assert_ne!(plan.slot(depth), plan.slot(a), "different formats never alias");
+        assert_ne!(
+            plan.slot(depth),
+            plan.slot(a),
+            "different formats never alias"
+        );
         assert_eq!(plan.slots.len(), 3);
     }
 

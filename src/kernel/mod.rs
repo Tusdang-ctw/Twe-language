@@ -5,16 +5,16 @@
 //! `twe-kernel` crate when the workspace splits.
 
 pub(crate) mod ao;
+pub mod canvas;
 pub(crate) mod clusters;
 pub(crate) mod environment;
 pub(crate) mod gpu_cull;
 pub(crate) mod gpu_profile;
-pub(crate) mod ktx2_bc;
 pub mod graph;
-pub mod canvas;
+pub(crate) mod ktx2_bc;
 pub(crate) mod material;
-pub(crate) mod post;
 pub mod particles;
+pub(crate) mod post;
 pub mod quality;
 pub mod render;
 pub(crate) mod ssr;
