@@ -310,3 +310,117 @@ fn verify_warns_when_particles_fall_back_to_the_cpu() {
         assert!(r.diagnostics.is_empty(), "{path}: {}", r.to_json());
     }
 }
+
+/// The `kind-error.*` diagnostics of `src`, as `(kind, line, message)`.
+fn kind_errors(src: &str) -> Vec<(String, u32, String)> {
+    verify_program(src)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.kind.starts_with("kind-error"))
+        .map(|d| (d.kind, d.line, d.message))
+        .collect()
+}
+
+#[test]
+fn verify_reports_a_vector_mixed_with_a_colour() {
+    // docs/06 §2.5.7: the run-time error, reported before running.
+    let src = "let p = vec3(1, 2, 3)\n\
+               let c = color.red * 0.5\n\
+               let bad = p + c\n\
+               let fine = p + (0, 1, 0)\n\
+               print(mix(color.blue, vec3(0, 1, 0), 0.5))\n";
+    let e = kind_errors(src);
+    assert_eq!(e.len(), 2, "{e:?}");
+    assert_eq!(e[0].0, "kind-error.mix");
+    assert_eq!(e[0].1, 3);
+    assert!(
+        e[0].2
+            .contains("can't add a vector (from `vec3`) and a colour"),
+        "{e:?}"
+    );
+    assert!(e[1].2.contains("mix: can't blend a colour"), "{e:?}");
+}
+
+#[test]
+fn verify_reports_a_vector_as_a_colour_argument_and_a_colour_as_a_position() {
+    let src = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        tint: vec3(1, 0, 0)\n\
+               let up = vec3(0, 1, 0)\n\
+               on render():\n    rect(at: (0, 0), size: (10, 10), color: up)\n\
+                   circle(color.white, 4.0, color.red)\n";
+    let e = kind_errors(src);
+    let messages: Vec<&str> = e.iter().map(|x| x.2.as_str()).collect();
+    assert!(
+        messages.contains(&"look tint expects a colour, got a vector (from `vec3`)"),
+        "{e:?}"
+    );
+    assert!(
+        messages.contains(&"rect.color expects a colour, got a vector (from `vec3`)"),
+        "{e:?}"
+    );
+    assert!(
+        messages.contains(&"circle.at expects a position, got a colour (from `color.*`)"),
+        "{e:?}"
+    );
+    assert_eq!(e.len(), 3, "{e:?}");
+}
+
+#[test]
+fn verify_kind_check_has_no_false_positives() {
+    // Unknowns never report: parameters, reassigned names, fields,
+    // plain tuples, redefined builtins, and visual blocks (WGSL).
+    let src = "function shade(c):\n    return c + vec3(1, 0, 0)\n\
+               var tint = color.red\n\
+               tint = vec3(0, 0, 1)\n\
+               let a = tint + vec3(1, 1, 1)\n\
+               let b = (1.0, 0.5, 0.0) + vec3(1, 1, 1)\n\
+               entity E:\n    var color = (1, 1, 1)\n    function f():\n        return color + vec3(0, 0, 0)\n\
+               visual Glow:\n    pixel(uv, time) -> color:\n        return mix(color.red, color.yellow, uv.y)\n";
+    assert_eq!(kind_errors(src), vec![]);
+    // A program that runs clean verifies clean: every example and test
+    // program (the run-time check would have failed them otherwise).
+    let mut checked = 0;
+    for dir in ["examples", "tests/programs"] {
+        for path in twe_files(std::path::Path::new(dir)) {
+            let src = std::fs::read_to_string(&path).unwrap();
+            let e = kind_errors(&src);
+            assert!(e.is_empty(), "{}: {e:?}", path.display());
+            checked += 1;
+        }
+    }
+    assert!(checked > 50, "only {checked} files");
+}
+
+#[test]
+fn kind_check_parameter_tables_name_real_builtin_parameters() {
+    // The tables mirror the run-time decoders; a renamed builtin or
+    // parameter must not silently drop out of the check.
+    let manifest = twec::stdlib::manifest();
+    for label in twec::kind_check::COLOUR_PARAMS
+        .iter()
+        .chain(twec::kind_check::POSITION_PARAMS)
+    {
+        let (name, param) = label.rsplit_once('.').unwrap();
+        let spec = manifest.iter().find(|s| s.name == name);
+        assert!(
+            spec.is_some_and(|s| s.params.iter().any(|p| p == param)),
+            "`{label}` is not a builtin parameter"
+        );
+    }
+}
+
+fn twe_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if p.file_name()
+                .is_some_and(|n| n != "dist" && n != "node_modules")
+            {
+                out.extend(twe_files(&p));
+            }
+        } else if p.extension().is_some_and(|e| e == "twe") {
+            out.push(p);
+        }
+    }
+    out
+}

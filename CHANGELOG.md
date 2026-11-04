@@ -13,7 +13,7 @@ removal would be load-bearing.
 ## Unreleased
 
 ### Added (from an outside review, 2026-11-04)
-- **Vectors and colours are told apart** — `vec3(...)` makes a vector and `color.*` a colour (plain tuple literals stay plain and mix with either). Adding a vector to a colour, mixing them, passing a vector as a `color:` / look `tint:` / `glow:`, or a colour as a 2D `at:` is now an error that says which is which. A program that never mixed the two runs unchanged. See `docs/changes/2026-11-04-web3d-gemini-critique-fixes.md`.
+- **Vectors and colours are told apart** — `vec3(...)` makes a vector and `color.*` a colour (plain tuple literals stay plain and mix with either). Adding a vector to a colour, mixing them, passing a vector as a `color:` / look `tint:` / `glow:`, or a colour as a 2D `at:` is now an error that says which is which. A program that never mixed the two runs unchanged. `twec verify` reports the cases it can prove before anything runs (`kind-error.mix`, `kind-error.argument`), with no false positives on any example. See `docs/changes/2026-11-04-web3d-gemini-critique-fixes.md`.
 - **`music.is_playing(handle)`** — true from `music.play` until `music.stop` / `sound.stop`, from the simulation's own record (deterministic, works without audio). Scripts no longer keep a `music_playing` flag. A hot reload now stops looped tracks (they used to keep playing and double up when the script restarted them).
 - **Look `attach:` / `offset:`** — draw a look in another entity's frame (a gun in a hand, a hat on a head): `attach: owner`, `offset: vec3(...)` in the owner's frame. Chains work; scale isn't inherited; a despawned parent hides the child. Lanternfall's held guns use it (no more hand-built basis, no one-tick lag).
 

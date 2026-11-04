@@ -45,6 +45,8 @@ pub mod grammar;
 pub mod heap;
 pub mod infer;
 pub mod json;
+// 2026-11-04: vectors vs colours, statically, for `twec verify`.
+pub mod kind_check;
 pub mod lexer;
 // Phase 33 session 4: end-to-end LLM authoring loop. Pure Rust, no
 // network deps in the binary — providers shell out to user-configured

@@ -207,6 +207,11 @@ Every entry points at its evidence: the closeout notes in [`changes/`](changes/)
 
   The game was then left to play itself for long unattended sessions, natively and in the browser's WebAssembly engine, to check that nothing leaks or crashes over hours of play.
 
+- **2026-11-04: taking an outside critique seriously.** Another AI model, shown one screenshot of a 40-line 2D sound demo, wrote a critique of Twe against Three.js. Most of it described a 2D Twe that no longer existed: Twe already had a declarative 3D scene, a WebGPU and WebAssembly backend, and shader compilation. Checked against the code, three points still held, and all three were fixed that day:
+  - **Colours and positions are no longer interchangeable.** Both were bare lists of numbers, so adding a colour to a position, or tinting a model with a position, silently drew nonsense. Now a value made by `vec3` knows it is a position and one from `color.*` knows it is a colour. Mixing them is an error that says which is which, and `twec verify` reports the cases it can prove before the game runs. Plain number lists still work as either, so no existing program broke; the checker was run over every example to prove it.
+  - **Music knows whether it is playing.** Scripts used to keep their own "is the music on?" flag next to the audio engine's. The language now tracks it, and the answer comes from the game's own record rather than the sound card, so replays stay exact.
+  - **Things can be attached to other things.** A gun in a hand, a hat on a head: `attach: owner` draws one entity in another's frame. Lanternfall's held guns had been doing that maths by hand, a frame late; now they ride their owner exactly.
+
 
 ## Themes worth telling
 

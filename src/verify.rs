@@ -333,6 +333,21 @@ pub fn verify_program_with_options(
     // web3d-M3: `look:` keys are checked at class definition when the
     // program runs; report the same problems statically.
     diagnostics.append(&mut collect_look_issues(&program));
+    // 2026-11-04: a vector used as a colour (or the reverse) is a
+    // run-time error; report the cases that are certain (docs/06 §2.5.7).
+    diagnostics.extend(
+        crate::kind_check::check_program(&program)
+            .into_iter()
+            .map(|k| VerifyDiagnostic {
+                kind: k.kind.to_string(),
+                severity: Severity::Error,
+                line: k.line,
+                col: k.col,
+                message: k.message,
+                help: Some(k.help),
+                fix: None,
+            }),
+    );
     // web3d-M5: `return` outside a function or method body fails when
     // it runs; report it before (the benchmark's pilot hit it).
     diagnostics.append(&mut collect_misplaced_returns(&program));

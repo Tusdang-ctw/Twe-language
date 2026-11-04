@@ -14,7 +14,7 @@
 
 **Alternatives rejected.**
 - *Nominal `Vec3` / `Color` types with methods.* That would add a second way to call vector maths (methods next to `math.*`, against Principle 2) and change how every example prints.
-- *A static check in `infer`.* `infer` has no per-builtin signatures, so it can't know `vec3` returns a vector. That table is the prerequisite; until it exists, the check runs at run time, like the tuple-length errors it sits next to.
+- *A static check in `infer`.* `infer` has no per-builtin signatures, so it can't know `vec3` returns a vector. Instead, a separate pass (`src/kind_check.rs`, follow-up below) proves what it can without them.
 
 **No false positives.** Only values that came from `vec3` / `color.*` are checked, so a program that ran before still runs unless it really mixed the two. Every example and test program still runs (`tests/examples_run.rs`).
 
@@ -51,9 +51,21 @@
 - A way to read an attached look's world position from script.
 - Inheriting scale.
 
+## Follow-up: `twec verify` reports the certain cases (same day)
+
+`src/kind_check.rs` runs in `twec verify`.
+- **What it reports.** `kind-error.mix` (vector ± colour, `mix` of one of each) and `kind-error.argument` (a vector where a builtin or a look's `tint:` / `glow:` decodes a colour, a colour where a builtin decodes a 2D point).
+- **How it stays sound without a type table.**
+  - A kind is known only for `vec3` / `math.cross` / `math.normalize`, `color.*` constants and constructors, arithmetic over them, and names that cannot mean anything else.
+  - Because `var` and `let` share `Stmt::Let`, "cannot mean anything else" is a property of the name across the whole file: exactly one binding, never assigned, never a parameter / field / loop variable / import alias.
+  - Redefining a builtin's root name (`color`, `vec3`, `math`) switches it off.
+- **The parameter tables.** `COLOUR_PARAMS` / `POSITION_PARAMS` list every `<builtin>.<param>` the run-time decoders (`color_of` / `rgba` / `rgba_of`, `xy_of`) check. Arguments are matched positionally or by keyword through the manifest's parameter names. A test fails if an entry stops naming a real builtin parameter.
+- **No false positives, measured.** Every `.twe` under `examples/` and `tests/programs/` verifies with no `kind-error`.
+
 ## Tests
 - `tests/programs/tuple_kinds.twe` + `vectors_and_colours_mix_with_plain_tuples`, `a_vector_is_not_a_colour_and_a_colour_is_not_a_position`, `a_look_refuses_a_vector_tint_or_glow`.
 - `music_is_playing_follows_play_and_stop`.
+- `tests/verify_v2.rs`: `verify_reports_a_vector_mixed_with_a_colour`, `verify_reports_a_vector_as_a_colour_argument_and_a_colour_as_a_position`, `verify_kind_check_has_no_false_positives` (incl. every example), `kind_check_parameter_tables_name_real_builtin_parameters`.
 - `tests/programs/look_attach.twe` + `look_attach_rides_the_parent_frame`, `look_attach_errors_name_the_problem`; `held_guns_follow_their_fighters` (Lanternfall).
 
 ## Docs

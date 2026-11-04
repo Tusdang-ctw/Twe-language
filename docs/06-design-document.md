@@ -187,7 +187,17 @@ color.red * 0.5          # a colour
 p + color.red            # error: can't add a vector (from `vec3`) and a colour (from `color.*`)
 ```
 
-Only a value that *came from* `vec3` or `color.*` is checked, so a plain tuple never errors where it didn't before (the "no false positives" rule, `docs/02`). The check is at run time; `twec verify` doesn't see it yet, because `infer` has no per-builtin signatures. Quaternions are not tuples at all (a `quat` value, §7.2), so they can't be mixed up with either. Design note: [`changes/2026-11-04-web3d-gemini-critique-fixes.md`](changes/2026-11-04-web3d-gemini-critique-fixes.md).
+Only a value that *came from* `vec3` or `color.*` is checked, so a plain tuple never errors where it didn't before (the "no false positives" rule, `docs/02`). The check is at run time.
+
+**`twec verify` reports the certain cases** before anything runs (`src/kind_check.rs`):
+- **What it reports.** `kind-error.mix` for `+` / `-` / `mix` of a vector and a colour; `kind-error.argument` for a vector passed where a builtin or a look's `tint:` / `glow:` wants a colour, or a colour where a builtin wants a 2D position.
+- **What it knows.** Only kinds it can be sure of:
+  - `vec3(...)`, `math.cross`, `math.normalize(x)` (as `x`), `color.<constant>` and the `color.*` constructors;
+  - arithmetic over those;
+  - a name bound by exactly one `let` / `var` in the file, never assigned and never a parameter, field or loop variable.
+- **What it ignores.** Everything else is unknown and never reported. That covers parameters, reassigned names, fields and anything a program redefines (`vec3`, `color`, ...). `visual` / `particles` blocks are skipped (WGSL types).
+
+So a program that verifies clean can still hit the run-time check through values `verify` couldn't follow, but `verify` never flags a program that runs. Quaternions are not tuples at all (a `quat` value, §7.2), so they can't be mixed up with either. Design note: [`changes/2026-11-04-web3d-gemini-critique-fixes.md`](changes/2026-11-04-web3d-gemini-critique-fixes.md).
 
 ### 2.6 Keywords
 
