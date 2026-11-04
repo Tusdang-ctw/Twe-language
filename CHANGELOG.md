@@ -12,6 +12,11 @@ removal would be load-bearing.
 
 ## Unreleased
 
+### Added (from an outside review, 2026-11-04)
+- **Vectors and colours are told apart** — `vec3(...)` makes a vector and `color.*` a colour (plain tuple literals stay plain and mix with either). Adding a vector to a colour, mixing them, passing a vector as a `color:` / look `tint:` / `glow:`, or a colour as a 2D `at:` is now an error that says which is which. A program that never mixed the two runs unchanged. See `docs/changes/2026-11-04-web3d-gemini-critique-fixes.md`.
+- **`music.is_playing(handle)`** — true from `music.play` until `music.stop` / `sound.stop`, from the simulation's own record (deterministic, works without audio). Scripts no longer keep a `music_playing` flag. A hot reload now stops looped tracks (they used to keep playing and double up when the script restarted them).
+- **Look `attach:` / `offset:`** — draw a look in another entity's frame (a gun in a hand, a hat on a head): `attach: owner`, `offset: vec3(...)` in the owner's frame. Chains work; scale isn't inherited; a despawned parent hides the child. Lanternfall's held guns use it (no more hand-built basis, no one-tick lag).
+
 ### Added (Lanternfall engine enablers)
 - **`camera.project` / `camera.ray` / `camera.ground_point` / `camera.fov`** (Lanternfall E1, 2026-11-03) — world <-> HUD mapping that matches the renderer exactly, for mouse aim, name tags and floating numbers. The 3D HUD is now 480 units tall and as wide as the window's aspect (640×480 at 4:3, unchanged); `screen.aspect` is new. Replay logs move to `TWE-REPLAY v3` (+ view size); v2/v1 still play. See `docs/changes/2026-11-03-web3d-camera-project.md`.
 - **Multi-file games build and ship** (Lanternfall E5, 2026-11-03) — `twec build` (web, `.exe`, `.twebundle`) packs every imported module into the bundle and built games load them from it; a missing module fails the build at its `import`. `spawn module.Class` spawns an imported module's entity. A module whose top level spawns, declares a scene or registers a top-level handler is now refused at load (those silently never ran). See `docs/changes/2026-11-03-web3d-multi-file-builds.md`.

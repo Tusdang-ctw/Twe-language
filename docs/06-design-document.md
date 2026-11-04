@@ -163,6 +163,32 @@ Examples: `(1, 2)`, `(x, y, z)`, `(0, 4, -8)`.
 
 A 1-element tuple is written `(x,)` (trailing comma) to disambiguate from grouping.
 
+**Vectors and colours** *(2026-11-04)*. A tuple can know what it stands for:
+- `vec3(...)` makes a **vector**, and so do the builtins that return positions and directions (`camera.project` / `camera.ground_point` / `camera.ray`, `math.cross`; `math.normalize` keeps its argument's kind).
+- The `color.*` constants and constructors (`color.from_hex`, `color.hsv`, `color.lerp`, `color.lerp_linear`, `color.to_linear`, `color.to_srgb`) make a **colour**.
+- A tuple literal is **plain**.
+
+The kind is invisible except where mixing the two would be a bug:
+
+| Operation | Result |
+|---|---|
+| `+` / `-` of two tuples | a plain side takes the other's kind; two vectors or two colours keep theirs; a vector and a colour are an error |
+| tuple `*` / `/` number | keeps the tuple's kind |
+| `mix(a, b, t)` | as `+` |
+| a vector where a colour goes (`color:`, a look's `tint:` / `glow:`, `color.*` arguments) | error |
+| a colour where a 2D position goes (`at:`, `size:`) | error |
+| `==`, display, `.x` / `[i]`, `save.*` | ignore the kind |
+
+```twe
+let p = vec3(1, 2, 3)
+p + (0, 1, 0)            # a vector
+color.red * 0.5          # a colour
+(0.2, 0.4, 0.6)          # plain: fine as a colour or a position
+p + color.red            # error: can't add a vector (from `vec3`) and a colour (from `color.*`)
+```
+
+Only a value that *came from* `vec3` or `color.*` is checked, so a plain tuple never errors where it didn't before (the "no false positives" rule, `docs/02`). The check is at run time; `twec verify` doesn't see it yet, because `infer` has no per-builtin signatures. Quaternions are not tuples at all (a `quat` value, §7.2), so they can't be mixed up with either. Design note: [`changes/2026-11-04-web3d-gemini-critique-fixes.md`](changes/2026-11-04-web3d-gemini-critique-fixes.md).
+
 ### 2.6 Keywords
 
 See §10 for the full list.
@@ -568,6 +594,8 @@ entity Enemy:
 | `material` | a `visual` block (§4.9) | none (the plain lit surface) |
 | `rotation` *(Lanternfall E3)* | a `quat` (§7.2 `quat.*`): a full orientation, applied after `facing` | none |
 | `glow` *(Lanternfall E3)* | number (white) or colour `(r, g, b)`: emission added to the lit surface, in the `emission:` convention — above 1 it is HDR and blooms | `0` |
+| `attach` *(2026-11-04)* | an entity, or `nil`: draw this look in that entity's frame (below) | `nil` (drawn at `pos`) |
+| `offset` *(2026-11-04)* | a `vec3` in the attached entity's frame: +Z its front, +Y up, +X its left | `vec3(0, 0, 0)` |
 
 **Tilt, stretch, flash** *(Lanternfall E3)*. The draw's transform is `position + facing_yaw * rotation * (scale * vertex)`, the same in every pass (main, shadows, ambient occlusion, culling, transparency sorting), and normals stay perpendicular under a non-uniform scale:
 
@@ -589,6 +617,27 @@ entity Bot:
         mesh: "assets/bot.glb"
         glow: hurt * 3.0                      # a white hit flash
 ```
+
+**Attachment** *(2026-11-04)*. `attach:` draws a look on another entity: a gun in a hand, a hat on a head, a turret on a tank.
+
+```twe
+entity HeldGun:
+    var owner = nil
+    look:
+        mesh: "assets/pistol.glb"
+        attach: owner
+        offset: vec3(-0.12, 0.86, 0.42)   # right of centre, chest high, in front
+```
+
+- **Where it is drawn.** The parent's place is where its look draws it: `at = parent.at + parent_orientation * offset`. The orientation is the parent's `facing` and `rotation` followed by the child's own, so a child's `facing: 0` points where its parent points.
+- **Scale is not inherited.** An attachment is a rigid mount: a squashing body doesn't squash its gun.
+- **The parent.** Any entity:
+  - with a look, the place that look is drawn, including its own `attach:` (chains work, in any spawn order);
+  - with no look, its `pos`, unturned.
+- **The child's `pos`.** It doesn't place the draw while attached, and needn't exist. `attach: nil` draws the look at the entity's own `pos`, as if the key weren't there.
+- **Despawns.** When the parent is despawned the child isn't drawn. The child stays alive: despawn it from its `update` if it should go too.
+- **Only the drawing moves.** Fields, physics and `entities.near` see the child's own `pos`. Attached looks are evaluated for each entity, each frame.
+- **Errors.** `offset:` without `attach:` is refused when the class is defined. `attach:` with a value that isn't an entity is refused at draw time. So is an entity attached to itself, or a chain more than 16 deep.
 
 **Materials.** With `material: Fire`, the visual (§4.9) is the mesh's surface, evaluated on the GPU for every pixel the mesh covers:
 - **`pixel`:** the colour is the surface's albedo, on the plain surface (roughness 0.5, not metal).
@@ -943,6 +992,8 @@ color.lerp_linear(color.red, color.blue, 0.5) # gamma-correct blend
 color.to_linear(color.red)       # sRGB → linear
 color.to_srgb(c)                 # linear → sRGB
 ```
+
+Every one of these is a **colour** (§2.5.7): `color.red * 0.5` is still one, and adding it to a `vec3` is an error.
 
 ### 7.5 Drawing  *(render context required)*
 
@@ -1466,9 +1517,17 @@ The `_aabb` helpers sample all four corners of the box; they fit the platformer 
 Pools, ducking and scheduling behave the same in all three. Paths are relative to the game's folder; in a web build they come from its `game.twebundle`.
 
 ```twe
+let sfx = sound.load("hit.wav")
 sound.play(sfx)                     # play once
-sound.play_at(sfx, (x, y))         # positional (attenuates with distance)
-sound.volume(sfx, 0.5)             # set volume 0–1
+sound.play_at(sfx, 0.5)             # play once at volume 0–1
+sound.play3d(sfx, at, 30.0)         # play once, quieter with distance from the camera
+sound.set_volume(sfx, 0.5)          # set the volume of what is playing
+sound.stop(sfx)                     # stop every instance (one-shots and music)
+
+let theme = sound.load("theme.ogg")
+music.play(theme)                   # looped (music.play_at(theme, v) for a volume)
+music.is_playing(theme)             # true until music.stop / sound.stop (2026-11-04)
+music.stop(theme)
 
 # Phase 29 session 5: tick-accurate scheduling for rhythm games.
 sound.now()                         # simulation time in seconds
@@ -1477,6 +1536,8 @@ sound.scheduled_count()             # how many entries are queued
 ```
 
 WAV and Ogg Vorbis supported.
+
+`music.is_playing(handle)` is true from `music.play` / `music.play_at` (or a `music.layer` starting the track) until `music.stop` / `sound.stop` (or the end of a `music.crossfade` away from it). It comes from the simulation's own record, not the audio device, so it reads the same in every replay and with no audio at all (`twec run`, tests). There is no `sound.is_playing` for one-shots: that would need the audio device's clock, and game logic that depended on it would stop being deterministic. A hot reload stops the looped tracks, so the reloaded script starts in silence and `music.is_playing` stays true to what is heard.
 
 `sound.now()` returns the simulation clock that `sound.schedule(...)` deadlines compare against. The clock advances by exactly `time.physics_dt` (1/60s) per fixed-step substep, so a sound queued for `t = sound.now() + 0.5` fires on the same tick across two runs of the same input — the foundation for rhythm-game determinism.
 

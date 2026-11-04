@@ -324,7 +324,7 @@ function start_round():
         b.name = names.handle()
         b.skill = 0.2 + random.float() * 0.7
         b.team = 10 + i
-        let held = spawn loot.HeldGun at b.pos
+        let held = spawn loot.HeldGun
         held.owner = b
         b.held = held
     # The Hush waits for everyone to land.
@@ -366,7 +366,7 @@ function open_gate():
 combat.keeper = me
 
 # The keeper's own gun in hand, made once.
-let my_gun = spawn loot.HeldGun at me.pos
+let my_gun = spawn loot.HeldGun
 my_gun.owner = me
 
 # Seconds of slow motion left (the round's last moment).

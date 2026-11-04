@@ -831,6 +831,8 @@ struct LookValues {
     rotation: [f32; 4],
     scale: [f32; 3],
     glow: [f32; 3],
+    /// 2026-11-04: `offset:`, in the attached parent's frame.
+    offset: [f32; 3],
 }
 
 /// web3d-M3: queue a draw for every live entity whose class has a
@@ -916,9 +918,12 @@ fn look_has_own_keys(look: &crate::value::LookDef) -> bool {
         &look.material,
         &look.rotation,
         &look.glow,
+        &look.offset,
     ]
     .iter()
         .any(|s| s.as_ref().is_some_and(|s| s.per_entity))
+        // An attached look follows its parent, which moves on its own.
+        || look.attach.is_some()
 }
 
 /// An entity's `pos` as the point its look is drawn at.
@@ -999,6 +1004,9 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
             anim: 0,
         }));
     }
+    // Evaluate every per-entity look first, so an attached look can
+    // read its parent's final place whatever their order.
+    let mut own: Vec<OwnLook> = Vec::with_capacity(cache.own.len());
     for entity in &cache.own {
         if entity.borrow().despawned {
             continue;
@@ -1006,7 +1014,16 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
         let base = class_values(env, entity)?;
         let look = entity.borrow().class.look.clone().expect("gathered with a look");
         let values = look_values(env, entity, &look, true, base)?;
-        let at = look_pos(&entity.borrow())?;
+        let parent = match &look.attach {
+            Some(slot) => look_parent(eval_look_slot(env, entity, slot)?, slot)?,
+            None => None,
+        };
+        // Attached, the entity's own `pos` doesn't place the draw.
+        let at = if parent.is_some() {
+            [0.0; 3]
+        } else {
+            look_pos(&entity.borrow())?
+        };
         let anim = match entity.borrow().anim.as_deref() {
             Some(a) => {
                 env.instance_anims.push(a.snapshot());
@@ -1014,21 +1031,170 @@ fn emit_looks(env: &mut Env, cache: &crate::value::LookCache) -> Result<(), Runt
             }
             None => 0,
         };
-        env.render_queue3d.push(crate::value::DrawCall3d {
-            primitive: values.primitive,
+        own.push(OwnLook {
+            entity: entity.clone(),
+            values,
             at,
-            color: values.color,
-            size: values.size,
-            texture: 0,
-            yaw: values.yaw,
-            material: values.material,
-            rotation: values.rotation,
-            scale: values.scale,
-            glow: values.glow,
+            rot: look_orientation(&values),
+            parent,
             anim,
+            placed: false,
+        });
+    }
+    for i in 0..own.len() {
+        if own[i].parent.is_some() && !place_attached(env, &mut own, i, 0, &mut class_values)? {
+            continue;
+        }
+        let o = &own[i];
+        // An attached look carries its whole orientation in `rotation`.
+        let attached = o.parent.is_some();
+        env.render_queue3d.push(crate::value::DrawCall3d {
+            primitive: o.values.primitive,
+            at: o.at,
+            color: o.values.color,
+            size: o.values.size,
+            texture: 0,
+            yaw: if attached { 0.0 } else { o.values.yaw },
+            material: o.values.material,
+            rotation: if attached { o.rot } else { o.values.rotation },
+            scale: o.values.scale,
+            glow: o.values.glow,
+            anim: o.anim,
         });
     }
     Ok(())
+}
+
+/// One per-entity look, evaluated, on its way to the draw queue.
+struct OwnLook {
+    entity: Rc<RefCell<Instance>>,
+    values: LookValues,
+    /// World position; for an attached look, set by [`place_attached`].
+    at: [f32; 3],
+    /// World orientation (x, y, z, w): `facing` then `rotation`, and for
+    /// an attached look its parent's orientation before both.
+    rot: [f32; 4],
+    /// `attach:` — the entity it is drawn on, if any.
+    parent: Option<Rc<RefCell<Instance>>>,
+    anim: u32,
+    /// An attached look whose world place is resolved.
+    placed: bool,
+}
+
+/// How deep `attach:` chains may go (a gun on a hand on an arm on ...)
+/// before a loop is assumed.
+const MAX_ATTACH_DEPTH: usize = 16;
+
+/// A look's orientation as one quaternion: `facing` (yaw about +Y), then
+/// `rotation`, as the renderer composes them.
+fn look_orientation(v: &LookValues) -> [f32; 4] {
+    let (s, c) = (v.yaw * 0.5).sin_cos();
+    crate::kernel::render::quat_mul([0.0, s, 0.0, c], v.rotation)
+}
+
+/// `attach:`'s value: an entity, or nil for "not attached".
+fn look_parent(
+    v: Value,
+    slot: &crate::value::LookSlot,
+) -> Result<Option<Rc<RefCell<Instance>>>, RuntimeError> {
+    if v.is_nil() {
+        return Ok(None);
+    }
+    if !v.is_instance() {
+        return Err(RuntimeError {
+            line: slot.line,
+            col: slot.col,
+            message: format!(
+                "look attach must be an entity or nil, got {}",
+                v.type_name()
+            ),
+            help: Some(
+                "e.g. `attach: owner`, where `owner` holds the entity to ride on".to_string(),
+            ),
+        });
+    }
+    Ok(Some(v.as_instance()))
+}
+
+type ClassValues<'a> =
+    dyn FnMut(&mut Env, &Rc<RefCell<Instance>>) -> Result<LookValues, RuntimeError> + 'a;
+
+/// Place attached look `i` in the world from its parent's place:
+/// `at = parent.at + parent.rot * offset`, `rot = parent.rot * rot`.
+/// A parent with a per-entity look is placed first (recursively); one
+/// with a shared look uses its class's values; one with no look, its
+/// `pos`. Returns false when the parent (or one of its own parents) was
+/// despawned: the look isn't drawn.
+fn place_attached(
+    env: &mut Env,
+    own: &mut [OwnLook],
+    i: usize,
+    depth: usize,
+    class_values: &mut ClassValues,
+) -> Result<bool, RuntimeError> {
+    if own[i].placed {
+        return Ok(true);
+    }
+    let Some(parent) = own[i].parent.clone() else {
+        return Ok(true);
+    };
+    if depth >= MAX_ATTACH_DEPTH {
+        return Err(RuntimeError {
+            line: 0,
+            col: 0,
+            message: format!(
+                "`{}`'s look attach: chain is more than {MAX_ATTACH_DEPTH} deep, or loops back on itself",
+                own[i].entity.borrow().class.name
+            ),
+            help: Some(
+                "an entity can't be attached to itself or to one of the entities riding on it"
+                    .to_string(),
+            ),
+        });
+    }
+    if parent.borrow().despawned {
+        return Ok(false);
+    }
+    let (p_at, p_rot) = match own.iter().position(|o| Rc::ptr_eq(&o.entity, &parent)) {
+        Some(j) => {
+            if !place_attached(env, own, j, depth + 1, class_values)? {
+                return Ok(false);
+            }
+            (own[j].at, own[j].rot)
+        }
+        None => {
+            let at = parent_pos(&parent.borrow())?;
+            let has_look = parent.borrow().class.look.is_some();
+            let rot = if has_look {
+                look_orientation(&class_values(env, &parent)?)
+            } else {
+                crate::render3d_types::NO_ROTATION
+            };
+            (at, rot)
+        }
+    };
+    let off = crate::kernel::render::quat_rotate(p_rot, own[i].values.offset);
+    let o = &mut own[i];
+    o.at = [p_at[0] + off[0], p_at[1] + off[1], p_at[2] + off[2]];
+    o.rot = crate::kernel::render::quat_mul(p_rot, o.rot);
+    o.placed = true;
+    Ok(true)
+}
+
+/// The `pos` of an entity something is attached to.
+fn parent_pos(inst: &Instance) -> Result<[f32; 3], RuntimeError> {
+    look_pos(inst).map_err(|_| RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!(
+            "a look is attached to a `{}`, whose `pos` is not a vec3",
+            inst.class.name
+        ),
+        help: Some(format!(
+            "give `{}` a field `var pos = vec3(0, 0, 0)`",
+            inst.class.name
+        )),
+    })
 }
 
 impl LookValues {
@@ -1042,6 +1208,7 @@ impl LookValues {
             rotation: crate::render3d_types::NO_ROTATION,
             scale: [1.0; 3],
             glow: [0.0; 3],
+            offset: [0.0; 3],
         }
     }
 }
@@ -1089,6 +1256,16 @@ fn look_values(
     if let Some(slot) = wanted(&look.material, per_entity) {
         let val = eval_look_slot(env, entity, slot)?;
         v.material = look_material(env, val, slot)?;
+    }
+    if let Some(slot) = wanted(&look.offset, per_entity) {
+        let val = eval_look_slot(env, entity, slot)?;
+        v.offset = crate::stdlib::xyz_of(&val, "look offset").map_err(|e| RuntimeError {
+            help: Some(
+                "`offset:` is a vec3 in the attached entity's frame: +Z its front, +Y up"
+                    .to_string(),
+            ),
+            ..at_slot(e, slot)
+        })?;
     }
     Ok(v)
 }
@@ -1209,6 +1386,8 @@ fn look_glow(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 3], Runtim
     let help = || {
         Some("`glow:` is a number (white) or an (r, g, b) colour, e.g. `glow: hurt * 4.0`".to_string())
     };
+    crate::stdlib::not_kind(&v, crate::tagged_value::TupleKind::Vector, "look glow")
+        .map_err(|e| at_slot(e, slot))?;
     if v.is_tuple() {
         let e = v.as_tuple();
         if e.len() == 3 || e.len() == 4 {
@@ -1227,6 +1406,8 @@ fn look_glow(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 3], Runtim
 }
 
 fn look_tint(v: Value, slot: &crate::value::LookSlot) -> Result<[f32; 4], RuntimeError> {
+    crate::stdlib::not_kind(&v, crate::tagged_value::TupleKind::Vector, "look tint")
+        .map_err(|e| at_slot(e, slot))?;
     if v.is_tuple() && v.as_tuple().len() == 3 {
         let e = v.as_tuple();
         let c = |x: &Value| crate::stdlib::number(x, "look tint").map(|n| n as f32);
@@ -4523,8 +4704,22 @@ fn build_look(
             "material" => look.material = Some(slot),
             "rotation" => look.rotation = Some(slot),
             "glow" => look.glow = Some(slot),
+            "attach" => look.attach = Some(slot),
+            "offset" => look.offset = Some(slot),
             other => unreachable!("look_key_problem accepted `{other}`"),
         }
+    }
+    if let (Some(offset), None) = (&look.offset, &look.attach) {
+        return Err(RuntimeError {
+            line: offset.line,
+            col: offset.col,
+            message: "look key `offset` needs `attach`: it is a place in the attached entity's frame"
+                .to_string(),
+            help: Some(
+                "add `attach: owner` (the entity to ride on), or move the entity's `pos` instead"
+                    .to_string(),
+            ),
+        });
     }
     Ok(Some(Rc::new(look)))
 }
@@ -4909,6 +5104,23 @@ fn apply_arith(
         let a = l.as_tuple();
         let b = r.as_tuple();
         if matches!(op, BinOp::Add | BinOp::Sub) {
+            let (lk, rk) = (tuple_kind_of(l), tuple_kind_of(r));
+            let Some(kind) = crate::tagged_value::TupleKind::join(lk, rk) else {
+                return Err(RuntimeError {
+                    line,
+                    col,
+                    message: format!(
+                        "can't {} {} and {}",
+                        if matches!(op, BinOp::Add) { "add" } else { "subtract" },
+                        lk.describe(),
+                        rk.describe()
+                    ),
+                    help: Some(
+                        "a colour and a position don't mix; if you meant it, rebuild one side as a plain tuple, e.g. `(c.x, c.y, c.z)`"
+                            .to_string(),
+                    ),
+                });
+            };
             if a.len() != b.len() {
                 return Err(RuntimeError {
                     line,
@@ -4926,7 +5138,7 @@ fn apply_arith(
             for (x, y) in a.iter().zip(b.iter()) {
                 out_elems.push(apply_arith(op, x, y, line, col)?);
             }
-            return Ok(Value::from_tuple(out_elems));
+            return Ok(Value::from_tuple_kind(out_elems, kind));
         }
     }
     if l.is_tuple() {
@@ -4936,7 +5148,7 @@ fn apply_arith(
             for x in elems.iter() {
                 out_elems.push(apply_arith(op, x, r, line, col)?);
             }
-            return Ok(Value::from_tuple(out_elems));
+            return Ok(Value::from_tuple_kind(out_elems, tuple_kind_of(l)));
         }
     }
     if r.is_tuple() {
@@ -4946,7 +5158,7 @@ fn apply_arith(
             for y in elems.iter() {
                 out_elems.push(apply_arith(op, l, y, line, col)?);
             }
-            return Ok(Value::from_tuple(out_elems));
+            return Ok(Value::from_tuple_kind(out_elems, tuple_kind_of(r)));
         }
     }
     let pair = if l.is_int_or_boxed_int() && r.is_int_or_boxed_int() {
@@ -4991,6 +5203,12 @@ fn apply_arith(
 enum NumPair {
     Ints(i64, i64),
     Floats(f64, f64),
+}
+
+/// A tuple's kind (`docs/06` §2.5.7); plain for anything else.
+fn tuple_kind_of(v: &Value) -> crate::tagged_value::TupleKind {
+    v.tuple_kind()
+        .unwrap_or(crate::tagged_value::TupleKind::Plain)
 }
 
 fn is_scalar(v: &Value) -> bool {

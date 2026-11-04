@@ -1,0 +1,56 @@
+# 2026-11-04: `attach:` / `offset:` in a look (docs/06 §4.9a). A gun
+# rides its owner's frame; tests/eval.rs renders one frame and checks
+# where each attached look was drawn.
+
+# Spawned before their owners: attachment doesn't depend on order.
+entity Gun:
+    var owner = nil
+    var pos = vec3(0, 0, -50)     # only used while unattached
+    look:
+        attach: owner
+        offset: vec3(0, 1, 2)     # 1 m up, 2 m in front of the owner
+        scale: 0.5
+
+# A scope on the gun: attachments chain.
+entity Scope:
+    var gun = nil
+    look:
+        attach: gun
+        offset: vec3(0, 0, 1)
+
+# Turned by a per-entity key: a quarter turn faces +X.
+entity Body:
+    var pos = vec3(0, 0, 0)
+    var heading = 0.0
+    look:
+        facing: heading
+
+# A shared look (reads nothing of the entity), turned the same way.
+entity Turret:
+    var pos = vec3(0, 0, 0)
+    look:
+        facing: 1.5707964
+
+# No look at all: only its `pos` counts.
+entity Post:
+    var pos = vec3(0, 0, 0)
+
+let g1 = spawn Gun
+let g2 = spawn Gun
+let g3 = spawn Gun
+let g4 = spawn Gun                # owner stays nil: drawn at its own pos
+let g5 = spawn Gun
+let s = spawn Scope
+
+let body = spawn Body at vec3(10, 0, 0)
+body.heading = 1.5707964
+let turret = spawn Turret at vec3(20, 0, 0)
+let post = spawn Post at vec3(30, 0, 0)
+let gone = spawn Post at vec3(40, 0, 0)
+
+g1.owner = body
+g2.owner = turret
+g3.owner = post
+g5.owner = gone
+s.gun = g1
+despawn gone

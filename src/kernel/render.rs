@@ -397,7 +397,7 @@ fn srgb_intensity_to_linear(c: f32) -> f32 {
 }
 
 /// Hamilton product `a * b` of (x, y, z, w) quaternions.
-fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub(crate) fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [
         a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
         a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
@@ -407,7 +407,7 @@ fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 }
 
 /// `v` rotated by quaternion `q` (x, y, z, w).
-fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+pub(crate) fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
     let u = [q[0], q[1], q[2]];
     let t = cross(u, v);
     let t = [t[0] + q[3] * v[0], t[1] + q[3] * v[1], t[2] + q[3] * v[2]];

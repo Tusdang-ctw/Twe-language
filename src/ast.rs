@@ -409,7 +409,7 @@ pub struct LookKey {
 
 /// The keys a `look:` block may set.
 pub const LOOK_KEYS: &[&str] = &[
-    "mesh", "tint", "scale", "facing", "material", "rotation", "glow",
+    "mesh", "tint", "scale", "facing", "material", "rotation", "glow", "attach", "offset",
 ];
 
 /// The problem with a `look:` key, if any, as `(message, help)`. Shared

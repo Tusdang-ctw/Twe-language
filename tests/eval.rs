@@ -3532,3 +3532,154 @@ fn an_entity_starts_in_its_initial_state_so_persistent_survives_pause() {
     let out = run_program_frames("tests/programs/entity_persistent_pause.twe", 5, 1.0 / 60.0).expect("runs");
     assert_eq!(out, "shell 3, crate 0\n");
 }
+
+#[test]
+fn vectors_and_colours_mix_with_plain_tuples() {
+    // docs/06 §2.5.7: `vec3` and `color.*` tag their tuples; arithmetic
+    // keeps the tag, and a plain tuple joins either.
+    let out = run_program("tests/programs/tuple_kinds.twe").expect("program should run");
+    let expected = "(1.0, 3.0, 3.0)\n\
+        (2.0, 4.0, 6.0)\n\
+        (0.5, 0.0, 0.0, 0.5)\n\
+        (1.0, 0.0, 1.0, 2.0)\n\
+        (0.5, 0.5, 0.5, 1.0)\n\
+        true\n\
+        (0.5, 0.0, 0.5, 1.0)\n\
+        (0.0, 0.6, 0.8)\n\
+        (1.0, 2.0, 4.0)\n\
+        (0.6, 0.7, 0.8, 1.0)\n\
+        (1.2, 2.4, 3.6)\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn a_vector_is_not_a_colour_and_a_colour_is_not_a_position() {
+    // Arithmetic: the two kinds don't mix, whatever their lengths.
+    let err = run_program_str("print(vec3(1, 0, 0) - color.red)\n").expect_err("mixed kinds");
+    assert!(
+        err.contains("can't subtract a vector (from `vec3`) and a colour (from `color.*`)"),
+        "{err}"
+    );
+    let err = run_program_str("let c = color.red + vec3(1, 2, 3)\n").expect_err("mixed kinds");
+    assert!(err.contains("can't add a colour"), "{err}");
+    let err = run_program_str("print(mix(color.red, vec3(1, 2, 3), 0.5))\n").expect_err("mix");
+    assert!(err.contains("mix: can't blend a colour"), "{err}");
+    // A vector passed where a colour goes.
+    let err =
+        run_program_str("print(color.lerp(vec3(1, 0, 0), color.red, 0.5))\n").expect_err("lerp");
+    assert!(
+        err.contains("color.lerp.a expects a colour, got a vector") && err.contains("color.red"),
+        "{err}"
+    );
+    // The tag survives arithmetic: a scaled vector is still a vector.
+    let err = run_program_str("print(color.to_linear(vec3(1, 0, 0) * 0.5))\n").expect_err("scaled");
+    assert!(err.contains("expects a colour, got a vector"), "{err}");
+}
+
+#[test]
+fn a_look_refuses_a_vector_tint_or_glow() {
+    let src = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        tint: pos\nspawn E\n";
+    let mut env = env_for(src).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("vector tint");
+    assert!(
+        e.message
+            .contains("look tint expects a colour, got a vector")
+            && e.line == 4,
+        "{e:?}"
+    );
+    let src = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        glow: pos * 2\nspawn E\n";
+    let mut env = env_for(src).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("vector glow");
+    assert!(e.message.contains("look glow expects a colour"), "{e:?}");
+    // A plain tuple and a colour are both fine.
+    let src = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        tint: (1, 0.5, 0)\n        glow: color.red * 2\nspawn E\n";
+    let mut env = env_for(src).expect("runs");
+    eval::render_frame3d(&mut env).expect("plain tint, colour glow");
+}
+
+#[test]
+fn music_is_playing_follows_play_and_stop() {
+    // docs/06 §7.10: the simulation's own record of looped tracks, so
+    // a script keeps no `music_playing` flag (and no audio shell runs here).
+    let src = "let t = sound.load(\"examples/assets/silence.wav\")\n\
+               print(music.is_playing(t))\n\
+               music.play(t)\n\
+               print(music.is_playing(t))\n\
+               sound.play(t)\n\
+               print(music.is_playing(t))\n\
+               music.stop(t)\n\
+               print(music.is_playing(t))\n\
+               music.play_at(t, 0.5)\n\
+               sound.stop(t)\n\
+               print(music.is_playing(t))\n";
+    assert_eq!(
+        run_program_str(src).expect("runs"),
+        "false\ntrue\ntrue\nfalse\nfalse\n"
+    );
+    let err = run_program_str("print(music.is_playing(\"x.ogg\"))\n").expect_err("not a handle");
+    assert!(
+        err.contains("music.is_playing expects a sound handle"),
+        "{err}"
+    );
+}
+
+#[test]
+fn look_attach_rides_the_parent_frame() {
+    let src = fs::read_to_string("tests/programs/look_attach.twe").unwrap();
+    let mut env = env_for(&src).expect("program runs");
+    eval::render_frame3d(&mut env).expect("render");
+    let q = &env.render_queue3d;
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+    let at = |p: [f32; 3]| {
+        q.iter()
+            .find(|d| near(d.at, p))
+            .unwrap_or_else(|| panic!("no draw at {p:?}: {q:#?}"))
+    };
+    // Body at x=10 facing +X: the gun's (0, 1, 2) offset turns to (2, 1, 0),
+    // and the gun takes the body's orientation (as a rotation, yaw 0).
+    let g1 = at([12.0, 1.0, 0.0]);
+    assert_eq!(g1.size, 0.5, "the gun's own scale, not inherited");
+    let h = std::f32::consts::FRAC_PI_4;
+    assert!(
+        g1.yaw == 0.0
+            && near(
+                [g1.rotation[1], g1.rotation[3], 0.0],
+                [h.sin(), h.cos(), 0.0]
+            ),
+        "{g1:?}"
+    );
+    // The scope rides the gun: one more metre along the gun's front (+X).
+    at([13.0, 1.0, 0.0]);
+    // A parent with a shared look turns its child the same way.
+    at([22.0, 1.0, 0.0]);
+    // A parent with no look: its pos, unturned.
+    at([30.0, 1.0, 2.0]);
+    // Owner nil: unattached, drawn at the gun's own pos.
+    at([0.0, 0.0, -50.0]);
+    // Owner despawned: not drawn. Body + Turret + 4 guns + scope.
+    assert_eq!(q.len(), 7, "{q:#?}");
+}
+
+#[test]
+fn look_attach_errors_name_the_problem() {
+    // `offset:` without `attach:` is refused when the class is built.
+    let src = "entity E:\n    var pos = vec3(0, 0, 0)\n    look:\n        offset: vec3(0, 1, 0)\n";
+    let e = env_for(src).err().expect("offset alone");
+    assert!(e.contains("`offset` needs `attach`"), "{e}");
+    // Attached to something that isn't an entity.
+    let src = "entity E:\n    look:\n        attach: 5\nspawn E\n";
+    let mut env = env_for(src).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("not an entity");
+    assert!(
+        e.message
+            .contains("attach must be an entity or nil, got int")
+            && e.line == 3,
+        "{e:?}"
+    );
+    // Attached to itself: a loop.
+    let src =
+        "entity E:\n    var to = nil\n    look:\n        attach: to\nlet e = spawn E\ne.to = e\n";
+    let mut env = env_for(src).expect("runs");
+    let e = eval::render_frame3d(&mut env).expect_err("loop");
+    assert!(e.message.contains("loops back on itself"), "{e:?}");
+}

@@ -89,6 +89,9 @@ thread_local! {
         crossfades: Vec::new(),
         wall_clock: 0.0,
     });
+    /// Paths with a looped track playing; see [`start_looping`].
+    static LOOPING: RefCell<std::collections::BTreeSet<String>> =
+        const { RefCell::new(std::collections::BTreeSet::new()) };
 }
 
 /// Register / overwrite a pool for `path`. A `max_voices` of 0 means
@@ -271,8 +274,35 @@ pub fn crossfade_snapshot() -> Vec<(String, String, f32, f32, bool)> {
     })
 }
 
-/// Wipe all state. Called by `clear_asset_caches` on hot reload.
+/// Note that a looped track (`music.play`, a music layer) started on
+/// `path`. It plays until [`stop_looping`]: the simulation knows this
+/// without asking the audio device, so `music.is_playing` reads the
+/// same in every run of the same input (web3d, 2026-11-04).
+pub fn start_looping(path: &str) {
+    LOOPING.with(|l| {
+        l.borrow_mut().insert(path.to_string());
+    });
+}
+
+/// Note that every instance of `path` was stopped.
+pub fn stop_looping(path: &str) {
+    LOOPING.with(|l| {
+        l.borrow_mut().remove(path);
+    });
+}
+
+/// Whether a looped track on `path` was started and not stopped.
+pub fn is_looping(path: &str) -> bool {
+    LOOPING.with(|l| l.borrow().contains(path))
+}
+
+/// Wipe all state. Called by `clear_asset_caches` on hot reload. The
+/// looped tracks still playing are stopped too, so the reloaded script
+/// starts with silence and `music.is_playing` tells the truth.
 pub fn clear() {
+    for path in LOOPING.with(|l| std::mem::take(&mut *l.borrow_mut())) {
+        crate::audio_host::push(crate::audio_host::AudioCmd::Stop { path });
+    }
     AUDIO_POLISH.with(|s| {
         *s.borrow_mut() = AudioPolishState {
             pools: HashMap::new(),

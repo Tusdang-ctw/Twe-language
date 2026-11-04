@@ -78,6 +78,11 @@ pub struct LookDef {
     pub rotation: Option<LookSlot>,
     /// Lanternfall E3: emission added to the lit colour (hit flashes).
     pub glow: Option<LookSlot>,
+    /// 2026-11-04: the entity this one is drawn on (a held gun on its
+    /// owner): its position and orientation become the parent's frame.
+    pub attach: Option<LookSlot>,
+    /// 2026-11-04: where in the attached parent's frame (a vec3).
+    pub offset: Option<LookSlot>,
 }
 
 /// web3d-M7 session 16: a class whose look reads nothing of the

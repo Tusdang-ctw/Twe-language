@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::tagged_value::TupleKind;
 use crate::value::{Env, Object, RuntimeError, Value};
 
 #[cfg(feature = "experimental")]
@@ -2767,6 +2768,10 @@ fn install_sound(env: &mut Env) {
         "stop".to_string(),
         Value::from_builtin("music.stop", &["handle"], sound_stop),
     );
+    music.insert(
+        "is_playing".to_string(),
+        Value::from_builtin("music.is_playing", &["handle"], music_is_playing),
+    );
     // v1.0.1 session 4: dynamic music layering + crossfade. The play
     // loop ticks `audio_polish::dirty_layers` per frame and dispatches
     // / volume-adjusts the underlying macroquad sounds. `music.layer`
@@ -2907,8 +2912,21 @@ fn sound_play3d_impl(env: &mut Env, args: &[Value]) -> Result<Value, RuntimeErro
 fn sound_stop(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 1, "sound.stop")?;
     let path = sound_handle_path(&args[0], "sound.stop")?;
+    crate::audio_polish::stop_looping(&path);
     crate::audio_host::push(crate::audio_host::AudioCmd::Stop { path });
     Ok(Value::NIL)
+}
+
+/// `music.is_playing(handle)` — whether a looped track on `handle` was
+/// started (`music.play` / `music.play_at`, or a `music.layer`) and not
+/// stopped since (`music.stop` / `sound.stop`, or the end of a
+/// `music.crossfade` away from it). Read from the simulation's own
+/// record, not the audio device, so replays see the same answer
+/// (web3d, 2026-11-04).
+fn music_is_playing(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
+    arity(args, 1, "music.is_playing")?;
+    let path = sound_handle_path(&args[0], "music.is_playing")?;
+    Ok(Value::from_bool(crate::audio_polish::is_looping(&path)))
 }
 
 /// `sound.set_volume(handle, volume)` — adjust volume of any
@@ -3159,6 +3177,9 @@ fn play_sound_path(
     // (`native_audio` through quad-snd natively, WebAudio in the
     // browser). `callee` is unused now the decode moved shell-side.
     let _ = callee;
+    if looped {
+        crate::audio_polish::start_looping(path);
+    }
     crate::audio_host::push(crate::audio_host::AudioCmd::Play {
         path: path.to_string(),
         volume: final_vol,
@@ -3230,6 +3251,7 @@ pub fn sync_audio_polish() {
         });
     };
     let stop = |path: &str| {
+        crate::audio_polish::stop_looping(path);
         crate::audio_host::push(crate::audio_host::AudioCmd::Stop {
             path: path.to_string(),
         });
@@ -6599,6 +6621,16 @@ fn math_mix(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     arity(args, 3, "mix")?;
     let t = as_f64(&args[2], "mix")?;
     if args[0].is_tuple() && args[1].is_tuple() {
+        let ka = args[0].tuple_kind().unwrap_or(TupleKind::Plain);
+        let kb = args[1].tuple_kind().unwrap_or(TupleKind::Plain);
+        let Some(kind) = TupleKind::join(ka, kb) else {
+            return Err(RuntimeError {
+                line: 0,
+                col: 0,
+                message: format!("mix: can't blend {} with {}", ka.describe(), kb.describe()),
+                help: Some("mix two colours or two vectors, not one of each".to_string()),
+            });
+        };
         let a = args[0].as_tuple();
         let b = args[1].as_tuple();
         if a.len() != b.len() {
@@ -6622,7 +6654,7 @@ fn math_mix(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             let bv = as_f64(&b[i], "mix")?;
             out.push(Value::from_float(av * (1.0 - t) + bv * t));
         }
-        return Ok(Value::from_tuple(out));
+        return Ok(Value::from_tuple_kind(out, kind));
     }
     let a = as_f64(&args[0], "mix")?;
     let b = as_f64(&args[1], "mix")?;
@@ -6727,11 +6759,14 @@ fn math_cross(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
             help: Some("cross product is only defined in 3D".to_string()),
         });
     }
-    Ok(Value::from_tuple(vec![
-        Value::from_float(a[1] * b[2] - a[2] * b[1]),
-        Value::from_float(a[2] * b[0] - a[0] * b[2]),
-        Value::from_float(a[0] * b[1] - a[1] * b[0]),
-    ]))
+    Ok(Value::from_tuple_kind(
+        [
+            Value::from_float(a[1] * b[2] - a[2] * b[1]),
+            Value::from_float(a[2] * b[0] - a[0] * b[2]),
+            Value::from_float(a[0] * b[1] - a[1] * b[0]),
+        ],
+        TupleKind::Vector,
+    ))
 }
 
 fn math_length(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
@@ -6914,7 +6949,8 @@ fn math_normalize(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError>
         return Ok(args[0]);
     }
     let normalized: Vec<Value> = v.iter().map(|x| Value::from_float(x / len)).collect();
-    Ok(Value::from_tuple(normalized))
+    let kind = args[0].tuple_kind().unwrap_or(TupleKind::Plain);
+    Ok(Value::from_tuple_kind(normalized, kind))
 }
 
 fn install_random(env: &mut Env) {
@@ -7085,15 +7121,7 @@ fn install_color(env: &mut Env) {
     ];
     let mut fields = HashMap::new();
     for (name, r, g, b, a) in palette {
-        fields.insert(
-            (*name).to_string(),
-            Value::from_tuple(vec![
-                Value::from_float(*r),
-                Value::from_float(*g),
-                Value::from_float(*b),
-                Value::from_float(*a),
-            ]),
-        );
+        fields.insert((*name).to_string(), make_color(*r, *g, *b, *a));
     }
     // Phase 9 session 6: color pipeline.
     // - from_hex: parse "#rrggbb" / "#rrggbbaa" (the leading '#' is
@@ -7309,6 +7337,7 @@ fn color_hsv(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
 /// for the 3-tuple form. Centralises the unpack so every color helper
 /// errors with the same message shape.
 fn rgba(v: &Value, what: &str) -> Result<(f64, f64, f64, f64), RuntimeError> {
+    not_kind(v, TupleKind::Vector, what)?;
     if !v.is_tuple() {
         let other = *v;
         return Err(RuntimeError {
@@ -7347,12 +7376,15 @@ fn rgba(v: &Value, what: &str) -> Result<(f64, f64, f64, f64), RuntimeError> {
 }
 
 fn make_color(r: f64, g: f64, b: f64, a: f64) -> Value {
-    Value::from_tuple(vec![
-        Value::from_float(r),
-        Value::from_float(g),
-        Value::from_float(b),
-        Value::from_float(a),
-    ])
+    Value::from_tuple_kind(
+        vec![
+            Value::from_float(r),
+            Value::from_float(g),
+            Value::from_float(b),
+            Value::from_float(a),
+        ],
+        TupleKind::Color,
+    )
 }
 
 fn install_screen(env: &mut Env) {
@@ -8664,6 +8696,7 @@ fn require_render(env: &Env, name: &str) -> Result<(), RuntimeError> {
 }
 
 fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
+    not_kind(v, TupleKind::Color, what)?;
     if v.is_tuple() && {
         let elems = v.as_tuple();
         elems.len() >= 2
@@ -8685,6 +8718,7 @@ fn xy_of(v: &Value, what: &str) -> Result<(f64, f64), RuntimeError> {
 }
 
 fn color_of(v: &Value, what: &str) -> Result<crate::color::Color, RuntimeError> {
+    not_kind(v, TupleKind::Vector, what)?;
     if v.is_tuple() && {
         let elems = v.as_tuple();
         elems.len() >= 3
@@ -10462,11 +10496,14 @@ fn vec3_impl(_env: &mut Env, args: &[Value]) -> Result<Value, RuntimeError> {
     let y = number(&args[1], "vec3.y")?;
     let z = number(&args[2], "vec3.z")?;
     // An array, not a `vec!`: the tuple's storage is allocated once.
-    Ok(Value::from_tuple([
-        Value::from_float(x),
-        Value::from_float(y),
-        Value::from_float(z),
-    ]))
+    Ok(Value::from_tuple_kind(
+        [
+            Value::from_float(x),
+            Value::from_float(y),
+            Value::from_float(z),
+        ],
+        TupleKind::Vector,
+    ))
 }
 
 // `camera.follow(target_xy, lerp)` — exponential smoothing toward a
@@ -10562,11 +10599,14 @@ fn camera_frame(env: &Env) -> (crate::camera3d::Camera3d, f32, [f32; 2]) {
 }
 
 fn vec3_value(p: [f32; 3]) -> Value {
-    Value::from_tuple(vec![
-        Value::from_float(f64::from(p[0])),
-        Value::from_float(f64::from(p[1])),
-        Value::from_float(f64::from(p[2])),
-    ])
+    Value::from_tuple_kind(
+        [
+            Value::from_float(f64::from(p[0])),
+            Value::from_float(f64::from(p[1])),
+            Value::from_float(f64::from(p[2])),
+        ],
+        TupleKind::Vector,
+    )
 }
 
 // Lanternfall E1: `camera.project(point)` — where a world point is on
@@ -11272,6 +11312,32 @@ fn texture_handle_id(v: &Value, what: &str) -> Result<u32, RuntimeError> {
 
 /// Pull a 3-component float vector out of a Twe tuple. Used by the
 /// 3D builtins. Mirrors `xy_of` but for the third axis.
+/// Refuse a tuple of the `wrong` [`TupleKind`] for `what`: a vector
+/// where a colour goes, or a colour where a position goes (`docs/06`
+/// §2.5.7). A plain tuple always passes. (`xyz_of` needs no check: a
+/// colour is four numbers, so its length already refuses one.)
+pub(crate) fn not_kind(v: &Value, wrong: TupleKind, what: &str) -> Result<(), RuntimeError> {
+    if v.tuple_kind() != Some(wrong) {
+        return Ok(());
+    }
+    let (expected, help) = match wrong {
+        TupleKind::Vector => (
+            "a colour",
+            "pass a colour such as `color.red` or `(r, g, b)`; a vec3 is a position or direction",
+        ),
+        _ => (
+            "a position",
+            "pass a position such as `(x, y)`; `color.*` values are colours",
+        ),
+    };
+    Err(RuntimeError {
+        line: 0,
+        col: 0,
+        message: format!("{what} expects {expected}, got {}", wrong.describe()),
+        help: Some(help.to_string()),
+    })
+}
+
 pub(crate) fn xyz_of(v: &Value, what: &str) -> Result<[f32; 3], RuntimeError> {
     let xyz = v.with_tuple(|e| match e {
         [x, y, z] => Some([*x, *y, *z]),

@@ -1,0 +1,20 @@
+# docs/06 §2.5.7: a vector (`vec3`) and a colour (`color.*`) are tuples
+# that know what they are. They mix with plain tuples, scale, compare
+# and print like any tuple; tests/eval.rs checks that one used as the
+# other is refused.
+
+let p = vec3(1, 2, 3)
+print(p + (0, 1, 0))                  # a plain tuple joins a vector
+print(p * 2)
+print(color.red * 0.5)                # a colour scaled stays a colour
+print(color.red + color.blue)
+print(color.white - (0.5, 0.5, 0.5, 0.0))
+print(p == (1.0, 2.0, 3.0))           # equality ignores the kind
+print(mix(color.red, color.blue, 0.5))
+print(math.normalize(vec3(0, 3, 4)))
+print(math.cross(vec3(1, 0, 0), vec3(0, 1, 0)) + p)
+
+# A literal is plain, so it is a fine colour and a fine position.
+let tint = (0.2, 0.4, 0.6)
+print(color.lerp(tint, color.white, 0.5))
+print(tint + p)

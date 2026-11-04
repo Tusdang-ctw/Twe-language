@@ -117,7 +117,10 @@ pub enum HeapBody {
     /// `to_legacy` rewraps without deep-copy.
     /// web3d-M3: elements stored inline with the refcount (one
     /// allocation, not an `Rc` around a separately allocated `Vec`).
-    Tuple(Rc<[TaggedValue]>),
+    Tuple {
+        kind: TupleKind,
+        elems: Rc<[TaggedValue]>,
+    },
     /// web3d-M3: a tuple of at most three elements (every `vec3`, every
     /// 2D position) stored inline in the heap object — one allocation
     /// per tuple instead of two. Same value as [`HeapBody::Tuple`] in
@@ -125,6 +128,7 @@ pub enum HeapBody {
     /// [`HeapBody::tuple_elems`].
     SmallTuple {
         len: u8,
+        kind: TupleKind,
         elems: [TaggedValue; 3],
     },
     /// Mutable list. Same migration as Tuple.
@@ -176,8 +180,53 @@ impl HeapBody {
     #[inline]
     pub fn tuple_elems(&self) -> Option<&[TaggedValue]> {
         match self {
-            HeapBody::Tuple(rc) => Some(rc),
-            HeapBody::SmallTuple { len, elems } => Some(&elems[..usize::from(*len)]),
+            HeapBody::Tuple { elems, .. } => Some(elems),
+            HeapBody::SmallTuple { len, elems, .. } => Some(&elems[..usize::from(*len)]),
+            _ => None,
+        }
+    }
+
+    /// What a tuple stands for, whichever representation holds it.
+    #[inline]
+    pub fn tuple_kind(&self) -> Option<TupleKind> {
+        match self {
+            HeapBody::Tuple { kind, .. } | HeapBody::SmallTuple { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+}
+
+/// What a tuple is known to stand for (web3d, 2026-11-04). `vec3(...)`
+/// makes a [`TupleKind::Vector`], the `color.*` constants and
+/// constructors a [`TupleKind::Color`]; a tuple literal is
+/// [`TupleKind::Plain`] and mixes with either. Arithmetic and the
+/// position / colour argument decoders reject a vector used as a colour
+/// or a colour used as a vector (`docs/06` §2.5.7). Invisible otherwise:
+/// equality, display and `.x` / `[i]` ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TupleKind {
+    Plain,
+    Vector,
+    Color,
+}
+
+impl TupleKind {
+    /// How a script would say what this tuple is.
+    pub fn describe(self) -> &'static str {
+        match self {
+            TupleKind::Plain => "a tuple",
+            TupleKind::Vector => "a vector (from `vec3`)",
+            TupleKind::Color => "a colour (from `color.*`)",
+        }
+    }
+
+    /// The kind of `a op b` for element-wise arithmetic: a plain side
+    /// takes the other's kind; two different known kinds don't mix.
+    pub fn join(a: TupleKind, b: TupleKind) -> Option<TupleKind> {
+        match (a, b) {
+            (TupleKind::Plain, k) | (k, TupleKind::Plain) => Some(k),
+            (x, y) if x == y => Some(x),
             _ => None,
         }
     }
@@ -191,7 +240,7 @@ impl HeapBodyKind {
             HeapBody::Percent(_) => Self::Percent,
             HeapBody::Quantity { .. } => Self::Quantity,
             HeapBody::Range { .. } => Self::Range,
-            HeapBody::Tuple(_) | HeapBody::SmallTuple { .. } => Self::Tuple,
+            HeapBody::Tuple { .. } | HeapBody::SmallTuple { .. } => Self::Tuple,
             HeapBody::List(_) => Self::List,
             HeapBody::Object(_) => Self::Object,
             HeapBody::Class(_) => Self::Class,
@@ -346,16 +395,25 @@ impl TaggedValue {
     }
 
     pub fn from_tuple(elems: impl AsRef<[TaggedValue]>) -> Self {
+        Self::from_tuple_kind(elems, TupleKind::Plain)
+    }
+
+    /// A tuple known to be a vector or a colour ([`TupleKind`]).
+    pub fn from_tuple_kind(elems: impl AsRef<[TaggedValue]>, kind: TupleKind) -> Self {
         let elems = elems.as_ref();
         if elems.len() <= 3 {
             let mut inline = [TaggedValue::NIL; 3];
             inline[..elems.len()].copy_from_slice(elems);
             return Self::from_heap(HeapBody::SmallTuple {
                 len: elems.len() as u8,
+                kind,
                 elems: inline,
             });
         }
-        Self::from_heap(HeapBody::Tuple(Rc::from(elems)))
+        Self::from_heap(HeapBody::Tuple {
+            kind,
+            elems: Rc::from(elems),
+        })
     }
 
     pub fn from_list(elems: Rc<RefCell<Vec<TaggedValue>>>) -> Self {
@@ -577,7 +635,7 @@ impl TaggedValue {
                 HeapBody::Percent(_) => "percent",
                 HeapBody::Quantity { .. } => "quantity",
                 HeapBody::Range { .. } => "range",
-                HeapBody::Tuple(_) | HeapBody::SmallTuple { .. } => "tuple",
+                HeapBody::Tuple { .. } | HeapBody::SmallTuple { .. } => "tuple",
                 HeapBody::List(_) => "list",
                 HeapBody::Object(o) => o.borrow().kind,
                 HeapBody::Class(_) => "class",
@@ -619,7 +677,7 @@ impl TaggedValue {
                     let op = if *exclusive { "..<" } else { ".." };
                     format!("{start}{op}{end}")
                 }
-                HeapBody::Tuple(_) | HeapBody::SmallTuple { .. } => {
+                HeapBody::Tuple { .. } | HeapBody::SmallTuple { .. } => {
                     let elems = b.tuple_elems().expect("tuple");
                     let parts: Vec<String> = elems.iter().map(|t| t.display()).collect();
                     format!("({})", parts.join(", "))
@@ -691,8 +749,8 @@ impl TaggedValue {
                         },
                     ) => sa == sb && ea == eb && xa == xb,
                     (
-                        HeapBody::Tuple(_) | HeapBody::SmallTuple { .. },
-                        HeapBody::Tuple(_) | HeapBody::SmallTuple { .. },
+                        HeapBody::Tuple { .. } | HeapBody::SmallTuple { .. },
+                        HeapBody::Tuple { .. } | HeapBody::SmallTuple { .. },
                     ) => {
                         let ra = a.tuple_elems().expect("tuple");
                         let rb = b.tuple_elems().expect("tuple");
@@ -780,7 +838,7 @@ impl TaggedValue {
 
     pub fn as_tuple(&self) -> Rc<[TaggedValue]> {
         self.with_obj_body(|b| match b {
-            HeapBody::Tuple(rc) => rc.clone(),
+            HeapBody::Tuple { elems, .. } => elems.clone(),
             // Slow path for inline tuples; hot readers use `with_tuple`.
             HeapBody::SmallTuple { .. } => Rc::from(b.tuple_elems().expect("tuple")),
             other => panic!("as_tuple: not a tuple: {other:?}"),
@@ -801,6 +859,20 @@ impl TaggedValue {
                 return None;
             }
             o.body.borrow().tuple_elems().map(f)
+        })
+    }
+
+    /// A tuple's [`TupleKind`]; `None` if this isn't a tuple.
+    #[inline]
+    pub fn tuple_kind(&self) -> Option<TupleKind> {
+        if !self.is_obj() {
+            return None;
+        }
+        self.with_heap_object(|o| {
+            if o.body_kind != HeapBodyKind::Tuple {
+                return None;
+            }
+            o.body.borrow().tuple_kind()
         })
     }
 

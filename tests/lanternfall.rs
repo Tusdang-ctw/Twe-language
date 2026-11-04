@@ -479,11 +479,34 @@ fn held_guns_follow_their_fighters() {
     let mut g = Game::new();
     g.practice();
     g.run(3, &[], &[]);
-    // The pistol is drawn at the keeper's hands, facing where it faces.
+    // The pistol is attached to the keeper: drawn at its right hand
+    // (`offset:` turned by its heading) and facing where it faces.
     assert_eq!(g.probe("my_gun.shown"), "true");
     assert_eq!(g.num("my_gun.gun"), 1.0);
-    assert!(g.num("math.length(my_gun.pos - me.pos)") < 1.5);
-    assert_eq!(g.num("my_gun.heading"), g.num("me.heading"));
+    assert_eq!(g.probe("my_gun.owner == me"), "true");
+    let h = g.num("me.heading") as f32;
+    let (s, c) = h.sin_cos();
+    let me = [
+        g.num("me.pos.x") as f32,
+        g.num("me.pos.y") as f32,
+        g.num("me.pos.z") as f32,
+    ];
+    let hand = [
+        me[0] - 0.12 * c + 0.42 * s,
+        me[1] + 0.86,
+        me[2] + 0.12 * s + 0.42 * c,
+    ];
+    twec::eval::render_frame3d(&mut g.env).expect("frame");
+    let gun = g
+        .env
+        .render_queue3d
+        .iter()
+        .find(|d| d.at.iter().zip(hand).all(|(a, b)| (a - b).abs() < 1e-3));
+    let gun = gun.unwrap_or_else(|| panic!("no draw at the keeper's hand {hand:?}"));
+    let half = h * 0.5;
+    assert!(
+        (gun.rotation[1] - half.sin()).abs() < 1e-4 && (gun.rotation[3] - half.cos()).abs() < 1e-4
+    );
     // The wrench in hand: the gun is put away.
     g.exec("me.slot = 0");
     g.run(2, &[], &[]);

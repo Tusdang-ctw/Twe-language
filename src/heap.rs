@@ -663,7 +663,7 @@ fn mark_class(class: &crate::value::ClassDef) {
 
 fn mark_body(body: &HeapBody) {
     match body {
-        HeapBody::Tuple(_) | HeapBody::SmallTuple { .. } => {
+        HeapBody::Tuple { .. } | HeapBody::SmallTuple { .. } => {
             for v in body.tuple_elems().expect("tuple") {
                 mark_value(v);
             }

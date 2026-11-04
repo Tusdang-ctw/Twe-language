@@ -19,6 +19,8 @@
 #     volume.
 #   - `music.play(handle)` — looped play.
 #   - `music.stop(handle)` — stop looped instance.
+#   - `music.is_playing(handle)` — whether the looped track is on,
+#     so the script keeps no flag of its own.
 #   - `sound.set_volume(handle, v)` — adjust volume of any
 #     currently-playing instances of `handle` in flight.
 #
@@ -29,7 +31,6 @@
 
 let track = sound.load("examples/assets/silence.wav")
 var volume = 0.5
-var music_playing = false
 
 on update(dt):
     # Wheel adjusts volume continuously, clamped 0..1.
@@ -43,15 +44,12 @@ on update(dt):
     if key_press.r:
         sound.play_at(track, volume)
     if key_press.m:
-        if music_playing:
+        if music.is_playing(track):
             music.stop(track)
-            music_playing = false
         else:
             music.play(track)
-            music_playing = true
     if key_press.s:
         sound.stop(track)
-        music_playing = false
 
 on render():
     rect(at: (10, 10), size: (200, 30), color: (0.1, 0.1, 0.1, 1.0))
